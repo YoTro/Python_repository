@@ -4,19 +4,48 @@
 #==             Author: Toryun           ==
 #==         Time:2017-08- 28         ==
 #========================
-import re,requests,xlrd,xlwt,datetime,time
+import re,requests,xlrd,xlwt,datetime,time,os
 from xlutils.copy import copy 
 def  main():
     start=datetime.datetime.now()
-    filename='d:/Documents/Downloads/Search Term Food Storage Container.xls'
+    try:
+        filename=raw_input("plz input a filename like c:\\eakd.xlsx (defult filename is d:/Documents/Downloads/Search Term Food Storage Container.xls) :\n")
+        t=os.path.exists(filename)
+        while t==False:
+            filename=raw_input("The path is wrong,plz input a correct filename like c:\\eakd.xlsx:\n")
+            t=os.path.exists(filename)
+            if filename=="\\n":
+                filename='d:/Documents/Downloads/Search Term Food Storage Container.xls'
+    except Exception,e:
+        print str(e)
+        
     data=xlrd.open_workbook(filename) # 打开指定工作薄
-    table=data.sheet_by_index(0) # 打开列表
+    sheets=data.sheets()#获取工作薄所有列表
+    z={}
+    p=0
+    for sheet in sheets:
+        p+=1
+        z[p]=sheet.name
+        print p,z[p] #返回所有列表名
+    try:
+        sheet_index=int(raw_input("plz input index in the serial number(default 1):\n"))
+        if sheet_index in range(1,len(sheets)):
+            t=sheet_index
+        else:
+            print 'The digital is wrong,plz input a correct number'
+    except Exception,e:
+        print str(e)
+        t=1
+    table=data.sheet_by_index(t-1) # 打开列表
     nrows=table.nrows # 行数
     cols=table.ncols # 列数
     print '列数：%d, 行数：%d'%(cols,nrows)
-    URL=table.col_values(cols-2) # 读取第20列导入URL数组
+    row_1st=table.row_values(0)#读取第一行
+    FBA_index=row_1st.index('FBA')#返回运输方式的所在列数
+    URL_index=row_1st.index('URL')#返回URL列的所在列数
+    FBA=table.col_values(FBA_index)# 读取导入FBA数组
+    URL=table.col_values(URL_index) # 读取导入URL数组
     l=len(URL)
-    FBA=table.col_values(cols-5)
     counts_arry=[]
     headers={'Host':	
 "www.amazon.com",
@@ -33,7 +62,7 @@ def  main():
 'Upgrade-Insecure-Requests':	
 "1"}
     data2=copy(data) # 复制工作簿
-    table2=data2.get_sheet(0)
+    table2=data2.get_sheet(t-1)
     for i in range(nrows-2):
         try:
             if FBA[i+1]=='FBA': #判断是否为FBA运输方式（因为只有该运输方式和第三方运输可以查店铺月反馈数
