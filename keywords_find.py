@@ -3,19 +3,37 @@
 #auth:Toryun
 #Date:17/8/24
 #Function:Find results of the words in the Amazon search,return to the excel
-import re,requests,xlwt,xlrd,string,datetime,os
+import re,requests,xlwt,xlrd,string,datetime,os,time
 from xlutils.copy import copy
 def get_url(i,url):
     '''利用代理IP查询Amazon搜索，返回结果'''
     try:
-        proxies={'HTTP': 'HTTP://183.144.214.132:3128', 'HTTPS': 'HTTPS://219.149.46.151:3129'}#免费IP地址*http://www.xicidaili.com*
+        proxies={'HTTP': 'HTTP://122.242.96.30:808', 'HTTPS': 'HTTPS://122.242.96.30:808'}#免费IP地址*http://www.xicidaili.com*
         amazon='https://www.amazon.com/s/ref=nb_sb_noss_2?url=search-alias%3Daps&field-keywords='
         u=str(url)#将列表转换成字符串
         u1=u.replace(' ','+')
         url=amazon+u1
         print i,url
-        _headers=requests.head(url)#得到request头部
-        r=requests.get(url,headers=_headers,proxies=proxies)#get
+        _headers={"Host":	
+"www.amazon.com",
+"User-Agent":
+"Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:56.0) Gecko/20100101 Firefox/56.0",
+"Referer":
+"https://www.amazon.com/",
+"Accept":
+"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+"Accept-Language":
+"zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3",
+"Accept-Encoding":	
+"gzip, deflate, br",
+"Connection":
+"keep-alive",
+"Cache-Control":"max-age=0",
+"Upgrade-Insecure-Requests":"1"
+}#得到request头部
+        
+        r=requests.get(url,headers=_headers,proxies=proxies)#通过代理得到请求内容
+        time.sleep(2)#延迟2秒
         m=re.findall(r'a-size-base a-spacing-small a-spacing-top-small a-text-normal">(.*?)<span>',r.content)#匹配result
         print m[0] #返回第一个值
         return m[0]
@@ -27,22 +45,25 @@ def main():
         t=os.path.exists(curl)#判断文件是否存在
         while t==False:
             curl=raw_input("Your url is not correct,plz input a right again:\n")#如果不存在，再次输入
+            t=os.path.exists(curl)
     except Exception,x:
         print str(x)
     start=datetime.datetime.now()
     data=xlrd.open_workbook(curl)
     table=data.sheet_by_index(0)
-    URL=table.col_values(0)
+    key=table.row_values(0)#获取头行返回数组
+    key_index=key.index('Keyword')#获取Keyword所在列数
+    Keywords=table.col_values(key_index)
     rows=table.nrows
-    print rows
+    print "Workbook's rows is %d"%rows
     data1=xlwt.Workbook()
     table1=data1.add_sheet(u'1')
-    for i in range(rows-1):
-        url=URL[i+1]
+    for i in xrange(rows-1):
+        url=Keywords[i+1]
         m=get_url(i,url)
         table1.write(i,0,url)
         table1.write(i,1,m)
-    data1.save('c:\\4.xls')
+    data1.save('c:\\4.xlsx')
     end=datetime.datetime.now()
     t=end-start
     print 'Total time: {0} s'.format(t)#打印总用时（从读取文件到保存文件）
