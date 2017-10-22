@@ -55,17 +55,17 @@ def main():
             time.sleep(2)
             r,url=requests_url(URL[i])
             print i,url
-            rank1=re.findall(r'(#\d+,\d{3}.*?)\(',r)
+            rank1=re.findall(r'(#\d+,\d{3}.*?)\(',r)#匹配排名大于百位的主目录排名
             if rank1:
                 print rank1
             else:
-                rank1=re.findall(r'(#\d{1,3}.*?)\(<a href',r)
+                rank1=re.findall(r'(#\d{1,3}.*?)\(<a href',r)#匹配排名小于千位的主目录排名
                 print rank1
-            rank2=re.findall(r'>(#\d+)<\/span>',r)
+            rank2=re.findall(r'>(#\d+)<\/span>',r)#匹配排名小于千位的小目录排名
             if rank2:
                 print rank2
             else:
-                rank2=re.findall(r'>(#\d+|#\d+,\d{3})\sin\s<',r)
+                rank2=re.findall(r'>(#\d+|#\d+,\d{3})\sin\s<',r)#匹配排名大于百位的小目录排名
                 print rank2
 
             
@@ -78,7 +78,7 @@ def main():
     data1.save('c:\\first_Choice_copy.xls') #保存复制表格
     end=datetime.datetime.now()
     t=end-start#总用时
-    print 'Total time: %s s.'%(t)
+    print 'Total time: {0} s.'.format(t)
 
 if  __name__== '__main__':
     main()
