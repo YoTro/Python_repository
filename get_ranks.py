@@ -2,8 +2,8 @@
 import re,requests,xlrd,datetime,xlwt,time
 from xlutils.copy import copy
 # 输入Asin，get网页返回内容和网址
-def requests_url(url):
-    url='https://www.amazon.com/dp/'+url
+def requests_url(asin):
+    url='https://www.amazon.com/dp/'+asin
     headers={"Host":	
 "www.amazon.com",
 "User-Agent":
@@ -19,18 +19,18 @@ def requests_url(url):
 "Cache-Control":"max-age=0",
 "Upgrade-Insecure-Requests":"1"
 }
-    proxies={'HTTP': 'HTTP://183.144.214.132:3128', 'HTTPS': 'HTTPS://219.149.46.151:3129'}
-    r=requests.get(url)
+    proxies={'HTTP': 'HTTP://122.242.96.30:808', 'HTTPS': 'HTTPS://122.242.96.30:808'}#免费代理IP
+    r=requests.get(url，headers=headers,proxies=proxies)
     return r.content,url
 def main():
     start=datetime.datetime.now() # 计算所用时间
     data=xlrd.open_workbook('D:\\Documents\\Downloads\Food_Bins&Canisters_adjust_cell_phone.xls')#打开工作簿
     sheets=data.sheets()
     z={}
-    p=0
+    p=0#key
     for sheet in sheets:
         p+=1
-        z[p]=sheet.name
+        z[p]=sheet.name#把工作簿中的sheet名导入字典z
         print p,z[p]
     try:
         sheet_index=int(raw_input("plz input index in the serial number(default 1):\n"))
@@ -44,7 +44,7 @@ def main():
     table=data.sheet_by_index(t-1)# 打开第一个sheet
     rows=table.nrows#计算表中列数和行数
     cols=table.ncols
-    print cols,rows
+    print "%s 's cols,rows is"%(z[t],cols,rows)#打印表名中的行列数
     row_1st=table.row_values(0)#读取第一行
     asin_index=row_1st.index('Asin')#返回Asin列的所在列数
     URL=table.col_values(asin_index,1,rows-1)#读取Asin列第二行到最后一行
@@ -70,7 +70,7 @@ def main():
 
             
             
-            table1.write(i+1,cols,rank1[0])
+            table1.write(i+1,cols,rank1[0])#写入sheet中
             table1.write(i+1,cols+1,rank2)
 
         except Exception,e:
