@@ -71,10 +71,10 @@ def main():
     print "{0} 's rows,cols are {1},{2}".format(z[sheet_num],rows,cols)
     rows_1st=table.row_values(0)#读取第一行
     URL_index=rows_1st.index('URL')#读取URL所在位置
-    URL=table.col_values(URL_index,1,rows-1)#读取该列从第2行到最后一行
+    URL=table.col_values(URL_index,1,rows)#读取该列从第2行到最后一行
     data1=copy(data)#xlutils.copy 类里的copy函数
     table1=data1.get_sheet(sheet_num-1)
-    for i in xrange(rows):
+    for i in xrange(rows-1):
         Amazon_='https://www.amazon.com'
         try:
             r=requests_url(URL[i])
