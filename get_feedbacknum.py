@@ -1,8 +1,8 @@
 # -*- coding:UTF-8 -*-
-# ========================
-#===   Python version is 2.7.13  ==
-#==             Author: Toryun           ==
-#==         Time:2017-08- 28         ==
+#========================
+#Python version is 2.7.13 
+#Author: Toryun        
+#Time:2017-08- 28       
 #========================
 import re,requests,xlrd,xlwt,datetime,time,os
 from xlutils.copy import copy 
