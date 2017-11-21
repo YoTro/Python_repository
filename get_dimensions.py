@@ -48,7 +48,7 @@ def main():
     print cols,rows
     row_1st=table.row_values(0)#读取第一行
     asin_index=row_1st.index('Asin')#返回Asin列的所在列数
-    URL=table.col_values(asin_index,1,rows-1)#读取Asin列第二行到最后一行
+    URL=table.col_values(asin_index,1,rows)#读取Asin列第二行到最后一行
     data1=copy(data)#复制工作簿
     table1=data1.get_sheet(t-1)
     for i in range(rows-1):
