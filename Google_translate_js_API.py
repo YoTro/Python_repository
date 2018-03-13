@@ -1,3 +1,8 @@
+#-*-coding:UTF-8-*-
+#Python version:2.7.13
+#System:window7
+#Time:2018-3-13
+#Function:python execjs call js snippet
 import execjs  
   
 class Py4Js():  
