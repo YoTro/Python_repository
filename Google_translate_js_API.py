@@ -4,9 +4,11 @@
 #Time:2018-3-13
 #Function:python execjs call js snippet
 import execjs  
-  
+import requests
+import urllib
+import re
 class Py4Js():  
-      
+  '''Google_translate js API'''    
     def __init__(self):  
         self.ctx = execjs.compile(""" 
         function TL(a) { 
@@ -50,4 +52,26 @@ class Py4Js():
     """)  
           
     def getTk(self,text):  
-        return self.ctx.call("TL",text)  
+        return self.ctx.call("TL",text)
+def  zh_or_en(sl):
+    sl=sl.decode('unicode_escape')
+    __zh=re.compile(u'[\u4e00-\u9fa5]+')
+    f=__zh.search(sl)
+    print sl
+    if f:#如果是中文，则用中译英URL
+        q=urllib.quote(sl)
+        url="https://translate.google.cn/translate_a/single?client=t&sl=zh-CN&tl=en&hl=zh-CN&dt=at&dt=bd&dt=ex&dt=ld&dt=md&dt=qca&dt=rw&dt=rm&dt=ss&dt=t&ie=UTF-8&oe=UTF-8&otf=1&ssel=3&tsel=3&kc=3&"
+    else:
+        q=sl
+        url="https://translate.google.cn/translate_a/single?client=t&sl=en&tl=zh-CN&hl=zh-CN&dt=at&dt=bd&dt=ex&dt=ld&dt=md&dt=qca&dt=rw&dt=rm&dt=ss&dt=t&ie=UTF-8&oe=UTF-8&otf=2&ssel=3&tsel=6&kc=1&"
+    return q,url
+js=Py4Js()
+sl=raw_input('plz input your translate word:\n')#输入要查询的中文
+q,url=zh_or_en(sl)
+print q
+tk=js.getTk(q)
+url=url+"tk={0}&q={1}".format(tk,q)
+r=requests.get(url)
+print r
+    
+    
