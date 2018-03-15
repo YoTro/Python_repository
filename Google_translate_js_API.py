@@ -60,20 +60,23 @@ def  zh_or_en(sl):
     f=__zh.search(s)
     if f:#如果是中文，则用中译英URL
         q=urllib.quote(sl)
-        
+        t=1
         url="https://translate.google.cn/translate_a/single?client=t&sl=zh-CN&tl=en&hl=zh-CN&dt=at&dt=bd&dt=ex&dt=ld&dt=md&dt=qca&dt=rw&dt=rm&dt=ss&dt=t&ie=UTF-8&oe=UTF-8&otf=1&ssel=3&tsel=3&kc=3&"
     else:
         q=sl
+        t=2
         url="https://translate.google.cn/translate_a/single?client=t&sl=en&tl=zh-CN&hl=zh-CN&dt=at&dt=bd&dt=ex&dt=ld&dt=md&dt=qca&dt=rw&dt=rm&dt=ss&dt=t&ie=UTF-8&oe=UTF-8&otf=2&ssel=3&tsel=6&kc=1&"
-    return q,url
+    return q,url,t
 js=Py4Js()
 sl=raw_input('plz input your translate word:\n')#输入要查询的中文
-q,url=zh_or_en(sl)
+q,url,t=zh_or_en(sl)
 print q
 tk=js.getTk(q)
 url=url+"tk={0}&q={1}".format(tk,q)
 r=requests.get(url)
-
-print  r.json()
+if t=1:
+      print  str(r.json()).decode('unicode_escape')
+if t=2:
+      print r.json()
     
     
