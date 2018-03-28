@@ -1,4 +1,9 @@
-﻿# -*- conding:UTF-8 -*-
+# -*- coding:UTF-8 -*-
+# =====================
+#==Python version is 2.7.13  
+#== Author: Toryun           
+#== Time:2017-08- 28         
+#======================
 import re,requests,xlrd,datetime,xlwt,os,time
 from xlutils.copy import copy
 # 输入Asin，get网页返回内容和网址
@@ -76,32 +81,26 @@ def main():
     URL=table.col_values(asin_index,1,rows-1)#读取Asin列第二行到最后一行
     data1=copy(data)#复制工作簿
     table1=data1.get_sheet(t-1)
+    date=str(start.month)+'/'+str(start.day)
+    table1.write(0,cols,date)
     for i in range(rows-1):
         try:
             r,url=requests_url(URL[i])
             time.sleep(3)
             print i,url
-            dimensions1=re.findall(r'<td class="a-size-base">\s+(.*?)\sinches',r)
-            dimensions2=re.findall('Product Dimensions:\s+<\/b>\s+(.*?)\s+inches',r)
-            price=re.findall(r'class="a-size-medium a-color-price">\$(.*?)<\/span>',r)
-            if dimensions1:
-                print dimensions1[0]
-                print price[0]
-                table1.write(i+1,cols,dimensions1[0])
-            elif  dimensions2:
-                print dimensions2[0]
-                print price[0]
-                table1.write(i+1,cols,dimensions2[0])
+            reviews=re.findall(r'<span id="acrCustomerReviewText" class="a-size-base">(.*?) customer reviews',r)
+            if reviews:
+                print reviews[0]
+                table1.write(i+1,cols,reviews[0])
             else:
-                print 'dimensions is None'
-            table1.write(i+1,cols+1,price[0])
+                print 'reviews is None'
         except Exception,e:
             print str(e)
     u='c:\\first_Choice_copy.xls'
     data1.save(u) #保存复制表格
     end=datetime.datetime.now()
     t=end-start#总用时
-    print 'It save in {0}.\nTotal time: {1} s.'format(u,t)
+    print 'It save in {0}.\nTotal time: {1} s.'.format(u,t)
 
 if  __name__== '__main__':
     main()

@@ -6,7 +6,7 @@
 import re,requests,xlwt,xlrd,string,datetime,os,time
 from xlutils.copy import copy
 def get_url(i,url):
-    '''利用代理IP查询Amazon搜索，返回结果'''
+    '''从工作簿中获取Keyword利用代理IP查询Amazon搜索，返回结果'''
     try:
         proxies={'HTTP': 'HTTP://122.242.96.30:808', 'HTTPS': 'HTTPS://122.242.96.30:808'}#免费IP地址*http://www.xicidaili.com*
         amazon='https://www.amazon.com/s/ref=nb_sb_noss_2?url=search-alias%3Daps&field-keywords='
@@ -51,8 +51,8 @@ def main():
     start=datetime.datetime.now()
     data=xlrd.open_workbook(curl)
     table=data.sheet_by_index(0)
-    key=table.row_values(0)#获取头行返回数组
-    key_index=key.index('Keyword')#获取Keyword所在列数
+    key=table.row_values(0)
+    key_index=key.index('Keyword')
     Keywords=table.col_values(key_index)
     rows=table.nrows
     print "Workbook's rows is %d"%rows
@@ -63,9 +63,10 @@ def main():
         m=get_url(i,url)
         table1.write(i,0,url)
         table1.write(i,1,m)
-    data1.save('c:\\4.xlsx')
+    data1_url='c:\\4.xlsx'
+    data1.save(data1_url)
     end=datetime.datetime.now()
     t=end-start
-    print 'Total time: {0} s'.format(t)#打印总用时（从读取文件到保存文件）
+    print '您用{0}所搜索的关键词已经存储到{1}\nTotal time: {2} s'.format(curl,data1_url,t)#打印文件原地址和新存储地址，总用时（从读取文件到保存文件）
 if __name__=='__main__':
     main()
