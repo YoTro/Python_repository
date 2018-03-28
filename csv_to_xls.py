@@ -11,6 +11,14 @@ import os
 import re
 import xlwt
 import datetime
+import sys
+def progress(i):
+    '''Output the speed of progress '''
+    sys.stdout.write('#')
+    sys.stdout.flush()#refresh the stdout
+def rate_progress(i):
+    sys.stdout.write('\r%2d%%'.format(i)
+    sys.stdout.flush()
 def workbook_create():
     '''Create sheet in workbook by xlwt创建表格'''
     workbook = xlwt.Workbook(encoding = 'utf-8')
@@ -49,7 +57,9 @@ def main():
     n=[]
     t=0#row行数
     l=0#parameter迭代参数
-    for i in range(len(file_list)):
+    l_=len(file_list)
+                           
+    for i in range(l_):
         for oldname in file_list:
             os.chdir(file_path)#编译时防止出现Python找不到工作目录错误
             f.append(oldname)
@@ -73,6 +83,9 @@ def main():
                 table2.write(l,r,x)
                 r+=1
             l=l+1
+         rate_progress(i)           
+         progress(i)
+                    
     t2=datetime.datetime.now()      
     print 'The workbook is save in {0}\nThe time is {1}'.format(file_save,t2-t1)
     workbook.save(file_save)
