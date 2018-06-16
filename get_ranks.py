@@ -70,8 +70,6 @@ def main():
                 rank2=re.findall(r'>(#\d+|#\d+,\d{3})\sin\s<',r)
                 print rank2
 
-            
-            
             table1.write(i+1,cols,rank1[0])
             table1.write(i+1,cols+1,rank2)
 

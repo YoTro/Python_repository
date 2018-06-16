@@ -11,19 +11,10 @@ import os
 import re
 import xlwt
 import datetime
-import sys
-def progress(i):
-    '''Output the speed of progress '''
-    sys.stdout.write('#')
-    sys.stdout.flush()#refresh the stdout
-def rate_progress(i):
-    sys.stdout.write('\r%2d%%'.format(i)
-    sys.stdout.flush()
 def workbook_create():
     '''Create sheet in workbook by xlwt创建表格'''
     workbook = xlwt.Workbook(encoding = 'utf-8')
     table1= workbook.add_sheet("data",cell_overwrite_ok=True)#取名data，可重写单元格
-    table2= workbook.add_sheet("data1",cell_overwrite_ok=False)
     style = xlwt.XFStyle()#设置样式
     font = xlwt.Font()#设置字体
     font.name = 'SimSun' # 指定“宋体”
@@ -34,7 +25,7 @@ def workbook_create():
     alignment.vert=xlwt.Alignment.VERT_CENTER#单元格字符垂直居中
     #格式: VERT_TOP, VERT_CENTER, VERT_BOTTOM, VERT_JUSTIFIED, VERT_DISTRIBUTED
     style.alignment=alignment#添加至样式
-    return table1,table2,workbook
+    return table1,workbook
         
 def main():
     file_path="C:\\Users\\Administrator\\Desktop\\1"#工作路径
@@ -50,16 +41,14 @@ def main():
             T=False
     
     t1=datetime.datetime.now()
-    table1,table2,workbook=workbook_create()
+    table1,workbook=workbook_create()
     
     file_list=os.listdir(file_path)#Get filename with extension name列出文件
     f=[]#Get old_filename获取旧文件名
     n=[]
     t=0#row行数
     l=0#parameter迭代参数
-    l_=len(file_list)
-                           
-    for i in range(l_):
+    for i in range(len(file_list)):
         for oldname in file_list:
             os.chdir(file_path)#编译时防止出现Python找不到工作目录错误
             f.append(oldname)
@@ -70,7 +59,7 @@ def main():
                 os.rename(oldname,newname)
             n.append(newname)
         print n[i]
-        new_url=file_path+os.sep+'('+str(i+1)+')'+'.csv'
+        new_url=file_path+os.sep+'('+str(i)+')'+'.csv'
         f_in=open(new_url, 'rb')
         text=csv.reader(f_in,dialect='excel')
         for line in text:
@@ -80,12 +69,8 @@ def main():
             for x in line:
                 table1.write(l,0,'2018/{0}/{1}'.format(m,str(i+d)))
                 table1.write(l,r,x)
-                table2.write(l,r,x)
                 r+=1
             l=l+1
-         rate_progress(i)           
-         progress(i)
-                    
     t2=datetime.datetime.now()      
     print 'The workbook is save in {0}\nThe time is {1}'.format(file_save,t2-t1)
     workbook.save(file_save)

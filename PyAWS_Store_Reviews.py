@@ -4,7 +4,13 @@
 #== Author: Toryun           
 #== Time:2017-08- 28         
 #======================
-import re,requests,xlrd,datetime,xlwt,os,time
+import re
+import requests
+import xlrd
+import datetime
+import xlwt
+import os
+import time
 from xlutils.copy import copy
 # 输入Asin，get网页返回内容和网址
 def requests_url(Asin):
@@ -83,7 +89,7 @@ def main():
     table1=data1.get_sheet(t-1)
     date=str(start.month)+'/'+str(start.day)
     table1.write(0,cols,date)
-    for i in range(rows-1):
+    for i in range(rows):
         try:
             r,url=requests_url(URL[i])
             time.sleep(3)
@@ -91,9 +97,10 @@ def main():
             reviews=re.findall(r'<span id="acrCustomerReviewText" class="a-size-base">(.*?) customer reviews',r)
             if reviews:
                 print reviews[0]
-                table1.write(i+1,cols,reviews[0])
+                table1.write(i+1,cols,int(reviews[0]))
             else:
                 print 'reviews is None'
+                table1.write(i+1,cols,0)
         except Exception,e:
             print str(e)
     u='c:\\first_Choice_copy.xls'
