@@ -149,7 +149,7 @@ _headers={
         "keep-alive"}
 proxies={'HTTP': 'HTTP://122.242.96.30:808', 'HTTPS': 'HTTPS://122.242.96.30:808'}
 r=requests.get(url,headers=_headers,proxies=proxies)
-print r.raise_for_status(),r.content
+print r.status_code,r.content
 
 
 

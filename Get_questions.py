@@ -10,7 +10,7 @@ import execjs
 import requests
 #---------------------------------------------------------------------------------
 def excel_bulit():
-    #Bulit a excel.构建Excel
+    '''Bulit a excel.构建Excel'''
     workbook = xlwt.Workbook(encoding = 'utf-8')
     table= workbook.add_sheet("data",cell_overwrite_ok=True)
     style = xlwt.XFStyle()#设置样式
@@ -124,12 +124,13 @@ headers={"Host":
              }
 workbook,table=excel_bulit()
 j=0
-url='https://www.amazon.com/ask/questions/asin/B075XLRHNQ/1/ref=ask_ql_psf_ql_hza?isAnswered=true'
+asin=raw_input('Plz input the asin you want to get questions:\n')
+url='https://www.amazon.com/ask/questions/asin/B075XLRHNQ/1/ref=ask_ql_psf_ql_hza?isAnswered=true'.format(asin)
 r0=requests.get(url,headers=headers)
 pages=re.findall(r'ref=ask_ql_psf_ql_hza\?isAnswered=true">(.*?)<\/a><\/li>\s+<li class="a\-last">',r0.content)
 page=int(pages[0])+1
 for i in range(1,page):
-    url='https://www.amazon.com/ask/questions/asin/B075XLRHNQ/{}/ref=ask_ql_psf_ql_hza?isAnswered=true'.format(str(i))
+    url='https://www.amazon.com/ask/questions/asin/{0}/{1}/ref=ask_ql_psf_ql_hza?isAnswered=true'.format(asin,str(i))
     r=requests.get(url,headers=headers)
     Questions=re.findall(r'=ask_ql_ql_al_hza">\s+(.*?)\s{45}',r.content)#获取第i页所有问题
     for b in range(len(Questions)):
@@ -144,6 +145,7 @@ for i in range(1,page):
         table.write(b+j,0,question)   
     j=j+b
 file_save='c:\\questions.xls'
+print 'The workbook is saved in {}'.format(file_save)
 workbook.save(file_save)
 
         

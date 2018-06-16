@@ -101,7 +101,7 @@ def main():
     data1.save(u) #保存复制表格
     end=datetime.datetime.now()
     t=end-start#总用时
-    print 'It save in {0}.\nTotal time: {1} s.'format(u,t)
+    print 'It save in {0}.\nTotal time: {1} s.'.format(u,t)
 
 if  __name__== '__main__':
     main()
