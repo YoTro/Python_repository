@@ -1,24 +1,30 @@
+# -*- coding:UTF:8 -*-
+# Author:Toryun
+# Python version:2.7.13
+# Date:18/3/25
+# Function:Read and return the shipping fee of the fast yunexpress China-US  from Google Sheets
+#	google-api-python-client
+#	对Google系列的产品进行api访问控制，
+#	Google sheet的最大单元格数：5000000
+# 由于目前我不知道batchGet中range匹配多行的写法，所以暂时用get代替
+
 from __future__ import print_function
 import httplib2
 import os
 import pickle
-from apiclient import discovery
+from googleapiclient import discovery
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-try:
-    import argparse
-    flags = argparse.ArgumentParser(parents=[tools.argparser]).parse_args()
-except ImportError:
-    flags = None
+
+
 
 # If modifying these scopes, delete your previously saved credentials
 # at ~/.credentials/sheets.googleapis.com-python-quickstart.json
-SCOPES = 'https://www.googleapis.com/auth/spreadsheets.readonly'
-CLIENT_SECRET_FILE = 'client_secret.json'
-APPLICATION_NAME = 'Google Sheets API Python Quickstart'
 
 
-def get_credentials():
+
+
+def CUS_shippingfee(weight):
     """Gets valid user credentials from storage.
 
     If nothing has been stored, or if the stored credentials are invalid,
@@ -27,7 +33,11 @@ def get_credentials():
     Returns:
         Credentials, the obtained credential.
     """
+    SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+    CLIENT_SECRET_FILE = 'credentials.json'
+    APPLICATION_NAME = 'Google Sheets API Python Quickstart'
     creds = None
+    p = 0
     # The file token.pickle stores the user's access and refresh tokens, and is
     # created automatically when the authorization flow completes for the first
     # time.
@@ -40,47 +50,40 @@ def get_credentials():
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
+                CLIENT_SECRET_FILE, SCOPES)
             creds = flow.run_local_server()
         # Save the credentials for the next run
         with open('token.pickle', 'wb') as token:
             pickle.dump(creds, token)
             
-    return creds
 
-def CUS_shippingfee(weight):
+
     """
 
     Creates a Sheets API service object and return a array of CN_TO_US shipping fee in this spreadsheet :
     https://docs.google.com/spreadsheets/d/1c7EkmwQNWVEwP2qgKERSx6tQnrb5tvqSidyY3m5BP_M/edit#gid=0it
     """
-    credentials = get_credentials()
-    http = credentials.authorize(httplib2.Http())
-    discoveryUrl = ('https://sheets.googleapis.com/$discovery/rest?'
-                    'version=v4')
-    service = discovery.build('sheets', 'v4', http=http,
-                              discoveryServiceUrl=discoveryUrl)
+
+    service = discovery.build('sheets', 'v4',credentials=creds)
 
     spreadsheetId = '1c7EkmwQNWVEwP2qgKERSx6tQnrb5tvqSidyY3m5BP_M'
-    rangeName = ['xuni_shipping_fee!A2:B80','xuni_shipping_fee!H2:I80']
-    result = service.spreadsheets().values().batchGet(
-        spreadsheetId=spreadsheetId, range=rangeName).execute()
+    if weight<=2000:
+        rangeName = 'xuni_shipping_fee!A2:B80'
+    else:
+        rangeName = 'xuni_shipping_fee!H2:I80'
+    result = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheetId,range=rangeName).execute()
     values = result.get('values', [])
-
     if not values:
         print('No data found.')
     else:
+        
         for row in values:
-            if weight<=2000:
-                for i in xrange(len(row[0][0])):
-                    if weight<=int(row[0][0][i])*1000:
-                        return float(row[0][1][i])
-                        break
-            else:
-                for i in xrange(len(row[1][0])):
-                    if weight<=int(row[1][0][i])*1000:
-                        return float(row[1][1][i])
-                        break        
+            if weight<=float(row[0])*1000:
+                p = float(row[1])
+                break
+
+    return p
 
 
 
