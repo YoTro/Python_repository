@@ -198,30 +198,13 @@ def read_sku(file_path):
         row_1st = table.row_values(0)#读取表格第一行
         sku_index = row_1st.index('商家编码')#返回商家编码所在列数
         skuArray_index = row_1st.index('价格信息')#返回价格信息所在列数
-        sku = table.col_values(sku_index,1,rows-1)#获取sku
+        skulist = table.col_values(sku_index,1,rows-1)#获取所有的sku
         skuArray = table.col_values(skuArray_index,1,rows-1)#获取价格信息
-        return sku,skuArray
-def Process_sku(sku,p,skuArray):
-        '''
-        To separate the single attribute of sku and the multi-attribute of sku. PS: similar to delete duplicates in an array.对商品编码进行处理，分开单属性sku和多属性sku。PS:类似于删除数组中的重复项
+        return skulist,skuArray
 
-        '''
-        i = 0
-        t,sku0 = []
 
-        for i in xrange(len(sku)):
-                t = re.findall(r'[A-Z]{2}\d+',sku[i])
-                for i in t:
-                        if not i in sku0:
-                                sku0.append(i)
-                if len(sku0) == 1:
-                        skuArray0 = '{"skuArray": [{"价格":"{0}","库存":"999","商家编码":"{1}"}]}'.format(p,sku0[0])
-                else:
-                        skuArray0 = re.findall(r'\"属性\"\"\:(.*?)商家编码\W+[A-Z]{2}\d+\"',skuArray[i])
-
-                        return sku1
-def read_all(sku):
-        '''Get the weight and cost of sku in the company product list which is in the local computer if can't get them from the website.读取公司产品统表里的sku的重量和成本价'''
+def read_all():
+        '''Get all sku, weight and cost in the company product list which is in the local computer if can't get them from the website.读取公司产品统表里的sku，重量和成本价并返回这三个数组（考虑到公司统表过大）'''
         user = getpass.getuser()#获取当前系统用户名
         file_path = 'C:\\Users\\{0}}\\Desktop\公司产品统表.xlsx'.format(user)#默认文件路径  
         if not os.path.exists(file_path):
@@ -257,29 +240,29 @@ def read_all(sku):
         cost_index = row_1st.index('成本价')#返回成本价所在列数
         weight_index = row_1st.index('重量')#返回重量所在列数
         SKU = table.col_values(sku_index,1,rows-1)#获取sku
-        cost = table.col_values(cost_index,1,rows-1)#获取成本价
-        weight = table.col_values(weight_index,1,rows-1)#获取重量
+        costlsit = table.col_values(cost_index,1,rows-1)#获取成本价
+        weightlist = table.col_values(weight_index,1,rows-1)#获取重量
+        return SKU,costlsit,weightlist
+def Search_sku(sku,costlist,weightlist):
+	'''
+	Get the price and weight of sku from the list then return
+	查找sku相对应的重量和成本并返回
+	'''
         try:
                 index = SKU.index(sku)
-                cost,weight = int(cost[index]),int(weight[index])
+                cost,weight = float(costlist[index]),float(weightlist[index])
                 return cost,weight
         except Exception,e:
                 print str(e)
                 print "Plz update the 公司产品统表 to newest version,can't find the sku"
+
                 pass
-def Oversea_warehouse(sku):
-        '''如果添加海外仓，怎么合成sku和skuArray'''
-        Price_ID = 
-        CN = '","属性":{"200007763":"201336100"},"库存":"999","商家编码":"'
-        CUS = '","属性":{"200007763":"201336106"},"库存":"35","商家编码":"'
-        CRU = '","属性":{"200007763":"201336103"},"库存":"35","商家编码":"'
-        CDE = '","属性":{"200007763":"201336101"},"库存":"35","商家编码":"'
-        CAU = ''
-        ID_ow = {"CN":CN,"CUS":CUS,"CRU":CRU,"CDE":CDE,"CUK":CUK,"CBR":CBR,"CES":CES}
+
 
 
 def pre_price(cost,weight,d,T,f,h,ow):
-        '''Calculate the price before the discount.计算折前价
+        '''
+        Calculate the price before the discount.计算折前价
        .Choose the promotional discount, marginal profit margin, USD/CNY exchange rate.选择相应的促销折扣、边际利润率，美元兑人民币汇率
         @cost:成本
         @weight:毛重
@@ -381,7 +364,44 @@ def pre_price(cost,weight,d,T,f,h,ow):
                 p["p_CBR"] = (1.01*cost+0.57+s_cbr)/(T*0.86(1-t)*(1-d))
         
         return p
+
+def Oversea_warehouse(sku,p,ow):
+        '''如果添加海外仓，怎么合成sku和skuArray'''
+        CN = '{"价格":"{0}","属性":\{{0},"库存":"999","商家编码":"{0}"}]'format(sku)
+        CUS = '{"价格":"{0}","属性":\{{0},"库存":"35","商家编码":"{0}_CUS"}]'format(p["p_CUS"],sku)
+        CRU = '{"价格":"{0}","属性":\{{0},"库存":"35","商家编码":"{0}_CRU"}]'format(p["p_CRU"],sku)
+        CDE = '{"价格":"{0}","属性":\{{0},"库存":"35","商家编码":"{0}_CDE"}]'format(p["p_CDE"],sku)
+        CAU = '{"价格":"{0}","属性":\{{0},"库存":"35","商家编码":"{0}_CDE"}]'format(p["p_CAU"],sku)
+        CUK = '{"价格":"{0}","属性":\{{0},"库存":"35","商家编码":"{0}_CDE"}]'format(p["p_CUK"],sku)
+        CFR = '{"价格":"{0}","属性":\{{0},"库存":"35","商家编码":"{0}_CDE"}]'format(p["p_CFR"],sku)
+        CIT = '{"价格":"{0}","属性":\{{0},"库存":"35","商家编码":"{0}_CDE"}]'format(p["p_CIT"],sku)
+        CBR = '{"价格":"{0}","属性":\{{0},"库存":"35","商家编码":"{0}_CBR"}]'format(p["p_CBR"],sku)
+        CES = '{"价格":"{0}","属性":\{{0},"库存":"35","商家编码":"{0}_CBR"}]'format(p["p_CES"],sku)
         
+        skuArray_ow = {"CN":CN,"CUS":CUS,"CRU":CRU,"CDE":CDE,"CUK":CUK,"CBR":CBR,"CES":CES}   
+
+def Process_sku(sku,p,skuArray):
+        '''
+        To separate the single attribute of sku and the multi-attribute of sku. PS: similar to delete duplicates in an array.
+        对商品编码进行处理，分开单属性sku和多属性sku。PS:类似于删除数组中的重复项
+
+        '''
+        i = 0
+        t,sku0 = []
+
+        for i in xrange(len(sku)):
+                t = re.findall(r'[A-Z]{2}\d+',sku[i])
+                for i in t:
+                        if not i in sku0:
+                                sku0.append(i)
+                if len(sku0) == 1:
+                        skuArray0 = '{"skuArray": [{"价格":"{0}","库存":"999","商家编码":"{1}"}]}'.format(p,sku[i])
+                else:
+                        sku_Attributes = re.findall(r'属性\W+\{(.*?),\"库存\W+\d+\W+商家编码\W+[A-Z]{2}\d+\"\}',skuArray[i])
+                        skuArray0 = 
+                        return sku1
+
+     
         
         
         
