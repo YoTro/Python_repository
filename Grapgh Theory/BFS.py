@@ -30,5 +30,4 @@ def BFS(graph,s):
 		print vertex
 	print queue
 if __name__ == '__main__':
-        s = raw_input("Please choose one key to caculate the shortest path:\n")
-        BFS(graph,s)
+        BFS(graph,"E")
