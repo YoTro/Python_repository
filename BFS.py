@@ -4,11 +4,13 @@
 
 graph = {
 	"A": ["B","C"],
-	"B": ["A","C","D"],
-	"C": ["A","B","D","E"],
-	"D": ["B","C","E","F"],
-	"E": ["C","D"],
-	"F": ["D"]
+	"B": ["D","C","F","A","E"],
+	"C": ["A","B","G","E","H"],
+	"D": ["B"],
+	"E": ["B","C","F","G"],
+	"F": ["B","E"],
+	"G": ["E","C"],
+	"H": ["C"]
 }
 
 def BFS(graph,s):
@@ -28,7 +30,6 @@ def BFS(graph,s):
 				seen.add(w)
 				#print seen,queue
 		print vertex
-	print queue
 if __name__ == '__main__':
         s = raw_input("Please choose one key to caculate the shortest path:\n")
         BFS(graph,s)
