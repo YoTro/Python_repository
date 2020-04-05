@@ -37,16 +37,13 @@ class Taylor():
 
     def f_Nderivative(self,n,f):
         '''N derivative of function函数的N阶导数'''
-        l = []
-        for i in range(n):
+        l = [f]
+        for i in range(n+1):
                 f = diff(f)
-                l.append(f)	
+                l.append(f)
+        l.pop()
         return l
         
-    def Taylor(self,x,n,f):
-        '''x为自变量，f为函数'''
-
-        return taylor_f
     def f(self,x):
         '''自定义function'''
         s = input('Please input the function:\n')
@@ -60,9 +57,9 @@ if __name__ =='__main__':
     Factorial = Taylor.Factorial_N(n)
     Nderivative = Taylor.f_Nderivative(n,f)
     taylor_f = 0.0
-    for i in range(1,n+1):
-        taylor_f += Taylor.f_Nderivative(i,f)[i-1]*pow(x,i)/Taylor.Factorial_N(i)
-    print "{0}'s {1} Taylor formula is \n".format(f,n, taylor_f)
+    for i in range(0,n+1):
+        taylor_f += Taylor.f_Nderivative(i,f)[i]*pow(x,i)/Taylor.Factorial_N(i)
+    print "{0}'s {1} Factorial Taylor formula is \n{2}".format(f,n, taylor_f)
     
     
 
