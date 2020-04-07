@@ -34,8 +34,9 @@ def Merge_sort(arr):
         right = arr[m:]
         #print m,left,right
         left = Merge_sort(left)
-        #print right
+        print left,right
         right = Merge_sort(right)
+        print left,right
     return Merge(left, right)
                 
 if __name__ == '__main__':
