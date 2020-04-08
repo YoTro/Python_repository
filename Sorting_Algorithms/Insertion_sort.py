@@ -1,5 +1,5 @@
 #coding:UTF-8
-#Auther: Toryun
+#Author: Toryun
 #Date: 2020-04-07 21:42:00
 #Function: Insertion Sort
 from random import *

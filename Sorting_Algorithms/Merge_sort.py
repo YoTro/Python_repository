@@ -1,3 +1,8 @@
+#coding:UTF-8
+#Author: Toryun
+#Date: 2020-04-06 23:44:00
+#Function: Merge Sort
+
 import math
 import time
 import os

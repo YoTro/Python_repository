@@ -1,4 +1,7 @@
 #coding:UTF-8
+#Author: Toryun
+#Date: 2020-04-05 21:42:00
+#Function: Binary search
 import math
 import time
 import numpy
