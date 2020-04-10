@@ -26,12 +26,14 @@ def Binary_search(listdata,value):
         elif listdata[mid] < value:
             low = mid + 1
             mid = (high - low) / 2 + low
+            
         else:
             high = mid -1 
             mid = (high - low) / 2
+        print mid
     t1 = time.time()
     T = t1 - t0
-    print "Binary_search Total time is {}".format(T)
+    #print "Binary_search Total time is {}".format(T)
     return T
 
 
