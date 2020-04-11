@@ -1,7 +1,9 @@
 #coding:UTF-8
 #Author: Toryun
 #Date: 2020-04-05
-#Function: Taylor
+#Function: Taylor 可以转换成c/c++
+#sympy have a function could achieve this method:series(method,n)
+#你也可以使用sympy库里的series函数得到Taylor展开式
 
 from sympy import *
 import math
@@ -59,7 +61,7 @@ if __name__ =='__main__':
     taylor_f = 0.0
     for i in range(0,n+1):
         taylor_f += Taylor.f_Nderivative(i,f)[i]*pow(x,i)/Taylor.Factorial_N(i)
-    print "{0}'s {1} Factorial Taylor formula is \n{2}".format(f,n, taylor_f)
+    pprint("{0}'s {1} Factorial Taylor formula is \n{2}".format(f,n, taylor_f))
     
     
 
