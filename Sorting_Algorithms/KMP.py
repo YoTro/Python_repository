@@ -50,12 +50,12 @@ class KMP():
         return p
 if __name__ == '__main__':
     arr = 'AABA'
-    S = 'AABAACAADAABAABA'
+    S = 'AABAACAADAABAABAAABAACAADAABAABAAABAACAADAABAABAAABAACAADAABAABA'
     print(S)
     print(arr)
     t0 = time.time()
     kmp = KMP()
     p = kmp.KMP(S,arr)
     t1 = time.time()
-    T = round(t1 - t0,2)
+    T = t1 - t0
     print("The \'{0}\' is in {1}th position, the total finding time is {2} seconds".format(arr,p,T))
