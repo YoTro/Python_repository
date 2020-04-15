@@ -26,7 +26,8 @@ def Counting_sort(arr):
         arr_tmp[i+1] += arr_tmp[i]
     print(arr_tmp) 
     arr_new = [0]*l
-    for i in range(l):
+    for i in range(l-1,-1,-1):
+        #倒序保持算法稳定性
         #print(i,arr[i],arr_tmp[arr[i]])
         arr_tmp[arr[i]] -= 1
         arr_new[arr_tmp[arr[i]]] = arr[i]
