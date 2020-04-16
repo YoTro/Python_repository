@@ -12,9 +12,13 @@ def Bucket_sort(arr):
     assert len(arr) > 0 and isinstance(arr,list)
     l = len(arr)
     max_i = 0
+    min_i = 0
     for i in range(l):
         if arr[i]>arr[max_i]:
             max_i = i
+        if arr[i]<arr[min_i]:
+            min_i = i
+    bucket_counts = arr[max_i]-arr[min_i]+1   
     arr_bucket = [[] for i in range(l)]
     i = 0
     while i < l:
@@ -28,7 +32,9 @@ def Bucket_sort(arr):
         if len(arr_bucket[i]) == 0:
             i += 1
         else:
-            tmp = 0
+            t0 = time.time()
+            arr_bucket[i].sort()           
+            '''tmp = 0
             while tmp < len(arr_bucket[i]):
                 #print tmp
                 for j in range(len(arr_bucket[i])):
@@ -36,7 +42,7 @@ def Bucket_sort(arr):
                     if arr_bucket[i][j] < arr_bucket[i][tmp]:
                         #print(arr_bucket[i][j], arr_bucket[i][tmp])
                         arr_bucket[i][j], arr_bucket[i][tmp] = arr_bucket[i][tmp], arr_bucket[i][j]
-                tmp += 1
+                tmp += 1'''
                 #print tmp
     #print arr_bucket
     i = 0
@@ -51,6 +57,11 @@ def Bucket_sort(arr):
 if __name__ == '__main__':
     arr = [i for i in range(100)]
     shuffle(arr)
-    print(arr)
+    t0 = time.time()
+    #print(arr)
     a = Bucket_sort(arr)
-    print(a)
+    t1 = time.time()
+    #print(a)
+    T = t1 - t0
+    print "Merge Sort total time is {}".format(T)
+    
