@@ -63,5 +63,5 @@ if __name__ == '__main__':
     t1 = time.time()
     #print(a)
     T = t1 - t0
-    print "Merge Sort total time is {}".format(T)
+    print "Bucket Sort total time is {}".format(T)
     
