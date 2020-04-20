@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "bilibili_ranking_data_everyday.py", line 1, in <module>
+    ﻿import requests
+ImportError: No module named requests
+/Users/jin/Documents/GitHub/Python_repository/bilibili/bilibili_rank.sh: line 10: /Users/demo/log: No such file or directory

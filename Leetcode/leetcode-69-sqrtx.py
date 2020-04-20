@@ -1,6 +1,6 @@
 #coding:UTF-8
 #Author: Toryun
-#Date: 2020-04-17 16:41:00
+#Date: 2020-04-19 16:41:00
 #https://leetcode-cn.com/problems/sqrtx/
 
 from __future__ import division
