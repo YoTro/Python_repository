@@ -8,27 +8,26 @@ import math
 import random
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-import gc
 import numpy as np
 
-def Radix_sort(arr,count):
+def Radix_sort(arr,count,bucket_size):
     '''根据数组元素的个位来进行桶排序'''
     k = [10**c for c in range(count)]
-    print k
+    #print k
     while len(k)>0:
         b = 10
         c = k.pop(0)
         l = len(arr)
-        buckets = [0]*b
+        buckets = [0]*bucket_size
         arr_new = [0]*l
         for i in range(l):
             n = arr[i]/c%b
             buckets[n] += 1
-        for i in range(9):
+        for i in range(bucket_size-1):
             buckets[i+1] += buckets[i]
         #print(buckets)
         for i in range(l-1,-1,-1):
-            n = arr[i]/c%b
+            n = arr[i]/c%b%bucket_size
             buckets[n] -= 1
             arr_new[buckets[n]] = arr[i]
         arr = arr_new
@@ -50,8 +49,13 @@ if __name__ == '__main__':
     arr = np.arange(num_bins)
     random.shuffle(arr)
     print("原数组array:\n{}".format(arr))
+    try:
+        bucket_size = int(raw_input('please input the number of buckets (default is 10):\n'))
+    except Exception as e:
+        print(str(e))
+        bucket_size = 10
     t0 = time.time()
-    arr1 = Radix_sort(arr,count)    
+    arr1 = Radix_sort(arr,count,bucket_size)    
     print("排序后:\n{}".format(arr1))
     t1 = time.time()
     T = t1 - t0
