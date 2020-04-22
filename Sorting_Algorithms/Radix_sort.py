@@ -59,4 +59,4 @@ if __name__ == '__main__':
     print("排序后:\n{}".format(arr1))
     t1 = time.time()
     T = t1 - t0
-    print "Heap Sort total time is {}".format(T)
+    print "Radix Sort total time is {}".format(T)
