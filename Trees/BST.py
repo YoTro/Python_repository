@@ -43,14 +43,16 @@ class BinaryTree():
         if self.root:
             stack = []
             stack.append(self.root)
+            #p = []
             while len(stack)>0:
                 node = stack.pop()
+                #p.append(node.value)
                 print node.value,
                 if node.right:
                     stack.append(node.right)                
                 if node.left:
                     stack.append(node.left)
-
+                #print p
         else:
             return
     def BFS(self):
@@ -58,9 +60,12 @@ class BinaryTree():
         if self.root is None:
             return
         queue = []
+        
         queue.append(self.root)
         while len(queue) > 0:
+            p = []
             node = queue.pop(0)
+            
             print node.value,
             if node.left:
                 queue.append(node.left)
@@ -68,9 +73,16 @@ class BinaryTree():
             if node.right:
                 queue.append(node.right)
                 #print "right{}".format(node.right.value),
-                
+            for i in queue:
+                p.append(i.value)
+            print p
     def NLR(self,root):
-        '''Pre-order'''
+        '''Pre-order
+        (L)	Recursively traverse N's left subtree.
+        (R)	Recursively traverse N's right subtree.
+        (N)	Process the current node N itself.
+
+        '''
         if root:
             print root.value,
             self.NLR(root.left)
@@ -91,7 +103,7 @@ class BinaryTree():
 if __name__ =='__main__':
     btree = BinaryTree(None)
     l = [x for x in range(random.randrange(1,10))]
-    l = [0 ,2 ,6 ,5 ,1 ,None,4 ,3 ,7 ]
+    l = [7 ,9 ,10,1 ,4 ,5 ,13 ]
     for i in range(len(l)):
         btree.add(l[i])
     print("深度优先遍历:\n")
