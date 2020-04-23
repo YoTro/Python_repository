@@ -26,16 +26,18 @@ class BinaryTree():
             queue.append(self.root)
             while len(queue) > 0:
                 node = queue.pop(0)
-                if not node.left:
+                if not node.left:#表示左节点为空节点
                     node.left = treenode(x)
                     return
                 else:
                     queue.append(node.left)
+                    #print " left {}".format(str(node.left.value))
                 if not node.right:
                     node.right = treenode(x)
                     return
                 else:
                     queue.append(node.right)
+                    #print " right {}".format(str(node.right.value))
     def DFS(self):
         '''deep fisrt search'''
         if self.root:
@@ -44,10 +46,11 @@ class BinaryTree():
             while len(stack)>0:
                 node = stack.pop()
                 print node.value,
+                if node.right:
+                    stack.append(node.right)                
                 if node.left:
                     stack.append(node.left)
-                if node.right:
-                    stack.append(node.right)
+
         else:
             return
     def BFS(self):
@@ -61,9 +64,10 @@ class BinaryTree():
             print node.value,
             if node.left:
                 queue.append(node.left)
-                print "left{}".format(node.left.value)
+                #print "left{}".format(node.left.value),
             if node.right:
                 queue.append(node.right)
+                #print "right{}".format(node.right.value),
                 
     def NLR(self,root):
         '''Pre-order'''
@@ -86,7 +90,8 @@ class BinaryTree():
 
 if __name__ =='__main__':
     btree = BinaryTree(None)
-    l = [x for x in range(random.randrange(1,50))]
+    l = [x for x in range(random.randrange(1,10))]
+    l = [0 ,2 ,6 ,5 ,1 ,None,4 ,3 ,7 ]
     for i in range(len(l)):
         btree.add(l[i])
     print("深度优先遍历:\n")
