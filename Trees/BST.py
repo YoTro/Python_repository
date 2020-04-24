@@ -116,6 +116,21 @@ class BinaryTree():
                 elif not node.left and node.value > x:
                     node.left = treenode(x)
                     node.left.height = 1 + node.height
+    def getMaxdepth(self):
+        if self.root is None:
+            return 0
+        else:
+            Max_d = []
+            stack = []
+            stack.append(self.root)
+            while len(stack) > 0:
+                node = stack.pop()
+                if node.left:
+                    stack.append(node.left)
+                if node.right:
+                    stack.append(node.right)
+                Max_d.append(node.height)
+        return max(Max_d)
     def DFS(self):
         '''deep fisrt search'''
         if self.root:
@@ -186,6 +201,8 @@ if __name__ =='__main__':
     print("\n广度优先遍历:\n")
     btree.BFS()
     btree.delect(random.choice(l))
+    Maxdepth = btree.getMaxdepth()
+    print("\n树的高度为{}".format( Maxdepth))
     #btree.delect()
     print("\n前序遍历:\n")
     btree.NLR(btree.root)
