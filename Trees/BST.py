@@ -3,6 +3,8 @@
 #Date: 2020-04-22 17:57:00
 #Function: Create/delect Binary tree and search tree
 import random
+import gc#手动回收内存
+#from memory_profiler import profile#内存检测
 
 class treenode():
     '''定义结构体:子树'''
@@ -45,25 +47,55 @@ class BinaryTree():
                     queue.append(node.right)
                     #print " right {}".format(str(node.right.value))
                 
-                        
+                       
     def delect(self,x):
         if self.root is None:
             return 0
         else:
             queue = []
+            q = []
+            tag = 0
             queue.append(self.root)
             while len(queue)>0:
                 node = queue.pop(0)
+                if node.left:
+                    queue.append(node.left)
+                if node.right:
+                    queue.append(node.right)
+                q.append(node)
+            while len(q)>0:
+                node = q.pop(0)
                 if node.value == x:
-                    if node.right:
-                        node = node.right
+                    tag = 1
+                    if (node.left==node.right==None):
+                        print ("删除的节点值为{}".format(node.value))
+                        node.value = None
+                        return
+                    elif not node.left or not node.right:
+                        if not node.left:
+                            print ("删除的节点值为{},补缺的节点为{}".format(node.value,node.right.value))
+                            node.value = node.right.value
+                            node.right = None
+                            return
+                        if not node.right:
+                            print ("删除的节点值为{},补缺的节点为{}".format(node.value,node.left.value))
+                            node.value = node.left.value
+                            node.left = None
+                            return
                     else:
-                        if node.left.right:
-                            node = node.left.right
-                            if node.left.right.left:
-                                node.left.right = node.left.right.left
-                        if node.left:
-                            node = node.left
+                        tmp = q.pop()
+                        while not tmp.value:
+                            tmp = q.pop()
+                        print ("删除的节点值为{},补缺的节点为{}".format(node.value,tmp.value))
+                        node.value = tmp.value
+                        tmp.value = None
+                        break
+                        
+                if tag != 1 and len(q)==0:
+                    #print tag
+                    print("\nWe can't find {} in this tree".format(x))
+                
+                    
     def insert(self,x):
         '''以左节点小于右节点方式做插入操作(BST)'''
         if self.root is None:
@@ -145,14 +177,16 @@ class BinaryTree():
 
 if __name__ =='__main__':
     btree = BinaryTree(None)
-    l = [x for x in range(random.randrange(1,10))]
-    l = [7 ,9 ,10,1 ,4 ,5 ,13 ]
+    l = [x for x in range(random.randrange(1,20))]
+    #l = [0,1,2,3]
     for i in range(len(l)):
-        btree.insert(l[i])
+        btree.add(l[i])
     print("深度优先遍历:\n")
     btree.DFS()
     print("\n广度优先遍历:\n")
     btree.BFS()
+    btree.delect(random.choice(l))
+    #btree.delect()
     print("\n前序遍历:\n")
     btree.NLR(btree.root)
     print("\n中序遍历:\n")
