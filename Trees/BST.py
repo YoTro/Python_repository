@@ -131,6 +131,24 @@ class BinaryTree():
                     stack.append(node.right)
                 Max_d.append(node.height)
         return max(Max_d)
+    def minDepth(self, root):
+        """
+        :type root: TreeNode
+        :rtype: int
+        """
+        if not root:
+            return 0
+
+        children = [root.left, root.right]
+        # if we're at leaf node
+        if not any(children):
+            return 1
+
+        min_depth = float('inf')
+        for c in children:
+            if c:
+                min_depth = min(self.minDepth(c), min_depth)
+        return min_depth + 1
     def DFS(self):
         '''deep fisrt search'''
         if self.root:
@@ -202,7 +220,9 @@ if __name__ =='__main__':
     btree.BFS()
     btree.delect(random.choice(l))
     Maxdepth = btree.getMaxdepth()
-    print("\n树的高度为{}".format( Maxdepth))
+    print("\n树的最大深度为{}\n".format( Maxdepth))
+    mindepth = btree.minDepth(btree.root)
+    print("\n树的最小深度为{}\n".format( mindepth))
     #btree.delect()
     print("\n前序遍历:\n")
     btree.NLR(btree.root)
