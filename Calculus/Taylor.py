@@ -25,6 +25,7 @@ class Taylor():
     def Factorial_N(self,i):
         '''Factorial of N N的阶乘
         你可以使用sympy自带的阶乘计算函数sympy.factorial(n)
+        或者math.factorial(n)
         '''
         b = 1
         l = []
