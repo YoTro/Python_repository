@@ -1,6 +1,8 @@
 ﻿import numpy as np
 import matplotlib.pyplot as plt
 import png_to_SVG
+#from scipy.interpolate  import lagrange #拉格朗日插值法
+
 
 class curve_fit_func():
     def curvefunc(self):
@@ -13,9 +15,9 @@ class curve_fit_func():
         #y1 = np.array(num1)
         #y2 = np.array(num2)
         y = np.array(Y)
-         
+        #np.fft.fft(lagrange(x,y)(10))
         #用3次多项式拟合
-        f1 = np.polyfit(x, y, 53)
+        f1 = np.polyfit(x, y, 50)
         p1 = np.poly1d(f1)
         #print(p1)#打印出拟合函数
         yvals1 = p1(x)  #拟合y值
