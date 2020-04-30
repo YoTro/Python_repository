@@ -48,7 +48,7 @@ class BinaryTree():
                     #print " right {}".format(str(node.right.value))
                 
                        
-    def delect(self,x):
+    def delete(self,x):
         if self.root is None:
             return 0
         else:
@@ -116,6 +116,22 @@ class BinaryTree():
                 elif not node.left and node.value > x:
                     node.left = treenode(x)
                     node.left.height = 1 + node.height
+    def hasPathSum(self, root, sum):
+        """
+        :type root: TreeNode
+        :type sum: int
+        :rtype: bool
+        给定一个二叉树和一个目标和，判断该树中是否存在根节点到叶子节点的路径，这条路径上所有节点值相加等于目标和。
+        说明: 叶子节点是指没有子节点的节点。
+        """
+        if root is not None:
+            sum -= root.value
+            #print("\n{} {}").format(sum,root.value)
+            if not root.left and not root.right:
+                return sum == 0
+            return self.hasPathSum(root.left,sum) or self.hasPathSum(root.right,sum)
+        else:
+            return False
     def getMaxdepth(self):
         if self.root is None:
             return 0
@@ -151,6 +167,7 @@ class BinaryTree():
         return min_depth + 1
     def DFS(self):
         '''deep fisrt search'''
+        print("深度优先遍历:\n")
         if self.root:
             stack = []
             stack.append(self.root)
@@ -168,6 +185,7 @@ class BinaryTree():
             return
     def BFS(self):
         '''Breadth-first-search/'''
+        print("\n广度优先遍历:\n")
         if self.root is None:
             return
         queue = []
@@ -184,6 +202,38 @@ class BinaryTree():
             if node.right:
                 queue.append(node.right)
                 #print "right{}".format(node.right.value),
+
+    def levelOrder(self, root):
+        """
+        :type root: TreeNode
+        :rtype: List[List[int]]
+        """
+        if not root:
+            return []
+        else:
+            q = []
+            q.append(root)
+            j = []
+            while len(q)>0:
+                p = []
+                d = []
+                for c in q:
+                    if c:
+                        p.append(c.value)
+                        #print c.value
+                        if c.left:
+                            d.append(c.left)
+                        if c.right:
+                            d.append(c.right)
+                        #print len(d)
+                q = d
+                #print len(q)
+                if p:
+                    j.append(p)
+            print("\n层次遍历(按层输出):\n")
+            print j
+            return j
+        
     def NLR(self,root):
         '''Pre-order
         (L)	Recursively traverse N's left subtree.
@@ -211,19 +261,17 @@ class BinaryTree():
 if __name__ =='__main__':
     btree = BinaryTree(None)
     l = [x for x in range(random.randrange(1,20))]
-    #l = [0,1,2,3]
     for i in range(len(l)):
         btree.add(l[i])
-    print("深度优先遍历:\n")
     btree.DFS()
-    print("\n广度优先遍历:\n")
     btree.BFS()
-    btree.delect(random.choice(l))
+    btree.levelOrder(btree.root)
+    #btree.hasPathSum(btree.root,3)
+    btree.delete(random.choice(l))
     Maxdepth = btree.getMaxdepth()
     print("\n树的最大深度为{}\n".format( Maxdepth))
     mindepth = btree.minDepth(btree.root)
     print("\n树的最小深度为{}\n".format( mindepth))
-    #btree.delect()
     print("\n前序遍历:\n")
     btree.NLR(btree.root)
     print("\n中序遍历:\n")
