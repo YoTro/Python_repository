@@ -168,7 +168,16 @@ class AVLTree():
         else:
             print False
             return False
-    
+    def isValidBST(self, root):
+        '''使用中序遍历,验证是否符合左节点小于右节点'''
+        res = self.Inorder_tree2(self.root)
+        for i in range(len(res)-1):
+            if res[i] > res[i+1]:
+                print("\n{} big then {}, it is not valid BST\n".format(res[i], res[i+1]))
+                return False
+        print("\nIt is a valid BST\n")
+        return True
+        
     def balance_Tree(self,node,x):
         '''
         调整二叉树
@@ -374,6 +383,18 @@ class AVLTree():
             self.Inorder_tree(root.left)
             print root.value,
             self.Inorder_tree(root.right)
+    def Inorder_tree2(self, root):
+        '''利用栈中序遍历返回list,中序遍历返回的列表一定是从小到大按顺序排列的'''
+        if not root:
+            return []
+        stack, res = [root],[]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, AvlTreeNode):
+                stack.extend([node.right, node.value, node.left])
+            elif isinstance(node, int):
+                res.append(node)
+        return res
     def postorder_tree(self,root):
         '''后序遍历'''
         if not root:
@@ -387,7 +408,7 @@ if __name__ == '__main__':
     l = [x for x in range(random.randrange(10,20))]
     random.shuffle(l)
     print l
-    #l = [1, 4, 2, 0, 6, 3, 5]
+    l = [1, 4, 2, 0, 6, 3, 5]
     Avltree = AVLTree()
     for i in range(len(l)):
         Avltree.add(l[i])
@@ -412,7 +433,8 @@ if __name__ == '__main__':
     print Avltree1.is_balance(Avltree1.root)
     Avltree1.DFS()
     Avltree1.BFS()
-    seeks = random.choice(l)
+    Avltree1.isValidBST(Avltree1.root)
+    seeks = 2#random.choice(l)
     Avltree1.search(seeks)
     Avltree1.delete(seeks)
     Avltree1.update(seeks,seeks+1)
