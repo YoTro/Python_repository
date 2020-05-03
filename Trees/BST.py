@@ -251,6 +251,18 @@ class BinaryTree():
             self.LNR(root.left)
             print root.value,
             self.LNR(root.right)
+    def LNR2(self, root):
+        '''利用栈中序遍历'''
+        stack,rst = [root],[]
+        while stack:
+            i = stack.pop()
+            if isinstance(i,treenode):
+                stack.extend([i.right,i.val,i.left])
+                print stack
+            elif isinstance(i,int):
+                rst.append(i)
+        return rst
+    
     def LRN(self,root):
         '''Post-order'''
         if root:
