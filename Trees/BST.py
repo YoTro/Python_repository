@@ -269,7 +269,27 @@ class BinaryTree():
             self.LRN(root.left)
             self.LRN(root.right)
             print root.value,
+    def identical(self, a, b):
+        '''判定两棵子树是否相同'''
+        if not a and not b:  # 两个 node 都为空为 True
+            return True
+        if a is None or b is None:  # 一方空，一方不空，为False
+            return False
+        # 3. 返回值 
+        #否则说明两个 node 都非空，那么如果两个树相等必须满足3个条件，即当前 node 的值相等，且各自左右子树也对应相等
+        return a.val == b.val and \
+               self.identical(a.left, b.left) and \
+               self.identical(a.right, b.right)
 
+    def isSubtree(self, s, t):
+        '''判定两棵树是否相同'''
+        if not s:
+            return False  # 边界，如果s为空直接返回False
+
+        if self.identical(s, t):  #1. 终止条件 若 s 和 t 对应的两棵树相同则返回True
+            return True
+        #2. 循环操作 不然的话就继续探索 s 的左右子树是否和 t 相等
+        return self.isSubtree(s.left, t) or self.isSubtree(s.right, t)
 if __name__ =='__main__':
     btree = BinaryTree(None)
     l = [x for x in range(random.randrange(1,20))]
