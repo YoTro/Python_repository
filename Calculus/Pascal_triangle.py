@@ -1,7 +1,7 @@
 #coding:utf-8
 #Date: 2020-05-07 00:34:00
-#杨辉三角递归
-def pascalTri(numRows):
+#杨辉三角递归和zip生成
+def pascalTri_recursive(numRows):
     """
     :type numRows: int
     :rtype: List[List[int]]
@@ -29,3 +29,18 @@ def pascalTri(numRows):
     j.append(1)
     p.append(j)
     return p
+def pascalTri_zip(rowIndex):
+    """
+    :type rowIndex: int
+    :rtype: List[int]
+    https://leetcode-cn.com/problems/pascals-triangle-ii/solution/gen-ju-yang-hui-san-jiao-gui-lu-shu-chu-by-yotro/
+    """
+    res = [[1]]
+    L = [1]
+    tmp = 1
+    while rowIndex != tmp:
+        L = [sum(i) for i in zip([0]+L, L+[0])]
+        tmp += 1
+        res.append(L)
+    return res
+    
