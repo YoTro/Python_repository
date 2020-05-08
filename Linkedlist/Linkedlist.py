@@ -73,10 +73,32 @@ class Solution:
     def dfs(self, head):
         if head:
             res.append(head.val)
-            self.dfs(head.next)
-        
+            self.dfs(head.next)   
         return res
-    
+    def reverse(self, head):
+        #1. 终止条件
+        if not head or not head.next:
+            return head
+        #2. 返回值
+        cur = self.reverse(head.next)
+        #3. 一次递归操作
+        head.next.next = head
+        head.next = None
+        return cur
+    def mergeTwoLists(self, l1, l2):
+        '''合并两个升序链表'''
+        #1. 终止条件
+        if l1 is None:
+            return l2
+        elif l2 is None:
+            return l1
+        #2. 返回值和一次递归中的操作内容
+        elif l1.val < l2.val:
+            l1.next = self.mergeTwoLists(l1.next, l2)
+            return l1
+        else:
+            l2.next = self.mergeTwoLists(l1, l2.next)
+            return l2   
 
 if __name__ == '__main__':
     lt = Solution()
