@@ -27,7 +27,7 @@
  </style>
 </head>
 <body>
-	<h1>Directory Tree</h1><p>
+	<h1>Python Repository</h1><p>
 	<a href="https://github.com/YoTro/Python_repository">https://github.com/YoTro/Python_repository</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/tree/master/AWS/">AWS</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/AWSRegister.py">AWSRegister.py</a><br>
@@ -51,10 +51,11 @@
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/get_img.py">get_img.py</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/get_ppc.py">get_ppc.py</a><br>
 	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/get_ranks.py">get_ranks.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/Apply_for_Job/">Apply_for_Job</a><br>
+	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Apply_for_Job/">Apply_for_Job</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Apply_for_Job/51job.py">51job.py</a><br>
 	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Apply_for_Job/requirements.txt">requirements.txt</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/tree/master/CV/">CV</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/Bezier.py">Bezier.py</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/PDF_to_EPUB/">PDF_to_EPUB</a><br>
 	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/PDF_to_EPUB/pdf_to_epub.py">pdf_to_epub.py</a><br>
 	│   │   └── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/PDF_to_EPUB/requirements.txt">requirements.txt</a><br>
@@ -65,7 +66,17 @@
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/png_to_SVG.py">png_to_SVG.py</a><br>
 	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/png_to_SVG.pyc">png_to_SVG.pyc</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Calculus/">Calculus</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Taylor.py">Taylor.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Catalan.py">Catalan.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Hanoi_Tower.py">Hanoi_Tower.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/MT19937.py">MT19937.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/MT19937.pyc">MT19937.pyc</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Marsaglia_polar_method.py">Marsaglia_polar_method.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Pascal_triangle.py">Pascal_triangle.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Pascal_triangle.sh">Pascal_triangle.sh</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Taylor.py">Taylor.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Zeller.py">Zeller.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/__init__.py">__init__.py</a><br>
+	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/interplotate_all.py">interplotate_all.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Google_Sample/">Google_Sample</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Google_Sample/CUS_Yuntuexpress.py">CUS_Yuntuexpress.py</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Google_Sample/Google_tranJS.py">Google_tranJS.py</a><br>
@@ -77,10 +88,43 @@
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Grapgh%20Theory/Dijkstra.py">Dijkstra.py</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Grapgh%20Theory/KMP.py">KMP.py</a><br>
 	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Grapgh%20Theory/__init__.py">__init__.py</a><br>
+	├── <a href="https://github.com/YoTro/Python_repository/blob/master/InsertimgExcel.py">InsertimgExcel.py</a><br>
+	├── <a href="https://github.com/YoTro/Python_repository/tree/master/LPL/">LPL</a><br>
+	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/LPL/Player_data_LOL.py">Player_data_LOL.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Leetcode/">Leetcode</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-1137-n-th-tribonacci-number.py">leetcode-1137-n-th-tribonacci-number.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/tree/master/Leetcode/Bit/">Bit</a><br>
+	│   │   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Bit/leetcode-231-power-of-two.py">leetcode-231-power-of-two.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/tree/master/Leetcode/DP/">DP</a><br>
+	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/198_House_robber.py">198_House_robber.py</a><br>
+	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/README.md">README.md</a><br>
+	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-08-best-time-to-buy-and-sell-stock.py">leetcode-08-best-time-to-buy-and-sell-stock.py</a><br>
+	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-121-best-time-to-buy-and-sell-stock.py">leetcode-121-best-time-to-buy-and-sell-stock.py</a><br>
+	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-5-longest-palindromic-substring.py">leetcode-5-longest-palindromic-substring.py</a><br>
+	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-53-maximum-subarray.py">leetcode-53-maximum-subarray.py</a><br>
+	│   │   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-718-maximum-length-of-repeated-subarray.py">leetcode-718-maximum-length-of-repeated-subarray.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/tree/master/Leetcode/Graph/">Graph</a><br>
+	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Graph/Linkedlist/">Linkedlist</a><br>
+	│   │   └── <a href="https://github.com/YoTro/Python_repository/tree/master/Leetcode/Graph/Tree/">Tree</a><br>
+	│   │   &nbsp;&nbsp;&nbsp; ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Graph/Tree/leetcode-236-lowest-common-ancestor-of-a-binary-tree.py">leetcode-236-lowest-common-ancestor-of-a-binary-tree.py</a><br>
+	│   │   &nbsp;&nbsp;&nbsp; └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Graph/Tree/leetcode-938-range-sum-of-bst.py">leetcode-938-range-sum-of-bst.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Mathematics/">Mathematics</a><br>
+	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Mathematics/leetcode-202-happy-number.py">leetcode-202-happy-number.py</a><br>
+	│   │   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Mathematics/leetcode-326-power-of-three.py">leetcode-326-power-of-three.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Recursive/">Recursive</a><br>
+	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Recursive/leetcode-1137-n-th-tribonacci-number.py">leetcode-1137-n-th-tribonacci-number.py</a><br>
+	│   │   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Recursive/leetcode-779-k-th-symbol-in-grammar.py">leetcode-779-k-th-symbol-in-grammar.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/__init__.py">__init__.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/__init__.pyc">__init__.pyc</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-15-3sum.py">leetcode-15-3sum.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-3-longest-substring-without-repeating-characters.py">leetcode-3-longest-substring-without-repeating-characters.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-441-arranging-coins.py">leetcode-441-arranging-coins.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-633-sum-of-square-numbers.py">leetcode-633-sum-of-square-numbers.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-65-valid-number.py">leetcode-65-valid-number.py</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-69-sqrtx.py">leetcode-69-sqrtx.py</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-938-range-sum-of-bst.py">leetcode-938-range-sum-of-bst.py</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-95-unique-binary-search-trees-ii.py">leetcode-95-unique-binary-search-trees-ii.py</a><br>
+	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/login_leetcode.py">login_leetcode.py</a><br>
+	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Linkedlist/">Linkedlist</a><br>
+	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Linkedlist/Linkedlist.py">Linkedlist.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/blob/master/Logistics_get_17track.py">Logistics_get_17track.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Pygame/">Pygame</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Pygame/1.py">1.py</a><br>
@@ -89,7 +133,6 @@
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Pygame/4.py">4.py</a><br>
 	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Pygame/5.py">5.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/blob/master/README.md">README.md</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/Rename.py">Rename.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Sorting_Algorithms/">Sorting_Algorithms</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Binary_search.py">Binary_search.py</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Bubble_sort.py">Bubble_sort.py</a><br>
@@ -106,8 +149,10 @@
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/hashsort.py">hashsort.py</a><br>
 	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/listsort.txt">listsort.txt</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Trees/">Trees</a><br>
+	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Trees/AVLTree.py">AVLTree.py</a><br>
+	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Trees/BST.py">BST.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/blob/master/__init__.py">__init__.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/bilibili/">bilibili</a><br>
+	├── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/">bilibili</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/README.md">README.md</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/__init__.py">__init__.py</a><br>
 	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/bilibili_rank.sh">bilibili_rank.sh</a><br>
@@ -118,6 +163,7 @@
 	├── <a href="https://github.com/YoTro/Python_repository/blob/master/covid-19.py">covid-19.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/blob/master/csv_to_xls.py">csv_to_xls.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/blob/master/dijkstra.py">dijkstra.py</a><br>
+	├── <a href="https://github.com/YoTro/Python_repository/blob/master/dingTalkfile.py">dingTalkfile.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/blob/master/get-pip.py">get-pip.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/blob/master/keywords_find.py">keywords_find.py</a><br>
 	├── <a href="https://github.com/YoTro/Python_repository/blob/master/pneumonia.py">pneumonia.py</a><br>
@@ -131,7 +177,7 @@
 	</p>
 	<p>
 
-12 directories, 86 files
+21 directories, 123 files
 	<br><br>
 	</p>
 	<hr>
