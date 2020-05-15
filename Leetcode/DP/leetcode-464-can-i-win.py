@@ -141,8 +141,8 @@ class Solution():
 
 if __name__ == '__main__':
 	#maxChoosableInteger 不大于20
-	maxChoosableInteger = 10#random.randrange(21)
-	desiredTotal = 15#random.randrange(301)
+	maxChoosableInteger = random.randrange(21)
+	desiredTotal = random.randrange(301)
 	print("最大的数是:{}, 累加目标值是:{}\n".format(maxChoosableInteger,desiredTotal))
 	solution = Solution()
 	t0 = solution.canIWin(maxChoosableInteger, desiredTotal)
