@@ -75,7 +75,7 @@ class Solution():
 		    for i in range(maxChoosableInteger):
 		        #查看数字数否被选取
 		        cur = 1 << i
-		        #如果被选取,则让对手操作
+		        #如果该数未被选取,则让对手操作
 		        if cur & used == 0:
 		            #如果对手不能选择稳赢的数,则我方获胜
 		            if desiredTotal <= i + 1 or not dfs(cur | used, desiredTotal - i - 1):
@@ -104,7 +104,7 @@ class Solution():
 	            for i in range(maxChoosableInteger):
 	                    #查看数字数否被选取
 	                    cur = 1 << i
-	                    #如果被选取,则让对手操作
+	                    #如果该数未被选取,则让对手操作
 	                    if cur & used == 0:
 	                            #如果对手不能选择稳赢的数,则我方获胜
 	                            if desiredTotal <= i + 1 or not dfs(cur | used, desiredTotal - i - 1):
