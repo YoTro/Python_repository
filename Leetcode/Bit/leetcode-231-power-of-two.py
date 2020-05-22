@@ -5,3 +5,6 @@ class Solution(object):
         if n == 0:
             return False
         return n & (-n) == n
+if __name__ == '__main__':
+    solution = Solution()
+    print solution.isPowerOfTwo(90)
