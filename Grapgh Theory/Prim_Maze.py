@@ -5,7 +5,7 @@
 import numpy as np 
 import random
 
-L = random.randint(7, 21)#定义迷宫初始长度
+L = random.randint(8, 21)#定义迷宫初始长度
 PATH = 1                 #路
 WALL = 0                 #墙
 RAND_MAX = 32767         #随机范围
@@ -61,11 +61,11 @@ class Maze():
 			X.pop(r)
 			Y.pop(r)
 		#设置入口和出口
-		self.maze[2][1] = 1
-		for i in range(L-3, -1, -1):
-			if self.maze[i][L-3] == 1:
-				self.maze[i][L-2] = 1
-				break
+		#self.maze[2][1] = 1
+		#for i in range(L-3, -1, -1):
+			#if self.maze[i][L-3] == 1:
+				#self.maze[i][L-2] = 1
+				#break
 
 if __name__ == '__main__':
 	Maze0 = Maze()
