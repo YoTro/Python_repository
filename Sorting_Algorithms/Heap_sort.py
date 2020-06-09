@@ -14,7 +14,7 @@ class heap():
     def swap(self,arr, i, j):
         '''交换函数'''
         arr[i], arr[j] = arr[j], arr[i]
-    def heapfiy(self, arr, i):
+    def heapify(self, arr, i):
         '''从堆顶开始进行比较,把最大值(或者最小值)放在父节点'''
         lchild = 2*i + 1 #初始化左节点(下标为1)
         rchild = 2*i + 2 #初始化右节点(下标为2)
@@ -24,15 +24,15 @@ class heap():
             largestnode = lchild
         if rchild < self.size and arr[rchild] > arr[largestnode]:
             largestnode = rchild
-        #如果进行了最大根下标改变了,则交换它们位置, 并递归地进行下一轮的heapfiy
+        #如果进行了最大根下标改变了,则交换它们位置, 并递归地进行下一轮的heapify
         if largestnode != i:
             self.swap(arr, i, largestnode)
-            self.heapfiy(arr, largestnode)
+            self.heapify(arr, largestnode)
     def buildMaxHeap(self, arr):
         '''构建大根堆'''
         #从数组中间为根出发(向下取整)
         for i in range(int(self.size/2), -1, -1):
-            self.heapfiy(arr, i)
+            self.heapify(arr, i)
     def MaxHeap(self):
         if self.size == 0:
             return []
@@ -52,11 +52,11 @@ class heap():
         for i in range(self.size - 1, 0, -1):
             self.swap(self.arr, 0, i)
             self.size -= 1
-            self.heapfiy(self.arr, 0)
+            self.heapify(self.arr, 0)
         return self.arr
 
 if __name__ == '__main__':
-    arr = np.arange(0)
+    arr = np.arange(10)
     np.random.shuffle(arr)
     print("初始化:{}\n".format(arr))
     t0 = time.time()
