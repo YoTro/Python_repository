@@ -31,7 +31,7 @@ def strongly_connected_components(graph):
             E = []
         #深度遍历node节点(可以称其为强连通分量的根,因为它是第一个被访问的节点)的子节点
         for v in E:
-            if v not in low:
+            if v not in dfn:
                 # 后继节点v未访问，递归调用strongconnect函数把v加入low并编号入栈
                 strongconnect(v)
                 low[node] = min(low[node],low[v])
@@ -40,7 +40,7 @@ def strongly_connected_components(graph):
             elif v in stack:
                 # 返回编号是最小的节点
                 low[node] = min(low[node],dfn[v])
-        
+                
         # 若node是根则出栈，并得到一个强连通分量,此时的node在栈底
         if low[node] == dfn[node]:
             connected_component = []
@@ -54,12 +54,12 @@ def strongly_connected_components(graph):
             result.append(component)
     #依次push入栈,遍历图所有节点,防止存在因一次tarjan而没有遍历到的节点
     for node in graph:
-        if node not in low:
+        if node not in dfn:
             strongconnect(node)
     return result
 if __name__ == '__main__':
     
-    grid = {
+    '''grid = {
     "A": {"B":5,"C":1},
     "B": {"A":5,"C":2,"D":1},
     "C": {"A":1,"B":2,"D":4,"E":8},
@@ -69,7 +69,14 @@ if __name__ == '__main__':
     "G": {"F":3, "H":5,"S":19},
     "H": {"G":5,"I":8,"J":4},
     "I": {"H":8,"K":3}
-    }
+    }'''
+    grid = {
+    "A": {"B":5},
+    "B": {"C":2},
+    "C": {"A":1},
+    "D": {"B":1,"C":4,"E":3},
+    "E": {"F":8,"D":3},
+    "F": {"C":6}}
     ret = strongly_connected_components(grid)
     print("The strongly connected componets is \n{}\n".format(ret))
 
