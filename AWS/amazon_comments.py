@@ -4,9 +4,8 @@ import requests
 import time
 import xlrd
 import re
-import os
 import math
-
+import os
 user_agent_list = ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36",
 "Mozilla/5.0 (Windows NT 6.2; WOW64) AppleWebKit/537.36 (KHTML like Gecko) Chrome/44.0.2403.155 Safari/537.36",
 "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36",
@@ -318,8 +317,8 @@ user_agent_list = ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 def read_excel(path):
     '''Read asin from workbook读取工作簿中的asin'''
     if not os.path.exists(path):
-    	print("Not exists {}".format(path))
-    	return []
+        print("Not exists this file in {}".format(path))
+        return []
     workbook=xlrd.open_workbook(path)
     table=workbook.sheet_by_index(0)
     header = table.row_values(0)#读取第一行
@@ -332,14 +331,14 @@ def Amazon_comments(Asins, user_agent_list):
      获取评论
      k 是页面数
     '''
-
-    base_url = "https://www.amazon.com/hz/reviews-render/ajax/reviews/get/ref=cm_cr_arp_d_viewopt_sr"
     if type(Asins) != list:
-    	print("Asins is not list")
-    	break
-    if len(Asin) == 0:
-    	print("Asins is none")
-    	break
+        print("Its type is not list, please change")
+        return
+    if len(Asins) == 0:
+        print("The Asins is none")
+        return
+    base_url = "https://www.amazon.com/hz/reviews-render/ajax/reviews/get/ref=cm_cr_arp_d_viewopt_sr"
+    
     for Asin in Asins:
         max_k = 2
         k = 1
@@ -386,18 +385,18 @@ def Amazon_comments(Asins, user_agent_list):
                         "pageSize": "10",
                         "asin": "{}".format(Asin),
                         "scope": "reviewsAjax0"
-                       }
+                        }
             session = requests.Session()
             r = session.post(base_url, headers = headers, data = payload)
             info = re.findall(r"(\\n){10}\s+\\n\s+\\n\s+<span>\\n(.*?)\\n<\/span>\\n  \\n<\/span><\/div><div class=",r.text)
             if k == 1:
                 tmp_k = re.findall(r'Showing \d-\d+ of (.*?) reviews',r.text)[0]
                 print(tmp_k)
-                if "," in tmp_k:
-                    tmp_k = tmp_k.replace(",","")
-                max_k = math.ceil(float(tmp_k)//10)
-	        with open('./Amazoncomments.csv','a+',encoding = 'utf-8',newline='') as f:
-	            f_csv = csv.writer(f)
+            if "," in tmp_k:
+                tmp_k = tmp_k.replace(",","")
+            max_k = math.ceil(float(tmp_k)//10)
+            with open('./Amazoncomments.csv','a+',encoding = 'utf-8',newline='') as f:
+                f_csv = csv.writer(f)
                 f_csv.writerows(info)
             time.sleep(random.randrange(1,5))
             k += 1
@@ -406,4 +405,4 @@ def Amazon_comments(Asins, user_agent_list):
 if __name__ == "__main__":
     path = './bestsellers.xls'
     asins = read_excel(path)
-    Amazon_comments(['B00LH3DMUO','B01LXDNNBW'], user_agent_list)
+    Amazon_comments(asins[1:3], user_agent_list)
