@@ -1,13 +1,23 @@
-﻿# -*- conding:UTF-8 -*-
+# -*- conding:UTF-8 -*-
 # Author:Toryun
 # Python version:2.7.13
 # Windows version:7
 # Date:2018-4-9
+# Update: 2022-5-13
+# Update_Content: add threads, delect googletranslate
 # Function:Get questions ,write in excel,translate into Chinese.获取问题，写入构建的Excel，翻译成中文
 import re
 import xlwt
 import execjs 
 import requests
+import threading
+import platform
+file_save='c:\\questions.xls'
+if platform.system().lower() == 'windows':
+    file_save='c:\\questions.xls'
+if platform.system().lower() == 'darwin' or platform.system().lower() == 'linux':
+    file_save='/Users/questions.xls'
+print(file_save)
 #---------------------------------------------------------------------------------
 def excel_bulit():
     '''Bulit a excel.构建Excel'''
@@ -107,46 +117,83 @@ def  zh_or_en(sl):
     r=requests.get(url,headers=_headers,proxies=proxies)
     stl=re.findall(r'\["(.*?)",',r.content)
     return stl[0]
- #---------------------------------------------------------------------------------
-headers={"Host":	
-"www.amazon.com",
-"User-Agent":
-"Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:57.0) Gecko/20100101 Firefox/57.0",
-"Accept":
-"text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-"Accept-Language":
-"zh-CN,en;q=0.8,zh;q=0.7,zh-TW;q=0.5,zh-HK;q=0.3,en-US;q=0.2",
-"Accept-Encoding":
-"gzip, deflate, br",
-"Connection":
-"keep-alive",
-         "Upgrade-Insecure-Requests":"1"
-             }
-workbook,table=excel_bulit()
-j=0
+
+class myThread (threading.Thread):
+    def __init__(self,asin):
+        threading.Thread.__init__(self)
+        self.asin = asin
+    def run(self):
+       # 获得锁，成功获得锁定后返回True
+       # 可选的timeout参数不填时将一直阻塞直到获得锁定
+       # 否则超时后将返回False
+        threadLock.acquire()
+        main(self.asin)
+        # 释放锁
+        threadLock.release()
+
+#---------------------------------------------------------------------------------
+def main(asin):
+    headers={
+        "Host":
+        "www.amazon.com",
+        "User-Agent":
+        "Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:57.0) Gecko/20100101 Firefox/57.0",
+        "Accept":
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language":
+        "zh-CN,en;q=0.8,zh;q=0.7,zh-TW;q=0.5,zh-HK;q=0.3,en-US;q=0.2",
+        "Accept-Encoding":
+        "gzip, deflate, br",
+        "Connection":
+        "keep-alive",
+                 "Upgrade-Insecure-Requests":"1"
+                 }
+    proxies={'HTTP': 'HTTP://122.242.96.30:808', 'HTTPS': 'HTTPS://122.242.96.30:808'}
+    workbook,table=excel_bulit()
+    j=0
+    
+    url='https://www.amazon.com/ask/questions/asin/{}/1'.format(asin)
+    r0=requests.get(url,headers=headers, proxies = proxies)
+    pages=re.findall(r'ref=ask_ql_psf_ql_hza">(\d+)<\/a><\/li>\s+.*?ref=ask_ql_psf_ql_hza">Next',r0.content)
+    page=int(pages[0])+1
+    for i in range(1,page):
+        url='https://www.amazon.com/ask/questions/asin/{0}/{1}'.format(asin,str(i))
+        r=requests.get(url,headers=headers)
+        Questions=re.findall(r'<span class="a-declarative" data-action="ask-no-op" data-csa-c-type="widget" data-csa-c-func-deps="aui-da-ask-no-op" data-ask-no-op="{&quot;metricName&quot;:&quot;top-question-text-click&quot;}">\s+(.*?)\s+</span>',r.content)#获取第i页所有问题
+        for b in range(len(Questions)):
+            question=Questions[b]
+            print question
+            sl=question
+            '''try:
+                stl=zh_or_en(sl)
+                table.write(b+j,1,stl)
+            except Exception,e:
+                print str(e)'''
+            table.write(b+j,0,question) 
+            j+=1  
+    print('The workbook is saved in {}'.format(file_save))
+    workbook.save(file_save)
 asin=raw_input('Plz input the asin you want to get questions:\n')
-url='https://www.amazon.com/ask/questions/asin/B075XLRHNQ/1/ref=ask_ql_psf_ql_hza?isAnswered=true'.format(asin)
-r0=requests.get(url,headers=headers)
-pages=re.findall(r'ref=ask_ql_psf_ql_hza\?isAnswered=true">(.*?)<\/a><\/li>\s+<li class="a\-last">',r0.content)
-page=int(pages[0])+1
-for i in range(1,page):
-    url='https://www.amazon.com/ask/questions/asin/{0}/{1}/ref=ask_ql_psf_ql_hza?isAnswered=true'.format(asin,str(i))
-    r=requests.get(url,headers=headers)
-    Questions=re.findall(r'=ask_ql_ql_al_hza">\s+(.*?)\s{45}',r.content)#获取第i页所有问题
-    for b in range(len(Questions)):
-        question=Questions[b]
-        print question
-        sl=question
-        try:
-            stl=zh_or_en(sl)
-            table.write(b+j,1,stl)
-        except Exception,e:
-            print str(e)
-        table.write(b+j,0,question)   
-    j=j+b
-file_save='c:\\questions.xls'
-print 'The workbook is saved in {}'.format(file_save)
-workbook.save(file_save)
+threadLock = threading.Lock()
+threads = []
+# 创建新线程
+thread1 = myThread(asin)
+thread2 = myThread(asin)
+ 
+# 开启新线程
+thread1.start()
+thread2.start()
+ 
+# 添加线程到线程列表
+threads.append(thread1)
+threads.append(thread2)
+ 
+# 等待所有线程完成
+for t in threads:
+    t.join()
+
+
+
 
         
         
