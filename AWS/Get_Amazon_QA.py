@@ -4,7 +4,9 @@ import os
 import math
 import xlrd
 import xlwt
+import html
 import random
+import platform
 import requests
 from Amazon_Utils import excel_bulit, Get_Amazonlists
 proxies_list80 = [
@@ -70,7 +72,70 @@ proxies_list1994 = ["216.127.188.18",
                     "173.44.42.66",
                     "198.211.55.167"
                     ]
-
+def is_bash():
+    '''判断使用平台'''
+    if platform.system().lower() == "windows":
+        return 0
+    if platform.system().lower() == 'darwin' or platform.system().lower() == 'linux':
+        return 1
+def is_TTD(url, f):
+    '''是否被Amazon屏蔽请求变狗'''
+    temp = f
+    if(re.findall("(_TTD_\.jpg)", f)):
+        if is_bash():
+            a = os.system('''curl -s '{}' \
+  -H 'authority: www.amazon.com' \
+  -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'sec-ch-ua: "Not_A Brand";v="99", "Google Chrome";v="109", "Chromium";v="109"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "macOS"' \
+  -H 'sec-fetch-dest: document' \
+  -H 'sec-fetch-mode: navigate' \
+  -H 'sec-fetch-site: none' \
+  -H 'sec-fetch-user: ?1' \
+  -H 'upgrade-insecure-requests: 1' \
+  -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36' \
+  --compressed > ./t.html'''.format(url))
+        else:
+            a = os.system('''curl -s "{}" ^
+  -H "authority: www.amazon.com" ^
+  -H "accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9" ^
+  -H "accept-language: en-US,en;q=0.9" ^
+  -H "sec-ch-ua: ""Not_A Brand"";v=""99"", ""Google Chrome"";v=""109"", ""Chromium"";v=""109""" ^
+  -H "sec-ch-ua-mobile: ?0" ^
+  -H "sec-ch-ua-platform: ""macOS""" ^
+  -H "sec-fetch-dest: document" ^
+  -H "sec-fetch-mode: navigate" ^
+  -H "sec-fetch-site: none" ^
+  -H "sec-fetch-user: ?1" ^
+  -H "upgrade-insecure-requests: 1" ^
+  -H "user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36" ^
+  --compressed > t.html'''.format(url))
+        if a == 0:
+            with open('./t.html', 'r') as f:
+                temp = f.read()
+                f.close()
+    return temp
+def matchQA(url, headers, f, QA_links, QAs):
+    questions_number = re.findall("(\d+) questions", f)
+    print(questions_number)
+    if len(questions_number) != 0:
+        qn = math.ceil(int(questions_number[0])/10)
+        for i in range(1, qn+1):
+            print(i)
+            url_i = url + str(i)
+            r = requests.get(url_i, headers = headers, timeout = 5)
+            temp = is_TTD(url_i, r.text)
+            QA_link = re.findall("askInlineAnswers\" id=\"(.*?)\">", temp)
+            QA_links.append(QA_link)
+            for i in range(len(QA_link)):
+                url_i_i = 'https://www.amazon.com/ask/questions/'+QA_link[i]
+                r = requests.get(url_i_i, headers = headers, timeout = 5)
+                temp = is_TTD(url_i_i, r.text)
+                QA = re.findall("\s+<span>(.*?)<\/span>", temp)
+                QAs.append(QA)
+    return QA_links, QAs
 def retry(func):
     def wrap(*args):
         i = 0
@@ -86,75 +151,27 @@ def retry(func):
     return wrap
 @retry
 def Get_Amazon_QA(asin):
+    QAs = []
+    QA_links = []
+    questions_number = []
     url = "https://www.amazon.com/ask/questions/asin/{}/".format(asin)
     headers={
+    "host": "www.amazon.com",
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
-    "accept-language": "zh-CN,zh;q=0.9",
-    "cache-control": "max-age=0",
-    "device-memory": "8",
-    "downlink": "1.95",
-    "dpr": "2",
-    "ect": "4g",
-    "rtt": "300",
-    "sec-ch-device-memory": "8",
-    "sec-ch-dpr": "2",
+    "accept-language": "en-US,en;q=0.9",
     "sec-ch-ua": "\"Not_A Brand\";v=\"99\", \"Google Chrome\";v=\"109\", \"Chromium\";v=\"109\"",
     "sec-ch-ua-mobile": "?0",
     "sec-ch-ua-platform": "\"macOS\"",
-    "sec-ch-viewport-width": "416",
     "sec-fetch-dest": "document",
     "sec-fetch-mode": "navigate",
     "sec-fetch-site": "none",
     "sec-fetch-user": "?1",
-    "upgrade-insecure-requests": "1",
-    "viewport-width": "416",
-    "cookie": "session-id=134-6751888-1158211; session-id-time=2082787201l; i18n-prefs=USD"
+    "upgrade-insecure-requests": "1"
   }
-    proxies = {'HTTP': 'HTTP://127.0.0.1:1081', 'HTTPS': 'HTTPS://127.0.0.1:1081'}
-    session = requests.Session()
-    r = session.get(url, headers = headers, proxies = proxies)
-    a = os.system('''curl '{}' \
-  -H 'authority: www.amazon.com' \
-  -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9' \
-  -H 'accept-language: zh-CN,zh;q=0.9,en;q=0.8' \
-  -H 'cache-control: max-age=0' \
-  -H 'cookie: session-id=132-1594050-2630761; session-id-time=2082787201l; i18n-prefs=USD; ubid-main=133-9093459-6797703; session-token="AtqhAdnj4pcMEbpADWE+q7IFwZRU+eyHXNFPf8Asv6LcClHkY71m1ls9bzrRbzObetKlC6igRlCJz34wK8eRqonrAVArJcbNdDdSIGbydQCV9BlFabXKZ1NQBrtofhW7F7cZ0RgbDJ9wyil/d4bRFZdRYfauKfVzCeCeNQDuMPV4KJa2PLZB/fYLMy4MLyY3aPEjmSG6OZ6KZAUJxS7RRa2ZuKSwjmZocJLqE8XoWXk="; csm-hit=tb:Y93BAT52DAAHPWPTZF2H+s-J9DDZQ1HC49NXVS35N1M|1676994718202&t:1676994718202&adb:adblk_yes' \
-  -H 'device-memory: 8' \
-  -H 'downlink: 2.95' \
-  -H 'dpr: 2' \
-  -H 'ect: 4g' \
-  -H 'rtt: 250' \
-  -H 'sec-ch-device-memory: 8' \
-  -H 'sec-ch-dpr: 2' \
-  -H 'sec-ch-ua: "Not_A Brand";v="99", "Google Chrome";v="109", "Chromium";v="109"' \
-  -H 'sec-ch-ua-mobile: ?0' \
-  -H 'sec-ch-ua-platform: "macOS"' \
-  -H 'sec-ch-viewport-width: 656' \
-  -H 'sec-fetch-dest: document' \
-  -H 'sec-fetch-mode: navigate' \
-  -H 'sec-fetch-site: none' \
-  -H 'sec-fetch-user: ?1' \
-  -H 'upgrade-insecure-requests: 1' \
-  -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36' \
-  -H 'viewport-width: 656' \
-  --compressed > ./t.html'''.format(url))
-    QAs = []
-    QA_links = []
-    questions_number = []
-    if (r.status_code == 200):
-        questions_number = re.findall("(\d+) questions", r.text)
-        if len(questions_number) != 0:
-            qn = math.ceil(int(questions_number[0])/10)
-            for i in range(1, qn+1):
-                print(i)
-                url_i = url + str(i)
-                r = session.get(url_i, headers = headers)
-                QA_link = re.findall("askInlineAnswers\" id=\"(.*?)\">", r.text)
-                QA_links.append(QA_link)
-                for i in range(len(QA_link)):
-                    r = session.get('https://www.amazon.com/ask/questions/'+QA_link[i],headers = headers)
-                    QA = re.findall("\s+<span>(.*?)<\/span>", r.text)
-                    QAs.append(QA)
+    proxies = {'HTTP': 'HTTP://122.242.96.30:808', 'HTTPS': 'HTTPS://122.242.96.30:808'}
+    r = requests.get(url, headers = headers, proxies = proxies, timeout = 5)    
+    temp = is_TTD(url, r.text)
+    QA_links, QAs = matchQA(url, headers, temp, QA_links, QAs)
     return QA_links, QAs
 
 def main():
@@ -166,11 +183,15 @@ def main():
         table = excel_bulit(workbook, asinlist[i])
         print(asinlist[i])
         QA_links, QAs = Get_Amazon_QA(asinlist[i])
-        print(QA_links)
-        for j in range(len(QA_links[i])):
-            table.write(i, j, QA_links[i][j], QAs[i][j])
-
+        #print(QA_links)
+        k = 0
+        for j in range(len(QA_links)):
+            for m in range(len(QA_links[j])):
+                table.write(k,0,QA_links[j][m])
+                for n in range(len(QAs[k])):
+                    table.write(k,n+1, html.unescape(QAs[k][n]))
+                k += 1
     workbook.save(file_save)
+    print("Saved to {}".format(file_save))
 if __name__ == '__main__':
-    #main()
-    print(Get_Amazon_QA("B0B9M764JM"))
+    main()
