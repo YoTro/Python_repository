@@ -1,191 +1,204 @@
-<!DOCTYPE html>
-<html>
-<head>
- <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
- <meta name="Author" content="Made by 'tree'">
- <meta name="GENERATOR" content="$Version: $ tree v1.8.0 (c) 1996 - 2018 by Steve Baker, Thomas Moore, Francesc Rocher, Florian Sesser, Kyosuke Tokoro $">
- <title>Directory Tree</title>
- <style type="text/css">
-  <!-- 
-  BODY { font-family : ariel, monospace, sans-serif; }
-  P { font-weight: normal; font-family : ariel, monospace, sans-serif; color: black; background-color: transparent;}
-  B { font-weight: normal; color: black; background-color: transparent;}
-  A:visited { font-weight : normal; text-decoration : none; background-color : transparent; margin : 0px 0px 0px 0px; padding : 0px 0px 0px 0px; display: inline; }
-  A:link    { font-weight : normal; text-decoration : none; margin : 0px 0px 0px 0px; padding : 0px 0px 0px 0px; display: inline; }
-  A:hover   { color : #000000; font-weight : normal; text-decoration : underline; background-color : yellow; margin : 0px 0px 0px 0px; padding : 0px 0px 0px 0px; display: inline; }
-  A:active  { color : #000000; font-weight: normal; background-color : transparent; margin : 0px 0px 0px 0px; padding : 0px 0px 0px 0px; display: inline; }
-  .VERSION { font-size: small; font-family : arial, sans-serif; }
-  .NORM  { color: black;  background-color: transparent;}
-  .FIFO  { color: purple; background-color: transparent;}
-  .CHAR  { color: yellow; background-color: transparent;}
-  .DIR   { color: blue;   background-color: transparent;}
-  .BLOCK { color: yellow; background-color: transparent;}
-  .LINK  { color: aqua;   background-color: transparent;}
-  .SOCK  { color: fuchsia;background-color: transparent;}
-  .EXEC  { color: green;  background-color: transparent;}
-  -->
- </style>
-</head>
-<body>
-	<h1>Python Repository</h1><p>
-	<a href="https://github.com/YoTro/Python_repository">https://github.com/YoTro/Python_repository</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/AWS/">AWS</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/AWSRegister.py">AWSRegister.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/AWS_captchaImage.py">AWS_captchaImage.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/AWSsellerxt.py">AWSsellerxt.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/AddtoCart.py">AddtoCart.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/Amazozn_email.py">Amazozn_email.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/Get_AmazonProducts_num.py">Get_AmazonProducts_num.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/Get_Amazon_products_num.py">Get_Amazon_products_num.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/Get_Amazon_tag.py">Get_Amazon_tag.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/Get_description.py">Get_description.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/Get_questions.py">Get_questions.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/PyAWS_Store_Reviews.py">PyAWS_Store_Reviews.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/__init__.py">__init__.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/amazon.py">amazon.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/amazon_cn.py">amazon_cn.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/amazon_us.py">amazon_us.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/captchaImg_sso.py">captchaImg_sso.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/get_dimensions.py">get_dimensions.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/get_feedbacknum.py">get_feedbacknum.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/get_img.py">get_img.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/get_ppc.py">get_ppc.py</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/AWS/get_ranks.py">get_ranks.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Apply_for_Job/">Apply_for_Job</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Apply_for_Job/51job.py">51job.py</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Apply_for_Job/requirements.txt">requirements.txt</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/CV/">CV</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/Bezier.py">Bezier.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/PDF_to_EPUB/">PDF_to_EPUB</a><br>
-	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/PDF_to_EPUB/pdf_to_epub.py">pdf_to_epub.py</a><br>
-	│   │   └── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/PDF_to_EPUB/requirements.txt">requirements.txt</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/Patch_CAPTCHA.py">Patch_CAPTCHA.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/__init__.py">__init__.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/curve_fit_func.py">curve_fit_func.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/nihe1.png">nihe1.png</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/png_to_SVG.py">png_to_SVG.py</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/CV/png_to_SVG.pyc">png_to_SVG.pyc</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Calculus/">Calculus</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Catalan.py">Catalan.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Hanoi_Tower.py">Hanoi_Tower.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/MT19937.py">MT19937.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/MT19937.pyc">MT19937.pyc</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Marsaglia_polar_method.py">Marsaglia_polar_method.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Pascal_triangle.py">Pascal_triangle.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Pascal_triangle.sh">Pascal_triangle.sh</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Taylor.py">Taylor.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/Zeller.py">Zeller.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/__init__.py">__init__.py</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Calculus/interplotate_all.py">interplotate_all.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Google_Sample/">Google_Sample</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Google_Sample/CUS_Yuntuexpress.py">CUS_Yuntuexpress.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Google_Sample/Google_tranJS.py">Google_tranJS.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Google_Sample/Google_translate_js_API.py">Google_translate_js_API.py</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Google_Sample/__init__.py">__init__.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Grapgh%20Theory/">Grapgh Theory</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Grapgh%20Theory/BFS.py">BFS.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Grapgh%20Theory/DFS.py">DFS.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Grapgh%20Theory/Dijkstra.py">Dijkstra.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Grapgh%20Theory/KMP.py">KMP.py</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Grapgh%20Theory/__init__.py">__init__.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/InsertimgExcel.py">InsertimgExcel.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/LPL/">LPL</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/LPL/Player_data_LOL.py">Player_data_LOL.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Leetcode/">Leetcode</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/tree/master/Leetcode/Bit/">Bit</a><br>
-	│   │   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Bit/leetcode-231-power-of-two.py">leetcode-231-power-of-two.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/tree/master/Leetcode/DP/">DP</a><br>
-	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/198_House_robber.py">198_House_robber.py</a><br>
-	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/README.md">README.md</a><br>
-	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-08-best-time-to-buy-and-sell-stock.py">leetcode-08-best-time-to-buy-and-sell-stock.py</a><br>
-	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-121-best-time-to-buy-and-sell-stock.py">leetcode-121-best-time-to-buy-and-sell-stock.py</a><br>
-	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-5-longest-palindromic-substring.py">leetcode-5-longest-palindromic-substring.py</a><br>
-	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-53-maximum-subarray.py">leetcode-53-maximum-subarray.py</a><br>
-	│   │   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-718-maximum-length-of-repeated-subarray.py">leetcode-718-maximum-length-of-repeated-subarray.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/tree/master/Leetcode/Graph/">Graph</a><br>
-	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Graph/Linkedlist/">Linkedlist</a><br>
-	│   │   └── <a href="https://github.com/YoTro/Python_repository/tree/master/Leetcode/Graph/Tree/">Tree</a><br>
-	│   │   &nbsp;&nbsp;&nbsp; ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Graph/Tree/leetcode-236-lowest-common-ancestor-of-a-binary-tree.py">leetcode-236-lowest-common-ancestor-of-a-binary-tree.py</a><br>
-	│   │   &nbsp;&nbsp;&nbsp; └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Graph/Tree/leetcode-938-range-sum-of-bst.py">leetcode-938-range-sum-of-bst.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Mathematics/">Mathematics</a><br>
-	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Mathematics/leetcode-202-happy-number.py">leetcode-202-happy-number.py</a><br>
-	│   │   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Mathematics/leetcode-326-power-of-three.py">leetcode-326-power-of-three.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Recursive/">Recursive</a><br>
-	│   │   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Recursive/leetcode-1137-n-th-tribonacci-number.py">leetcode-1137-n-th-tribonacci-number.py</a><br>
-	│   │   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/Recursive/leetcode-779-k-th-symbol-in-grammar.py">leetcode-779-k-th-symbol-in-grammar.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/__init__.py">__init__.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/__init__.pyc">__init__.pyc</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-15-3sum.py">leetcode-15-3sum.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-3-longest-substring-without-repeating-characters.py">leetcode-3-longest-substring-without-repeating-characters.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-441-arranging-coins.py">leetcode-441-arranging-coins.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-633-sum-of-square-numbers.py">leetcode-633-sum-of-square-numbers.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-65-valid-number.py">leetcode-65-valid-number.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-69-sqrtx.py">leetcode-69-sqrtx.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/leetcode-95-unique-binary-search-trees-ii.py">leetcode-95-unique-binary-search-trees-ii.py</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Leetcode/login_leetcode.py">login_leetcode.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Linkedlist/">Linkedlist</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Linkedlist/Linkedlist.py">Linkedlist.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/Logistics_get_17track.py">Logistics_get_17track.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Pygame/">Pygame</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Pygame/1.py">1.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Pygame/2.py">2.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Pygame/3.py">3.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Pygame/4.py">4.py</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Pygame/5.py">5.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/README.md">README.md</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Sorting_Algorithms/">Sorting_Algorithms</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Binary_search.py">Binary_search.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Bubble_sort.py">Bubble_sort.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Bucket_sort.py">Bucket_sort.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Heap_sort.py">Heap_sort.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Insertion_sort.py">Insertion_sort.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Merge_sort.py">Merge_sort.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Quick_sort.py">Quick_sort.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Radix_sort.py">Radix_sort.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Select_sort.py">Select_sort.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/Shell_sort.py">Shell_sort.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/__init__.py">__init__.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/counting_sort.py">counting_sort.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/hashsort.py">hashsort.py</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Sorting_Algorithms/listsort.txt">listsort.txt</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/tree/master/Trees/">Trees</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/Trees/AVLTree.py">AVLTree.py</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/Trees/BST.py">BST.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/__init__.py">__init__.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/">bilibili</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/README.md">README.md</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/__init__.py">__init__.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/bilibili_rank.sh">bilibili_rank.sh</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/bilibili_ranking_data_everyday.py">bilibili_ranking_data_everyday.py</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/log">log</a><br>
-	│   ├── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/log.err">log.err</a><br>
-	│   └── <a href="https://github.com/YoTro/Python_repository/blob/master/bilibili/requirements.txt">requirements.txt</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/covid-19.py">covid-19.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/csv_to_xls.py">csv_to_xls.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/dijkstra.py">dijkstra.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/dingTalkfile.py">dingTalkfile.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/get-pip.py">get-pip.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/keywords_find.py">keywords_find.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/pneumonia.py">pneumonia.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/postTocart.py">postTocart.py</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/price%E6%AD%A3%E5%88%99.txt">price正则.txt</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/pytree.html">pytree.html</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/pytree.txt">pytree.txt</a><br>
-	├── <a href="https://github.com/YoTro/Python_repository/blob/master/taobaoSEO_keyword.pyc">taobaoSEO_keyword.pyc</a><br>
-	└── <a href="https://github.com/YoTro/Python_repository/blob/master/xt.py">xt.py</a><br>
-	<br><br>
-	</p>
-	<p>
-
-21 directories, 123 files
-	<br><br>
-	</p>
-	<hr>
-	<p class="VERSION">
-		 tree v1.8.0 © 1996 - 2018 by Steve Baker and Thomas Moore <br>
-		 HTML output hacked and copyleft © 1998 by Francesc Rocher <br>
-		 JSON output hacked and copyleft © 2014 by Florian Sesser <br>
-		 Charsets / OS/2 support © 2001 by Kyosuke Tokoro
-	</p>
-</body>
-</html>
+* [AWS](/YoTro/Python_repository/tree/master/AWS)
+    * [.DS_Store](/YoTro/Python_repository/blob/master/AWS/.DS_Store)
+    * [AWSRegister.py](/YoTro/Python_repository/blob/master/AWS/AWSRegister.py)
+    * [AWS_captchaImage.py](/YoTro/Python_repository/blob/master/AWS/AWS_captchaImage.py)
+    * [AWSsellerxt.py](/YoTro/Python_repository/blob/master/AWS/AWSsellerxt.py)
+    * [AddtoCart.py](/YoTro/Python_repository/blob/master/AWS/AddtoCart.py)
+    * [Amazon_Utils.py](/YoTro/Python_repository/blob/master/AWS/Amazon_Utils.py)
+    * [Amazozn_email.py](/YoTro/Python_repository/blob/master/AWS/Amazozn_email.py)
+    * [Get\_5\_Features.py](/YoTro/Python_repository/blob/master/AWS/Get_5_Features.py)
+    * [Get\_AmazonProducts\_num.py](/YoTro/Python_repository/blob/master/AWS/Get_AmazonProducts_num.py)
+    * [Get\_Amazon\_QA.py](/YoTro/Python_repository/blob/master/AWS/Get_Amazon_QA.py)
+    * [Get\_Amazon\_bestsellers.py](/YoTro/Python_repository/blob/master/AWS/Get_Amazon_bestsellers.py)
+    * [Get\_Amazon\_products_num.py](/YoTro/Python_repository/blob/master/AWS/Get_Amazon_products_num.py)
+    * [Get\_Amazon\_tag.py](/YoTro/Python_repository/blob/master/AWS/Get_Amazon_tag.py)
+    * [Get\_FBA\_Package\_Weight\_Dimensions.py](/YoTro/Python_repository/blob/master/AWS/Get_FBA_Package_Weight_Dimensions.py)
+    * [Get_description.py](/YoTro/Python_repository/blob/master/AWS/Get_description.py)
+    * [Get_questions.py](/YoTro/Python_repository/blob/master/AWS/Get_questions.py)
+    * [Is\_Amz\_videos.py](/YoTro/Python_repository/blob/master/AWS/Is_Amz_videos.py)
+    * [PyAWS\_Store\_Reviews.py](/YoTro/Python_repository/blob/master/AWS/PyAWS_Store_Reviews.py)
+    * [README.md](/YoTro/Python_repository/blob/master/AWS/README.md)
+    * [Sellersprite.py](/YoTro/Python_repository/blob/master/AWS/Sellersprite.py)
+    * [\_\_init\_\_.py](/YoTro/Python_repository/blob/master/AWS/__init__.py)
+    * [amazon.py](/YoTro/Python_repository/blob/master/AWS/amazon.py)
+    * [amazon_cn.py](/YoTro/Python_repository/blob/master/AWS/amazon_cn.py)
+    * [amazon_comments.py](/YoTro/Python_repository/blob/master/AWS/amazon_comments.py)
+    * [amazon_us.py](/YoTro/Python_repository/blob/master/AWS/amazon_us.py)
+    * [captchaImg_sso.py](/YoTro/Python_repository/blob/master/AWS/captchaImg_sso.py)
+    * [get_dimensions.py](/YoTro/Python_repository/blob/master/AWS/get_dimensions.py)
+    * [get_feedbacknum.py](/YoTro/Python_repository/blob/master/AWS/get_feedbacknum.py)
+    * [get_img.py](/YoTro/Python_repository/blob/master/AWS/get_img.py)
+    * [get_ppc.py](/YoTro/Python_repository/blob/master/AWS/get_ppc.py)
+    * [get_ranks.py](/YoTro/Python_repository/blob/master/AWS/get_ranks.py)
+    * [keywords_find.py](/YoTro/Python_repository/blob/master/AWS/keywords_find.py)
+    * [postTocart.py](/YoTro/Python_repository/blob/master/AWS/postTocart.py)
+    * [price正则.txt](/YoTro/Python_repository/blob/master/AWS/price%E6%AD%A3%E5%88%99.txt)
+* [Apply\_for\_Job](/YoTro/Python_repository/tree/master/Apply_for_Job)
+    * [51job.py](/YoTro/Python_repository/blob/master/Apply_for_Job/51job.py)
+    * [requirements.txt](/YoTro/Python_repository/blob/master/Apply_for_Job/requirements.txt)
+* [CV](/YoTro/Python_repository/tree/master/CV)
+    * [PDF\_to\_EPUB](/YoTro/Python_repository/tree/master/CV/PDF_to_EPUB)
+        * [pdf\_to\_epub.py](/YoTro/Python_repository/blob/master/CV/PDF_to_EPUB/pdf_to_epub.py)
+        * [requirements.txt](/YoTro/Python_repository/blob/master/CV/PDF_to_EPUB/requirements.txt)
+    * [.DS_Store](/YoTro/Python_repository/blob/master/CV/.DS_Store)
+    * [Bezier.py](/YoTro/Python_repository/blob/master/CV/Bezier.py)
+    * [Patch_CAPTCHA.py](/YoTro/Python_repository/blob/master/CV/Patch_CAPTCHA.py)
+    * [\_\_init\_\_.py](/YoTro/Python_repository/blob/master/CV/__init__.py)
+    * [curve\_fit\_func.py](/YoTro/Python_repository/blob/master/CV/curve_fit_func.py)
+    * [nihe1.png](/YoTro/Python_repository/blob/master/CV/nihe1.png)
+    * [png\_to\_SVG.py](/YoTro/Python_repository/blob/master/CV/png_to_SVG.py)
+* [Calculus](/YoTro/Python_repository/tree/master/Calculus)
+    * [.DS_Store](/YoTro/Python_repository/blob/master/Calculus/.DS_Store)
+    * [Catalan.py](/YoTro/Python_repository/blob/master/Calculus/Catalan.py)
+    * [Ellipsecircumference.py](/YoTro/Python_repository/blob/master/Calculus/Ellipsecircumference.py)
+    * [Hanoi_Tower.py](/YoTro/Python_repository/blob/master/Calculus/Hanoi_Tower.py)
+    * [MT19937.py](/YoTro/Python_repository/blob/master/Calculus/MT19937.py)
+    * [Marsaglia\_polar\_method.py](/YoTro/Python_repository/blob/master/Calculus/Marsaglia_polar_method.py)
+    * [Pascal_triangle.py](/YoTro/Python_repository/blob/master/Calculus/Pascal_triangle.py)
+    * [Pascal_triangle.sh](/YoTro/Python_repository/blob/master/Calculus/Pascal_triangle.sh)
+    * [Primenumber.py](/YoTro/Python_repository/blob/master/Calculus/Primenumber.py)
+    * [Taylor.py](/YoTro/Python_repository/blob/master/Calculus/Taylor.py)
+    * [Zeller.py](/YoTro/Python_repository/blob/master/Calculus/Zeller.py)
+    * [\_\_init\_\_.py](/YoTro/Python_repository/blob/master/Calculus/__init__.py)
+    * [interplotate_all.py](/YoTro/Python_repository/blob/master/Calculus/interplotate_all.py)
+* [Google_Sample](/YoTro/Python_repository/tree/master/Google_Sample)
+    * [.DS_Store](/YoTro/Python_repository/blob/master/Google_Sample/.DS_Store)
+    * [CUS_Yuntuexpress.py](/YoTro/Python_repository/blob/master/Google_Sample/CUS_Yuntuexpress.py)
+    * [Google_tranJS.py](/YoTro/Python_repository/blob/master/Google_Sample/Google_tranJS.py)
+    * [Google\_translate\_js_API.py](/YoTro/Python_repository/blob/master/Google_Sample/Google_translate_js_API.py)
+    * [\_\_init\_\_.py](/YoTro/Python_repository/blob/master/Google_Sample/__init__.py)
+* [Grapgh Theory](/YoTro/Python_repository/tree/master/Grapgh%20Theory)
+    * [.DS_Store](/YoTro/Python_repository/blob/master/Grapgh%20Theory/.DS_Store)
+    * [Astar.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/Astar.py)
+    * [BFS.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/BFS.py)
+    * [Binaryheap.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/Binaryheap.py)
+    * [DFS.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/DFS.py)
+    * [DFS_Maze.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/DFS_Maze.py)
+    * [Dijkstra.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/Dijkstra.py)
+    * [KMP.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/KMP.py)
+    * [PageRank.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/PageRank.py)
+    * [Prim_Maze.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/Prim_Maze.py)
+    * [Pygraph.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/Pygraph.py)
+    * [Recursive\_division\_Maze.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/Recursive_division_Maze.py)
+    * [Tarjan.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/Tarjan.py)
+    * [\_\_init\_\_.py](/YoTro/Python_repository/blob/master/Grapgh%20Theory/__init__.py)
+* [Leetcode](/YoTro/Python_repository/tree/master/Leetcode)
+    * [Bit](/YoTro/Python_repository/tree/master/Leetcode/Bit)
+        * [.DS_Store](/YoTro/Python_repository/blob/master/Leetcode/Bit/.DS_Store)
+        * [leetcode-1371-find-the-longest-substring-containing-vowels-in-even-counts.py](/YoTro/Python_repository/blob/master/Leetcode/Bit/leetcode-1371-find-the-longest-substring-containing-vowels-in-even-counts.py)
+        * [leetcode-231-power-of-two.py](/YoTro/Python_repository/blob/master/Leetcode/Bit/leetcode-231-power-of-two.py)
+        * [leetcode-jianzhioffer-51-shu-zu-zhong-de-ni-xu-dui-lcof.py](/YoTro/Python_repository/blob/master/Leetcode/Bit/leetcode-jianzhioffer-51-shu-zu-zhong-de-ni-xu-dui-lcof.py)
+    * [DP](/YoTro/Python_repository/tree/master/Leetcode/DP)
+        * [.DS_Store](/YoTro/Python_repository/blob/master/Leetcode/DP/.DS_Store)
+        * [198\_House\_robber.py](/YoTro/Python_repository/blob/master/Leetcode/DP/198_House_robber.py)
+        * [README.md](/YoTro/Python_repository/blob/master/Leetcode/DP/README.md)
+        * [leetcode-08-best-time-to-buy-and-sell-stock.py](/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-08-best-time-to-buy-and-sell-stock.py)
+        * [leetcode-121-best-time-to-buy-and-sell-stock.py](/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-121-best-time-to-buy-and-sell-stock.py)
+        * [leetcode-152-maximum-product-subarray.py](/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-152-maximum-product-subarray.py)
+        * [leetcode-279-perfect-squares.py](/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-279-perfect-squares.py)
+        * [leetcode-322-coin-change.py](/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-322-coin-change.py)
+        * [leetcode-464-can-i-win.py](/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-464-can-i-win.py)
+        * [leetcode-486-maximum-length-of-repeated-subarray.py](/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-486-maximum-length-of-repeated-subarray.py)
+        * [leetcode-5-longest-palindromic-substring.py](/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-5-longest-palindromic-substring.py)
+        * [leetcode-53-maximum-subarray.py](/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-53-maximum-subarray.py)
+        * [leetcode-718-maximum-length-of-repeated-subarray.py](/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-718-maximum-length-of-repeated-subarray.py)
+        * [leetcode-837-new-21-game.py](/YoTro/Python_repository/blob/master/Leetcode/DP/leetcode-837-new-21-game.py)
+    * [Graph](/YoTro/Python_repository/tree/master/Leetcode/Graph)
+        * [Tree](/YoTro/Python_repository/tree/master/Leetcode/Graph/Tree)
+            * [.DS_Store](/YoTro/Python_repository/blob/master/Leetcode/Graph/Tree/.DS_Store)
+            * [leetcode-236-lowest-common-ancestor-of-a-binary-tree.py](/YoTro/Python_repository/blob/master/Leetcode/Graph/Tree/leetcode-236-lowest-common-ancestor-of-a-binary-tree.py)
+            * [leetcode-938-range-sum-of-bst.py](/YoTro/Python_repository/blob/master/Leetcode/Graph/Tree/leetcode-938-range-sum-of-bst.py)
+            * [leetcode-95-unique-binary-search-trees-ii.py](/YoTro/Python_repository/blob/master/Leetcode/Graph/Tree/leetcode-95-unique-binary-search-trees-ii.py)
+        * [.DS_Store](/YoTro/Python_repository/blob/master/Leetcode/Graph/.DS_Store)
+        * [leetcode-1263-minimum-moves-to-move-a-box-to-their-target-location.py](/YoTro/Python_repository/blob/master/Leetcode/Graph/leetcode-1263-minimum-moves-to-move-a-box-to-their-target-location.py)
+    * [Mathematics](/YoTro/Python_repository/tree/master/Leetcode/Mathematics)
+        * [leetcode-202-happy-number.py](/YoTro/Python_repository/blob/master/Leetcode/Mathematics/leetcode-202-happy-number.py)
+        * [leetcode-326-power-of-three.py](/YoTro/Python_repository/blob/master/Leetcode/Mathematics/leetcode-326-power-of-three.py)
+        * [leetcode-866-prime-palindrome.py](/YoTro/Python_repository/blob/master/Leetcode/Mathematics/leetcode-866-prime-palindrome.py)
+    * [Recursive](/YoTro/Python_repository/tree/master/Leetcode/Recursive)
+        * [leetcode-1137-n-th-tribonacci-number.py](/YoTro/Python_repository/blob/master/Leetcode/Recursive/leetcode-1137-n-th-tribonacci-number.py)
+        * [leetcode-779-k-th-symbol-in-grammar.py](/YoTro/Python_repository/blob/master/Leetcode/Recursive/leetcode-779-k-th-symbol-in-grammar.py)
+    * [.DS_Store](/YoTro/Python_repository/blob/master/Leetcode/.DS_Store)
+    * [\_\_init\_\_.py](/YoTro/Python_repository/blob/master/Leetcode/__init__.py)
+    * [leetcode-15-3sum.py](/YoTro/Python_repository/blob/master/Leetcode/leetcode-15-3sum.py)
+    * [leetcode-3-longest-substring-without-repeating-characters.py](/YoTro/Python_repository/blob/master/Leetcode/leetcode-3-longest-substring-without-repeating-characters.py)
+    * [leetcode-441-arranging-coins.py](/YoTro/Python_repository/blob/master/Leetcode/leetcode-441-arranging-coins.py)
+    * [leetcode-633-sum-of-square-numbers.py](/YoTro/Python_repository/blob/master/Leetcode/leetcode-633-sum-of-square-numbers.py)
+    * [leetcode-65-valid-number.py](/YoTro/Python_repository/blob/master/Leetcode/leetcode-65-valid-number.py)
+    * [leetcode-69-sqrtx.py](/YoTro/Python_repository/blob/master/Leetcode/leetcode-69-sqrtx.py)
+    * [login_leetcode.py](/YoTro/Python_repository/blob/master/Leetcode/login_leetcode.py)
+* [Linkedlist](/YoTro/Python_repository/tree/master/Linkedlist)
+    * [.DS_Store](/YoTro/Python_repository/blob/master/Linkedlist/.DS_Store)
+    * [Linkedlist.py](/YoTro/Python_repository/blob/master/Linkedlist/Linkedlist.py)
+* [MachineLearning](/YoTro/Python_repository/tree/master/MachineLearning)
+    * [SVM.py](/YoTro/Python_repository/blob/master/MachineLearning/SVM.py)
+    * [\_\_init\_\_.py](/YoTro/Python_repository/blob/master/MachineLearning/__init__.py)
+    * [mnist2jpg.py](/YoTro/Python_repository/blob/master/MachineLearning/mnist2jpg.py)
+* [OnlineCompile](/YoTro/Python_repository/tree/master/OnlineCompile)
+    * [OnlineC.py](/YoTro/Python_repository/blob/master/OnlineCompile/OnlineC.py)
+    * [OnlineCompileMultilangs.py](/YoTro/Python_repository/blob/master/OnlineCompile/OnlineCompileMultilangs.py)
+* [Pygame](/YoTro/Python_repository/tree/master/Pygame)
+    * [.DS_Store](/YoTro/Python_repository/blob/master/Pygame/.DS_Store)
+    * [1.py](/YoTro/Python_repository/blob/master/Pygame/1.py)
+    * [10.py](/YoTro/Python_repository/blob/master/Pygame/10.py)
+    * [11.py](/YoTro/Python_repository/blob/master/Pygame/11.py)
+    * [12.py](/YoTro/Python_repository/blob/master/Pygame/12.py)
+    * [13.py](/YoTro/Python_repository/blob/master/Pygame/13.py)
+    * [14.py](/YoTro/Python_repository/blob/master/Pygame/14.py)
+    * [15.py](/YoTro/Python_repository/blob/master/Pygame/15.py)
+    * [16.py](/YoTro/Python_repository/blob/master/Pygame/16.py)
+    * [2.py](/YoTro/Python_repository/blob/master/Pygame/2.py)
+    * [3.py](/YoTro/Python_repository/blob/master/Pygame/3.py)
+    * [4.py](/YoTro/Python_repository/blob/master/Pygame/4.py)
+    * [5.py](/YoTro/Python_repository/blob/master/Pygame/5.py)
+    * [6.py](/YoTro/Python_repository/blob/master/Pygame/6.py)
+    * [7.py](/YoTro/Python_repository/blob/master/Pygame/7.py)
+    * [8.py](/YoTro/Python_repository/blob/master/Pygame/8.py)
+    * [9.py](/YoTro/Python_repository/blob/master/Pygame/9.py)
+* [Sorting_Algorithms](/YoTro/Python_repository/tree/master/Sorting_Algorithms)
+    * [.DS_Store](/YoTro/Python_repository/blob/master/Sorting_Algorithms/.DS_Store)
+    * [Binary_search.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/Binary_search.py)
+    * [Bubble_sort.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/Bubble_sort.py)
+    * [Bucket_sort.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/Bucket_sort.py)
+    * [Hash_sort.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/Hash_sort.py)
+    * [Heap_sort.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/Heap_sort.py)
+    * [Insertion_sort.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/Insertion_sort.py)
+    * [Merge_sort.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/Merge_sort.py)
+    * [Quick_sort.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/Quick_sort.py)
+    * [Radix_sort.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/Radix_sort.py)
+    * [Select_sort.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/Select_sort.py)
+    * [Shell_sort.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/Shell_sort.py)
+    * [\_\_init\_\_.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/__init__.py)
+    * [counting_sort.py](/YoTro/Python_repository/blob/master/Sorting_Algorithms/counting_sort.py)
+    * [listsort.txt](/YoTro/Python_repository/blob/master/Sorting_Algorithms/listsort.txt)
+* [Trees](/YoTro/Python_repository/tree/master/Trees)
+    * [.DS_Store](/YoTro/Python_repository/blob/master/Trees/.DS_Store)
+    * [AVLTree.py](/YoTro/Python_repository/blob/master/Trees/AVLTree.py)
+    * [BST.py](/YoTro/Python_repository/blob/master/Trees/BST.py)
+    * [Trie_Tree.py](/YoTro/Python_repository/blob/master/Trees/Trie_Tree.py)
+* [bilibili](/YoTro/Python_repository/tree/master/bilibili)
+    * [.DS_Store](/YoTro/Python_repository/blob/master/bilibili/.DS_Store)
+    * [README.md](/YoTro/Python_repository/blob/master/bilibili/README.md)
+    * [\_\_init\_\_.py](/YoTro/Python_repository/blob/master/bilibili/__init__.py)
+    * [bilibili_rank.sh](/YoTro/Python_repository/blob/master/bilibili/bilibili_rank.sh)
+    * [bilibili\_ranking\_data_everyday.py](/YoTro/Python_repository/blob/master/bilibili/bilibili_ranking_data_everyday.py)
+    * [log](/YoTro/Python_repository/blob/master/bilibili/log)
+    * [log.err](/YoTro/Python_repository/blob/master/bilibili/log.err)
+    * [requirements.txt](/YoTro/Python_repository/blob/master/bilibili/requirements.txt)
+* [.DS_Store](/YoTro/Python_repository/blob/master/.DS_Store)
+* [.gitignore](/YoTro/Python_repository/blob/master/.gitignore)
+* [InsertimgExcel.py](/YoTro/Python_repository/blob/master/InsertimgExcel.py)
+* [LICENSE](/YoTro/Python_repository/blob/master/LICENSE)
+* [Logistics\_get\_17track.py](/YoTro/Python_repository/blob/master/Logistics_get_17track.py)
+* [README.md](/YoTro/Python_repository/blob/master/README.md)
+* [\_\_init\_\_.py](/YoTro/Python_repository/blob/master/__init__.py)
+* [covid-19.py](/YoTro/Python_repository/blob/master/covid-19.py)
+* [csv\_to\_xls.py](/YoTro/Python_repository/blob/master/csv_to_xls.py)
+* [dijkstra.py](/YoTro/Python_repository/blob/master/dijkstra.py)
+* [dingTalkfile.py](/YoTro/Python_repository/blob/master/dingTalkfile.py)
+* [get-pip.py](/YoTro/Python_repository/blob/master/get-pip.py)
+* [pneumonia.py](/YoTro/Python_repository/blob/master/pneumonia.py)
+* [pytree.html](/YoTro/Python_repository/blob/master/pytree.html)
+* [pytree.txt](/YoTro/Python_repository/blob/master/pytree.txt)
+* [taobaoSEO_keyword.pyc](/YoTro/Python_repository/blob/master/taobaoSEO_keyword.pyc)
+* [xt.py](/YoTro/Python_repository/blob/master/xt.py)
