@@ -1,9 +1,11 @@
 # -*- coding:UTF-8 -*-
 # 登陆卖家精灵
+import os
 import json
 import execjs
 import hashlib
 import requests
+from Amazon_Utils import xlwt, excel_bulit, Get_Amazonlists
 
 class dl:
     '''获取卖家精灵tk'''
@@ -136,7 +138,7 @@ def keepa(session, asin, Auth_Token, tk):
     if r.status_code == 200:
         response['bsr'] = r.json()['data']['keepa']['bsr']
         response['times'] = r.json()['data']['times']
-        print(response)
+        #print(response)
     else:
         print(r.text)
     return response
@@ -217,6 +219,30 @@ def get_keywors_traffic_extend_asin(session, asins):
     else:
         print(r.text)
     return keywords
+
+def Save_To_Excel(session, Auth_Token, dl):
+    '''保存BSR'''
+    asinsfile = "./bs.xlsx"
+    file_save = "./BSR.xls"
+    if not os.path.exists(asinsfile):
+        print("The asinsfile to be queried does not exist: {}".format(os.path.abspath(asinsfile)))
+        return
+    asins = Get_Amazonlists(asinsfile)
+    workbook = xlwt.Workbook(encoding = 'utf-8')
+    print("Total asins: {}".format(len(asins)))
+    for i in range(len(asins)):
+        print(asins[i])
+        keepa_tk = dl.s2Tkk("", asins[i])
+        BSR = keepa(session, asins[i], Auth_Token, keepa_tk)
+        table = excel_bulit(workbook, asins[i])
+        if len(BSR['times']) == 0:
+            print("The BSR is None.")
+            continue
+        for j in range(len(BSR['times'])):
+            table.write(j, 0, BSR['times'][j])
+            table.write(j, 1, BSR['bsr'][j])
+    workbook.save(file_save)
+    print("The excel is saved to {}".format(os.path.abspath(file_save)))
 if __name__ == '__main__':
     email = ""
     password = ""
@@ -227,11 +253,7 @@ if __name__ == '__main__':
 #   session = Sellersprite_login(session, email, pwd, salt)
     #keywords = get_keywors_traffic_extend_asin(session, asins)
     #print(keywords)
-    asin = 'B0B71DH45N'
-    session, Auth_Token = Sellersprite_extension_login(session,email,pwd, extension_login_tk)
     dl = dl()
-    keepa_tk = dl.s2Tkk("", asin)
     extension_login_tk = dl.s2Tkk(email, pwd)
     session, Auth_Token = Sellersprite_extension_login(session,email,pwd, extension_login_tk)
-    #brs = keepa(session, asin, Auth_Token, keepa_tk)
-    print(extension_login_tk, keepa_tk, _tk("", asin))
+    Save_To_Excel(session, Auth_Token, dl)
