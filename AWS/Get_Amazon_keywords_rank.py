@@ -82,22 +82,26 @@ def get_rank_keyword(asins, keyword, page):
         for i in range(len(asins)):
             result = re.findall("data-asin=\"{}\" data-index=\"(\d+)\"".format(asins[i]), r.text)#匹配result
             if len(result) != 0:
-                t[asins[i]] = [page+1, result[0]]
+                t[asins[i]] = [page, int(result[0])-1]
         return t
     
 if __name__ == '__main__':
     workbook = xlwt.Workbook(encoding = 'utf-8')
     table = excel_bulit(workbook, "1")
-    keyword = "outdoor rug"
-    asins = ["B08B6FJPK5","B08B6FQVZZ","B08HQJ6CV6","B08HQL4Q3G","B08HQPYMH3","B08JLGNPVX","B0BW3Y3W91","B0BW442C9T"]
+    table.write(0, 0, "ASIN")
+    table.write(0, 1, "keyword")
+    table.write(0, 2, "页数")
+    table.write(0, 3, "单页排名")
+    asins = ["B0BQ38RJJH","B091YMYV7Q","B08HQJ6CV6","B08HQL4Q3G","B08HQPYMH3","B08JLGNPVX","B0BW3Y3W91","B0BW442C9T"]
     file_save = "./keywordrank.xls"
-    fn = "./ReverseASIN-US-B08B6FJPK5-Last-30-days.xls"
-    for keyword in Get_Exceldata(fn, "关键词"):
+    fn = "./kw.xls"
+    keywords = Get_Exceldata(fn, '关键词')
+    i = 1
+    for keyword in keywords:
         t = get_result(keyword)
         if t:
             t = int(t[0].replace(",",""))
-            i = 0
-            for page in range((t//48)+1):
+            for page in range(1, (t//48)+2):
                 t = get_rank_keyword(asins, keyword, page)
                 print(t)
                 if t:
@@ -107,7 +111,7 @@ if __name__ == '__main__':
                         table.write(i, 2, t[k][0])
                         table.write(i, 3, t[k][1])
                         i+=1
-                if page > 6:
+                if page > 7:
                     print("Result is over 7th page")
                     break
     workbook.save(file_save)
