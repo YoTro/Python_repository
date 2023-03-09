@@ -134,11 +134,13 @@ def keepa(session, asin, Auth_Token, tk):
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
     }
     r = session.get(url, headers = headers)
-    response = {'bsr':[],'times':[]}
+    response = {'times':[], 'bsr':[], 'subRanks':[]}
     if r.status_code == 200:
+        #print(r.json()['data']['keepa'].keys())
         response['bsr'] = r.json()['data']['keepa']['bsr']
         response['times'] = r.json()['data']['times']
-        #print(response)
+        response['subRanks'] = list(r.json()['data']['keepa']['subRanks'].values())[0]
+        #print(response['subRanks'])
     else:
         print(r.text)
     return response
@@ -222,7 +224,7 @@ def get_keywors_traffic_extend_asin(session, asins):
 
 def Save_To_Excel(session, Auth_Token, dl):
     '''保存BSR'''
-    asinsfile = "./bs.xlsx"
+    asinsfile = "./bs.xls"
     file_save = "./BSR.xls"
     if not os.path.exists(asinsfile):
         print("The asinsfile to be queried does not exist: {}".format(os.path.abspath(asinsfile)))
@@ -241,11 +243,12 @@ def Save_To_Excel(session, Auth_Token, dl):
         for j in range(len(BSR['times'])):
             table.write(j, 0, BSR['times'][j])
             table.write(j, 1, BSR['bsr'][j])
+            table.write(j, 2, BSR['subRanks'][j])
     workbook.save(file_save)
     print("The excel is saved to {}".format(os.path.abspath(file_save)))
 if __name__ == '__main__':
-    email = ""
-    password = ""
+    email = "17007063609"
+    password = "yamaxun360"
 #   asins = ["B098T9ZFB5","B09JW5FNVX","B0B71DH45N","B07MHHM31K","B08RYQR1CJ"]
     pwd, salt = salt_pwd_hash(email, password)
     #print(type(salt))
