@@ -247,8 +247,8 @@ def Save_To_Excel(session, Auth_Token, dl):
     workbook.save(file_save)
     print("The excel is saved to {}".format(os.path.abspath(file_save)))
 if __name__ == '__main__':
-    email = "17007063609"
-    password = "yamaxun360"
+    email = ""
+    password = ""
 #   asins = ["B098T9ZFB5","B09JW5FNVX","B0B71DH45N","B07MHHM31K","B08RYQR1CJ"]
     pwd, salt = salt_pwd_hash(email, password)
     #print(type(salt))
