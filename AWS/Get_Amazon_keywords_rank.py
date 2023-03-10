@@ -92,24 +92,25 @@ if __name__ == '__main__':
     table.write(0, 1, "keyword")
     table.write(0, 2, "页数")
     table.write(0, 3, "单页排名")
-    asins = ["B0BQ38RJJH","B091YMYV7Q","B08HQJ6CV6","B08HQL4Q3G","B08HQPYMH3","B08JLGNPVX","B0BW3Y3W91","B0BW442C9T"]
+    asins = ["B08B6FJPK5","B08B6FQVZZ","B08HQJ6CV6","B08HQL4Q3G","B08HQPYMH3","B08JLGNPVX","B0BW3Y3W91","B0BW442C9T"]
     file_save = "./keywordrank.xls"
     fn = "./kw.xls"
     keywords = Get_Exceldata(fn, '关键词')
     i = 1
     for keyword in keywords:
+        print(keyword)
         t = get_result(keyword)
         if t:
-            t = int(t[0].replace(",",""))
+            t = int(t.replace(",",""))
             for page in range(1, (t//48)+2):
-                t = get_rank_keyword(asins, keyword, page)
-                print(t)
-                if t:
-                    for k in t:
+                d = get_rank_keyword(asins, keyword, page)
+                print(page, d)
+                if d:
+                    for k in d:
                         table.write(i, 0, k)
                         table.write(i, 1, keyword)
-                        table.write(i, 2, t[k][0])
-                        table.write(i, 3, t[k][1])
+                        table.write(i, 2, d[k][0])
+                        table.write(i, 3, d[k][1])
                         i+=1
                 if page > 7:
                     print("Result is over 7th page")
