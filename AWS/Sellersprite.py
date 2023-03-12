@@ -5,7 +5,7 @@ import json
 import execjs
 import hashlib
 import requests
-from Amazon_Utils import xlwt, excel_bulit, Get_Amazonlists
+from Amazon_Utils import xlwt, excel_bulit, Get_ASINlists
 
 class dl:
     '''获取卖家精灵tk'''
@@ -229,7 +229,7 @@ def Save_To_Excel(session, Auth_Token, dl):
     if not os.path.exists(asinsfile):
         print("The asinsfile to be queried does not exist: {}".format(os.path.abspath(asinsfile)))
         return
-    asins = Get_Amazonlists(asinsfile)
+    asins = Get_ASINlists(asinsfile)
     workbook = xlwt.Workbook(encoding = 'utf-8')
     print("Total asins: {}".format(len(asins)))
     for i in range(len(asins)):
