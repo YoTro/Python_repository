@@ -47,7 +47,7 @@ def excel_bulit(workbook, asin):
     style.alignment=alignment#添加至样式
     return table
 
-def Get_Amazonlists(fn):
+def Get_ASINlists(fn):
     '''从表格里获取ASINURL'''
     data=xlrd.open_workbook(fn) # 打开工作薄
     sheets=data.sheets()
@@ -133,7 +133,7 @@ def File_path_choice():
             while f==False:
                 file_path=str(raw_input("Your file is not exsits,plz input a fileurl:\n"))
                 f=os.path.exists(file_path)
-    except Exception,e:
+    except Exception as e:
         print(str(e))
         file_path=t
     return file_path
