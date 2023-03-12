@@ -9,7 +9,7 @@ import json
 import random
 import requests
 from hyper.contrib import HTTP20Adapter
-from Amazon_Utils import excel_bulit, Get_Amazonlists
+from Amazon_Utils import excel_bulit, Get_ASINlists
 
 proxies_list80 = [
                 "184.60.66.122",
@@ -176,7 +176,7 @@ def Productmatch(asin, proxies):
 def main():
     file_save='./AMZWD.xls'
     fn = './OR.xls'
-    asinlist = Get_Amazonlists(fn)
+    asinlist = Get_ASINlists(fn)
     workbook = xlwt.Workbook(encoding = 'utf-8')
     table = excel_bulit(workbook, '1')
     k = len(asinlist)
