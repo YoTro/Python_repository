@@ -7,7 +7,7 @@ import re
 import os
 import time
 import requests
-from Amazon_Utils import xlwt, retry, excel_bulit, Get_Amazonlists, Get_Exceldata
+from Amazon_Utils import xlwt, retry, excel_bulit, Get_ASINlists, Get_Exceldata
 def is_TTD(f):
     '''是否被Amazon屏蔽请求变狗'''
     temp = f
