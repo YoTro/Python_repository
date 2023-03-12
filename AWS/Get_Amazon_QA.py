@@ -8,7 +8,7 @@ import html
 import random
 import platform
 import requests
-from Amazon_Utils import excel_bulit, Get_Amazonlists
+from Amazon_Utils import excel_bulit, Get_ASINlists
 proxies_list80 = [
                 "184.60.66.122",
                 "34.23.45.223",
@@ -177,7 +177,7 @@ def Get_Amazon_QA(asin):
 def main():
     file_save='./AMZQA.xls'
     fn = './OR.xls'
-    asinlist = Get_Amazonlists(fn)
+    asinlist = Get_ASINlists(fn)
     workbook = xlwt.Workbook(encoding = 'utf-8')
     for i in range(len(asinlist)):
         table = excel_bulit(workbook, asinlist[i])
