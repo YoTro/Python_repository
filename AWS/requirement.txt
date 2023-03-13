@@ -1,0 +1,8 @@
+xlwt
+xlrd
+lxml
+xlutils
+requests
+mechanize
+xlsxwriter
+amazoncaptcha
