@@ -2,11 +2,10 @@
 # Functions: 获取amazon列表每个listing是否含有videos
 import re
 import os
+import xlwt
 import requests
 import datetime
-import xlrd
-import xlsxwriter
-
+from Amazon_Utils import Get_Exceldata, excel_bulit
 
 def is_AMZ_V(url):
 	header = {
@@ -39,47 +38,24 @@ def is_AMZ_V(url):
 		
 def main():
     start=datetime.datetime.now()
-    fn="/Users/Administrator/Desktop/BSR(Squirrels)-99-US-221213.xls"
-    data=xlrd.open_workbook(fn) # 打开工作薄
-    sheets=data.sheets()
-    fp='/Users/Administrator/Desktop/amz_videos.xls'
-    workbook1=xlsxwriter.Workbook(fp)
-    sheet1=workbook1.add_worksheet()
-    z={}
-    p=0
-    for sheet in sheets:
-        p+=1
-        z[p]=sheet.name
-        print(p,z[p])
-    try:
-        sheet_index=int(input("plz input index in the serial number(default 1):\n"))
-        if sheet_index in range(1,len(sheets)+1):
-            t=sheet_index
-        else:
-            print('The digital is wrong,plz input a correct number')
-    except Exception as e:
-        print(str(e))
-        t=1
-    table=data.sheet_by_index(t-1) # 读取指定sheet
-    cols=table.ncols
-    rows=table.nrows
-    print("{0}'s rows ,cols are {1},{2}".format(z[t],rows,cols))
-    first_sheet=table.row_values(0)
-    url_index=first_sheet.index('URL')#返回第一行URL的列数
-    URL=table.col_values(url_index) # 读取指定列（该列含有URL）
-    for i in range(rows-1):
+    fn="./url.xls"
+    file_save = "./amzvide.xls"
+    workbook = xlwt.Workbook(encoding = 'utf-8')
+    table = excel_bulit(workbook, "1")
+    URL = Get_Exceldata(fn, "URL")
+    rows = len(URL)
+    for i in range(rows):
         try:
-            u=URL[i+1]
+            u=URL[i]
             print(i,u)
             is_v = is_AMZ_V(u)
-            sheet1.write(i, 0, str(is_v))
-            sheet1.write(i, 1, u)
+            table.write(i, 0, str(is_v))
+            table.write(i, 1, u)
         except Exception as e:
-            print(str(e))
-            
-    workbook1.close()
+            print(str(e))   
+    workbook.save(file_save)
     end=datetime.datetime.now()
     t=end-start
-    print('已将照片存入Excel {0}中\n总共用时：{1}s'.format(fp,t))	
+    print('已将照片存入Excel {0}中\n总共用时：{1}s'.format(os.path.abspath(file_save),t))	
 if  __name__=="__main__":
 	main()
