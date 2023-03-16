@@ -16,63 +16,10 @@ import random
 import requests
 from io import BytesIO
 from amazoncaptcha import AmazonCaptcha
-from Amazon_Utils import File_path_choice, Get_ASINlists, is_TTD, retry, excel_bulit
+from Amazon_Utils import File_path_choice, Get_ASINlists, is_TTD, retry, excel_bulit, requests_asin
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
-def is_Captcha(f, asin, session, headers):
-    '''Amazon验证码'''
-    url = re.findall("(https://images-na.ssl-images-amazon.com/captcha.*?jpg)", f)
-    i = 0
-    while url:
-        captcha = AmazonCaptcha.fromlink(url[0])
-        text = captcha.solve()
-#        with open('./t.html', 'w') as f:
-#            f.write(r)
-#            f.close()
-        validateCaptcha_url = "https://www.amazon.com/errors/validateCaptcha"
-        amzn = re.findall("name=\"amzn\" value=\"(.*?)\"", f)[0]
-        amzn_r = re.findall("name=\"amzn-r\" value=\"(.*?)\"", f)[0]
-        params = {
-            "amzn": amzn,
-            "amzn-r": html.unescape(amzn_r),
-            "field-keywords": text
-        }
-        validateCaptcha_url = validateCaptcha_url+"?"+ urllib.parse.urlencode(params)
-        print(validateCaptcha_url)
-        r = session.get(validateCaptcha_url, headers = headers, timeout = 5)#Amazon验证请求
-        u = "https://www.amazon.com/dp/"+asin
-        r = session.get(u, headers=headers, timeout = 5)
-        f = r.text
-        print(url)
-        url = re.findall("(https://images-na.ssl-images-amazon.com/captcha.*?jpg)", f)
-        i += 1
-        if i == 5:
-            url = []
-    return f, session
-
-def requests_url(asin):
-    '''Get the content of Amazon listing web page.获取listing网页内容'''
-    headers={
-        'Connection':'keep-alive',
-        'sec-ch-ua':'"Google Chrome";v="111", "Not(A:Brand";v="8", "Chromium";v="111"',
-        'sec-ch-ua-mobile':'?0',
-        'sec-ch-ua-platform':'"macOS"',
-        'Upgrade-Insecure-Requests':'1',
-        'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36',
-        'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Sec-Fetch-Site':'none',
-        'Sec-Fetch-Mode':'navigate',
-        'Sec-Fetch-User':'?1',
-        'Sec-Fetch-Dest':'document',
-        'Accept-Encoding':'gzip, deflate, br',
-        'Accept-Language':'en-US,en;q=0.9'
-        }#浏览器头部
-    #proxies={'HTTP': 'HTTP://127.0.0.1:1081', 'HTTPS': 'HTTPS://127.0.0.1:1081'}#免费代理IP
-    session=requests.Session()
-    url = 'https://www.amazon.com/dp/'+asin
-    r = session.get(url, headers=headers, timeout = 5)
-    return is_Captcha(r.text, asin, session, headers)
 
 def get_form_parameter(f):
     '''addCart params'''
@@ -311,7 +258,7 @@ def main():
         asin = ASINs[i]
         stock = "inf"
         table.write(i,0,asin)
-        r, session = requests_url(asin)
+        r, session = requests_asin('https://www.amazon.com'+asin)
         if not is_TTD(r):
             offerListingId, CSRF, anti_csrftoken_a2z, session_id,merchantID=get_form_parameter(r)
             if offerListingId[0]=='' and merchantID[0]=='' and len(CSRF)==1:#不在售
