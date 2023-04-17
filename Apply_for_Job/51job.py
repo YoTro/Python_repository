@@ -1,196 +1,173 @@
-#coding=utf-8
+# -*- coding: utf-8 -*-
 """
 @author:Toryun
-@data:2020/3/31
+@data:2023/4/18
 @version:Python3.8
 @Function: 获取前程无忧招聘工作数据
 """
-import xlwt
-import re
-import requests
-from selenium import webdriver
+import os
 import time
-from lxml import etree
-from tqdm import tqdm
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.header import Header
-import smtplib
+import json
+import pickle
+import requests
+import pandas as pd
+import urllib.parse
+import hmac
+from hashlib import sha256
+from urllib.parse import urlencode
 
-#通过模拟搜索页面并用xpath筛选岗位情况保存到excel中
 class Job(object):
     def __init__(self):
-        '''初始化Google驱动'''
-        self.__url = 'http://www.51job.com' 
-        self.__job = "Python"
-        #记录excel中的行数,后面从第二行开始录入数据
-        self.__count = 1
-        #火狐驱动
-        self.__driver = webdriver.Chrome(executable_path=r"/Users/jin/Downloads/chromedriver")
-        self.__createSheet()
+        '''初始化参数'''
+        self.__baseurl = 'https://cupidjob.51job.com/open/noauth/search-pc' 
+        self.__api_key = "51job"
+        self.__time = int(time.time())
+        self.__keyword = "亚马逊运营"
+        self.__urlencode_keyword = urllib.parse.quote("亚马逊运营")
+        self.__searchType = 2
+        self.__function = ""
+        self.__industry = ""
+        self.__jobArea = "000000"#默认全国
+        self.__jobArea2 = ""
+        self.__landmark = ""
+        self.__metro = ""
+        self.__salary = ""
+        self.__workYear = ""
+        self.__degree = ""
+        self.__companyType = ""
+        self.__companySize = ""
+        self.__jobType = ""
+        self.__issueDate = ""
+        self.__sortType = 0
+        self.__pageNum = 1
+        self.__requestId = ""
+        self.__pageSize = 1000#默认请求50页
+        self.__source = 1
+        self.__accountId = ""
+        self.__pageCode = "sou|sou|soulb"
+        self.__key = 'abfc8f9dcf8c3f3d8aa294ac5f2cf2cc7767e5592590f39c3f503271dd68562b'#sign密钥
 
-    def __createSheet(self):
-        '''创建工作簿'''
-        self.__f = xlwt.Workbook()
-        self.__sheet = self.__f.add_sheet("51Job",cell_overwrite_ok=True)
-        rowTitle = ['编号','标题','地点','公司名','待遇范围','工作简介','公司介绍','招聘网址']
-        for i in range(0,len(rowTitle)):
-            self.__sheet.write(0,i,rowTitle[i])
-    
-    
-    def __findWebSite(self):
-        '''自动化搜索工作，设置工作地点，月薪等搜索条件'''
-        self.__driver.get(self.__url)
-        #最大化窗口
-        self.__driver.maximize_window()
+    def get_sign(self, params, key):  
+        #sign加密方法
+        encoded_params = urlencode(params)
+        message =  '/open/noauth/search-pc?'+ encoded_params
+        hmac_key = bytes(key, 'utf-8')
+        message = bytes(message, 'utf-8')
+        signature = hmac.new(hmac_key, message, sha256).hexdigest()
+        return signature
 
-        self.__driver.find_element_by_xpath('//*[@id="kwdselectid"]').send_keys(self.__job)
-        #切换到全国查找，通过js设置没成功，只能换一种
-        self.__driver.find_element_by_xpath('//*[@id="work_position_input"]').click()        
-        time.sleep(1)
+    def get_property(self):
+        #检测是否登陆属性
+        property ='%7B%22partner%22%3A%22%22%2C%22webId%22%3A2%2C%22fromdomain%22%3A%2251job_web%22%2C%22frompageUrl%22%3A%22https%3A%2F%2Fwe.51job.com%2F%22%2C%22pageUrl%22%3A%22https%3A%2F%2Fwe.51job.com%2Fpc%2Fsearch%3Fkeyword%3D{}%26searchType%3D2%26sortType%3D0%26metro%3D%22%2C%22identityType%22%3A%22%22%2C%22userType%22%3A%22%22%2C%22isLogin%22%3A%22%E5%90%A6%22%2C%22accountid%22%3A%22%22%7D'.format(urllib.parse.quote(self.__urlencode_keyword))
+        return property
+
+    def get_uuid(self):
+        uuid = requests.get("https://oauth.51job.com/ajax/get_token.php?fromdomain=51job_web").json()['resultBody']['uuid']
+        return uuid
+    def __citycode__(self, city):
+        #获取城市代码,默认全国
+        self.__jobArea = "000000"
+        url = 'https://vapi.51job.com/resource.php?query=dd&version=400&clientid=000011&accountid=&usertoken=&client_id=000011&property=%7B%22partner%22%3A%22%22%2C%22webId%22%3A2%2C%22fromdomain%22%3A%2251job_web%22%2C%22frompageUrl%22%3A%22https%3A%2F%2Fwe.51job.com%2F%22%2C%22pageUrl%22%3A%22https%3A%2F%2Fwe.51job.com%2Fpc%2Fsearch%3Fkeyword%3D%25E4%25BA%259A%25E9%25A9%25AC%25E9%2580%258A%25E8%25BF%2590%25E8%2590%25A5%26searchType%3D2%26sortType%3D0%26metro%3D%22%2C%22identityType%22%3A%22%22%2C%22userType%22%3A%22%22%2C%22isLogin%22%3A%22%E5%90%A6%22%2C%22accountid%22%3A%22%22%7D&dd_name=d_pc_abc_area&path=763cd7c36162daa3d2ed2b48b500e623&sign=53363cff7c255ce47b2c8944787c8196'
+
+        response = requests.get(url)
+        json_data = response.json()
+        for i in range(len(json_data['resultbody'])):
+            for item in json_data['resultbody'][i]['sub']:
+              if item['value'] == city:
+                  print(item['id'])
+                  self.__jobArea = item['id']
+                  break
+
+    def __search__(self, job):
+        #搜索招聘信息
         try:
-            #定位当前地方
-            self.__driver.find_element_by_xpath('//*[@id="work_position_click_multiple_selected_each_050000"]/em').click()
+        self.__keyword = job
         except:
-            try:
-                #可能帮你定到国外，这两种是常见的
-                self.__driver.find_element_by_xpath('//*[@id="work_position_click_multiple_selected_each_360000"]/em').click()
-            except:
-                print("您已设置为全国搜索了")
-        self.__driver.find_element_by_xpath('//*[@id="work_position_click_bottom_save"]').click()
-        #开始搜索进入到搜索页面
-        self.__driver.find_element_by_xpath('/html/body/div[3]/div/div[1]/div/button').click()
-        time.sleep(1)
-        self.__driver.find_element_by_xpath('//*[@id="filter_issuedate"]/ul/li[2]').click()
-        self.__driver.find_element_by_xpath('//*[@id="filter_providesalary"]/ul/li[7]').click()
-        self.__js = 'document.querySelector("body > div.dw_wp > div.dw_filter > div.op").click()'
-        self.__driver.execute_script(self.__js)
+        self.__keyword = "亚马逊运营"
+        payload={
+            "api_key":  self.__api_key,
+            "timestamp":  self.__time,
+            "keyword":  self.__keyword,
+            "searchType":  self.__searchType,
+            "function":  self.__function,
+            "industry":  self.__industry,
+            "jobArea": self.__jobArea,
+            "jobArea2": self.__jobArea2,
+            "landmark": self.__landmark,
+            "metro": self.__metro,
+            "salary": self.__salary,
+            "workYear": self.__workYear,
+            "degree": self.__degree,
+            "companyType": self.__companyType,
+            "companySize": self.__companySize,
+            "jobType": self.__jobType,
+            "issueDate": self.__issueDate,
+            "sortType": self.__sortType,
+            "pageNum": self.__pageNum,
+            "requestId": self.__requestId,
+            "pageSize": self.__pageSize,
+            "source": self.__source,
+            "accountId": self.__accountId,
+            "pageCode": self.__pageCode
+        }
+        headers = {
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+            'Connection': 'keep-alive',
+            'Cookie': 'JSESSIONID=AC424E89E896ACE2581306A5F3162C0B; acw_tc=ac11000116817489511698415e00dd6e33dd767bc22c847a283fd181bca0a6; uid=wKhJP2Q9c9d90Yn04FYjAg==',
+            #'Cookie': 'guid=753e3a11c580dd4649d7f95dd88c1d6a; sajssdk_2015_cross_new_user=1; Hm_lvt_1370a11171bd6f2d9b1fe98951541941=1681739056; Hm_lpvt_1370a11171bd6f2d9b1fe98951541941=1681739056; sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%22753e3a11c580dd4649d7f95dd88c1d6a%22%2C%22first_id%22%3A%221878f74b224cc-04e52bc15a1bf4-1d525634-2073600-1878f74b225404%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E7%9B%B4%E6%8E%A5%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC_%E7%9B%B4%E6%8E%A5%E6%89%93%E5%BC%80%22%2C%22%24latest_referrer%22%3A%22%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMTg3OGY3NGIyMjRjYy0wNGU1MmJjMTVhMWJmNC0xZDUyNTYzNC0yMDczNjAwLTE4NzhmNzRiMjI1NDA0IiwiJGlkZW50aXR5X2xvZ2luX2lkIjoiNzUzZTNhMTFjNTgwZGQ0NjQ5ZDdmOTVkZDg4YzFkNmEifQ%3D%3D%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%24identity_login_id%22%2C%22value%22%3A%22753e3a11c580dd4649d7f95dd88c1d6a%22%7D%2C%22%24device_id%22%3A%221878f74b224cc-04e52bc15a1bf4-1d525634-2073600-1878f74b225404%22%7D; nsearch=jobarea%3D%26%7C%26ord_field%3D%26%7C%26recentSearch0%3D%26%7C%26recentSearch1%3D%26%7C%26recentSearch2%3D%26%7C%26recentSearch3%3D%26%7C%26recentSearch4%3D%26%7C%26collapse_expansion%3D; search=jobarea%7E%60%7C%21recentSearch0%7E%60000000%A1%FB%A1%FA000000%A1%FB%A1%FA0000%A1%FB%A1%FA00%A1%FB%A1%FA99%A1%FB%A1%FA%A1%FB%A1%FA99%A1%FB%A1%FA99%A1%FB%A1%FA99%A1%FB%A1%FA99%A1%FB%A1%FA9%A1%FB%A1%FA99%A1%FB%A1%FA%A1%FB%A1%FA0%A1%FB%A1%FA%D1%C7%C2%ED%D1%B7%D4%CB%D3%AA%A1%FB%A1%FA2%A1%FB%A1%FA1%7C%21; acw_tc=ac11000116817391419527213e00dded418252606ba0c5d1f6c6c9342cb919; JSESSIONID=7F9E94C3F0C08826EC12AB428F44555C; uid=wKhJP2Q9TYZ9Y4nyzyMiAg==; JSESSIONID=E6F6189DA1387899D42ED8B125F42738',
+            'From-Domain': '51job_web',
+            'Origin': 'https://we.51job.com',
+            'Referer': 'https://we.51job.com/',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+            'account-id': '',
+            'partner': '',
+            'property': self.get_property(),
+            'sec-ch-ua': '"Chromium";v="112", "Google Chrome";v="112", "Not:A-Brand";v="99"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"macOS"',
+            'sign': self.get_sign(payload, self.__key),
+            'user-token': '',
+            'uuid': '753e3a11c580dd4649d7f95dd88c1d6a'
+        }
+        url = self.__baseurl+'?'+urlencode(payload)
+        response = requests.request("GET", url, headers=headers).json()
+        #print(response['resultbody']['job']['items'][0])
+        return response
 
-    def __saveDataToExcel(self,jobs):
-        '''保存数据到工作簿'''
-        for j in range(0,len(jobs)):
-            self.__sheet.write(self.__count,j,jobs[j])
-        self.__f.save("51Job_xpath.xls")
-        self.__count += 1
-
-    def __fitterField(self,title,info,name,salary,detail,address,site):
-        '''对数据进行判断，并返回数组'''
-        jobs = []
-        jobs.append(self.__count)
-        title = title[0] if len(title) > 0 else ''
-        jobs.append(title.strip())
-        print(address)
-        address = address if  len(address) > 0 else ''
-        jobs.append(address.strip())
-        name = name[0] if len(name) > 0 else ''
-        jobs.append(name)
-        salary = salary[0] if len(salary) > 0 else ''
-        jobs.append(salary)
-        detail = detail if len(detail) > 0 else ''
-        jobs.append(detail.strip())
-        info = info[0] if len(info) > 0 else ''
-        jobs.append(info)
-        site = site[0] if len(site) > 0 else ''
-        jobs.append(site)
-        return jobs
-
-    def __getJobDetail(self,site):
-        '''工作简介职责'''
-        try:
-            site = site[0] if len(site) > 0 else ''
-            res = requests.get(site,timeout=2)
-            res.encoding = 'gbk'
-            selector = etree.HTML(res.text)
-            #有时候是p标签组成的，有时候没有p标签
-            jobDetails = selector.xpath('//div[@class="bmsg job_msg inbox"]')
-            addresses = selector.xpath('/html/body/div[3]/div[2]/div[3]/div[2]/div')
-            detail = jobDetails[0].xpath('string(.)').strip()
-            address = addresses[0].xpath('string(.)').strip()
-            return detail,address
-        except Exception as e:
-            return "暂无数据"
-            
-        
-    def getData(self,work='Python'):
-        '''获取51job上的数据'''
-        self.__job=work
-        #先模拟搜索全国Python招聘
-        self.__findWebSite()
-        t = True
-        while t:
-            #下拉滚动条
-            for i in range(5):
-                height = 1000 * i
-                self.__driver.execute_script('window.scrollBy(0,'+str(height)+')')
-            selector = etree.HTML(self.__driver.page_source)
-            divs = selector.xpath('//*[@id="resultList"]/div[@class="el"]')
-            for div in divs:
-                title = div.xpath('./p/span/a/text()')
-                info=div.xpath('./span[2]/text()')
-                name=div.xpath('./span[1]/a/@title')
-                salary = div.xpath('./span[3]/text()')
-                site = div.xpath('./p/span/a/@href')
-
-                detail,address = self.__getJobDetail(site)
-                
-                jobs = self.__fitterField(title,info,name,salary,detail,address,site)
-                #开始存入到excel中
-                self.__saveDataToExcel(jobs)
-                for i in tqdm(range(len(divs))):
-                    time.sleep(0.0001)
-            try:
-                self.__driver.find_element_by_xpath('//*[@id="resultList"]/div[55]/div/div/div/ul/li[8]/a').click()
-                page_id = re.findall(r'<li class=\"on\">(\d+)<\/li>',self.__driver.page_source)
-                print(page_id[0])
-            except Exception as e:
-                print(e,end="\n")
-                t = False
-        self.__driver.close()
-    def Send_attchment():
-        '''Send the data to my emailbox'''
-        EMAIL_HOST = 'smtp.qq.com'
-        EMAIL_HOST_USER = '1329776780@qq.com'
-        password = input("Please input the EMAIL_HOST_PASSWORD to login email:\n")
-        EMAIL_HOST_PASSWORD = password
-        EMAIL_PORT = 587
-        EMAIL_USE_TLS = True
-        from_email = "1329776780@qq.com"
-        from_addr = "Toryun"
-        to_addr = ["zhongjin95@gmail.com"]
-        subject = "24h jobs for {}".format(self.__job)
-        content = "here is the message send from {0}".format(from_addr)
-        path_file = "51Job_xpath.xls"     
-        message = MIMEMultipart()
-        message['From'] = Header(from_addr,'utf-8')
-        message['To'] =  Header(to_addr[0],'utf-8')
-        message['Subject'] = Header(subject, 'utf-8')
-        message.attach(MIMEText(content,'plain', 'utf-8'))
-        att1 = MIMEText(open(path_file, 'rb').read(), 'base64', 'utf-8')
-        att1["Content-Type"] = 'application/octet-stream'
-        att1["Content-Disposition"] = 'attachment; filename="covid-19.txt"'
-        message.attach(att1)    
-        try:
-            smtpObj = smtplib.SMTP_SSL(EMAIL_HOST,465)
-            smtpObj.login(EMAIL_HOST_USER,EMAIL_HOST_PASSWORD) 
-            smtpObj.sendmail(from_email, to_addr, message.as_string())
-            print("邮件发送成功")
-        except OSError as err:
-            print("Error: 无法发送邮件\n{0}".format(err))
-        #msg.content_subtype = "txt"
-        #msg.attach_file(path_file)
-        #msg.send()
+    def save_jobs(self, response):
+        #以csv和pickle格式保存
+        items = response['resultbody']['job']['items']
+        datas = []
+        for i in range(len(items)):
+            #公司名
+            Company = items[i]['fullCompanyName']
+            #工作地点
+            Location = items[i]['jobAreaString']
+            #岗位
+            Job = items[i]['jobName']
+            #薪资
+            Salary = items[i]['provideSalaryString']
+            #发布时间
+            UpdateDateTime = items[i]['updateDateTime']
+            #详情链接
+            JobHref = items[i]['jobHref']
+            datas.append([Job, Salary, Company, Location, UpdateDateTime, JobHref])
+        saved_path = './jobs.csv'
+        with open('./jobs.pickle', 'wb') as f:
+            pickle.dump(datas, f)
+            f.close()
+        df = pd.DataFrame(datas, columns=['Job', 'Salary', 'Company', 'Location', 'UpdateDateTime', 'JobHref'])
+        df.to_csv(saved_path, index=False, encoding='utf-8-sig')
+        print(os.path.abspath(saved_path))
 
 if __name__=='__main__':
+    city = "深圳"
+    k = "自动化测试"
     job = Job()
-    #此处可以写Android等其它岗位
-    try:
-        s = input("Please in put the jos which you want to search:\n")
-    except:
-        s = "Python" #默认
-    t0 = time.time()
-    job.getData(s)
-    Send_attchment()
-    t1 = time.time()
-    T = t1 - t0
-    print("Total time is {}".format(T))
-
+    job.__citycode__(city)
+    response = job.__search__(k)
+    job.save_jobs(response)
