@@ -5,9 +5,12 @@
 @version:Python3.8
 @Function: 获取前程无忧招聘工作数据
 """
+import re
 import os
 import time
 import json
+import random
+import execjs
 import pickle
 import requests
 import pandas as pd
@@ -15,7 +18,10 @@ import urllib.parse
 import hmac
 from hashlib import sha256
 from urllib.parse import urlencode
-
+from bs4 import BeautifulSoup
+from lxml import etree
+from tqdm import tqdm
+from proxy import proxies
 class Job(object):
     def __init__(self):
         '''初始化参数'''
@@ -41,11 +47,12 @@ class Job(object):
         self.__sortType = 0
         self.__pageNum = 1
         self.__requestId = ""
-        self.__pageSize = 1000#默认请求50页
+        self.__pageSize = 50#20条一页最多请求1000条
         self.__source = 1
         self.__accountId = ""
         self.__pageCode = "sou|sou|soulb"
         self.__key = 'abfc8f9dcf8c3f3d8aa294ac5f2cf2cc7767e5592590f39c3f503271dd68562b'#sign密钥
+        self.__proxies = proxies()#{'http': ['20.111.54.16:80', '20.206.106.192:80', '20.111.54.16:8123', '20.210.113.32:8123', '120.197.219.82:9091', '183.237.47.54:9091', '20.24.43.214:8123', '182.106.220.252:9091', '117.40.176.42:9091', '171.34.53.2:9091', '223.84.240.36:9091'], 'https': ['127.0.0.1:8001']}#代理ip
 
     def get_sign(self, params, key):  
         #sign加密方法
@@ -81,9 +88,9 @@ class Job(object):
     def __search__(self, job):
         #搜索招聘信息
         try:
-        self.__keyword = job
+            self.__keyword = job
         except:
-        self.__keyword = "亚马逊运营"
+            self.__keyword = "亚马逊运营"
         payload={
             "api_key":  self.__api_key,
             "timestamp":  self.__time,
@@ -137,12 +144,133 @@ class Job(object):
         response = requests.request("GET", url, headers=headers).json()
         #print(response['resultbody']['job']['items'][0])
         return response
-
+    def __jobdetails__(self, url):
+        target_url = "_0x48a0dc(_0x319bfa)"
+        target_code = "_0x3baf44[_0x3e621b]=_0x30f62c;"
+        def get_timestamp(url, proxies, target_url, target_code):
+            timestamp__1258 = ""
+            try:
+                os.environ["EXECJS_RUNTIME"] = "Node"
+                headers = {
+                  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                  'Accept-Language': 'zh-CN,zh;q=0.9',
+                  'Cache-Control': 'max-age=0',
+                  'Connection': 'keep-alive',
+                  'Cookie': 'acw_tc=ac11000116818008452498924e00e0a4044f563de8a51e045de6ce729d8179',
+                  'Sec-Fetch-Dest': 'document',
+                  'Sec-Fetch-Mode': 'navigate',
+                  'Sec-Fetch-Site': 'same-origin',
+                  'Sec-Fetch-User': '?1',
+                  'Upgrade-Insecure-Requests': '1',
+                  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36',
+                  'sec-ch-ua': '"Google Chrome";v="111", "Not(A:Brand";v="8", "Chromium";v="111"',
+                  'sec-ch-ua-mobile': '?0',
+                  'sec-ch-ua-platform': '"macOS"'
+                }
+                response = requests.request("GET", url, headers=headers, proxies = proxies, timeout = 5)
+                # 解析HTML内容
+                soup = BeautifulSoup(response.text, 'html.parser')
+                # 找到<script>标签
+                script_tag = soup.find('script')
+                # 获取<script>标签中的内容
+                script_content = script_tag.string
+                # 全局变量返回时间戳, 在目标位置插入新的代码
+                insert_code = 'res=_0x30f62c;'
+                # 加密需要传入url到此函数
+                insert_url = "_0x48a0dc('{}')".format(url)
+                first_script_content = script_content.replace(target_code, insert_code + target_code)
+                new_script_content = first_script_content.replace(target_url, insert_url)
+                # 全局环境
+                global_js = '''
+                    const jsdom = require("jsdom");
+                    const { JSDOM } = jsdom;
+                    const dom = new JSDOM(`<!DOCTYPE html><script>`);
+                    window = dom.window;
+                    document = window.document;
+                    XMLHttpRequest = window.XMLHttpRequest;
+                    global.navigator = {
+                      userAgent: 'node.js'
+                    };
+                    var res;
+                '''
+                #编译js
+                ctx = execjs.compile(global_js+new_script_content)
+                # 返回timestamp__1258
+                timestamp__1258 = ctx.eval('res')
+                if(timestamp__1258==None):
+                    timestamp__1258 = ""
+                    print("被检测需要更换IP")
+            except Exception as e:
+                print(e)
+            return timestamp__1258
+        http_type = "http"
+        proxies = {'https':'https://'+random.choice(self.__proxies[http_type])}
+        timestamp__1258 = get_timestamp(url, proxies, target_url, target_code)
+        new_url = url + "&timestamp__1258=" + urllib.parse.quote(timestamp__1258) 
+        try:
+            proxies = {'https':'https://'+random.choice(self.__proxies[http_type])}
+            headers = {
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+              'Accept-Language': 'zh-CN,zh;q=0.9',
+              'Cache-Control': 'max-age=0',
+              'Connection': 'keep-alive',
+              'Cookie': 'acw_tc=ac11000116818008452498924e00e0a4044f563de8a51e045de6ce729d8179',
+              'Referer': 'https://jobs.51job.com/shenzhen/145527528.html?s=sou_sou_soulb&t=0_0&req=37fc80a0c963972cf0cc9b622ab85802',
+              'Sec-Fetch-Dest': 'document',
+              'Sec-Fetch-Mode': 'navigate',
+              'Sec-Fetch-Site': 'same-origin',
+              'Sec-Fetch-User': '?1',
+              'Upgrade-Insecure-Requests': '1',
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36',
+              'sec-ch-ua': '"Google Chrome";v="111", "Not(A:Brand";v="8", "Chromium";v="111"',
+              'sec-ch-ua-mobile': '?0',
+              'sec-ch-ua-platform': '"macOS"'
+            }
+            response1 = requests.request("GET", new_url, headers=headers, proxies = proxies, timeout = 5)
+            i = 0
+            while(target_code in response1.text):
+                timestamp__1258 = get_timestamp(url, proxies, target_url, target_code)
+                new_url = url + "&timestamp__1258=" + urllib.parse.quote(timestamp__1258) 
+                response1 = requests.request("GET", new_url, headers=headers, proxies = proxies, timeout = 5)
+                i+=1
+                print(i, new_url)
+                if i == 5:
+                    break
+            tree = etree.HTML(response1.text)
+            sign = tree.xpath('//input[@id="sign"]/@value')[0]
+            data = tree.xpath('//input[@id="data"]/@value')[0]
+            url_jobdetails = "https://vapi.51job.com/job.php?apiversion=400&module=jobinfo&clientid=000005"
+            payload = "data={}&sign={}".format(urllib.parse.quote(data), sign)
+            headers = {
+              'Accept': 'application/json, text/javascript, */*; q=0.01',
+              'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+              'Connection': 'keep-alive',
+              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'Origin': 'https://jobs.51job.com',
+              'Referer': 'https://jobs.51job.com/',
+              'Sec-Fetch-Dest': 'empty',
+              'Sec-Fetch-Mode': 'cors',
+              'Sec-Fetch-Site': 'same-site',
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36',
+              'sec-ch-ua': '"Google Chrome";v="111", "Not(A:Brand";v="8", "Chromium";v="111"',
+              'sec-ch-ua-mobile': '?0',
+              'sec-ch-ua-platform': '"macOS"',
+              'Cookie': 'guid=65f3b0e173fdcee5aa1a17fcb7707b50; acw_tc=ac11000116817988482433413e00df9fd1c1a32f77f755ebc6fb656d4bae06'
+            }
+            response = requests.request("POST", url_jobdetails, headers=headers, data=payload, proxies = proxies, timeout = 5).json()
+            address = response['resultbody']['address']
+            #提取文字转义换行标签
+            cjobinfo = BeautifulSoup(response['resultbody']['cjobinfo'], 'html.parser').get_text(separator='\n')
+        except Exception as e:
+            print(e)
+            cjobinfo = ""
+            address = ""
+        return cjobinfo, address
     def save_jobs(self, response):
         #以csv和pickle格式保存
         items = response['resultbody']['job']['items']
         datas = []
-        for i in range(len(items)):
+        for i in tqdm(range(len(items))):
             #公司名
             Company = items[i]['fullCompanyName']
             #工作地点
@@ -155,12 +283,14 @@ class Job(object):
             UpdateDateTime = items[i]['updateDateTime']
             #详情链接
             JobHref = items[i]['jobHref']
-            datas.append([Job, Salary, Company, Location, UpdateDateTime, JobHref])
+            #岗位职责与任职要求,上班地点
+            Jobdetails, Address = self.__jobdetails__(JobHref)
+            datas.append([Job, Salary, Company, Location, UpdateDateTime, JobHref, Jobdetails, Address])
         saved_path = './jobs.csv'
         with open('./jobs.pickle', 'wb') as f:
             pickle.dump(datas, f)
             f.close()
-        df = pd.DataFrame(datas, columns=['Job', 'Salary', 'Company', 'Location', 'UpdateDateTime', 'JobHref'])
+        df = pd.DataFrame(datas, columns=['Job', 'Salary', 'Company', 'Location', 'UpdateDateTime', 'JobHref', 'Jobdetails', 'Address'])
         df.to_csv(saved_path, index=False, encoding='utf-8-sig')
         print(os.path.abspath(saved_path))
 
