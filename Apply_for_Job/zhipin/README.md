@@ -30,13 +30,13 @@ pageSize = 30#默认一页最多30条招聘信息
 ├── main.py
 ├── requirements.txt
 ├── top
-│   └── static.zhipin.com
-│       └── zhipin-geek
-│           └── v648
-│               └── web
-│                   └── geek
-│                       └── js
-│                           └── main.js
+│   └── static.zhipin.com
+│       └── zhipin-geek
+│           └── v648
+│               └── web
+│                   └── geek
+│                       └── js
+│                           └── main.js
 ├── websocketclient.py
 ├── websocketserver.py
 ├── zhipin.py
