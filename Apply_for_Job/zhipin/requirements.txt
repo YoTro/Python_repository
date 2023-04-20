@@ -1,0 +1,5 @@
+tqdm
+pandas
+asyncio
+requests
+websockets
