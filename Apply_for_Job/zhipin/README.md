@@ -46,9 +46,14 @@ pageSize = 30#默认一页最多30条招聘信息
 2. `websocketserver.py`websocket服务端接收`__zp_stoken__`
 3. `zhipin.py`定义了初始化,搜索和保存函数
 4. `main.py`定义所有搜索参数并运行文件
-5. `top`需要注入js文件的文件夹, 路径与官网一致
+5. `top`需要注入js文件的文件夹, 路径与官网必须一致,其中文件夹名为v648每天会变
 
 # How to Work
+
+二选一部署
+
+## 本地部署
+
 1. 安装依赖库
 ```sh
 pip3 install -r requirements.txt
@@ -70,5 +75,66 @@ python3 websocketserver.py
 ```python
 python3 main.py
 ```
-6. 自动保存zhipinjobs.csv到当前文件夹中
+6. 自动保存zhipinjobs.csv到本地的当前文件夹中
 
+## 远程服务器部署
+
+1. 登陆远程Linux服务器,把整个zhipin文件夹下载下来
+2. 安装Nginx
+```sh
+sudo apt-get update
+sudo apt-get install nginx
+```
+3. 配置NGINX
+```sh
+sudo vim /etc/nginx/nginx.conf
+```
+“your.domain.com”应替换为您的实际域名，“/path/to/your/certificate.pem”和“/path/to/your/privatekey.pem”应替换为您的SSL证书和私钥的实际路径，如果你尚未配置ssl,请使用letsencrypt配置免费的ssl
+“/websocket”是您的WebSocket应用程序的路径
+```js
+        server {
+            listen 443 ssl;
+            listen [::]:443 ssl;
+		    server_name your.domain.com;
+
+		    ssl_certificate /path/to/your/certificate.pem;
+		    ssl_certificate_key /path/to/your/privatekey.pem;
+            location /websocket {
+                proxy_pass http://localhost:8765/websocket;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "Upgrade";
+                proxy_set_header Host $host;
+            }
+        }
+```
+
+4. 安装依赖库
+```sh
+pip3 install -r requirements.txt
+```
+5. 修改top文件夹中的main.js第10025行代码, 协议必须是wss否则会报错
+```js
+var socket = new WebSocket("wss://www.toryunbot.com/websocket");
+```
+```js
+DOMException: Failed to construct 'WebSocket': An insecure WebSocket connection may not be initiated from a page loaded over HTTPS.
+```
+6. 把官网对应main.js文件用本项目的top文件夹覆盖掉, 文件夹路径必须与官网一致, 持久化存储即使关机重启依然存在
+```sh
+F12打开谷歌工具 > 点击source > 点击page左边>>的Overrides > 勾选Enable Local Overrides > 点击+Select folder for overrides
+```
+7. 
+```sh
+cd ./zhipin
+```
+然后启动websocketserver.py文件
+```python
+python3 websocketserver.py
+```
+8. 刷新官网
+9. 运行main.py文件
+```python
+python3 main.py
+```
+10. 自动保存zhipinjobs.csv到远程服务器的当前文件夹中
