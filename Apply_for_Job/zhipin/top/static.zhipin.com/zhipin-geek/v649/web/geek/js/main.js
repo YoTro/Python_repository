@@ -10012,7 +10012,7 @@ function loadGatewayScript(i, n, e) {
 }
 setInterval(function() {
   window.location.reload();
-}, Math.floor(Math.random() * 10000) + 10000); // 每隔10-20秒刷新一次
+}, Math.floor(Math.random() * 10000) + 30000); // 每隔10-40秒刷新一次
 var setGatewayCookie = function() {
     var a, n = {}, o = document.createElement("iframe");
     function s(e, t) {
