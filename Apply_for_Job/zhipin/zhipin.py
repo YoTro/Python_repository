@@ -1,3 +1,4 @@
+import re
 import os
 import time
 import asyncio
@@ -29,10 +30,398 @@ class zhipin(object):
         self.position = ""
         self.jobType = ""
         self.salary = ""
-        self.multiBusinessDistrict = "440307"
+        self.multiBusinessDistrict = ""
         self.multiSubway = ""
         self.page = 1
         self.pageSize = 30
+    def __citycode__(self, city):
+        self.city = "101280600"
+        site = {
+            "code": 0,
+            "message": "Success",
+            "zpData": {
+                "hotCitySites": [
+                    {
+                        "name": "全国",
+                        "code": 100010000,
+                        "url": "/?city=100010000"
+                    },
+                    {
+                        "name": "北京",
+                        "code": 101010100,
+                        "url": "/beijing/"
+                    },
+                    {
+                        "name": "上海",
+                        "code": 101020100,
+                        "url": "/shanghai/"
+                    },
+                    {
+                        "name": "广州",
+                        "code": 101280100,
+                        "url": "/guangzhou/"
+                    },
+                    {
+                        "name": "深圳",
+                        "code": 101280600,
+                        "url": "/shenzhen/"
+                    },
+                    {
+                        "name": "杭州",
+                        "code": 101210100,
+                        "url": "/hangzhou/"
+                    },
+                    {
+                        "name": "天津",
+                        "code": 101030100,
+                        "url": "/tianjin/"
+                    },
+                    {
+                        "name": "西安",
+                        "code": 101110100,
+                        "url": "/xian/"
+                    },
+                    {
+                        "name": "苏州",
+                        "code": 101190400,
+                        "url": "/suzhou/"
+                    },
+                    {
+                        "name": "武汉",
+                        "code": 101200100,
+                        "url": "/wuhan/"
+                    },
+                    {
+                        "name": "厦门",
+                        "code": 101230200,
+                        "url": "/xiamen/"
+                    },
+                    {
+                        "name": "长沙",
+                        "code": 101250100,
+                        "url": "/changsha/"
+                    },
+                    {
+                        "name": "成都",
+                        "code": 101270100,
+                        "url": "/chengdu/"
+                    },
+                    {
+                        "name": "郑州",
+                        "code": 101180100,
+                        "url": "/zhengzhou/"
+                    },
+                    {
+                        "name": "重庆",
+                        "code": 101040100,
+                        "url": "/chongqing/"
+                    },
+                    {
+                        "name": "佛山",
+                        "code": 101280800,
+                        "url": "/foshan/"
+                    },
+                    {
+                        "name": "合肥",
+                        "code": 101220100,
+                        "url": "/hefei/"
+                    },
+                    {
+                        "name": "济南",
+                        "code": 101120100,
+                        "url": "/jinan/"
+                    },
+                    {
+                        "name": "青岛",
+                        "code": 101120200,
+                        "url": "/qingdao/"
+                    },
+                    {
+                        "name": "南京",
+                        "code": 101190100,
+                        "url": "/nanjing/"
+                    },
+                    {
+                        "name": "东莞",
+                        "code": 101281600,
+                        "url": "/dongguan/"
+                    },
+                    {
+                        "name": "昆明",
+                        "code": 101290100,
+                        "url": "/kunming/"
+                    },
+                    {
+                        "name": "南昌",
+                        "code": 101240100,
+                        "url": "/nanchang/"
+                    },
+                    {
+                        "name": "石家庄",
+                        "code": 101090100,
+                        "url": "/shijiazhuang/"
+                    },
+                    {
+                        "name": "宁波",
+                        "code": 101210400,
+                        "url": "/ningbo/"
+                    },
+                    {
+                        "name": "福州",
+                        "code": 101230100,
+                        "url": "/fuzhou/"
+                    }
+                ],
+                "otherCitySites": [
+                    {
+                        "name": "南通",
+                        "code": 101190500,
+                        "url": "/nantong/"
+                    },
+                    {
+                        "name": "无锡",
+                        "code": 101190200,
+                        "url": "/wuxi/"
+                    },
+                    {
+                        "name": "珠海",
+                        "code": 101280700,
+                        "url": "/zhuhai/"
+                    },
+                    {
+                        "name": "南宁",
+                        "code": 101300100,
+                        "url": "/nanning/"
+                    },
+                    {
+                        "name": "常州",
+                        "code": 101191100,
+                        "url": "/changzhou/"
+                    },
+                    {
+                        "name": "沈阳",
+                        "code": 101070100,
+                        "url": "/shenyang/"
+                    },
+                    {
+                        "name": "大连",
+                        "code": 101070200,
+                        "url": "/dalian/"
+                    },
+                    {
+                        "name": "贵阳",
+                        "code": 101260100,
+                        "url": "/guiyang/"
+                    },
+                    {
+                        "name": "惠州",
+                        "code": 101280300,
+                        "url": "/huizhou/"
+                    },
+                    {
+                        "name": "太原",
+                        "code": 101100100,
+                        "url": "/taiyuan/"
+                    },
+                    {
+                        "name": "中山",
+                        "code": 101281700,
+                        "url": "/zhongshan/"
+                    },
+                    {
+                        "name": "泉州",
+                        "code": 101230500,
+                        "url": "/quanzhou/"
+                    },
+                    {
+                        "name": "温州",
+                        "code": 101210700,
+                        "url": "/wenzhou/"
+                    },
+                    {
+                        "name": "金华",
+                        "code": 101210900,
+                        "url": "/jinhua/"
+                    },
+                    {
+                        "name": "海口",
+                        "code": 101310100,
+                        "url": "/haikou/"
+                    },
+                    {
+                        "name": "长春",
+                        "code": 101060100,
+                        "url": "/changchun/"
+                    },
+                    {
+                        "name": "徐州",
+                        "code": 101190800,
+                        "url": "/xuzhou/"
+                    },
+                    {
+                        "name": "哈尔滨",
+                        "code": 101050100,
+                        "url": "/haerbin/"
+                    },
+                    {
+                        "name": "乌鲁木齐",
+                        "code": 101130100,
+                        "url": "/wulumuqi/"
+                    },
+                    {
+                        "name": "嘉兴",
+                        "code": 101210300,
+                        "url": "/jiaxing/"
+                    },
+                    {
+                        "name": "保定",
+                        "code": 101090200,
+                        "url": "/baoding/"
+                    },
+                    {
+                        "name": "汕头",
+                        "code": 101280500,
+                        "url": "/shantou/"
+                    },
+                    {
+                        "name": "烟台",
+                        "code": 101120500,
+                        "url": "/yantai/"
+                    },
+                    {
+                        "name": "潍坊",
+                        "code": 101120600,
+                        "url": "/weifang/"
+                    },
+                    {
+                        "name": "江门",
+                        "code": 101281100,
+                        "url": "/jiangmen/"
+                    }
+                ]
+            }
+        }
+        for item in site['zpData']['hotCitySites']: 
+            if item['name'] == city:
+                self.city = item['code']
+        for item in site['zpData']['otherCitySites']:
+            if item['name'] == city:
+                self.city = item['code'] 
+        return  self.city
+    def __businessDistrict__(self, citycode, counties):
+        self.city = citycode
+        countycode = {}
+        url = "https://www.zhipin.com/wapi/zpgeek/businessDistrict.json?cityCode={}".format(self.city)
+        payload = {}
+        headers = {
+          'authority': 'www.zhipin.com',
+          'accept': 'application/json, text/plain, */*',
+          'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'cache-control': 'no-cache',
+          'pragma': 'no-cache',
+          'sec-ch-ua': '"Chromium";v="112", "Google Chrome";v="112", "Not:A-Brand";v="99"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"macOS"',
+          'sec-fetch-dest': 'empty',
+          'sec-fetch-mode': 'cors',
+          'sec-fetch-site': 'same-origin',
+          'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+          'x-requested-with': 'XMLHttpRequest',
+          'Cookie': 'SERVERID=606144fb348bc19e48aededaa626f54e|1682196442|1682193847'
+        }
+        response = requests.request("GET", url, headers=headers, data=payload, timeout=5)
+        if (response.status_code == 200):
+            for item in response.json()['zpData']['businessDistrict']['subLevelModelList']:
+                for county in counties:
+                    if item['name'] == county:
+                        countycode[item['code']] = []
+                        for street in item['subLevelModelList']:
+                            for subdistrict in counties[county]:
+                                if street['name'] == subdistrict:
+                                    countycode[item['code']].append(street['code'])
+        self.multiBusinessDistrict = ",".join([f"{k}:{'_'.join(map(str, v))}" for k, v in countiescode.items()])
+        return countycode
+    def __getSubwayByCity__(self, cityCode):
+        self.city = cityCode
+        subways = {}
+        url = "https://www.zhipin.com/wapi/zpCommon/data/getSubwayByCity?cityCode={}".format(self.city)
+        payload = {}
+        headers = {
+          'authority': 'www.zhipin.com',
+          'accept': 'application/json, text/plain, */*',
+          'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'cache-control': 'no-cache',
+          'pragma': 'no-cache',
+          'sec-ch-ua': '"Chromium";v="112", "Google Chrome";v="112", "Not:A-Brand";v="99"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"macOS"',
+          'sec-fetch-dest': 'empty',
+          'sec-fetch-mode': 'cors',
+          'sec-fetch-site': 'same-origin',
+          'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+          'x-requested-with': 'XMLHttpRequest',
+        }
+
+        response = requests.request("GET", url, headers=headers, data=payload, timeout=5)
+        if (response.status_code == 200):
+            s = ""
+            while(True):
+                i = 0
+                print("\nInput Q or q to quit\n")
+                for item in response.json()['zpData']['subwayList']:
+                    print(i, item['name'], item['code'])
+                    i+=1
+                try:
+                    s = input("选择序号:")
+                    if s == 'q' or s == 'Q':
+                        break
+                    while(re.match('\d+',s)==None or int(s)>i or int(s)<0):
+                        s = input("选择序号:")
+                except:
+                    s = '0'
+                subwaycode = response.json()['zpData']['subwayList'][int(s)]['code']
+                subways[subwaycode]=[]
+                subLevelModelList = response.json()['zpData']['subwayList'][int(s)]['subLevelModelList']
+                while(True):
+                    i = 0
+                    for p in subLevelModelList:
+                        print(i, p['name'], p['code'])
+                        i+=1
+                    try:
+                        s = input("选择序号:")
+                        if s == 'q' or s == 'Q':
+                            break
+                        while(re.match('\d+',s)==None or int(s)>i or int(s)<0):
+                            s = input("选择序号:")
+                    except:
+                        s = '0'
+                    subways[subwaycode].append(subLevelModelList[int(s)]['code'])
+        self.multiSubway = ",".join([f"{k}:{'_'.join(map(str, v))}" for k, v in subways.items()])
+        print(self.multiSubway)
+        return subways
+    def __condition__(self):
+        url = "https://www.zhipin.com/wapi/zpgeek/search/job/condition.json"
+
+        payload = {}
+        headers = {
+          'authority': 'www.zhipin.com',
+          'accept': 'application/json, text/plain, */*',
+          'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'cache-control': 'no-cache',
+          'pragma': 'no-cache',
+          'sec-ch-ua': '"Chromium";v="112", "Google Chrome";v="112", "Not:A-Brand";v="99"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"macOS"',
+          'sec-fetch-dest': 'empty',
+          'sec-fetch-mode': 'cors',
+          'sec-fetch-site': 'same-origin',
+          'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+          'x-requested-with': 'XMLHttpRequest',
+        }
+        response = requests.request("GET", url, headers=headers, data=payload, timeout=5)
+
+        print(response.json())
+        
 
     def Search_jobs(self, scene, queryjob, city, experience, payType, partTime, degree, industry, scale, stage, position, jobType, salary, multiBusinessDistrict, multiSubway, page, pageSize):
         self.query = queryjob
@@ -71,11 +460,11 @@ class zhipin(object):
                         print("New zp_stoken:{}\n".format(self.__zp_stoken__ == zp_stoken))
                         if self.__zp_stoken__ == zp_stoken:
                             time.sleep(20)
+                            if i == 5:
+                                return {'zpData':{'jobList':[]}}
                             continue
                     headers['cookie'] = '__zp_stoken__={}'.format(self.__zp_stoken__)
                     response = requests.request("GET", url, headers=headers).json()
-                    if i == 5:
-                        return {'zpData':{'jobList':[]}}
         except Exception as e:
             print(e)
             return {'zpData':{'jobList':[]}}
@@ -116,11 +505,12 @@ class zhipin(object):
                     print("New zp_stoken:{}\n".format(self.__zp_stoken__ != zp_stoken))
                     if self.__zp_stoken__ == zp_stoken:
                         time.sleep(20)
+                        if i == 5:
+                            return secjob, address    
                         continue
                 headers['cookie'] = '__zp_stoken__={}'.format(self.__zp_stoken__)
-                response = requests.request("GET", url, headers=headers, timeout=5)
-                if i == 5:
-                   return secjob, address        
+                response = requests.request("GET", url, headers=headers, timeout=10)
+                print("被检测需要验证:{}\n".format("securityCheck" in response.text))    
             html = response.text
             tree = etree.HTML(html)
             for sec in tree.xpath(secxpath):
