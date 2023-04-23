@@ -1,4 +1,5 @@
 tqdm
+lxml
 pandas
 asyncio
 requests
