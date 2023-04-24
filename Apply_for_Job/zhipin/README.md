@@ -9,8 +9,8 @@ scene = "1"#场景
 queryjob = "亚马逊运营"#岗位关键词
 city = "101280600"#城市代码
 experience = ""#工作经验
-payType = ""
-partTime = ""
+payType = ""#工资结算周期
+partTime = ""#兼职时间
 degree = ""#学历要求
 industry = ""#公司行业
 scale = ""#公司规模
@@ -106,7 +106,18 @@ sudo vim /etc/nginx/nginx.conf
                 proxy_set_header Connection "Upgrade";
                 proxy_set_header Host $host;
             }
+            location /zp_stoken {
+                proxy_pass http://0.0.0.0:8080/zp_stoken;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            }
         }
+```
+重置NGINX
+```sh
+sudo systemctl reload nginx
 ```
 
 4. 安装依赖库
@@ -115,7 +126,7 @@ pip3 install -r requirements.txt
 ```
 5. 修改top文件夹中的main.js第10025行代码, 协议必须是wss否则会报错
 ```js
-var socket = new WebSocket("wss://www.toryunbot.com/websocket");
+var socket = new WebSocket("wss://www.yourdomain.com/websocket");
 ```
 ```js
 DOMException: Failed to construct 'WebSocket': An insecure WebSocket connection may not be initiated from a page loaded over HTTPS.
@@ -124,14 +135,14 @@ DOMException: Failed to construct 'WebSocket': An insecure WebSocket connection 
 ```sh
 F12打开谷歌工具 > 点击source > 点击page左边>>的Overrides > 勾选Enable Local Overrides > 点击+Select folder for overrides
 ```
-7. 
+7. 启动app.py和websocketserver.py
 ```sh
 cd ./zhipin
 ```
-然后启动websocketserver.py文件
 ```python
-python3 websocketserver.py
+nohup python3 websocketserver.py & nohup python3 app.py 
 ```
+
 8. 刷新官网
 9. 运行main.py文件
 ```python
