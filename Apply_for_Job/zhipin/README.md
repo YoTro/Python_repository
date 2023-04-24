@@ -1,13 +1,22 @@
 # Boss爬虫
 ## 原理:根据RPC获取zp_stoken
 !["RPC"](RPC.png)
-优点:无需知道具体加密过程, 不用补环境, 被检测的概率最低
+
+## 为什么使用RPC抓取
+
+js逆向破解难点: 每请求4次数据, `__zp_stoken__`就会刷新一次, js页面补环境要补10000行代码
+
+selenium自动化破解难点:非常容易被识别
+
+RPC优点:无需知道具体加密过程, 不用补环境, 被检测的概率最低
+
+缺点:请求150+时要求验证码识别, 暂时未破解geetest,需要搜集图片标框后进行yolo训练
 
 # 参数说明
 ```js
 scene = "1"#场景
 queryjob = "亚马逊运营"#岗位关键词
-city = "101280600"#城市代码
+city = "深圳"#城市
 experience = ""#工作经验
 payType = ""#工资结算周期
 partTime = ""#兼职时间
@@ -139,13 +148,19 @@ F12打开谷歌工具 > 点击source > 点击page左边>>的Overrides > 勾选En
 ```sh
 cd ./zhipin
 ```
-```python
+```sh
 nohup python3 websocketserver.py & nohup python3 app.py 
 ```
-
 8. 刷新官网
-9. 运行main.py文件
+9. 全局搜索get_zp_stoken函数, 填入你的zp_stoken远程服务器获取接口URL
+```python
+get_zp_stoken(url = "https://www.yourdomain.com/zp_stoken")
+```
+10. 在本地下载zhipin文件夹的所有文件然后运行main.py文件
 ```python
 python3 main.py
 ```
-10. 自动保存zhipinjobs.csv到远程服务器的当前文件夹中
+11. 自动保存zhipinjobs.csv到本地的当前文件夹中或者远程服务器的当前文件夹中
+
+# TODO
+- [ ] 验证码破解
