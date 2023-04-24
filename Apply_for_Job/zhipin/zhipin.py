@@ -13,10 +13,6 @@ class zhipin(object):
     def __init__(self):
         super(zhipin, self).__init__()
         self.__zp_stoken__ = ""
-        filename = "./zp_stoken.txt"
-        if os.path.exists(filename):
-            with open(filename, "r") as f:
-                self.__zp_stoken__  = f.read().strip()
         self.scene = "1"
         self.query = "亚马逊运营"
         self.city = "101280600"
@@ -308,7 +304,7 @@ class zhipin(object):
             if item['name'] == city:
                 self.city = item['code'] 
         return  self.city
-    def __businessDistrict__(self, citycode, counties):
+    def __businessDistrictcode__(self, citycode, counties):
         self.city = citycode
         countycode = {}
         url = "https://www.zhipin.com/wapi/zpgeek/businessDistrict.json?cityCode={}".format(self.city)
@@ -339,7 +335,7 @@ class zhipin(object):
                             for subdistrict in counties[county]:
                                 if street['name'] == subdistrict:
                                     countycode[item['code']].append(street['code'])
-        self.multiBusinessDistrict = ",".join([f"{k}:{'_'.join(map(str, v))}" for k, v in countiescode.items()])
+        self.multiBusinessDistrict = ",".join([f"{k}:{'_'.join(map(str, v))}" for k, v in countycode.items()])
         return countycode
     def __getSubwayByCity__(self, cityCode):
         self.city = cityCode
@@ -421,14 +417,25 @@ class zhipin(object):
         response = requests.request("GET", url, headers=headers, data=payload, timeout=5)
 
         print(response.json())
-        
-
+    def get_zp_stoken(self, url = "https://toryunbot.com/zp_stoken"):
+        '''从本地或者远程服务器获取__zp_stoken__'''
+        zp_stoken = ""
+        filename = "./zp_stoken.txt"
+        if os.path.exists(filename):
+            with open(filename, "r") as f:
+                zp_stoken  = f.read().strip()
+        else:
+            try:
+                response = requests.request("GET", url, timeout=10)
+                zp_stoken = response.text
+            except:
+                pass
+        return zp_stoken
     def Search_jobs(self, scene, queryjob, city, experience, payType, partTime, degree, industry, scale, stage, position, jobType, salary, multiBusinessDistrict, multiSubway, page, pageSize):
         self.query = queryjob
         self.page = page
-        # 从文件中读取 zp_stoken 的值
-        with open("./zp_stoken.txt", "r") as f:
-            self.__zp_stoken__ = f.read().strip()
+        # 读取 zp_stoken 的值
+        self.__zp_stoken__ = self.get_zp_stoken()
         response = {'zpData':{'jobList':[]}}
         try:
             url_encoded_queryjob= urllib.parse.quote(self.query)
@@ -455,23 +462,21 @@ class zhipin(object):
             zp_stoken = self.__zp_stoken__ 
             while ('jobList' not in response['zpData'] or len(response['zpData']['jobList'])==0 ):
                     i+=1
-                    with open("./zp_stoken.txt", "r") as f:
-                        self.__zp_stoken__ = f.read().strip()
-                        print("New zp_stoken:{}\n".format(self.__zp_stoken__ == zp_stoken))
-                        if self.__zp_stoken__ == zp_stoken:
-                            time.sleep(20)
-                            if i == 5:
-                                return {'zpData':{'jobList':[]}}
-                            continue
-                    headers['cookie'] = '__zp_stoken__={}'.format(self.__zp_stoken__)
-                    response = requests.request("GET", url, headers=headers).json()
+                    self.__zp_stoken__ = self.get_zp_stoken()
+                    print("New zp_stoken:{}\n".format(self.__zp_stoken__ != zp_stoken))
+                    if self.__zp_stoken__ == zp_stoken:
+                        time.sleep(20)
+                        if i == 5:
+                            return {'zpData':{'jobList':[]}}
+                    else:
+                        headers['cookie'] = '__zp_stoken__={}'.format(self.__zp_stoken__)
+                        response = requests.request("GET", url, headers=headers).json()
         except Exception as e:
             print(e)
             return {'zpData':{'jobList':[]}}
         return response
     def Jobdetails(self, url):
-        with open("./zp_stoken.txt", "r") as f:
-            self.__zp_stoken__ = f.read().strip()
+        self.__zp_stoken__ = self.get_zp_stoken()
         secjob = ""
         address = ""  
         try: 
@@ -500,14 +505,13 @@ class zhipin(object):
             i = 0 
             while(response.status_code != 200 or "securityCheck" in response.text):
                 i+=1
-                with open("./zp_stoken.txt", "r") as f:
-                    self.__zp_stoken__ = f.read().strip()
-                    print("New zp_stoken:{}\n".format(self.__zp_stoken__ != zp_stoken))
-                    if self.__zp_stoken__ == zp_stoken:
-                        time.sleep(20)
-                        if i == 5:
-                            return secjob, address    
-                        continue
+                self.__zp_stoken__ = self.get_zp_stoken()
+                print("New zp_stoken:{}\n".format(self.__zp_stoken__ != zp_stoken))
+                if self.__zp_stoken__ == zp_stoken:
+                    time.sleep(40)
+                    if i == 5:
+                        return secjob, address    
+                    continue
                 headers['cookie'] = '__zp_stoken__={}'.format(self.__zp_stoken__)
                 response = requests.request("GET", url, headers=headers, timeout=10)
                 print("被检测需要验证:{}\n".format("securityCheck" in response.text))    
