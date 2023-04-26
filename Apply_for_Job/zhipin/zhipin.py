@@ -304,6 +304,69 @@ class zhipin(object):
             if item['name'] == city:
                 self.city = item['code'] 
         return  self.city
+    def getbusinessDistrict(self, citycode):
+        # 返回一个字典
+        counties = {}
+        url = "https://www.zhipin.com/wapi/zpgeek/businessDistrict.json?cityCode={}".format(citycode)
+        payload = {}
+        headers = {
+          'authority': 'www.zhipin.com',
+          'accept': 'application/json, text/plain, */*',
+          'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'cache-control': 'no-cache',
+          'pragma': 'no-cache',
+          'sec-ch-ua': '"Chromium";v="112", "Google Chrome";v="112", "Not:A-Brand";v="99"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"macOS"',
+          'sec-fetch-dest': 'empty',
+          'sec-fetch-mode': 'cors',
+          'sec-fetch-site': 'same-origin',
+          'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+          'x-requested-with': 'XMLHttpRequest',
+          'Cookie': 'SERVERID=606144fb348bc19e48aededaa626f54e|1682196442|1682193847'
+        }
+        response = requests.request("GET", url, headers=headers, data=payload, timeout=10)
+        if (response.status_code == 200): 
+            s = ""
+            while(True):
+                i = 0
+                county = []
+                print("\nInput Q or q to back\n")
+                for item in response.json()['zpData']['businessDistrict']['subLevelModelList']: 
+                    print(i, item['name'])
+                    county.append(item['name'])
+                    i+=1
+                try:
+                    s = input("选择序号:")
+                    if s == 'q' or s == 'Q':
+                        break
+                    while(re.match('\d+',s)==None or int(s)>i or int(s)<0):
+                        s = input("选择序号:")
+                except:
+                    s = '0'
+                cts = county[int(s)]
+                counties[cts]=[]
+                subLevelModelList = response.json()['zpData']['businessDistrict']['subLevelModelList'][int(s)]['subLevelModelList']
+                while(True):
+                    i = 0
+                    street = []
+                    for p in subLevelModelList:
+                        print(i, p['name'])
+                        i+=1
+                        street.append(p['name'])
+                    try:
+                        s = input("选择序号(回车默认全选):")
+                        if s == 'q' or s == 'Q':
+                            break
+                        if s == "":
+                            counties[cts] = street
+                            break 
+                        while(re.match('\d+',s)==None or int(s)>i or int(s)<0):
+                            s = input("选择序号:")
+                    except:
+                        s = '0'
+                    counties[cts].append(street[int(s)])               
+        return counties
     def __businessDistrictcode__(self, citycode, counties):
         self.city = citycode
         countycode = {}
@@ -325,16 +388,19 @@ class zhipin(object):
           'x-requested-with': 'XMLHttpRequest',
           'Cookie': 'SERVERID=606144fb348bc19e48aededaa626f54e|1682196442|1682193847'
         }
-        response = requests.request("GET", url, headers=headers, data=payload, timeout=5)
-        if (response.status_code == 200):
-            for item in response.json()['zpData']['businessDistrict']['subLevelModelList']:
-                for county in counties:
-                    if item['name'] == county:
-                        countycode[item['code']] = []
-                        for street in item['subLevelModelList']:
-                            for subdistrict in counties[county]:
-                                if street['name'] == subdistrict:
-                                    countycode[item['code']].append(street['code'])
+        try:
+            response = requests.request("GET", url, headers=headers, data=payload, timeout=5)
+            if (response.status_code == 200):
+                for item in response.json()['zpData']['businessDistrict']['subLevelModelList']:
+                    for county in counties:
+                        if item['name'] == county:
+                            countycode[item['code']] = []
+                            for street in item['subLevelModelList']:
+                                for subdistrict in counties[county]:
+                                    if street['name'] == subdistrict:
+                                        countycode[item['code']].append(street['code'])
+        except Exception as e:
+            pass
         self.multiBusinessDistrict = ",".join([f"{k}:{'_'.join(map(str, v))}" for k, v in countycode.items()])
         return countycode
     def __getSubwayByCity__(self, cityCode):
@@ -363,7 +429,7 @@ class zhipin(object):
             s = ""
             while(True):
                 i = 0
-                print("\nInput Q or q to quit\n")
+                print("\nInput Q or q to back\n")
                 for item in response.json()['zpData']['subwayList']:
                     print(i, item['name'], item['code'])
                     i+=1
@@ -471,6 +537,8 @@ class zhipin(object):
                     else:
                         headers['cookie'] = '__zp_stoken__={}'.format(self.__zp_stoken__)
                         response = requests.request("GET", url, headers=headers).json()
+                        if (response['zpData']['hasMore']==False and response['zpData']['resCount']<=int(self.page)*30):
+                            break
         except Exception as e:
             print(e)
             return {'zpData':{'jobList':[]}}
@@ -514,7 +582,9 @@ class zhipin(object):
                     continue
                 headers['cookie'] = '__zp_stoken__={}'.format(self.__zp_stoken__)
                 response = requests.request("GET", url, headers=headers, timeout=10)
-                print("被检测需要验证:{}\n".format("securityCheck" in response.text))    
+                print("被检测需要验证:{}\n".format("securityCheck" in response.text))
+                if ("securityCheck" in response.text):
+                    return secjob, address
             html = response.text
             tree = etree.HTML(html)
             for sec in tree.xpath(secxpath):
@@ -524,7 +594,7 @@ class zhipin(object):
             pass
         return secjob, address
 
-    def Save_To_Excel(self, response):
+    def Save_To_Excel(self, response, saved_path = './zhipinjobs.csv'):
         print("-------开始保存-------\n")
         data = []
         joblist = response['zpData']['jobList']
@@ -546,7 +616,6 @@ class zhipin(object):
                 data.append([links, titles, salaries, city, District, Street, companies, secjob, address])
             except Exception as e:
                 pass
-        saved_path = './zhipinjobs.csv'
         df = pd.DataFrame(data, columns=['Links', 'Titles', 'Salaries', 'City', 'District', 'Street', 'Companies', 'Secjob', 'Address'])
         df.to_csv(saved_path, index=False, encoding='utf-8-sig')
         print(os.path.abspath(saved_path))
