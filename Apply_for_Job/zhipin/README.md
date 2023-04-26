@@ -35,13 +35,17 @@ pageSize = 30#默认一页最多30条招聘信息
 # 文件结构
 
 ```html
+├── Amap.py
 ├── README.md
+├── RPC.png
+├── amapkey.json
+├── app.py
 ├── main.py
 ├── requirements.txt
 ├── top
 │   └── static.zhipin.com
 │       └── zhipin-geek
-│           └── v648
+│           └── v649
 │               └── web
 │                   └── geek
 │                       └── js
@@ -49,13 +53,15 @@ pageSize = 30#默认一页最多30条招聘信息
 ├── websocketclient.py
 ├── websocketserver.py
 ├── zhipin.py
-└── zp_stoken.txt
 ```
 1. `websocketclient.py`websocket客户端定义发送与接收信息
 2. `websocketserver.py`websocket服务端接收`__zp_stoken__`
-3. `zhipin.py`定义了初始化,搜索和保存函数
-4. `main.py`定义所有搜索参数并运行文件
+3. `app.py`运行本地端口服务使得地址`/zp_stoken`可以返回`__zp_stoken__`
+4. `zhipin.py`定义了初始化,搜索和保存函数
+5. `main.py`定义所有搜索参数并运行文件
 5. `top`需要注入js文件的文件夹, 路径与官网必须一致,其中文件夹名为v648每天会变
+6. `Amap.py`通过高德地图api计算通过不同的出行方式到达工作地点的时间
+7. `amapkey.json`高德地图token
 
 # How to Work
 
