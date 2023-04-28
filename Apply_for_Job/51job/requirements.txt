@@ -1,0 +1,7 @@
+lxml
+tqdm
+execjs
+pickle
+pandas
+requests
+beautifulsoup4
