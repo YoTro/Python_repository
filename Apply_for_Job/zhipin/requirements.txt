@@ -1,7 +1,0 @@
-tqdm
-lxml
-web.py
-pandas
-asyncio
-requests
-websockets
