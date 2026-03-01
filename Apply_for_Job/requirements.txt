@@ -5,3 +5,4 @@ pickle
 pandas
 requests
 beautifulsoup4
+drissionpage
