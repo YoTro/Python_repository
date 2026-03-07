@@ -10,6 +10,7 @@ import time
 import sys
 import os
 import requests
+import subprocess
 
 OUT_FILE  = os.path.join(os.path.dirname(__file__), 'nc_env/data/challenge.json')
 OUT_CSV   = os.path.join(os.path.dirname(__file__), 'nc_env/data/jobs.csv') # This will be changed to data/job_data.csv later
