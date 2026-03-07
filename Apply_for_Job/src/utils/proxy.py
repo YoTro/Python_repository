@@ -4,7 +4,10 @@ import json
 import requests
 from tqdm import tqdm
 
-def proxies():
+def proxies(proxy_url=None):
+    if proxy_url:
+        return {'http': proxy_url, 'https': proxy_url}
+
     filename = '../../data/proxies.txt'
     # 如果本地有缓存，直接读取，不再请求网络
     if os.path.exists(filename):

@@ -10,14 +10,23 @@ from bs4 import BeautifulSoup
 import time
 import json
 
-def scrape_zhipin(query: str, city_code: str, max_pages: int = 20):
+def scrape_zhipin(query: str, city_code: str, output_filename: str, max_pages: int = 20, proxy_url=None):
     """
     使用DrissionPage抓取Boss直聘职位信息
 
     :param query: 职位关键词，例如 "亚马逊运营"
     :param city_code: 城市代码，例如 "101280600" (深圳)
+    :param output_filename: 输出的CSV文件路径
     :param max_pages: 最大抓取页数20
+    :param proxy_url: 代理地址
     """
+    import os
+    os.environ['no_proxy'] = '127.0.0.1,localhost'
+    
+    if proxy_url:
+        print(f"[WARN] Zhipin 模式连接到本地 9222 端口的现有浏览器实例。")
+        print(f"[WARN] 无法直接为其设置代理 ({proxy_url})，请在启动浏览器时带上 --proxy-server 参数。")
+
     job_list = []
     page = ChromiumPage(addr_or_opts='localhost:9222')
     tab = page.new_tab()
@@ -36,9 +45,12 @@ def scrape_zhipin(query: str, city_code: str, max_pages: int = 20):
         tab.get(url)
         print("正在等待第一页数据并检查登录状态...")
         initial_packet = tab.listen.wait(timeout=25)
-        if not initial_packet or not initial_packet.response.body.get('zpData', {}).get('jobList'):
+
+        # -- 更健壮的检查 --
+        if not (initial_packet and initial_packet.response and initial_packet.response.body and 
+                initial_packet.response.body.get('zpData', {}).get('jobList')):
             print("\n错误：获取第一页数据失败或登录状态异常。")
-            if initial_packet:
+            if initial_packet and initial_packet.response and initial_packet.response.body:
                  print(f"API消息: {initial_packet.response.body.get('message')}")
             try:
                 tab.save('get_first_page_failed.png')
@@ -84,7 +96,7 @@ def scrape_zhipin(query: str, city_code: str, max_pages: int = 20):
             try:
                 card.click()  # 触发 detail.json 请求
                 packet = tab.listen.wait(timeout=10)
-                if not packet or not packet.response.body.get('zpData'):
+                if not (packet and packet.response and packet.response.body and packet.response.body.get('zpData')):
                     continue
 
                 detail = packet.response.body['zpData']
@@ -132,7 +144,6 @@ def scrape_zhipin(query: str, city_code: str, max_pages: int = 20):
             })
         
         df = pd.DataFrame(processed_data)
-        output_filename = '../../data/zhipin_jobs.csv'
         df.to_csv(output_filename, index=False, encoding='utf-8-sig')
         print(f"数据已成功保存到 {output_filename}")
     else:

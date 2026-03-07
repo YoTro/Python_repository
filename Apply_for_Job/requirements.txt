@@ -1,8 +1,4 @@
-lxml
-tqdm
-execjs
-pickle
+DrissionPage
 pandas
 requests
-beautifulsoup4
-drissionpage
+tqdm

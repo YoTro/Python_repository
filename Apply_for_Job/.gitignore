@@ -3,13 +3,44 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.db
+*.sqlite3
+.pytest_cache/
+.coverage
+htmlcov/
+.venv
+venv/
+ENV/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
 
 # macOS
 .DS_Store
 
-# Data
-*.csv
-
 # IDEs
 .idea/
 .vscode/
+*.swp
+*.swo
+
+# Project Specific - Data & Scraped Results
+data/*.csv
+data/*.txt
+data/*.json
+!data/.gitkeep
+
+# Project Specific - WAF/NC Challenge Data
+src/job51/nc_env/data/*.json
+src/job51/nc_env/data/*.html
+src/job51/nc_env/data/*.png
+!src/job51/nc_env/data/.gitkeep
+
+# Environment & Credentials
+.env
+.env.local
+config/amapkey.json
