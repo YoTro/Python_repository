@@ -6,7 +6,6 @@ from DrissionPage import ChromiumPage, SessionPage
 from tqdm import tqdm
 from time import sleep
 import random
-from bs4 import BeautifulSoup
 import time
 import json
 
