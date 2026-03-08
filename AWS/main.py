@@ -22,6 +22,8 @@ from src.extractors.images import ImageExtractor
 from src.extractors.videos import VideoExtractor
 from src.extractors.cart_stock import CartStockExtractor
 from src.extractors.review_count import ReviewCountExtractor
+from src.extractors.past_month_sales import PastMonthSalesExtractor
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -37,7 +39,7 @@ def main():
     tasks = [
         "sales", "reviews", "product_num", "details", 
         "fulfillment", "dimensions", "bestsellers", "keywords_rank", 
-        "ranks", "feedback", "images", "videos", "stock", "review_count", "full_asin_details"
+        "ranks", "feedback", "images", "videos", "stock", "review_count", "past_month_sales", "full_asin_details"
     ]
     
     parser.add_argument("task", choices=tasks, help="Task to perform")
@@ -219,6 +221,15 @@ def main():
             data = extractor.get_review_count(asin)
             all_results.append(data)
 
+    elif args.task == "past_month_sales":
+        if not asins:
+            logger.error("--input is required and must contain ASINs.")
+            return
+        extractor = PastMonthSalesExtractor(use_proxy=args.use_proxy, proxies_dict=proxies)
+        for asin in asins:
+            data = extractor.get_past_month_sales(asin)
+            all_results.append(data)
+
     elif args.task == "full_asin_details":
         if not asins:
             logger.error("--input is required and must contain ASINs.")
@@ -232,6 +243,7 @@ def main():
         ex_videos = VideoExtractor(use_proxy=args.use_proxy, proxies_dict=proxies)
         ex_stock = CartStockExtractor(use_proxy=args.use_proxy, proxies_dict=proxies)
         ex_review_count = ReviewCountExtractor(use_proxy=args.use_proxy, proxies_dict=proxies)
+        ex_past_sales = PastMonthSalesExtractor(use_proxy=args.use_proxy, proxies_dict=proxies)
 
         for asin in asins:
             logger.info(f"Aggregating full data for ASIN: {asin}")
@@ -289,6 +301,13 @@ def main():
                 review_count = ex_review_count.get_review_count(asin)
                 if review_count: combined_data.update(review_count)
             except Exception as e: logger.error(f"Error fetching review count for {asin}: {e}")
+
+            # 9. Past Month Sales
+            try:
+                past_sales = ex_past_sales.get_past_month_sales(asin)
+                if past_sales and "PastMonthSales" in past_sales: 
+                    combined_data["PastMonthSales"] = past_sales["PastMonthSales"]
+            except Exception as e: logger.error(f"Error fetching past month sales for {asin}: {e}")
 
             all_results.append(combined_data)
 
