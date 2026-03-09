@@ -1,91 +1,128 @@
 # Amazon Web Scraper (AWS) V2
 
-A modern, modular, and self-healing Python 3 toolkit for scraping Amazon data with high success rates.
+A powerful Amazon scraping and analysis tool that supports multi-dimensional data extraction and product similarity analysis based on machine learning.
 
-## Core Features
-- **Anti-Bot Self-Healing**: Automatically initializes and maintains Amazon cookies using `DrissionPage` (stealth mode). If a "TTD" (bot detection) page is encountered, the scraper automatically refreshes cookies and rotates User-Agents to resume the task.
-- **US Station Preference**: Forces US localization (Currency: USD, Language: en_US) regardless of your proxy or host IP location.
-- **Advanced 999 Stock Method**: Accurate real-time stock estimation using a pure API-driven 999-method that bypasses modern WAF blocks by dynamically matching browser header signatures.
-- **Data Aggregator**: Combine multiple data points (Details, Ranks, Images, Stock, Fulfillment) into a single unified CSV row.
+## 🚀 Key Features
 
-## Project Structure
+### 1. Data Scraping
+*   **Full Dimension Extraction**: ASIN, Title, 5 Features (Bullets), Product Description, Price, Ranks, Review Counts, Sales, etc.
+*   **Diverse Tasks**: Supports keyword search scraping, Bestsellers scraping, ASIN details aggregation, stock checking, and more.
+*   **Anti-Bot Protection**: Integrated `DrissionPage` for automatic cookie retrieval, TLS fingerprint impersonation via `curl_cffi`, and proxy rotation support.
+*   **Network Compatibility**: Specifically optimized for Windows **TUN Mode** (VPN/Proxy environments) to resolve browser automation handshake failures.
+
+### 2. Similarity Analysis
+*   **Vectorized Matching**: Uses **TF-IDF** algorithm to convert product text (Title + Features) into high-dimensional vectors.
+*   **Cosine Similarity**: Precisely calculates text overlap between products to identify duplicates or highly similar items.
+*   **Automated Clustering**: Supporting **K-Means** (fixed groups) and **DBSCAN** (density-based).
+
+---
+
+## 🛠 Installation & Setup
+
+1. **Requirements**: Python 3.8+
+2. **Install Dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. **Configuration**: 
+   Configure User-Agent lists and scraper settings in `config/settings.json`.
+
+---
+
+## 📖 Usage Guide
+
+### Basic Command Structure
+```bash
+python main.py <task> --input <input_file> --output <output_file> [options]
+```
+
+### Task-Specific Examples
+
+#### 🔍 Keyword & Market Research
+*   **Search for ASINs**: Get a list of ASINs for a specific keyword.
+    ```bash
+    python main.py sales --keyword "outdoor rug" --pages 3 --output data/rug_asins.csv
+    ```
+*   **Keyword Ranking**: Track where your target ASINs appear in search results for a keyword.
+    ```bash
+    python main.py keywords_rank --keyword "outdoor rug" --input data/target_asins.csv --pages 5 --output data/rank_results.csv
+    ```
+*   **Bestsellers**: Extract products from an Amazon Bestsellers category URL.
+    ```bash
+    python main.py bestsellers --url "https://www.amazon.com/Best-Sellers-..." --output data/bestsellers.csv
+    ```
+
+#### 📦 Product Metrics & Details
+*   **Product Details**: Extract Title, Bullet Points, and Description.
+    ```bash
+    python main.py details --input data/asins.csv --output data/details.csv
+    ```
+*   **Sales & Stock**: Get "Past Month Sales" and current "Cart Stock" levels.
+    ```bash
+    python main.py past_month_sales --input data/asins.csv --output data/sales_stats.csv
+    python main.py stock --input data/asins.csv --output data/stock_levels.csv
+    ```
+*   **Dimensions & Fulfillment**: Get product weight, size, and FBA/FBM info.
+    ```bash
+    python main.py dimensions --input data/asins.csv --output data/specs.csv
+    python main.py fulfillment --input data/asins.csv --output data/logistics.csv
+    ```
+*   **Review Analysis**: Get total review counts or fetch actual comment text.
+    ```bash
+    python main.py review_count --input data/asins.csv --output data/counts.csv
+    python main.py reviews --input data/asins.csv --pages 5 --output data/comments.csv
+    ```
+
+#### 🏭 Seller & Media Analysis
+*   **Seller Feedback**: Get lifetime and recent feedback counts for seller IDs.
+    ```bash
+    python main.py feedback --input data/seller_ids.csv --output data/seller_stats.csv
+    ```
+*   **Images & Videos**: Extract all product image URLs or check if a listing has video content.
+    ```bash
+    python main.py images --input data/asins.csv --output data/images.csv
+    python main.py videos --input data/asins.csv --output data/video_check.csv
+    ```
+
+#### 💎 Advanced Aggregation & Analysis
+*   **Full ASIN Details**: Run ALL extractors at once for a list of ASINs (Comprehensive Report).
+    ```bash
+    python main.py full_asin_details --input data/asins.csv --output data/master_report.csv
+    ```
+*   **Similarity Clustering**: Group products by text similarity.
+    ```bash
+    # KMeans (Macro segments)
+    python main.py analyze_similarity --input data/details.csv --output data/clusters.csv --clusters 5
+    # DBSCAN (Precision competitors)
+    python main.py analyze_similarity --input data/details.csv --output data/clusters.csv --cluster-method dbscan
+    ```
+
+---
+
+## 📂 Project Structure
+
 ```text
-/AWS/
-├── main.py                  # Single unified CLI entry point
-├── requirements.txt         # Project dependencies
-├── config/                  # Configuration & dynamic states
-│   ├── settings.json        # Global timeout/retry settings
-│   ├── proxies.txt          # Proxy rotation list
-│   └── cookies.json         # (Auto-generated) Cached session data
-├── data/                    # I/O directory for CSV files
-├── src/                     # Source code
-│   ├── core/                # Core logic (networking, session, proxies)
-│   │   ├── scraper.py       # Base scraper with self-healing logic
-│   │   └── proxy.py         # Proxy rotation manager
-│   ├── extractors/          # Task-specific data extractors
-│   │   ├── cart_stock.py    # API-driven 999 stock method
-│   │   ├── sales.py         # Keyword search scraper
-│   │   ├── product_details.py # Detail page scraper
-│   │   └── ...              # Other specialized extractors
-│   └── utils/               # Shared helpers
-│       ├── cookie_helper.py # Browser-based cookie fetcher
-│       └── csv_helper.py    # Data persistence logic
-└── tests/                   # Debugging scripts and test suits
+AWS/
+├── data/               # Recommended folder for all input/output CSV files
+├── config/             # Config files and cookie cache
+├── src/
+│   ├── analysis/       # Similarity analysis logic (KMeans, DBSCAN)
+│   ├── core/           # Core scraper base class and network handling
+│   ├── extractors/     # Specialized data extractors for various dimensions
+│   └── utils/          # Config, CSV, and Cookie utilities
+├── tests/              # Integration tests and verification scripts
+└── main.py             # Unified CLI entry point
 ```
 
-## Installation
-Ensure you have Python 3.8+ and a Chrome-based browser installed.
-```bash
-pip install -r requirements.txt
-```
+---
 
-## Configuration
-- **`config/settings.json`**: General scraper settings (timeouts, retries).
-- **`config/proxies.txt`**: Add your proxy list here (one per line, format: `http://user:pass@ip:port`).
-- **`config/cookies.json`**: Automatically generated/updated session data (Safe to ignore, excluded in `.gitignore`).
+## 🔬 Clustering Algorithm Comparison
 
-## Unified Entry Point: `main.py`
+| Algorithm | Use Case | Advantages |
+| :--- | :--- | :--- |
+| **K-Means** | Market overview, fixed grouping | Simple logic; ensures every product is assigned to a cluster. |
+| **DBSCAN** | Finding duplicates, precision competitors | Automatically determines the number of clusters; identifies unique/outlier products. |
 
-### 1. The "Super Aggregator" (Recommended)
-Extracts everything related to specific ASINs (Details, Fulfillment, Ranks, Images, Stock, Review Counts) into a single wide CSV.
-```bash
-python main.py full_asin_details --input data/asins.csv --output data/full_results.csv
-```
-
-### 2. Search & Discover ASINs
-Search a keyword and save all found ASINs.
-```bash
-python main.py sales --keyword "curling wand" --pages 3 --output data/asins_found.csv
-```
-
-### 3. Check Keyword Rankings
-Check where your target ASINs rank for a specific keyword (scans first 3 pages by default).
-```bash
-python main.py keywords_rank --keyword "hair curler" --input data/asins.csv --output data/rankings.csv
-```
-
-### 4. Direct Stock Check
-Run only the 999 stock check. Output includes `StockStatus` (Actual vs Limit).
-```bash
-python main.py stock --input data/asins.csv --output data/stock_check.csv
-```
-
-### 5. Other Tasks
-- **`reviews`**: Extract the first page of product reviews.
-- **`bestsellers`**: Extract ASINs from a Bestseller category URL.
-- **`images`**: Extract all product image URLs.
-- **`feedback`**: Get seller feedback counts.
-
-## Input CSV Format
-For tasks requiring `--input`, the CSV must contain an `ASIN` column:
-```csv
-ASIN,Notes
-B01XXXXXXX,product A
-B02YYYYYYY,product B
-```
-
-## Anti-Bot Mechanism
-The scraper uses a hybrid approach:
-1. **Stealth Layer**: `DrissionPage` is used silently at the start to fetch valid `session-id` and WAF tokens.
-2. **Speed Layer**: `curl_cffi` performs high-speed requests mimicking modern Chrome TLS fingerprints (JA3/JA4).
-3. **Healing Layer**: If Amazon blocks a request, the `AmazonBaseScraper` core automatically triggers a stealth browser to get fresh "keys" and retries without user intervention.
+## ⚠️ Notes
+*   **TUN Mode Fix**: If you encounter `WebSocketBadStatusException` in Windows, this tool has been optimized with randomized debugging ports to bypass loopback issues.
+*   **Politeness**: Please respect Amazon's `robots.txt` and avoid aggressive scraping. Use proxies if you need to process large volumes of data.

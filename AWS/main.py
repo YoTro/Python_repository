@@ -23,6 +23,7 @@ from src.extractors.videos import VideoExtractor
 from src.extractors.cart_stock import CartStockExtractor
 from src.extractors.review_count import ReviewCountExtractor
 from src.extractors.past_month_sales import PastMonthSalesExtractor
+from src.analysis.similarity import ProductSimilarityAnalysis
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +40,8 @@ def main():
     tasks = [
         "sales", "reviews", "product_num", "details", 
         "fulfillment", "dimensions", "bestsellers", "keywords_rank", 
-        "ranks", "feedback", "images", "videos", "stock", "review_count", "past_month_sales", "full_asin_details"
+        "ranks", "feedback", "images", "videos", "stock", "review_count", 
+        "past_month_sales", "full_asin_details", "analyze_similarity"
     ]
     
     parser.add_argument("task", choices=tasks, help="Task to perform")
@@ -49,6 +51,8 @@ def main():
     parser.add_argument("--output", type=str, required=True, help="Output CSV file path")
     parser.add_argument("--pages", type=int, default=1, help="Number of pages to fetch (for tasks that support pagination)")
     parser.add_argument("--use-proxy", action="store_true", help="Enable proxy support")
+    parser.add_argument("--clusters", type=int, default=None, help="Number of clusters for analyze_similarity task")
+    parser.add_argument("--cluster-method", choices=["kmeans", "dbscan"], default="kmeans", help="Clustering method to use")
     
     args = parser.parse_args()
 
@@ -229,6 +233,27 @@ def main():
         for asin in asins:
             data = extractor.get_past_month_sales(asin)
             all_results.append(data)
+
+    elif args.task == "analyze_similarity":
+        if not args.input:
+            logger.error("--input (CSV file with product data) is required for 'analyze_similarity' task.")
+            return
+        
+        logger.info(f"Loading data from {args.input} for similarity analysis.")
+        data = CSVHelper.read_csv(args.input)
+        if not data:
+            logger.error("No data found in input file.")
+            return
+
+        analyzer = ProductSimilarityAnalysis(data)
+        if analyzer.fit():
+            # Perform clustering
+            analyzer.cluster_products(n_clusters=args.clusters, method=args.cluster_method)
+            all_results = analyzer.get_analyzed_data()
+            logger.info(f"Analysis complete using {args.cluster_method}. Found {len(all_results)} analyzed rows.")
+        else:
+            logger.error("Failed to fit the analyzer.")
+            return
 
     elif args.task == "full_asin_details":
         if not asins:

@@ -2,3 +2,6 @@ curl_cffi
 beautifulsoup4
 lxml
 DrissionPage
+scikit-learn
+numpy
+pandas

@@ -4,7 +4,7 @@ import time
 import os
 import json
 from typing import Dict, Optional
-
+import random
 logger = logging.getLogger(__name__)
 
 class AmazonCookieHelper:
@@ -12,7 +12,7 @@ class AmazonCookieHelper:
     Helper to fetch and manage Amazon cookies using DrissionPage.
     """
     
-    def __init__(self, cache_file: str = "config/cookies.json", headless: bool = True):
+    def __init__(self, cache_file: str = "config/cookies.json", headless: bool = False):
         self.cache_file = cache_file
         self.headless = headless
         
@@ -22,24 +22,36 @@ class AmazonCookieHelper:
         """
         logger.info("Launching browser to fetch fresh Amazon cookies...")
         co = ChromiumOptions()
+        
+        # Windows TUN mode fix: Specify a fixed port to avoid conflict
+        
+        random_port = random.randint(10000, 60000)
+        co.set_local_port(random_port)
+        
         if self.headless:
             co.headless(True)
         co.incognito()
         
+        # Optimization for proxy/TUN environments
+        co.set_argument('--proxy-server-bypass-list', '<-loopback>')
+        co.set_argument('--disable-gpu')
+        co.set_argument('--no-sandbox')
+        
         # Use a fixed modern UA for consistency
-        ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         co.set_user_agent(ua)
         
-        # Add some common arguments to avoid detection
-        co.set_argument('--no-sandbox')
-        co.set_argument('--disable-gpu')
-        
-        page = ChromiumPage(co)
+        page = None
         cookies_dict = {}
         
         try:
-            page.get('https://www.amazon.com/')
-            time.sleep(3) # Wait for initial load
+            page = ChromiumPage(co)
+            # Increase timeout for potential slow proxy connection
+            page.set.load_mode.eager() 
+            
+            logger.info("Navigating to Amazon...")
+            page.get('https://www.amazon.com/', timeout=20)
+            time.sleep(5)
             
             # Handle "Continue shopping" button if it appears
             continue_btn = page.ele('text:Continue shopping', timeout=3)
