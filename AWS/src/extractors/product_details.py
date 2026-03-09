@@ -24,6 +24,12 @@ class ProductDetailsExtractor(AmazonBaseScraper):
             
         soup = BeautifulSoup(html_content, 'html.parser')
         
+        # 0. Extract Title
+        title = ""
+        title_span = soup.find('span', id='productTitle')
+        if title_span:
+            title = title_span.get_text(strip=True)
+
         # 1. Extract 5 Features (bullet points)
         features = []
         feature_bullets_div = soup.find('div', id='feature-bullets')
@@ -47,6 +53,7 @@ class ProductDetailsExtractor(AmazonBaseScraper):
             
         return {
             "URL": url,
+            "Title": title,
             "Features": features,
             "Description": description
         }

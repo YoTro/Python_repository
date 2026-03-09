@@ -36,6 +36,26 @@ class CSVHelper:
             logger.error(f"Failed to save CSV: {e}")
 
     @staticmethod
+    def read_csv(file_path: str) -> List[Dict]:
+        """
+        Read all rows from a CSV file into a list of dictionaries.
+        """
+        data = []
+        if not os.path.exists(file_path):
+            logger.error(f"File not found: {file_path}")
+            return []
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    data.append(row)
+            return data
+        except Exception as e:
+            logger.error(f"Failed to read CSV: {e}")
+            return []
+
+    @staticmethod
     def read_asins_from_csv(file_path: str, column_name: str = "ASIN") -> List[str]:
         """
         Read a list of ASINs from a CSV file.

@@ -19,6 +19,7 @@ class AmazonBaseScraper:
     def __init__(self, use_proxy: bool = False, proxies_dict: Optional[Dict[str, str]] = None):
         self.session = requests.Session(impersonate="chrome")
         self.use_proxy = use_proxy
+        self.ua = self._get_random_ua()  # Initialize with a random UA first
         if use_proxy and proxies_dict:
             self.session.proxies.update(proxies_dict)
         
@@ -32,8 +33,10 @@ class AmazonBaseScraper:
         if data:
             self.session.cookies.update(data.get("cookies", {}))
             # Use the UA that got the cookies to ensure session consistency
-            self.ua = data.get("user_agent", self._get_random_ua())
+            self.ua = data.get("user_agent", self.ua)
             logger.info(f"Session cookies and User-Agent updated. UA: {self.ua[:30]}...")
+        else:
+            logger.warning("No cookie data found, using default User-Agent.")
             
     def _get_random_ua(self) -> str:
         default_uas = [
