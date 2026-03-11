@@ -1,16 +1,14 @@
 import logging
-import json
 import hashlib
 import requests
+from src.utils.config_helper import ConfigHelper
 
 logger = logging.getLogger(__name__)
 
-class SellerspriteAPI:
+class SellerspriteAuth:
     """
-    API client for Sellersprite (卖家精灵).
-    Includes logic for generating tokens, authentication, and fetching Keepa/Traffic data.
+    Authentication handler for Sellersprite (卖家精灵).
     """
-
     def __init__(self):
         self.session = requests.Session()
         self.GOOGLE_TKK_DEFAULT = "446379.1364508470"
@@ -64,9 +62,6 @@ class SellerspriteAPI:
     def generate_tk(self, email: str, identifier: str) -> str:
         """
         Generates the 'tk' token required by the Sellersprite API.
-        
-        :param email: The user's email.
-        :param identifier: Can be the hashed password (for login) or an ASIN (for API calls).
         """
         s = []
         a = [email, identifier]
@@ -78,18 +73,26 @@ class SellerspriteAPI:
     def salt_password(self, email: str, password: str) -> tuple:
         """
         Hash the password along with the email salt.
-        Returns (password_hash, salt).
         """
         password_hash = hashlib.md5(password.encode()).hexdigest()
         email_password_hash = email + password_hash
         salt = hashlib.md5(email_password_hash.encode()).hexdigest()
         return password_hash, salt
 
-    def login_extension(self, email: str, password_hash: str) -> str:
+    def login_extension(self, email: str = None, password: str = None) -> str:
         """
         Authenticate via the extension API endpoint.
         Returns the Auth-Token if successful.
         """
+        if not email or not password:
+            email = ConfigHelper.get("accounts.sellersprite_email", email or "")
+            password = ConfigHelper.get("accounts.sellersprite_password", password or "")
+            
+        if not email or not password:
+            logger.error("Sellersprite email or password not provided in config or params.")
+            return None
+
+        password_hash, _ = self.salt_password(email, password)
         tk = self.generate_tk(email, password_hash)
         url = f"https://www.sellersprite.com/v2/extension/signin?email={email}&password={password_hash}&tk={tk}&version=3.4.2&language=zh_CN&extension=lnbmbgocenenhhhdojdielgnmeflbnfb&source=chrome"
         
@@ -109,36 +112,3 @@ class SellerspriteAPI:
                 return data['data']['token']
         logger.error(f"Failed to authenticate: {res.text}")
         return None
-
-    def get_keepa_data(self, auth_token: str, asin: str) -> dict:
-        """
-        Fetch Keepa ranking data for an ASIN.
-        """
-        tk = self.generate_tk("", asin)
-        url = f"https://www.sellersprite.com/v2/extension/keepa?station=US&asin={asin}&tk={tk}&version=3.4.2&language=zh_CN&extension=lnbmbgocenenhhhdojdielgnmeflbnfb&source=chrome"
-        
-        headers = {
-            "Host": "www.sellersprite.com",
-            "Accept": "application/json",
-            "Random-Token": "6152a0b0-11a4-438e-877e-339c77be509a",
-            "Auth-Token": auth_token,
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36"
-        }
-        
-        logger.info(f"Fetching Keepa data for {asin}")
-        res = self.session.get(url, headers=headers)
-        response_data = {'times': [], 'bsr': [], 'subRanks': []}
-        
-        if res.status_code == 200:
-            data = res.json()
-            if 'data' in data and 'keepa' in data['data']:
-                keepa = data['data']['keepa']
-                response_data['bsr'] = keepa.get('bsr', [])
-                response_data['times'] = data['data'].get('times', [])
-                sub_ranks = keepa.get('subRanks', {})
-                if sub_ranks:
-                    response_data['subRanks'] = list(sub_ranks.values())[0]
-        else:
-            logger.error(f"Failed to fetch Keepa data: {res.text}")
-            
-        return response_data
