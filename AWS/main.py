@@ -1,5 +1,6 @@
 import argparse
 import logging
+import pandas as pd
 from typing import List, Dict
 
 # Import the core and utils
@@ -24,6 +25,7 @@ from src.extractors.cart_stock import CartStockExtractor
 from src.extractors.review_count import ReviewCountExtractor
 from src.extractors.past_month_sales import PastMonthSalesExtractor
 from src.analysis.similarity import ProductSimilarityAnalysis
+from src.analysis.sales_rank_regression import SalesRankRegressor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,7 +43,8 @@ def main():
         "sales", "reviews", "product_num", "details", 
         "fulfillment", "dimensions", "bestsellers", "keywords_rank", 
         "ranks", "feedback", "images", "videos", "stock", "review_count", 
-        "past_month_sales", "full_asin_details", "analyze_similarity"
+        "past_month_sales", "full_asin_details", "analyze_similarity",
+        "analyze_weekly_sales"
     ]
     
     parser.add_argument("task", choices=tasks, help="Task to perform")
@@ -53,6 +56,9 @@ def main():
     parser.add_argument("--use-proxy", action="store_true", help="Enable proxy support")
     parser.add_argument("--clusters", type=int, default=None, help="Number of clusters for analyze_similarity task")
     parser.add_argument("--cluster-method", choices=["kmeans", "dbscan"], default="kmeans", help="Clustering method to use")
+    parser.add_argument("--rank-col", type=str, default="PrimaryRank", help="Column name for Rank in analyze_sales_rank task")
+    parser.add_argument("--sales-col", type=str, default="Orders", help="Column name for Sales in analyze_sales_rank task")
+    parser.add_argument("--date-col", type=str, default="Time", help="Column name for Date in analyze_sales_rank task")
     
     args = parser.parse_args()
 
@@ -253,6 +259,41 @@ def main():
             logger.info(f"Analysis complete using {args.cluster_method}. Found {len(all_results)} analyzed rows.")
         else:
             logger.error("Failed to fit the analyzer.")
+            return
+
+    elif args.task == "analyze_weekly_sales":
+        if not args.input:
+            logger.error("--input (CSV file with Sales/Rank data) is required.")
+            return
+        
+        data = CSVHelper.read_csv(args.input)
+        df = pd.DataFrame(data)
+        regressor = SalesRankRegressor()
+        
+        if regressor.fit(df, rank_col=args.rank_col, sales_col=args.sales_col, date_col=args.date_col):
+            summary = regressor.get_summary()
+            logger.info(f"Advanced Regression Summary: {summary}")
+            
+            # Predict Weekly Sales based on rank, month, and weekend status
+            def get_prediction(row):
+                rank = regressor._extract_rank(row[args.rank_col])
+                if not rank: return 0
+                
+                # Extract month and weekend info from the row's date
+                month, is_weekend = 1, 0
+                if args.date_col in row:
+                    try:
+                        dt = pd.to_datetime(row[args.date_col])
+                        month = dt.month
+                        is_weekend = 1 if dt.dayofweek in [5, 6] else 0
+                    except: pass
+                
+                return round(regressor.predict(rank, month=month, is_weekend=is_weekend), 2)
+
+            df['Predicted_Weekly_Sales'] = df.apply(get_prediction, axis=1)
+            all_results = df.to_dict(orient='records')
+        else:
+            logger.error("Failed to fit the advanced sales-rank regression model.")
             return
 
     elif args.task == "full_asin_details":
