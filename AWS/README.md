@@ -2,6 +2,15 @@
 
 A powerful Amazon scraping and analysis tool that supports multi-dimensional data extraction and product similarity analysis based on machine learning.
 
+## 📖 Documentation & Guides
+
+For more in-depth information, please refer to the following guides in the `docs/` folder:
+
+*   **[Task Details](docs/TASK_DETAILS.md)**: Detailed explanation of every scraper and analysis task.
+*   **[Input Schemas](docs/INPUT_SCHEMA.md)**: Required CSV column headers and data formats for each task.
+
+---
+
 ## 🚀 Key Features
 
 ### 1. Data Scraping
@@ -10,10 +19,20 @@ A powerful Amazon scraping and analysis tool that supports multi-dimensional dat
 *   **Anti-Bot Protection**: Integrated `DrissionPage` for automatic cookie retrieval, TLS fingerprint impersonation via `curl_cffi`, and proxy rotation support.
 *   **Network Compatibility**: Specifically optimized for Windows **TUN Mode** (VPN/Proxy environments) to resolve browser automation handshake failures.
 
-### 2. Similarity Analysis
-*   **Vectorized Matching**: Uses **TF-IDF** algorithm to convert product text (Title + Features) into high-dimensional vectors.
-*   **Cosine Similarity**: Precisely calculates text overlap between products to identify duplicates or highly similar items.
-*   **Automated Clustering**: Supporting **K-Means** (fixed groups) and **DBSCAN** (density-based).
+### 2. Market Intelligence & Analysis
+*   **Similarity Clustering**: Group products by text similarity.
+    ```bash
+    # KMeans (Macro segments)
+    python main.py analyze_similarity --input data/products.csv --output data/clusters.csv --clusters 5
+    # DBSCAN (Precision competitors)
+    python main.py analyze_similarity --input data/products.csv --output data/clusters.csv --cluster-method dbscan
+    ```
+*   **Weekly Sales Regression**: Estimate **WEEKLY** sales based on Amazon Best Sellers Rank using the **UCLA Power-Law Formula** ($\hat{Q} = \exp( \frac{c - \ln(Rank - 1)}{\theta} ) \times 7$).
+    ```bash
+    python main.py analyze_weekly_sales --input data/history.csv --output data/sales_estimate.csv
+    ```
+    *   **$\theta$ (Theta)**: The rank-sales elasticity (from structural eq: $\ln(Rank-1) = c - \theta \ln(Q)$).
+    *   **$c$ (Scale)**: The intercept representing demand scale.
 
 ---
 
