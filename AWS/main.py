@@ -1,5 +1,6 @@
 import argparse
 import logging
+import pandas as pd
 from typing import List, Dict
 
 # Import the core and utils
@@ -31,6 +32,9 @@ def main():
     parser.add_argument("--use-proxy", action="store_true", help="Enable proxy support")
     parser.add_argument("--clusters", type=int, default=None, help="Number of clusters for analyze_similarity task")
     parser.add_argument("--cluster-method", choices=["kmeans", "dbscan"], default="kmeans", help="Clustering method to use")
+    parser.add_argument("--rank-col", type=str, default="PrimaryRank", help="Column name for Rank in analyze_sales_rank task")
+    parser.add_argument("--sales-col", type=str, default="Orders", help="Column name for Sales in analyze_sales_rank task")
+    parser.add_argument("--date-col", type=str, default="Time", help="Column name for Date in analyze_sales_rank task")
     
     args = parser.parse_args()
 
