@@ -155,3 +155,6 @@ data/*.csv
 data/*.json
 proxies.txt
 tests/*.csv
+tests/test_input.csv
+config/*token.json
+data/*

@@ -105,13 +105,16 @@ python main.py <task> --input <input_file> --output <output_file> [options]
 AWS/
 ├── data/               # Recommended folder for all input/output CSV files
 ├── config/             # Config files and cookie cache
+├── docs/               # System architecture and data schemas
 ├── src/
-│   ├── analysis/       # Similarity analysis logic (KMeans, DBSCAN)
-│   ├── core/           # Core scraper base class and network handling
+│   ├── analysis/       # ML clustering and sales rank regression logic
+│   ├── core/           # Core base classes, network handling, and Standard DTO Models
 │   ├── extractors/     # Specialized data extractors for various dimensions
+│   ├── integrations/   # Third-party service adapters (Sellersprite, Xiyouzhaoci, ERP)
+│   ├── tasks/          # Factory/Strategy pattern implementations for CLI commands
 │   └── utils/          # Config, CSV, and Cookie utilities
 ├── tests/              # Integration tests and verification scripts
-└── main.py             # Unified CLI entry point
+└── main.py             # Unified CLI entry point routing to TaskFactory
 ```
 
 ---

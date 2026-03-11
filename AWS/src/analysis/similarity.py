@@ -4,35 +4,53 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.cluster import KMeans, DBSCAN
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
+from src.core.models import StandardProduct
 
 logger = logging.getLogger(__name__)
 
 class ProductSimilarityAnalysis:
     """
-    Utility to analyze product similarity based on textual data (Title, Features, Description).
+    Utility to analyze product similarity based on textual data.
     Uses TF-IDF for vectorization and Scikit-learn for similarity/clustering.
     """
 
-    def __init__(self, data: List[Dict]):
+    def __init__(self, data: Union[List[Dict], List[StandardProduct]]):
         """
-        :param data: List of dictionaries containing product information (must have 'Title' or 'ASIN').
+        :param data: List of dictionaries or StandardProduct objects.
         """
-        self.df = pd.DataFrame(data)
-        if 'Title' not in self.df.columns:
-            logger.warning("Data does not contain 'Title' column. Analysis might be limited.")
-            self.df['Title'] = ""
+        # Convert StandardProduct objects to dicts
+        normalized_data = []
+        for item in data:
+            if isinstance(item, StandardProduct):
+                normalized_data.append(item.to_dict())
+            else:
+                # Handle legacy uppercase keys and convert to lowercase standard
+                norm_item = {}
+                norm_item['asin'] = item.get('asin', item.get('ASIN', ''))
+                norm_item['title'] = item.get('title', item.get('Title', ''))
+                norm_item['features'] = item.get('features', item.get('Features', []))
+                # keep other original keys just in case
+                for k, v in item.items():
+                    if k not in ['ASIN', 'Title', 'Features', 'asin', 'title', 'features']:
+                        norm_item[k] = v
+                normalized_data.append(norm_item)
+
+        self.df = pd.DataFrame(normalized_data)
         
-        # Fill NaN values to avoid issues during vectorization
-        self.df['Title'] = self.df['Title'].fillna("")
-        if 'Features' in self.df.columns:
-            # Handle if Features is a list (from ProductDetailsExtractor)
-            self.df['Features_Str'] = self.df['Features'].apply(lambda x: " ".join(x) if isinstance(x, list) else str(x))
+        if 'title' not in self.df.columns or self.df['title'].str.strip().empty:
+            logger.warning("Data does not contain 'title' column. Analysis might be limited.")
+            self.df['title'] = ""
+            
+        self.df['title'] = self.df['title'].fillna("")
+        
+        if 'features' in self.df.columns:
+            self.df['Features_Str'] = self.df['features'].apply(lambda x: " ".join(x) if isinstance(x, list) else str(x))
         else:
             self.df['Features_Str'] = ""
 
-        # Combine Title and Features for a richer text representation
-        self.df['CombinedText'] = (self.df['Title'] + " " + self.df['Features_Str']).str.lower()
+        # Combine title and features for a richer text representation
+        self.df['CombinedText'] = (self.df['title'] + " " + self.df['Features_Str']).str.lower()
         
         self.vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
         self.tfidf_matrix = None
@@ -94,11 +112,11 @@ class ProductSimilarityAnalysis:
         if self.tfidf_matrix is None:
             self.fit()
 
-        if 'ASIN' not in self.df.columns:
-            logger.error("ASIN column not found in data.")
+        if 'asin' not in self.df.columns:
+            logger.error("asin column not found in data.")
             return pd.DataFrame()
 
-        idx_matches = self.df.index[self.df['ASIN'] == target_asin].tolist()
+        idx_matches = self.df.index[self.df['asin'] == target_asin].tolist()
         if not idx_matches:
             logger.error(f"ASIN {target_asin} not found in the dataset.")
             return pd.DataFrame()
@@ -112,7 +130,7 @@ class ProductSimilarityAnalysis:
         results = self.df.iloc[related_indices].copy()
         results['SimilarityScore'] = sim_scores[related_indices]
         
-        return results[['ASIN', 'Title', 'SimilarityScore']]
+        return results[['asin', 'title', 'SimilarityScore']]
 
     def get_analyzed_data(self) -> List[Dict]:
         """Return the dataframe as a list of dictionaries for saving."""

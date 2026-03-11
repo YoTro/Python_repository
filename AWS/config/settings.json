@@ -8,9 +8,10 @@
     "network": {
         "proxy_file": "config/proxies.txt"
     },
-    "api_keys": {
+    "accounts": {
         "sellersprite_email": "",
-        "sellersprite_password": ""
+        "sellersprite_password": "",
+        "xiyouzhaoci_phone": "15669012019"
     },
     "user_agents": [
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36",
