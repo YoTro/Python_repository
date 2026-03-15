@@ -2,6 +2,7 @@
 
 The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platform** featuring a robust **Agentic Architecture** and **Model Context Protocol (MCP)** integration. It enables LLMs (Claude, Gemini, etc.) and deterministic code-based Workflow Engines to autonomously perform market research, competitor analysis, and listing optimization.
 
+```txt
 ================================================================================
                      DUAL-TRACK AGENT ARCHITECTURE
               Single-User · MCP-Native · Multi-User Ready
@@ -435,7 +436,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
   16    ProcessStep   final_synthesis      CLOUD_LLM  --> selection report
   ────  ────────────  ───────────────────  ────────────────────────────────────
   Each step writes checkpoint on completion; failures resume from last checkpoint
-
+```
 ---
 
 ## 2. Directory Structure (Domain-Driven Design)
