@@ -1,17 +1,17 @@
 {
     "scraper": {
-        "max_retries": 3,
-        "timeout": 15,
+        "max_retries": 5,
+        "timeout": 30,
         "retry_delay_min": 2,
         "retry_delay_max": 5
     },
     "network": {
         "proxy_file": "config/proxies.txt"
     },
-    "accounts": {
-        "sellersprite_email": "",
-        "sellersprite_password": "",
-        "xiyouzhaoci_phone": "15669012019"
+    "integrations": {
+        "feishu": {
+            "default_bot": "amazon_bot"
+        }
     },
     "user_agents": [
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36",
