@@ -1,0 +1,273 @@
+{
+  "meta": {
+    "title": "Amazon FBA 2026 US Logistics Fee Schedule",
+    "effective_date": "2026-01-15",
+    "source": "https://sellercentral.amazon.com/help/hub/reference/external/GABBX6GZPA8MSZGW",
+    "reference_source": "https://amzprep.com/amazon-fba-fees/",
+    "currency": "USD",
+    "notes": "Effective Jan 15, 2026. FBA fulfillment fees increase by an average of $0.08 per unit. Amazon will discontinue FBA Labeling and Prep services starting Jan 1, 2026."
+  },
+
+  "fba_fulfillment_fees": {
+    "standard_non_apparel": {
+      "description": "FBA Fulfillment Fees for Standard Products (Excluding Apparel)",
+      "tiers": [
+        { "size_tier": "Small Standard", "weight_range": "≤2 oz",            "fee_usd": 3.11 },
+        { "size_tier": "Small Standard", "weight_range": "2+ to 4 oz",       "fee_usd": 3.20 },
+        { "size_tier": "Small Standard", "weight_range": "4+ to 6 oz",       "fee_usd": 3.29 },
+        { "size_tier": "Small Standard", "weight_range": "6+ to 8 oz",       "fee_usd": 3.38 },
+        { "size_tier": "Small Standard", "weight_range": "8+ to 10 oz",      "fee_usd": 3.48 },
+        { "size_tier": "Small Standard", "weight_range": "10+ to 12 oz",     "fee_usd": 3.58 },
+        { "size_tier": "Small Standard", "weight_range": "12+ to 14 oz",     "fee_usd": 3.65 },
+        { "size_tier": "Small Standard", "weight_range": "14+ to 16 oz",     "fee_usd": 3.70 },
+        { "size_tier": "Large Standard", "weight_range": "≤4 oz",            "fee_usd": 3.73 },
+        { "size_tier": "Large Standard", "weight_range": "4+ to 8 oz",       "fee_usd": 3.95 },
+        { "size_tier": "Large Standard", "weight_range": "8+ to 12 oz",      "fee_usd": 4.20 },
+        { "size_tier": "Large Standard", "weight_range": "12+ to 16 oz",     "fee_usd": 4.60 },
+        { "size_tier": "Large Standard", "weight_range": "1+ to 1.25 lb",    "fee_usd": 5.04 },
+        { "size_tier": "Large Standard", "weight_range": "1.25+ to 1.5 lb",  "fee_usd": 5.42 },
+        { "size_tier": "Large Standard", "weight_range": "1.5+ to 1.75 lb",  "fee_usd": 5.57 },
+        { "size_tier": "Large Standard", "weight_range": "1.75+ to 2 lb",    "fee_usd": 5.82 },
+        { "size_tier": "Large Standard", "weight_range": "2+ to 2.25 lb",    "fee_usd": 5.92 },
+        { "size_tier": "Large Standard", "weight_range": "2.25+ to 2.5 lb",  "fee_usd": 6.10 },
+        { "size_tier": "Large Standard", "weight_range": "2.5+ to 2.75 lb",  "fee_usd": 6.26 },
+        { "size_tier": "Large Standard", "weight_range": "2.75+ to 3 lb",    "fee_usd": 6.67 },
+        { "size_tier": "Large Standard", "weight_range": "3+ to 20 lb",      "fee_formula": "$6.97 + $0.08 per 4oz interval above first 3 lb" },
+        { "size_tier": "Large Bulky",    "weight_range": "0 to 50 lb",       "fee_formula": "$9.66 + $0.38/lb interval above first lb" },
+        { "size_tier": "Extra-Large 0-50 lb",    "weight_range": "0 to 50 lb",       "fee_formula": "$26.38 + $0.38/lb interval above first lb" },
+        { "size_tier": "Extra-Large 50-70 lb",   "weight_range": "50+ to 70 lb",     "fee_formula": "$40.17 + $0.75/lb interval above 51 lb" },
+        { "size_tier": "Extra-Large 70-150 lb",  "weight_range": "70+ to 150 lb",    "fee_formula": "$54.86 + $0.75/lb interval above 71 lb" },
+        { "size_tier": "Extra-Large 150+ lb",    "weight_range": "150+ lb",          "fee_formula": "$195.00 + $0.19/lb interval above 151 lb" }
+      ]
+    },
+
+    "apparel": {
+      "description": "FBA Fulfillment Fees for Apparel",
+      "tiers": [
+        { "size_tier": "Small Standard", "weight_range": "≤4 oz",           "fee_usd": 3.32 },
+        { "size_tier": "Small Standard", "weight_range": "4+ to 8 oz",      "fee_usd": 3.47 },
+        { "size_tier": "Small Standard", "weight_range": "8+ to 12 oz",     "fee_usd": 3.77 },
+        { "size_tier": "Small Standard", "weight_range": "12+ to 16 oz",    "fee_usd": 4.03 },
+        { "size_tier": "Large Standard", "weight_range": "≤4 oz",           "fee_usd": 4.30 },
+        { "size_tier": "Large Standard", "weight_range": "4+ to 8 oz",      "fee_usd": 4.50 },
+        { "size_tier": "Large Standard", "weight_range": "8+ to 12 oz",     "fee_usd": 4.72 },
+        { "size_tier": "Large Standard", "weight_range": "12+ to 16 oz",    "fee_usd": 5.17 },
+        { "size_tier": "Large Standard", "weight_range": "1+ to 1.5 lb",    "fee_usd": 5.95 },
+        { "size_tier": "Large Standard", "weight_range": "1.5+ to 2 lb",    "fee_usd": 6.19 },
+        { "size_tier": "Large Standard", "weight_range": "2+ to 2.5 lb",    "fee_usd": 6.65 },
+        { "size_tier": "Large Standard", "weight_range": "2.5+ to 3 lb",    "fee_usd": 6.86 },
+        { "size_tier": "Large Standard", "weight_range": "3+ to 20 lb",     "fee_formula": "$6.97 + $0.16/half-lb above first 3 lb" },
+        { "size_tier": "Large Bulky",    "weight_range": "0 to 50 lb",      "fee_formula": "$9.66 + $0.38/lb interval above first lb" },
+        { "size_tier": "Extra-Large 0-50 lb",   "weight_range": "0 to 50 lb",    "fee_formula": "$26.38 + $0.38/lb interval above first lb" },
+        { "size_tier": "Extra-Large 50-70 lb",  "weight_range": "50+ to 70 lb",  "fee_formula": "$40.17 + $0.75/lb interval above 51 lb" },
+        { "size_tier": "Extra-Large 70-150 lb", "weight_range": "70+ to 150 lb", "fee_formula": "$54.86 + $0.75/lb interval above 71 lb" },
+        { "size_tier": "Extra-Large 150+ lb",   "weight_range": "150+ lb",       "fee_formula": "$195.00 + $0.19/lb interval above 151 lb" }
+      ]
+    },
+
+    "dangerous_goods": {
+      "description": "FBA Fulfillment Fees for Dangerous Goods (Hazmat)",
+      "tiers": [
+        { "size_tier": "Small Standard", "weight_range": "≤2 oz",           "fee_usd": 4.08 },
+        { "size_tier": "Small Standard", "weight_range": "2+ to 4 oz",      "fee_usd": 4.14 },
+        { "size_tier": "Small Standard", "weight_range": "4+ to 6 oz",      "fee_usd": 4.21 },
+        { "size_tier": "Small Standard", "weight_range": "6+ to 8 oz",      "fee_usd": 4.27 },
+        { "size_tier": "Small Standard", "weight_range": "8+ to 10 oz",     "fee_usd": 4.35 },
+        { "size_tier": "Small Standard", "weight_range": "10+ to 12 oz",    "fee_usd": 4.41 },
+        { "size_tier": "Small Standard", "weight_range": "12+ to 14 oz",    "fee_usd": 4.46 },
+        { "size_tier": "Small Standard", "weight_range": "14+ to 16 oz",    "fee_usd": 4.52 },
+        { "size_tier": "Large Standard", "weight_range": "≤4 oz",           "fee_usd": 4.55 },
+        { "size_tier": "Large Standard", "weight_range": "4+ to 8 oz",      "fee_usd": 4.76 },
+        { "size_tier": "Large Standard", "weight_range": "8+ to 12 oz",     "fee_usd": 4.99 },
+        { "size_tier": "Large Standard", "weight_range": "12+ to 16 oz",    "fee_usd": 5.19 },
+        { "size_tier": "Large Standard", "weight_range": "1+ to 1.25 lb",   "fee_usd": 5.64 },
+        { "size_tier": "Large Standard", "weight_range": "1.25+ to 1.5 lb", "fee_usd": 6.02 },
+        { "size_tier": "Large Standard", "weight_range": "1.5+ to 1.75 lb", "fee_usd": 6.17 },
+        { "size_tier": "Large Standard", "weight_range": "1.75+ to 2 lb",   "fee_usd": 6.31 },
+        { "size_tier": "Large Standard", "weight_range": "2+ to 2.25 lb",   "fee_usd": 6.38 },
+        { "size_tier": "Large Standard", "weight_range": "2.25+ to 2.5 lb", "fee_usd": 6.56 },
+        { "size_tier": "Large Standard", "weight_range": "2.5+ to 2.75 lb", "fee_usd": 6.72 },
+        { "size_tier": "Large Standard", "weight_range": "2.75+ to 3 lb",   "fee_usd": 7.13 },
+        { "size_tier": "Large Standard", "weight_range": "3+ to 20 lb",     "fee_formula": "$7.43 + $0.08 per 4oz interval above first 3 lb" },
+        { "size_tier": "Large Bulky",    "weight_range": "0 to 50 lb",      "fee_formula": "$10.38 + $0.38/lb interval above first lb" },
+        { "size_tier": "Extra-Large 0-50 lb",   "weight_range": "0 to 50 lb",    "fee_formula": "$28.49 + $0.38/lb interval above first lb" },
+        { "size_tier": "Extra-Large 50-70 lb",  "weight_range": "50+ to 70 lb",  "fee_formula": "$43.38 + $0.75/lb interval above 51 lb" },
+        { "size_tier": "Extra-Large 70-150 lb", "weight_range": "70+ to 150 lb", "fee_formula": "$61.99 + $0.75/lb interval above 71 lb" },
+        { "size_tier": "Extra-Large 150+ lb",   "weight_range": "150+ lb",       "fee_formula": "$219.58 + $0.19/lb interval above 151 lb" }
+      ]
+    }
+  },
+
+  "low_price_fba_fees": {
+    "description": "Low-Price FBA Rates (Price <$10, discount increased to $0.86/unit vs standard)",
+    "discount_vs_standard": "$0.86 per unit",
+    "non_apparel": [
+      { "size_tier": "Small Standard", "weight_range": "≤2 oz",           "low_price_fee_usd": 2.29, "standard_fee_usd": 3.06 },
+      { "size_tier": "Small Standard", "weight_range": "2+ to 4 oz",      "low_price_fee_usd": 2.38, "standard_fee_usd": 3.15 },
+      { "size_tier": "Small Standard", "weight_range": "4+ to 6 oz",      "low_price_fee_usd": 2.47, "standard_fee_usd": 3.24 },
+      { "size_tier": "Small Standard", "weight_range": "6+ to 8 oz",      "low_price_fee_usd": 2.56, "standard_fee_usd": 3.33 },
+      { "size_tier": "Small Standard", "weight_range": "8+ to 10 oz",     "low_price_fee_usd": 2.66, "standard_fee_usd": 3.43 },
+      { "size_tier": "Small Standard", "weight_range": "10+ to 12 oz",    "low_price_fee_usd": 2.76, "standard_fee_usd": 3.53 },
+      { "size_tier": "Small Standard", "weight_range": "12+ to 14 oz",    "low_price_fee_usd": 2.83, "standard_fee_usd": 3.60 },
+      { "size_tier": "Small Standard", "weight_range": "14+ to 16 oz",    "low_price_fee_usd": 2.88, "standard_fee_usd": 3.65 },
+      { "size_tier": "Large Standard", "weight_range": "≤4 oz",           "low_price_fee_usd": 2.91, "standard_fee_usd": 3.68 },
+      { "size_tier": "Large Standard", "weight_range": "4+ to 8 oz",      "low_price_fee_usd": 3.13, "standard_fee_usd": 3.90 },
+      { "size_tier": "Large Standard", "weight_range": "8+ to 12 oz",     "low_price_fee_usd": 3.38, "standard_fee_usd": 4.15 },
+      { "size_tier": "Large Standard", "weight_range": "12+ to 16 oz",    "low_price_fee_usd": 3.78, "standard_fee_usd": 4.55 },
+      { "size_tier": "Large Standard", "weight_range": "1+ to 1.25 lb",   "low_price_fee_usd": 4.22, "standard_fee_usd": 4.99 },
+      { "size_tier": "Large Standard", "weight_range": "1.25+ to 1.5 lb", "low_price_fee_usd": 4.60, "standard_fee_usd": 5.37 },
+      { "size_tier": "Large Standard", "weight_range": "1.5+ to 1.75 lb", "low_price_fee_usd": 4.75, "standard_fee_usd": 5.52 },
+      { "size_tier": "Large Standard", "weight_range": "1.75+ to 2 lb",   "low_price_fee_usd": 5.00, "standard_fee_usd": 5.77 },
+      { "size_tier": "Large Standard", "weight_range": "2+ to 2.25 lb",   "low_price_fee_usd": 5.10, "standard_fee_usd": 5.87 },
+      { "size_tier": "Large Standard", "weight_range": "2.25+ to 2.5 lb", "low_price_fee_usd": 5.28, "standard_fee_usd": 6.05 },
+      { "size_tier": "Large Standard", "weight_range": "2.5+ to 2.75 lb", "low_price_fee_usd": 5.44, "standard_fee_usd": 6.21 },
+      { "size_tier": "Large Standard", "weight_range": "2.75+ to 3 lb",   "low_price_fee_usd": 5.85, "standard_fee_usd": 6.62 },
+      { "size_tier": "Large Standard", "weight_range": "3+ to 20 lb",     "low_price_fee_formula": "$6.15 + $0.08 per 4oz interval above first 3 lb" },
+      { "size_tier": "Large Bulky",    "weight_range": "0 to 50 lb",      "low_price_fee_formula": "$8.84 + $0.38/lb interval above first lb" }
+    ]
+  },
+
+  "monthly_storage_fees": {
+    "description": "Monthly Inventory Storage Fees (Per cubic foot)",
+    "non_dangerous_goods_off_peak": {
+      "period": "January – September (Off-Peak)",
+      "standard_size": [
+        { "storage_utilization_ratio": "0–22 weeks",  "base_fee_per_cuft": 0.78, "surcharge_per_cuft": null, "total_per_cuft": 0.78 },
+        { "storage_utilization_ratio": "22–28 weeks", "base_fee_per_cuft": 0.78, "surcharge_per_cuft": 0.44, "total_per_cuft": 1.22 },
+        { "storage_utilization_ratio": "28–36 weeks", "base_fee_per_cuft": 0.78, "surcharge_per_cuft": 0.76, "total_per_cuft": 1.54 },
+        { "storage_utilization_ratio": "36–44 weeks", "base_fee_per_cuft": 0.78, "surcharge_per_cuft": 1.16, "total_per_cuft": 1.94 },
+        { "storage_utilization_ratio": "44–52 weeks", "base_fee_per_cuft": 0.78, "surcharge_per_cuft": 1.58, "total_per_cuft": 2.36 },
+        { "storage_utilization_ratio": "52+ weeks",    "base_fee_per_cuft": 0.78, "surcharge_per_cuft": 1.88, "total_per_cuft": 2.66 },
+        { "storage_utilization_ratio": "New Sellers/Individual Sellers/≤25 cuft per day", "base_fee_per_cuft": 0.78, "surcharge_per_cuft": null, "total_per_cuft": 0.87 }
+      ],
+      "oversize": [
+        { "storage_utilization_ratio": "0–22 weeks",  "base_fee_per_cuft": 0.56, "surcharge_per_cuft": null, "total_per_cuft": 0.56 },
+        { "storage_utilization_ratio": "22–28 weeks", "base_fee_per_cuft": 0.56, "surcharge_per_cuft": 0.23, "total_per_cuft": 0.79 },
+        { "storage_utilization_ratio": "28–36 weeks", "base_fee_per_cuft": 0.56, "surcharge_per_cuft": 0.46, "total_per_cuft": 1.02 },
+        { "storage_utilization_ratio": "36–44 weeks", "base_fee_per_cuft": 0.56, "surcharge_per_cuft": 0.63, "total_per_cuft": 1.19 },
+        { "storage_utilization_ratio": "44–52 weeks", "base_fee_per_cuft": 0.56, "surcharge_per_cuft": 0.76, "total_per_cuft": 1.32 },
+        { "storage_utilization_ratio": "52+ weeks",    "base_fee_per_cuft": 0.56, "surcharge_per_cuft": 1.26, "total_per_cuft": 1.82 },
+        { "storage_utilization_ratio": "New Sellers/Individual Sellers/≤25 cuft per day", "base_fee_per_cuft": 0.56, "surcharge_per_cuft": null, "total_per_cuft": 0.56 }
+      ]
+    },
+    "non_dangerous_goods_peak": {
+      "period": "October – December (Peak)",
+      "standard_size": [
+        { "storage_utilization_ratio": "0–22 weeks",  "base_fee_per_cuft": 2.40, "surcharge_per_cuft": null, "total_per_cuft": 2.40 },
+        { "storage_utilization_ratio": "22–28 weeks", "base_fee_per_cuft": 2.40, "surcharge_per_cuft": 0.44, "total_per_cuft": 2.84 },
+        { "storage_utilization_ratio": "28–36 weeks", "base_fee_per_cuft": 2.40, "surcharge_per_cuft": 0.76, "total_per_cuft": 3.16 },
+        { "storage_utilization_ratio": "36–44 weeks", "base_fee_per_cuft": 2.40, "surcharge_per_cuft": 1.16, "total_per_cuft": 3.56 },
+        { "storage_utilization_ratio": "44–52 weeks", "base_fee_per_cuft": 2.40, "surcharge_per_cuft": 1.58, "total_per_cuft": 3.98 },
+        { "storage_utilization_ratio": "52+ weeks",    "base_fee_per_cuft": 2.40, "surcharge_per_cuft": 1.88, "total_per_cuft": 4.28 },
+        { "storage_utilization_ratio": "New Sellers/Individual Sellers/≤25 cuft per day", "base_fee_per_cuft": 2.40, "surcharge_per_cuft": null, "total_per_cuft": 2.40 }
+      ],
+      "oversize": [
+        { "storage_utilization_ratio": "0–22 weeks",  "base_fee_per_cuft": 1.40, "surcharge_per_cuft": null, "total_per_cuft": 1.40 },
+        { "storage_utilization_ratio": "22–28 weeks", "base_fee_per_cuft": 1.40, "surcharge_per_cuft": 0.23, "total_per_cuft": 1.63 },
+        { "storage_utilization_ratio": "28–36 weeks", "base_fee_per_cuft": 1.40, "surcharge_per_cuft": 0.46, "total_per_cuft": 1.86 },
+        { "storage_utilization_ratio": "36–44 weeks", "base_fee_per_cuft": 1.40, "surcharge_per_cuft": 0.63, "total_per_cuft": 2.03 },
+        { "storage_utilization_ratio": "44–52 weeks", "base_fee_per_cuft": 1.40, "surcharge_per_cuft": 0.76, "total_per_cuft": 2.16 },
+        { "storage_utilization_ratio": "52+ weeks",    "base_fee_per_cuft": 1.40, "surcharge_per_cuft": 1.26, "total_per_cuft": 2.66 },
+        { "storage_utilization_ratio": "New Sellers/Individual Sellers/≤25 cuft per day", "base_fee_per_cuft": 1.40, "surcharge_per_cuft": null, "total_per_cuft": 1.40 }
+      ]
+    },
+    "dangerous_goods": [
+      { "month": "January – September", "size": "Standard-size", "fee_per_cuft": 0.99 },
+      { "month": "January – September", "size": "Oversize",       "fee_per_cuft": 0.78 },
+      { "month": "October – December",  "size": "Standard-size", "fee_per_cuft": 3.63 },
+      { "month": "October – December",  "size": "Oversize",       "fee_per_cuft": 2.43 }
+    ]
+  },
+
+  "referral_fees_2026": {
+    "description": "Referral Fees (Unchanged for 2026, calculated as percentage of total sales price)",
+    "minimum_per_item_usd": 0.30,
+    "categories": [
+      { "category": "Amazon Device Accessories",           "rate": "45%",                                        "minimum_usd": 0.30 },
+      { "category": "Automotive and Powersports",          "rate": "12%",                                        "minimum_usd": 0.30 },
+      { "category": "Baby Products",                       "rate": "8% (≤$10) / 15% (>$10)",                    "minimum_usd": 0.30 },
+      { "category": "Backpacks, Handbags, and Luggage",    "rate": "15%",                                        "minimum_usd": 0.30 },
+      { "category": "Base Equipment Power Tools",          "rate": "12%",                                        "minimum_usd": 0.30 },
+      { "category": "Beauty, Health and Personal Care",    "rate": "8% (≤$10) / 15% (>$10)",                    "minimum_usd": 0.30 },
+      { "category": "Business, Industrial, Scientific",    "rate": "12%",                                        "minimum_usd": 0.30 },
+      { "category": "Clothing and Accessories",            "rate": "5% (≤$15) / 10% ($15-$20) / 17% (>$20)",   "minimum_usd": 0.30 },
+      { "category": "Compact Appliances",                  "rate": "15% (≤$300) / 8% (>$300)",                  "minimum_usd": 0.30 },
+      { "category": "Computers",                           "rate": "8%",                                         "minimum_usd": 0.30 },
+      { "category": "Consumer Electronics",                "rate": "8%",                                         "minimum_usd": 0.30 },
+      { "category": "Electronics Accessories",             "rate": "15% (≤$100) / 8% (>$100)",                  "minimum_usd": 0.30 },
+      { "category": "Everything Else",                     "rate": "15%",                                        "minimum_usd": 0.30 },
+      { "category": "Eyewear",                             "rate": "15%",                                        "minimum_usd": 0.30 },
+      { "category": "Fine Art",                            "rate": "20% (≤$100) / 15% ($100-$1000) / 10% ($1000-$5000) / 5% (>$5000)", "minimum_usd": null },
+      { "category": "Footwear",                            "rate": "15%",                                        "minimum_usd": 0.30 },
+      { "category": "Full-Size Appliances",                "rate": "8%",                                         "minimum_usd": 0.30 },
+      { "category": "Furniture",                           "rate": "15% (≤$200) / 10% (>$200)",                 "minimum_usd": 0.30 },
+      { "category": "Gift Cards",                          "rate": "20%",                                        "minimum_usd": null },
+      { "category": "Grocery and Gourmet",                 "rate": "8% (≤$15) / 15% (>$15)",                   "minimum_usd": null },
+      { "category": "Home and Kitchen",                    "rate": "15%",                                        "minimum_usd": 0.30 },
+      { "category": "Jewelry",                             "rate": "20% (≤$250) / 5% (>$250)",                  "minimum_usd": 0.30 },
+      { "category": "Lawn and Garden",                     "rate": "15%",                                        "minimum_usd": 0.30 },
+      { "category": "Lawn Mowers and Snow Throwers",       "rate": "15% (≤$500) / 8% (>$500)",                  "minimum_usd": 0.30 },
+      { "category": "Mattresses",                          "rate": "15%",                                        "minimum_usd": 0.30 },
+      { "category": "Media (Books/DVD/Music/Software/Video)", "rate": "15%",                                     "minimum_usd": null },
+      { "category": "Merchant Fulfilled Services",         "rate": "20%",                                        "minimum_usd": 0.30 },
+      { "category": "Musical Instruments and AV Production","rate": "15%",                                       "minimum_usd": 0.30 },
+      { "category": "Office Products",                     "rate": "15%",                                        "minimum_usd": 0.30 },
+      { "category": "Pet Products",                        "rate": "15% / 22% (veterinary diets)",              "minimum_usd": 0.30 },
+      { "category": "Sports and Outdoors",                 "rate": "15%",                                        "minimum_usd": 0.30 },
+      { "category": "Tires",                               "rate": "10%",                                        "minimum_usd": 0.30 },
+      { "category": "Tools and Home Improvement",          "rate": "15%",                                        "minimum_usd": 0.30 },
+      { "category": "Toys and Games",                      "rate": "15%",                                        "minimum_usd": 0.30 },
+      { "category": "Video Game Consoles",                 "rate": "8%",                                         "minimum_usd": null },
+      { "category": "Video Games and Gaming Accessories",  "rate": "15%",                                        "minimum_usd": null },
+      { "category": "Watches",                             "rate": "16% (≤$1500) / 3% (>$1500)",                "minimum_usd": 0.30 }
+    ]
+  },
+
+  "awd_fees_2026": {
+    "description": "Amazon Warehousing & Distribution (AWD) Fee Changes (2026)",
+    "changes": [
+      { "fee_type": "Storage - West Region",  "fee_2025_usd": 0.48, "fee_2026_usd": 0.57, "change_pct": "+18.8%" },
+      { "fee_type": "Storage - Other Regions","fee_2025_usd": 0.48, "fee_2026_usd": 0.48, "change_pct": "No change" },
+      { "fee_type": "Transportation",         "fee_2025_usd": 1.15, "fee_2026_usd": 1.40, "change_pct": "+21.7%" },
+      { "fee_type": "Inbound Processing",     "fee_2025_usd": 1.35, "fee_2026_usd": 1.40, "change_pct": "+3.7%" },
+      { "fee_type": "Outbound Processing",    "fee_2025_usd": 1.35, "fee_2026_usd": 1.40, "change_pct": "+3.7%" }
+    ]
+  },
+
+  "inbound_defect_fees_2026": {
+    "description": "Inbound Defect Fees (Significant increase starting Jan 1, 2026, as Amazon ends FBA prep services)",
+    "fee_range_2025": "$0.02–$0.07 per unit",
+    "fee_range_2026": "$0.32–$5.72 per unit",
+    "notes": "At a 2% defect rate, the cost for 10,000 units jumps from a max of $14 in 2025 to a max of $1,144 in 2026."
+  },
+
+  "inbound_placement_fees_2026": {
+    "description": "FBA Inbound Placement Service Fees (Updated Tiers Jan 15, 2026)",
+    "standard_size": [
+      { "size": "Small Standard", "weight": "≤16 oz",      "fee_2025": "$0.16–$0.30", "fee_2026": "$0.14–$0.32", "impact": "Minimal" },
+      { "size": "Large Standard", "weight": "≤1.5 lb",     "fee_2025": "$0.18–$0.41", "fee_2026": "$0.20–$0.50", "impact": "+$0.02–$0.09" },
+      { "size": "Large Standard", "weight": "1.5–3 lb",    "fee_2025": "$0.27–$0.49", "fee_2026": "$0.34–$0.60", "impact": "+$0.07–$0.11" },
+      { "size": "Large Standard", "weight": "3–20 lb",     "fee_2025": "$0.37–$0.68", "fee_2026": "$0.38–$1.50", "impact": "Up to +120%" }
+    ],
+    "bulky_categories": [
+      { "category": "Small Bulky (≤50 lb)", "fee_2025": "$1.10–$5.95", "fee_2026": "$1.10–$5.95", "change": "No change" },
+      { "category": "Large Bulky (≤50 lb)", "fee_2025": "$1.10–$5.95", "fee_2026": "$1.30–$6.50", "change": "+5–10%" }
+    ]
+  },
+
+  "key_changes_summary_2026": {
+    "effective_date": "2026-01-15",
+    "average_fee_increase_per_unit": "$0.08",
+    "no_new_fee_types": true,
+    "prep_services_ended": "2026-01-01",
+    "low_price_fba_discount_increase": "Increased from $0.77 to $0.86 per unit",
+    "mcf_increase": "Multi-Channel Fulfillment (MCF) increased by approx. $0.30 per unit (+10%~15%)",
+    "payment_timing_change": "Transitioned to DD+7 (Available 7 days after delivery date)",
+    "notable_increases_by_product": [
+      { "product_type": "Small Standard ($10–$50)",  "fee_increase_per_unit": "+$0.25" },
+      { "product_type": "Small Standard (>$50)",     "fee_increase_per_unit": "+$0.51" },
+      { "product_type": "Items <$10",                "fee_increase_per_unit": "+$0.12 (Selected Large Standard)" },
+      { "product_type": "Large Standard ($10–$50)",  "fee_increase_per_unit": "+$0.31 (Average)" }
+    ]
+  }
+}
