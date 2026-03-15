@@ -1,150 +1,93 @@
-# Amazon Web Scraper (AWS) V2
+# Amazon Web Scraper (AWS) V2 - Hybrid Intelligence Edition
 
-A powerful Amazon scraping and analysis tool that supports multi-dimensional data extraction and product similarity analysis based on machine learning.
+A next-generation Amazon market intelligence platform featuring a robust **Dual-Track Agentic Architecture** and **Model Context Protocol (MCP)** integration. It enables LLMs (Claude, Gemini, etc.) and code-based Workflow Engines to autonomously perform market research, competitor analysis, and listing optimization.
+
+It employs a **Hybrid Intelligence** model: 
+- **Workflow Track**: For deterministic, high-throughput batch processing using **Step Tri-primitives** and persistent checkpoints.
+- **Agent Track**: For exploratory, high-reasoning market analysis via ReAct loops and **Persistent Session Management**.
+- **Unified Gateway**: A centralized API Gateway for identity resolution, rate limiting, and request normalization.
 
 ## 📖 Documentation & Guides
 
-For more in-depth information, please refer to the following guides in the `docs/` folder:
-
-*   **[Task Details](docs/TASK_DETAILS.md)**: Detailed explanation of every scraper and analysis task.
-*   **[Input Schemas](docs/INPUT_SCHEMA.md)**: Required CSV column headers and data formats for each task.
+*   **[Architecture & Design](docs/ARCHITECTURE.md)**: Deep dive into the Dual-Track and Multi-User Ready system design.
+*   **[Testing Guide](docs/TESTING.md)**: Procedures for unit tests, protocol integrity, and full-flow simulation.
+*   **[Input & Data Schemas](docs/INPUT_SCHEMA.md)**: Guide to Pydantic models and CLI CSV input formats.
+*   **[LLM Usage Guidelines](docs/LLM_GUIDELINES.md)**: Best practices for Prompt Engineering and Model Selection.
+*   **[MCP Protocol Usage](docs/MCP_PROTOCOL.md)**: Guide to extending the Model Context Protocol integration.
+*   **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)**: Solutions for common scraping and LLM issues.
 
 ---
 
 ## 🚀 Key Features
 
-### 1. Data Scraping
-*   **Full Dimension Extraction**: ASIN, Title, 5 Features (Bullets), Product Description, Price, Ranks, Review Counts, Sales, etc.
-*   **Diverse Tasks**: Supports keyword search scraping, Bestsellers scraping, ASIN details aggregation, stock checking, and more.
-*   **Anti-Bot Protection**: Integrated `DrissionPage` for automatic cookie retrieval, TLS fingerprint impersonation via `curl_cffi`, and proxy rotation support.
-*   **Network Compatibility**: Specifically optimized for Windows **TUN Mode** (VPN/Proxy environments) to resolve browser automation handshake failures.
+### 1. Dual-Track Orchestration (Gateway & Job Manager)
+*   **API Gateway**: Centralized entry point for CLI, Feishu, and Cron. Handles Auth (Ext Pt #1), Rate Limiting (Ext Pt #2), and request normalization into `UnifiedRequest`.
+*   **Job Manager**: Manages an asynchronous task queue with worker pools. Supports stateful resilience via **Checkpointing** (Workflows) and **Session Management** (Agents).
+*   **Hybrid Routing**: Automatically dispatches deterministic pipelines to the Workflow Engine and conversational intents to the MCP Agent.
 
-### 2. Market Intelligence & Analysis
-*   **Similarity Clustering**: Group products by text similarity.
-    ```bash
-    # KMeans (Macro segments)
-    python main.py analyze_similarity --input data/products.csv --output data/clusters.csv --clusters 5
-    # DBSCAN (Precision competitors)
-    python main.py analyze_similarity --input data/products.csv --output data/clusters.csv --cluster-method dbscan
-    ```
-*   **Weekly Sales Regression**: Estimate **WEEKLY** sales based on Amazon Best Sellers Rank using the **UCLA Power-Law Formula** ($\hat{Q} = \exp( \frac{c - \ln(Rank - 1)}{\theta} ) \times 7$).
-    ```bash
-    python main.py analyze_weekly_sales --input data/history.csv --output data/sales_estimate.csv
-    ```
-    *   **$\theta$ (Theta)**: The rank-sales elasticity (from structural eq: $\ln(Rank-1) = c - \theta \ln(Q)$).
-    *   **$c$ (Scale)**: The intercept representing demand scale.
+### 2. Step Tri-primitives & Data Orchestration
+*   **Step Primitives**: Workflows are built using `EnrichStep` (Data fetching), `FilterStep` (Rule-based funneling), and `ProcessStep` (AI/Python processing).
+*   **Mediated Persistence**: L1 Raw Data Servers (Amazon, Market) write to a centralized **Data Cache**, while L2 Calculation Servers (Finance, Compliance) consume from it, ensuring 100% decoupling.
+*   **Unified Registry**: A top-level `Tool Registry` allows both tracks to discover and invoke capabilities across all domain servers.
+
+### 3. Robust Microservice Tool Servers
+*   **Amazon Domain**: 16+ focused async scrapers (BSR, Reviews, Stock) using `curl_cffi` for TLS impersonation.
+*   **Market & Social**: Integrated adapters for SellerSprite, Lingxing, TikTok, and Meta trends.
+*   **Intelligence Router**: Automatically routes tasks between Cloud APIs (Gemini/Claude) and Local LLMs (Llama.cpp/Ollama) based on cost and complexity.
+
+### 4. Advanced Feishu (Lark) Bot Integration
+*   **Interactive Commands**: Trigger deterministic workflows and get live progress bars with **Dynamic ETA** updates.
+*   **Bitable Reporting**: Automatically generates structured reports in Feishu Multi-dimensional tables.
 
 ---
 
 ## 🛠 Installation & Setup
 
-1. **Requirements**: Python 3.8+
+1. **Requirements**: Python 3.11+
 2. **Install Dependencies**:
    ```bash
+   python3.11 -m venv venv311
+   source venv311/bin/activate
    pip install -r requirements.txt
    ```
-3. **Configuration**: 
-   Configure User-Agent lists and scraper settings in `config/settings.json`.
+3. **Environment Variables**:
+   Create a `.env` file in the project root with your API keys (Gemini, Anthropic, Feishu).
 
 ---
 
-## 📖 Usage Guide
+## ⚡ Quick Start
 
-### Basic Command Structure
+### 1. CLI Usage (Single-User Testing)
 ```bash
-python main.py <task> --input <input_file> --output <output_file> [options]
+# Run a deterministic Workflow (uses defaults from config/workflow_defaults.yaml)
+python main.py --workflow product_screening --params '{"keyword": "yoga mat"}'
+
+# Override specific thresholds — unspecified values fall back to workflow_defaults.yaml
+python main.py --workflow product_screening --params '{"keyword": "yoga mat", "price_min": 30, "profit_margin_min": 0.35}'
+
+# Talk to the exploratory MCP Agent
+python main.py --explore "Analyze the profit margin of massage guns"
 ```
 
-### Task-Specific Examples
+### 2. Feishu (Lark) Bot Listener
+Start the WebSocket listener to receive commands and chat messages from Feishu:
+```bash
+# Start the bot (defaults to amazon_bot configuration)
+PYTHONPATH=. venv311/bin/python src/entry/feishu/bot_listener.py --bot amazon_bot
+```
+Then in your Feishu group chat, send:
+- `获取 Electronics BSR` (Triggers Workflow Track)
+- `更新亚马逊 Cookies` (Triggers manual auth refresh)
+- `这个类目好做吗？` (Triggers Agent Track Fallback)
 
-#### 🔍 Keyword & Market Research
-*   **Search for ASINs**: Get a list of ASINs for a specific keyword.
-    ```bash
-    python main.py sales --keyword "outdoor rug" --pages 3 --output data/rug_asins.csv
-    ```
-*   **Keyword Ranking**: Track where your target ASINs appear in search results for a keyword.
-    ```bash
-    python main.py keywords_rank --keyword "outdoor rug" --input data/target_asins.csv --pages 5 --output data/rank_results.csv
-    ```
-*   **Bestsellers**: Extract products from an Amazon Bestsellers category URL.
-    ```bash
-    python main.py bestsellers --url "https://www.amazon.com/Best-Sellers-..." --output data/bestsellers.csv
-    ```
-
-#### 📦 Product Metrics & Details
-*   **Product Details**: Extract Title, Bullet Points, and Description.
-    ```bash
-    python main.py details --input data/asins.csv --output data/details.csv
-    ```
-*   **Sales & Stock**: Get "Past Month Sales" and current "Cart Stock" levels.
-    ```bash
-    python main.py past_month_sales --input data/asins.csv --output data/sales_stats.csv
-    python main.py stock --input data/asins.csv --output data/stock_levels.csv
-    ```
-*   **Dimensions & Fulfillment**: Get product weight, size, and FBA/FBM info.
-    ```bash
-    python main.py dimensions --input data/asins.csv --output data/specs.csv
-    python main.py fulfillment --input data/asins.csv --output data/logistics.csv
-    ```
-*   **Review Analysis**: Get total review counts or fetch actual comment text.
-    ```bash
-    python main.py review_count --input data/asins.csv --output data/counts.csv
-    python main.py reviews --input data/asins.csv --pages 5 --output data/comments.csv
-    ```
-
-#### 🏭 Seller & Media Analysis
-*   **Seller Feedback**: Get lifetime and recent feedback counts for seller IDs.
-    ```bash
-    python main.py feedback --input data/seller_ids.csv --output data/seller_stats.csv
-    ```
-*   **Images & Videos**: Extract all product image URLs or check if a listing has video content.
-    ```bash
-    python main.py images --input data/asins.csv --output data/images.csv
-    python main.py videos --input data/asins.csv --output data/video_check.csv
-    ```
-
-#### 💎 Advanced Aggregation & Analysis
-*   **Full ASIN Details**: Run ALL extractors at once for a list of ASINs (Comprehensive Report).
-    ```bash
-    python main.py full_asin_details --input data/asins.csv --output data/master_report.csv
-    ```
-*   **Similarity Clustering**: Group products by text similarity.
-    ```bash
-    # KMeans (Macro segments)
-    python main.py analyze_similarity --input data/details.csv --output data/clusters.csv --clusters 5
-    # DBSCAN (Precision competitors)
-    python main.py analyze_similarity --input data/details.csv --output data/clusters.csv --cluster-method dbscan
-    ```
-
----
-
-## 📂 Project Structure
-
-```text
-AWS/
-├── data/               # Recommended folder for all input/output CSV files
-├── config/             # Config files and cookie cache
-├── docs/               # System architecture and data schemas
-├── src/
-│   ├── analysis/       # ML clustering and sales rank regression logic
-│   ├── core/           # Core base classes, network handling, and Standard DTO Models
-│   ├── extractors/     # Specialized data extractors for various dimensions
-│   ├── integrations/   # Third-party service adapters (Sellersprite, Xiyouzhaoci, ERP)
-│   ├── tasks/          # Factory/Strategy pattern implementations for CLI commands
-│   └── utils/          # Config, CSV, and Cookie utilities
-├── tests/              # Integration tests and verification scripts
-└── main.py             # Unified CLI entry point routing to TaskFactory
+### 3. Deployment to Claude Desktop
+```bash
+# One-click deployment of all L1/L2 tools to Claude Desktop
+./scripts/deploy_claude_desktop.sh
 ```
 
 ---
 
-## 🔬 Clustering Algorithm Comparison
+## 📂 Project Structure & Architecture
 
-| Algorithm | Use Case | Advantages |
-| :--- | :--- | :--- |
-| **K-Means** | Market overview, fixed grouping | Simple logic; ensures every product is assigned to a cluster. |
-| **DBSCAN** | Finding duplicates, precision competitors | Automatically determines the number of clusters; identifies unique/outlier products. |
-
-## ⚠️ Notes
-*   **TUN Mode Fix**: If you encounter `WebSocketBadStatusException` in Windows, this tool has been optimized with randomized debugging ports to bypass loopback issues.
-*   **Politeness**: Please respect Amazon's `robots.txt` and avoid aggressive scraping. Use proxies if you need to process large volumes of data.
+For a detailed breakdown of the **Domain-Driven Design (DDD)** directory structure and the inter-layer data flow (Gateway -> Job Manager -> MCP Servers), please refer to the **[System Architecture Document (docs/ARCHITECTURE.md)](docs/ARCHITECTURE.md)**.

@@ -1,0 +1,454 @@
+{
+  "meta": {
+    "title": "Amazon US Category Referral Fee (Commission) Schedule",
+    "marketplace": "Amazon.com (US)",
+    "currency": "USD",
+    "effective_date": "2026-01-15",
+    "notes": "Referral fees are calculated as a percentage of the total sales price (item price + shipping + gift wrap). Amazon deducts whichever is greater: the referral fee percentage or the per-item minimum referral fee. Referral fees are unchanged for 2026.",
+    "source": "https://sellercentral.amazon.com/help/hub/reference/external/GABBX6GZPA8MSZGW",
+    "generated_date": "2026-03-13"
+  },
+  "referral_fees": [
+    {
+      "category": "Amazon Device Accessories",
+      "browse_node_hint": "7141129011",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 45 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Automotive and Powersports",
+      "browse_node_hint": "15706571",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 12 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Baby Products",
+      "browse_node_hint": "15684181",
+      "tier_type": "whole_price",
+      "tier_type_note": "The rate that applies to the total sales price is determined by which band the total price falls into",
+      "tiers": [
+        { "price_range": "≤ $10.00", "rate_pct": 8  },
+        { "price_range": "> $10.00", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Backpacks, Handbags, and Luggage",
+      "browse_node_hint": "15743631",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Base Equipment Power Tools",
+      "browse_node_hint": "228021",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 12 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Beauty, Health and Personal Care",
+      "browse_node_hint": "11055981",
+      "tier_type": "whole_price",
+      "tier_type_note": "The rate that applies to the total sales price is determined by which band the total price falls into",
+      "tiers": [
+        { "price_range": "≤ $10.00", "rate_pct": 8  },
+        { "price_range": "> $10.00", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Business, Industrial, and Scientific Supplies",
+      "browse_node_hint": "2972638011",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 12 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Clothing and Accessories",
+      "browse_node_hint": "1055398",
+      "tier_type": "whole_price",
+      "tier_type_note": "The rate that applies to the total sales price is determined by which band the total price falls into",
+      "tiers": [
+        { "price_range": "≤ $15.00",              "rate_pct": 5  },
+        { "price_range": "> $15.00 and ≤ $20.00", "rate_pct": 10 },
+        { "price_range": "> $20.00",              "rate_pct": 17 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Compact Appliances",
+      "browse_node_hint": null,
+      "tier_type": "proportional",
+      "tier_type_note": "Fee is calculated proportionally: each portion of the price is charged at its own rate and summed",
+      "tiers": [
+        { "price_range": "Portion of total sales price up to $300.00",    "rate_pct": 15 },
+        { "price_range": "Portion of total sales price greater than $300.00", "rate_pct": 8  }
+      ],
+      "minimum_referral_fee_usd": 0.30,
+      "example": { "item_price_usd": 400, "calculation": "15% × $300 + 8% × $100 = $45.00 + $8.00 = $53.00", "final_fee_usd": 53.00 }
+    },
+    {
+      "category": "Computers",
+      "browse_node_hint": "16225007011",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 8 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Consumer Electronics",
+      "browse_node_hint": "468642",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 8 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Electronics Accessories",
+      "browse_node_hint": null,
+      "tier_type": "proportional",
+      "tier_type_note": "Fee is calculated proportionally: each portion of the price is charged at its own rate and summed",
+      "tiers": [
+        { "price_range": "Portion of total sales price up to $100.00",    "rate_pct": 15 },
+        { "price_range": "Portion of total sales price greater than $100.00", "rate_pct": 8  }
+      ],
+      "minimum_referral_fee_usd": 0.30,
+      "example": { "item_price_usd": 150, "calculation": "15% × $100 + 8% × $50 = $15.00 + $4.00 = $19.00", "final_fee_usd": 19.00 }
+    },
+    {
+      "category": "Everything Else",
+      "browse_node_hint": null,
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30,
+      "notes": "Catch-all category for items that do not fit any other browse node"
+    },
+    {
+      "category": "Eyewear",
+      "browse_node_hint": "7147441011",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Fine Art",
+      "browse_node_hint": "4366820011",
+      "tier_type": "proportional",
+      "tier_type_note": "Fee is calculated proportionally: each portion of the price is charged at its own rate and summed",
+      "tiers": [
+        { "price_range": "Portion of total sales price up to $100.00",                        "rate_pct": 20 },
+        { "price_range": "Portion of total sales price greater than $100.00 up to $1,000.00",  "rate_pct": 15 },
+        { "price_range": "Portion of total sales price greater than $1,000.00 up to $5,000.00","rate_pct": 10 },
+        { "price_range": "Portion of total sales price greater than $5,000.00",               "rate_pct": 5  }
+      ],
+      "minimum_referral_fee_usd": null,
+      "example": { "item_price_usd": 2000, "calculation": "20%×$100 + 15%×$900 + 10%×$1000 = $20 + $135 + $100 = $255.00", "final_fee_usd": 255.00 }
+    },
+    {
+      "category": "Footwear",
+      "browse_node_hint": null,
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Full-Size Appliances",
+      "browse_node_hint": null,
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 8 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Furniture",
+      "browse_node_hint": "1063294",
+      "tier_type": "proportional",
+      "tier_type_note": "Fee is calculated proportionally: each portion of the price is charged at its own rate and summed",
+      "tiers": [
+        { "price_range": "Portion of total sales price up to $200.00",    "rate_pct": 15 },
+        { "price_range": "Portion of total sales price greater than $200.00", "rate_pct": 10 }
+      ],
+      "minimum_referral_fee_usd": 0.30,
+      "example": { "item_price_usd": 350, "calculation": "15% × $200 + 10% × $150 = $30.00 + $15.00 = $45.00", "final_fee_usd": 45.00 }
+    },
+    {
+      "category": "Gift Cards",
+      "browse_node_hint": "10805321",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 20 }
+      ],
+      "minimum_referral_fee_usd": null
+    },
+    {
+      "category": "Grocery and Gourmet",
+      "browse_node_hint": "3760901",
+      "tier_type": "whole_price",
+      "tier_type_note": "The rate that applies to the total sales price is determined by which band the total price falls into",
+      "tiers": [
+        { "price_range": "≤ $15.00", "rate_pct": 8  },
+        { "price_range": "> $15.00", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": null
+    },
+    {
+      "category": "Home and Kitchen",
+      "browse_node_hint": "284507",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Jewelry",
+      "browse_node_hint": "2474936011",
+      "tier_type": "proportional",
+      "tier_type_note": "Fee is calculated proportionally: each portion of the price is charged at its own rate and summed",
+      "tiers": [
+        { "price_range": "Portion of total sales price up to $250.00",    "rate_pct": 20 },
+        { "price_range": "Portion of total sales price greater than $250.00", "rate_pct": 5  }
+      ],
+      "minimum_referral_fee_usd": 0.30,
+      "example": { "item_price_usd": 400, "calculation": "20% × $250 + 5% × $150 = $50.00 + $7.50 = $57.50", "final_fee_usd": 57.50 }
+    },
+    {
+      "category": "Lawn and Garden",
+      "browse_node_hint": "2619533011",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Lawn Mowers and Snow Throwers",
+      "browse_node_hint": null,
+      "tier_type": "whole_price",
+      "tier_type_note": "The rate that applies to the total sales price is determined by which band the total price falls into",
+      "tiers": [
+        { "price_range": "≤ $500.00", "rate_pct": 15 },
+        { "price_range": "> $500.00", "rate_pct": 8  }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Mattresses",
+      "browse_node_hint": null,
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Media - Books, DVD, Music, Software, Video",
+      "browse_node_hint": "283155",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": null
+    },
+    {
+      "category": "Merchant Fulfilled Services",
+      "browse_node_hint": null,
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 20 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Musical Instruments and AV Production",
+      "browse_node_hint": "1069242",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Office Products",
+      "browse_node_hint": "979455011",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Pet Products",
+      "browse_node_hint": "15709851",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices (standard)",        "rate_pct": 15 },
+        { "price_range": "All prices (veterinary diets)", "rate_pct": 22 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Sports and Outdoors",
+      "browse_node_hint": "165793011",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Tires",
+      "browse_node_hint": null,
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 10 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Tools and Home Improvement",
+      "browse_node_hint": "1064954",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Toys and Games",
+      "browse_node_hint": "16310101",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": 0.30
+    },
+    {
+      "category": "Video Game Consoles",
+      "browse_node_hint": null,
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 8 }
+      ],
+      "minimum_referral_fee_usd": null
+    },
+    {
+      "category": "Video Games and Gaming Accessories",
+      "browse_node_hint": "228013",
+      "tier_type": "flat",
+      "tiers": [
+        { "price_range": "All prices", "rate_pct": 15 }
+      ],
+      "minimum_referral_fee_usd": null
+    },
+    {
+      "category": "Watches",
+      "browse_node_hint": "6400762011",
+      "tier_type": "proportional",
+      "tier_type_note": "Fee is calculated proportionally: each portion of the price is charged at its own rate and summed",
+      "tiers": [
+        { "price_range": "Portion of total sales price up to $1,500.00",    "rate_pct": 16 },
+        { "price_range": "Portion of total sales price greater than $1,500.00", "rate_pct": 3  }
+      ],
+      "minimum_referral_fee_usd": 0.30,
+      "example": { "item_price_usd": 2000, "calculation": "16% × $1500 + 3% × $500 = $240.00 + $15.00 = $255.00", "final_fee_usd": 255.00 }
+    }
+  ],
+  "tier_type_legend": {
+    "flat":        "Single rate applies to the entire total sales price",
+    "whole_price": "The total sales price determines which single rate applies to the ENTIRE amount",
+    "proportional":"Each portion of the price is charged at its own bracket rate; amounts are summed (like income tax brackets)"
+  },
+  "calculation_rules": {
+    "description": "How Amazon calculates the referral fee for each order",
+    "steps": [
+      "1. Determine total sales price = item price + shipping charges + gift wrap charges (excluding Amazon-collected tax)",
+      "2. Identify the category's tier_type: flat / whole_price / proportional",
+      "3. Apply the rate(s) according to tier_type",
+      "4. Compare the result with the per-item minimum referral fee",
+      "5. Amazon deducts whichever amount is GREATER: the calculated fee OR the minimum fee"
+    ],
+    "examples": [
+      {
+        "scenario": "Proportional – Jewelry at $400",
+        "calculation": "20% × $250 + 5% × ($400 - $250) = $50.00 + $7.50 = $57.50",
+        "final_fee_usd": 57.50
+      },
+      {
+        "scenario": "Whole-price – Baby Product at $8",
+        "calculation": "8% × $8 = $0.64 (price ≤ $10, so 8% applies to the whole amount)",
+        "final_fee_usd": 0.64
+      },
+      {
+        "scenario": "Whole-price – Baby Product at $25",
+        "calculation": "15% × $25 = $3.75 (price > $10, so 15% applies to the whole amount)",
+        "final_fee_usd": 3.75
+      },
+      {
+        "scenario": "Minimum fee trigger – Home and Kitchen at $1.50",
+        "calculation": "15% × $1.50 = $0.225; minimum fee $0.30 > $0.225 → minimum applies",
+        "final_fee_usd": 0.30
+      }
+    ]
+  },
+  "quick_reference": {
+    "description": "Categories grouped by flat rate (sorted ascending)",
+    "rate_8_pct":  ["Computers", "Consumer Electronics", "Full-Size Appliances", "Video Game Consoles"],
+    "rate_10_pct": ["Tires"],
+    "rate_12_pct": ["Automotive and Powersports", "Base Equipment Power Tools", "Business, Industrial, and Scientific Supplies"],
+    "rate_15_pct": [
+      "Backpacks, Handbags, and Luggage", "Eyewear", "Footwear",
+      "Home and Kitchen", "Lawn and Garden", "Mattresses",
+      "Media - Books, DVD, Music, Software, Video",
+      "Musical Instruments and AV Production", "Office Products",
+      "Pet Products (standard)", "Sports and Outdoors",
+      "Tools and Home Improvement", "Toys and Games",
+      "Video Games and Gaming Accessories"
+    ],
+    "rate_20_pct": ["Gift Cards", "Merchant Fulfilled Services"],
+    "rate_22_pct": ["Pet Products (veterinary diets)"],
+    "rate_45_pct": ["Amazon Device Accessories"],
+    "tiered_whole_price_categories": [
+      "Baby Products (8%/15% at $10)",
+      "Beauty, Health and Personal Care (8%/15% at $10)",
+      "Clothing and Accessories (5%/10%/17% at $15/$20)",
+      "Grocery and Gourmet (8%/15% at $15)",
+      "Lawn Mowers and Snow Throwers (15%/8% at $500)"
+    ],
+    "tiered_proportional_categories": [
+      "Compact Appliances (15%/8% at $300)",
+      "Electronics Accessories (15%/8% at $100)",
+      "Fine Art (20%/15%/10%/5% at $100/$1000/$5000)",
+      "Furniture (15%/10% at $200)",
+      "Jewelry (20%/5% at $250)",
+      "Watches (16%/3% at $1500)"
+    ],
+    "no_minimum_fee_categories": [
+      "Fine Art", "Gift Cards", "Grocery and Gourmet",
+      "Media - Books, DVD, Music, Software, Video",
+      "Video Game Consoles", "Video Games and Gaming Accessories"
+    ]
+  }
+}

@@ -1,0 +1,52 @@
+# Workflow Default Configurations
+# These values are used when no job-level override is provided.
+# Override by passing params in the job request.
+
+product_screening:
+  # Stage 1: Basic filters
+  price_min: 20
+  price_max: 40
+  weight_min: 20        # grams
+  weight_max: 1000      # grams
+  rating_min: 4.2
+  rating_max: 4.5
+  daily_sales_min: 30
+  daily_sales_max: 40
+
+  # Stage 2: Competition
+  us_seller_ratio_min: 0.80
+
+  # Stage 3: Profitability
+  cost_ratio_max: 0.30       # cost < 30% of selling price
+  profit_margin_min: 0.30    # profit margin > 30%
+
+  # Stage 4: Compliance
+  epa_status_allowed:
+    - exempt
+    - not_required
+
+  # Stage 5: Advertising
+  ad_traffic_ratio_max: 0.20  # BSR >50 ASIN ad traffic < 20%
+
+  # Stage 6: Social media (optional)
+  enable_social_analysis: true
+  enable_patent_check: true
+
+  # Execution settings
+  search_max_pages: 3         # pages to search for candidates
+  parallel_concurrency: 5     # max parallel extractor calls
+
+competitor_monitor:
+  check_interval_hours: 4
+  price_change_alert_pct: 0.10
+  stock_drop_alert_pct: 0.50
+
+review_analysis:
+  max_reviews_per_product: 100
+  sample_positive: 15
+  sample_negative: 15
+  sample_neutral: 5
+
+bsr_collection:
+  max_pages: 2
+  categories: []
