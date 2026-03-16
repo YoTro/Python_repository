@@ -32,5 +32,12 @@ compliance_tools = [
     )
 ]
 
+_COMPLIANCE_META = {
+    "check_epa": ("FILTER", "EPA registration requirement status"),
+    "check_patent": ("FILTER", "patent risk level"),
+    "get_regulations": ("FILTER", "list of applicable regulations"),
+}
+
 for tool in compliance_tools:
-    tool_registry.register_tool(tool, handle_compliance_tool)
+    cat, ret = _COMPLIANCE_META.get(tool.name, ("FILTER", ""))
+    tool_registry.register_tool(tool, handle_compliance_tool, category=cat, returns=ret)

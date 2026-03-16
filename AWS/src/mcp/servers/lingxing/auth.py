@@ -19,7 +19,13 @@ class LingxingAuth:
 
     BASE_URL = "https://gw.lingxingerp.com/newadmin/api/passport"
 
-    def __init__(self, token_file: str = "config/lingxing_token.json"):
+    # Default: <project_root>/config/lingxing_token.json
+    _DEFAULT_TOKEN_FILE = os.path.join(
+        os.path.dirname(__file__), "..", "..", "..", "..", "config", "lingxing_token.json"
+    )
+
+    def __init__(self, token_file: str = None):
+        token_file = token_file or os.path.abspath(self._DEFAULT_TOKEN_FILE)
         self.session = requests.Session(impersonate="chrome")
         self.token_file = token_file
         self.common_headers = {

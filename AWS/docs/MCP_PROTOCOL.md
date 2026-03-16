@@ -19,7 +19,7 @@ Our MCP capabilities are structured to support strict microservice isolation and
     *   **L2 (Calculation / Output Layer)**: Consumes data from `DataCache` or processes outputs. Does NOT call L1 directly (e.g., `finance`, `compliance`, `output`).
     *   *Example*: The `output` domain is subdivided into discrete handlers (`write_bitable.py`, `send_card.py`, `export_csv.py`) that aggregate via `tools.py` to maintain the Single Responsibility Principle.
 *   **`src/mcp/client/` (The Consumers)**: Contains the `LocalMCPClient`. This is the unified interface used by the `WorkflowEngine` and the `MCPAgent` to call tools. By routing internal code through the MCP Client, we ensure 100% consistency between LLM-driven and Code-driven execution.
-*   **`src/registry/` (The Capability Hub)**: Moved to the top-level directory (`src/registry/tools.py`, `resources.py`, `prompts.py`). It acts as the central hub that aggregates all capabilities across different servers without tying them to a specific protocol.
+*   **`src/registry/` (The Capability Hub)**: Moved to the top-level directory (`src/registry/tools.py`, `resources.py`, `prompts.py`). It acts as the central hub that aggregates all capabilities across different servers without tying them to a specific protocol. Each tool carries `ToolMeta` with `category` (DATA/COMPUTE/FILTER/OUTPUT) and `returns` metadata, used by the `ToolCatalogFormatter` to build categorized system prompts for the agent.
 *   **`src/mcp/server.py`**: The external-facing stdio server (`AWSHelperServer`) that allows Desktop LLMs (like Claude) to connect to our platform.
 
 ## 3. Extending Capabilities (Adding a New Tool)
@@ -32,7 +32,9 @@ To add a new capability that an LLM or Workflow can use:
     *   Instantiate a `mcp.types.Tool` object with a unique `name`, a clear `description` (crucial for LLMs), and an `inputSchema` (JSON Schema).
     *   Implement an `async` handler function that accepts `name: str` and `arguments: dict`.
     *   The handler should execute the core logic (interacting with `DataCache` if crossing L1/L2) and return a `list[mcp.types.TextContent]`.
-    *   Call `tool_registry.register_tool(your_tool_instance, your_handler)`.
+    *   Call `tool_registry.register_tool(your_tool_instance, your_handler, category="DATA", returns="description of output")`.
+        *   `category`: One of `DATA`, `COMPUTE`, `FILTER`, `OUTPUT`. Controls how the tool appears in the agent's system prompt catalog.
+        *   `returns`: Short description of what the tool returns (shown to LLM for planning).
 4.  **Register the Domain**: Ensure your `tools.py` is imported in **`src/registry/tools.py`** to trigger the registration during startup.
 
 ## 4. Using Tools Internally
@@ -48,7 +50,7 @@ async def _my_step(items: list, ctx: WorkflowContext):
 ```
 
 **In an Agent:**
-The `MCPAgent` automatically lists all tools via `self.mcp.list_tools()` and feeds their schemas to the LLM. It then executes the LLM's chosen action using `self.mcp.call_tool_json()`.
+The `MCPAgent` uses `PromptBuilder` to assemble a categorized system prompt from `ToolRegistry` metadata. Tools are grouped by category (DATA → COMPUTE → FILTER → OUTPUT) with parameter schemas and return descriptions, enabling the LLM to plan multi-phase execution autonomously.
 
 ## 5. External Client Integration (Claude Desktop)
 

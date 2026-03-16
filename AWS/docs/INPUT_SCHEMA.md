@@ -12,6 +12,26 @@ All data within the system conforms to the Pydantic models defined in `src/core/
 
 **Benefit**: These models provide strict validation, type safety, and auto-generated JSON schemas, which are crucial for LLMs to understand and manipulate data correctly via the MCP Protocol.
 
+## 1.1 Tool Registration Metadata
+
+Each tool registered in `ToolRegistry` carries additional `ToolMeta`:
+
+| Field | Type | Values | Purpose |
+|---|---|---|---|
+| `category` | `str` | `DATA`, `COMPUTE`, `FILTER`, `OUTPUT` | Groups tools in the agent system prompt |
+| `returns` | `str` | Free text | Describes output to help LLM plan tool chains |
+
+Example registration:
+```python
+tool_registry.register_tool(
+    tool, handler,
+    category="DATA",
+    returns="list of products with ASIN, title, price",
+)
+```
+
+The `ToolCatalogFormatter` reads this metadata to generate a categorized tool catalog (48 tools across 4 categories) injected into the agent's system prompt via `$tool_catalog`.
+
 ## 2. Agent Inputs and Task Arguments
 
 Agents and high-level processors primarily receive inputs as either:

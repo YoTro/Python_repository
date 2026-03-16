@@ -2,7 +2,7 @@
 
 The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platform** featuring a robust **Agentic Architecture** and **Model Context Protocol (MCP)** integration. It enables LLMs (Claude, Gemini, etc.) and deterministic code-based Workflow Engines to autonomously perform market research, competitor analysis, and listing optimization.
 
-```txt
+```
 ================================================================================
                      DUAL-TRACK AGENT ARCHITECTURE
               Single-User · MCP-Native · Multi-User Ready
@@ -73,8 +73,8 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |  WorkflowRegistry:           |             |  Constraint Boundaries:          |
 |    "product_screening"       |             |  +-------------------------+     |
 |    "competitor_monitor"      |             |  | allowed_tools[ ]        |     |
-|    "review_analysis"         |             |  | max_steps: N            |     |
-|    "replenish_alert"         |             |  | token_budget: N         |     |
+|    "review_analysis"         |             |  | max_steps: N (display)  |     |
+|    "replenish_alert"         |             |  | token_budget: N (cloud) |     |
 |    ...register(name, fn)     |             |  | human_in_loop: true     |     |
 |                              |             |  | (High-risk confirmation) |     |
 |  Execution Engine:           |             |  +-------------------------+     |
@@ -82,13 +82,13 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |    checkpoint.save()  ───────┼─ Resume ───┼── session.save()                 |
 |    result = step.run() ──────┼────────────┼── tool = agent.decide()          |
 |    if not items: break       |             |                                  |
-|                              |             |  System Prompt Conventions:      |
-|  Step Tri-primitives:        |             |   · Output format                |
-|  +----------------------+    |             |   · Tool calling specs           |
-|  | EnrichStep  ─────────┼────┼── MCP Client|   · Termination conditions       |
-|  | ProcessStep ─────────┼────┼── Intel Router                                |
-|  | FilterStep  (Python) |    |             |  filters_override injected       |
-|  +----------------------+    |             |  via session context              |
+|                              |             |  System Prompt Architecture:     |
+|  Step Tri-primitives:        |             |   · .md template (editable)      |
+|  +----------------------+    |             |   · PromptBuilder (assembly)     |
+|  | EnrichStep  ─────────┼────┼── MCP Client|   · ToolCatalogFormatter         |
+|  | ProcessStep ─────────┼────┼── Intel Router  (groups by category)          |
+|  | FilterStep  (Python) |    |             |  Autonomous output rules:        |
+|  +----------------------+    |             |  · Auto-create Bitable if no ID  |
 |                              |             |                                  |
 +==============|===============+             +=================|================+
                |                                               |
@@ -100,13 +100,15 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                         TOOL REGISTRY                                        |
 |                                                                              |
 |   Unified Reg / Discovery / Versioning / ACL                                 |
+|   ToolMeta per tool: category (DATA/COMPUTE/FILTER/OUTPUT) + returns desc    |
 |                                                                              |
-|   tool_name       server_url          version   allowed_plans                |
-|   ─────────────── ─────────────────── ───────── ─────────────────────────── |
-|   amazon_search   amazon-server:8001  v2.1      [free, pro, enterprise]      |
-|   patent_check    compliance-server   v1.3      [pro, enterprise]             |
-|   social_trend    social-server       v1.0      [enterprise]                  |
-|   ...                                                                        |
+|   tool_name       category   server            returns                       |
+|   ─────────────── ────────── ───────────────── ──────────────────────────── |
+|   search_products DATA       amazon-server     list of products w/ ASIN      |
+|   calc_profit     COMPUTE    finance-server    profit margin as decimal      |
+|   check_epa       FILTER     compliance-server EPA requirement status        |
+|   add_bitable_rec OUTPUT     output-server     created record ID             |
+|   ...  (48 tools total across 7 domain servers)                              |
 |                                                                              |
 |   [Single-User] Memory dict, no filtering                                    |
 |   [Ext Point #4] Per-tenant tool visibility control                          |
@@ -447,9 +449,13 @@ The project follows a strict **Layered Architecture** within the `src/` director
 AWS/
 ├── src/
 │   ├── agents/             # AGENT TRACK: Exploratory reasoning loops
-│   │   ├── mcp_agent.py    # ReAct loop implementation
-│   │   ├── session.py      # AgentSession & Persistent Session Manager
-│   │   └── base_agent.py   # Abstract base for all intelligent agents
+│   │   ├── mcp_agent.py    # ReAct loop with cloud token budget tracking
+│   │   ├── session.py      # AgentSession (cloud_token_usage + token_usage)
+│   │   ├── base_agent.py   # Abstract base for all intelligent agents
+│   │   └── prompts/        # 3-layer system prompt architecture
+│   │       ├── mcp_agent_system.md      # Human-editable template
+│   │       ├── prompt_builder.py        # Runtime assembly (string.Template)
+│   │       └── tool_catalog_formatter.py # Groups tools by category
 │   │
 │   ├── workflows/          # WORKFLOW TRACK: Deterministic batch pipelines
 │   │   ├── engine/         # Sequential execution engine with checkpoint support
@@ -468,7 +474,7 @@ AWS/
 │   │   └── callbacks/      # Output strategies (Feishu, CSV, MCP, Factory)
 │   │
 │   ├── registry/           # CAPABILITY HUB: Unified Discovery
-│   │   ├── tools.py        # Central ToolRegistry (Domain-driven auto-registration)
+│   │   ├── tools.py        # ToolRegistry + ToolMeta(category, returns) metadata
 │   │   ├── resources.py    # Registry for static JSON/Markdown context
 │   │   └── prompts.py      # Registry for Standard Operating Procedures (SOPs)
 │   │
@@ -476,12 +482,13 @@ AWS/
 │   │   ├── client/         # LocalMCPClient (Unified bridge for both tracks)
 │   │   ├── server.py       # External Stdio Server for desktop LLM clients
 │   │   └── servers/        # DOMAIN MICROSERVICES (L1/L2 Tools)
-│   │       ├── amazon/     # L1: Focused Amazon scrapers (curl_cffi)
-│   │       ├── market/     # L1: Market API integrations (SellerSprite, etc.)
+│   │       ├── amazon/     # L1: 17 Amazon scrapers (curl_cffi)
+│   │       ├── market/     # L1: Xiyouzhaoci + SellerSprite (keyword/ASIN)
+│   │       ├── lingxing/   # L1: Lingxing ERP inventory (AES-ECB auth)
 │   │       ├── social/     # L1: TikTok/Meta trend analysis
 │   │       ├── finance/    # L2: Profit & Fee calculation (Consumes Cache)
 │   │       ├── compliance/ # L2: EPA/Patent/Trademark checking
-│   │       └── output/     # L2: Data reporting (Bitable, Card, Docs)
+│   │       └── output/     # L2: 14 tools (Bitable CRUD, Card, Doc, CSV, JSON)
 │   │
 │   ├── intelligence/       # AI ORCHESTRATION: Provider routing
 │   │   ├── dto.py          # LLMResponse DTOs (Zero dependencies)
@@ -661,4 +668,43 @@ The `FallbackHandler` uses the **Strategy Pattern** with a dictionary mapping `F
 The router serves both orchestration tracks through a single `IntelligenceRouter` instance created by the `JobManager`:
 
 - **Workflow Track**: `ProcessStep` declares a `compute_target` (PURE_PYTHON / LOCAL_LLM / CLOUD_LLM). The step maps this to a `TaskCategory` and calls `ctx.router.batch_route_and_execute()`. Results are cached per `(job_id, step_name, item_id)` to avoid redundant LLM calls on workflow resume.
-- **Agent Track**: `BaseAgent` receives the router in its constructor. The `MCPAgent` calls `router.route_and_execute()` in each iteration of its ReAct loop, typically with `DEEP_REASONING` since agent tasks are exploratory by nature.
+- **Agent Track**: `BaseAgent` receives the router in its constructor. The `MCPAgent` calls `router.route_and_execute()` in each iteration of its ReAct loop, forced to `DEEP_REASONING` since agent tasks are exploratory by nature.
+
+### 5.8 Agent Token Budget Strategy
+
+The `MCPAgent` tracks cumulative token usage across all LLM calls, but only **cloud** tokens count toward the budget:
+
+| Metric | Tracked In | Budget-Relevant |
+|---|---|---|
+| `session.token_usage` | All providers (total) | No (informational) |
+| `session.cloud_token_usage` | Cloud providers only | Yes (triggers batch switch) |
+
+**Local model tokens are free** — they consume local compute, not API credits. When the local model is strong enough to handle agent reasoning, the agent loop runs without any budget constraint.
+
+When `cloud_token_usage >= token_budget` (default 50,000):
+1. Progress callback notifies user: "Switching to batch mode"
+2. Agent injects a forced summarization prompt
+3. LLM produces Final Answer from all data collected so far
+4. Session status → `completed` (not `failed`)
+
+`max_steps` remains as a **progress display counter** — it does NOT terminate the agent.
+
+### 5.9 Agent System Prompt Architecture
+
+The agent system prompt is built from three layers:
+
+```
+mcp_agent_system.md          Human-editable template with $variables
+        │
+        v
+PromptBuilder.build()        Loads .md, injects runtime values via string.Template
+        │
+        v
+ToolCatalogFormatter          Groups 48 tools into 4 categories from ToolMeta
+                              DATA → COMPUTE → FILTER → OUTPUT
+```
+
+The template includes:
+- **Execution Phases**: COLLECT → FILTER → ENRICH → ANALYZE → OUTPUT
+- **Autonomous Output Rules**: Agent must never ask for IDs it can discover via tools (e.g., auto-create Bitable)
+- **Tool Disambiguation**: Explicit warnings about similar tools (e.g., `search_products` vs `xiyou_keyword_analysis`)

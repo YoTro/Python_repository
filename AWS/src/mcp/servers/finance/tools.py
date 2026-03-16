@@ -54,5 +54,12 @@ finance_tools = [
     )
 ]
 
+_FINANCE_META = {
+    "calc_profit": ("COMPUTE", "profit margin as decimal"),
+    "calc_fba_fee": ("COMPUTE", "FBA fee in USD"),
+    "estimate_cost": ("COMPUTE", "estimated manufacturing cost in USD"),
+}
+
 for tool in finance_tools:
-    tool_registry.register_tool(tool, handle_finance_tool)
+    cat, ret = _FINANCE_META.get(tool.name, ("COMPUTE", ""))
+    tool_registry.register_tool(tool, handle_finance_tool, category=cat, returns=ret)
