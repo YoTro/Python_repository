@@ -34,11 +34,12 @@ Test the foundational building blocks and utilities.
 
 ### B. Stateful Management Tests
 Verify session persistence for Agents and execution checkpoints for Workflows.
-*   **Location**: `tests/test_agent_session.py`, `tests/test_workflow_engine.py`
+*   **Location**: `tests/test_agent_session.py`, `tests/test_workflow_engine.py`, `tests/test_checkpoint_resume.py`
 *   **Command**:
     ```bash
-    PYTHONPATH=. venv311/bin/pytest tests/test_agent_session.py tests/test_workflow_engine.py
+    PYTHONPATH=. venv311/bin/pytest tests/test_agent_session.py tests/test_workflow_engine.py tests/test_checkpoint_resume.py
     ```
+*   **Note**: `AgentSession` now tracks `cloud_token_usage` separately from `token_usage`. Tests should verify that local model tokens do not increment `cloud_token_usage`.
 
 ### C. Data Orchestration (L1/L2) Tests
 Validates that L1 scrapers write to the cache and L2 calculators consume from it correctly.

@@ -48,10 +48,26 @@ This guide provides essential information for developers to understand, maintain
 ### C. Adding a New MCP Tool
 1.  Locate the relevant domain in `src/mcp/servers/`.
 2.  In `tools.py`, define the `Tool` object (Name, Description, InputSchema).
-3.  Add the tool to the `tool_registry` with an async handler.
-4.  If it's a new domain (e.g., `advertising`), create the folder and register its import in `src/mcp/registry/tools.py`.
+3.  Register with metadata:
+    ```python
+    tool_registry.register_tool(
+        tool, handler,
+        category="DATA",      # DATA | COMPUTE | FILTER | OUTPUT
+        returns="list of products with ASIN and price",  # shown to LLM
+    )
+    ```
+    The `category` controls grouping in the agent's system prompt. The `returns` description helps the LLM plan which tools to chain.
+4.  If it's a new domain (e.g., `advertising`), create the folder and register its import in `src/registry/tools.py`.
 
-### D. Using Telemetry & ETA
+### D. Modifying the Agent System Prompt
+The agent prompt is a 3-layer system — you should rarely need to touch code:
+1.  **Edit the template**: `src/agents/prompts/mcp_agent_system.md` — human-readable Markdown with `$tool_catalog` and `$token_budget` variables.
+2.  **Tool catalog is auto-generated**: `tool_catalog_formatter.py` reads `ToolMeta` from the registry and groups tools into DATA/COMPUTE/FILTER/OUTPUT sections.
+3.  **Assembly**: `prompt_builder.py` loads the `.md` template and injects the catalog via `string.Template`.
+
+To add a new execution phase or constraint, edit the `.md` file directly — no code changes needed.
+
+### F. Using Telemetry & ETA
 When writing a new Feishu command or Workflow step:
 *   **Static ETA**: Update `TimeEstimator` in `src/core/telemetry/tracker.py` with your baseline.
 *   **Dynamic Progress**: Ensure your workflow step calls `callback.on_progress()` to trigger the `TelemetryTracker` moving-average calculation.
@@ -75,5 +91,6 @@ venv311/bin/pytest tests/test_feishu_full_flow.py -s
 *   `src/core/`: The "Kernel". Scrapers, Telemetry, Models, Utils (proxy, config, cookies, CSV, parser, account helpers).
 *   `src/mcp/servers/`: The "Capabilities". Where the actual work happens.
 *   `src/workflows/`: The "Industrial Orchestrator". Deterministic batching.
-*   `src/agents/`: The "Intelligent Orchestrator". ReAct-based exploration.
+*   `src/agents/`: The "Intelligent Orchestrator". ReAct-based exploration with cloud token budgeting.
+    *   `src/agents/prompts/`: 3-layer system prompt (`.md` template + builder + catalog formatter).
 *   `src/entry/`: The "Gates". CLI and Bot listeners.

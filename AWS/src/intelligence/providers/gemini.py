@@ -91,8 +91,9 @@ class GeminiProvider(BaseLLMProvider):
                 config=config,
             )
             
-            token_count = 0 # Older client does not expose usage metadata directly
-            
+            usage = getattr(response, "usage_metadata", None)
+            token_count = usage.total_token_count if usage else await self.count_tokens(prompt, system_message)
+
             return LLMResponse(
                 text=response.text,
                 provider_name="gemini",

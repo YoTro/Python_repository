@@ -4,18 +4,25 @@ This document outlines best practices for interacting with the LLMs integrated i
 
 ## 1. Prompt Engineering Principles
 
-*   **Clear Role & Persona**: Always start your system message by clearly defining the LLM's role (e.g., "You are a Senior Amazon Category Manager.").
-*   **Explicit Instructions**: Provide unambiguous instructions for the task. Use bullet points or numbered lists.
-*   **Output Format**: Explicitly state the desired output format, especially when expecting JSON. The `IntelligenceRouter` and `Pydantic` schemas handle this, but reinforcing it in the prompt helps.
-*   **Context First**: Provide all necessary context (data, previous turns, resources) before asking the question.
-*   **Example-Driven (Few-shot)**: For complex or nuanced tasks, provide one or two examples of input/output pairs.
-*   **Negative Constraints**: Tell the LLM what *not* to do (e.g., "Do not include conversational filler.", "Return ONLY the JSON.").
+*   **3-Layer System Prompt**: The `MCPAgent` system prompt is built from three components:
+    1.  **`mcp_agent_system.md`** — Human-editable Markdown template with `$tool_catalog` and `$token_budget` variables. Edit this to change agent behavior without touching code.
+    2.  **`PromptBuilder`** — Loads the `.md` template and injects runtime values via `string.Template` (no Jinja2 dependency).
+    3.  **`ToolCatalogFormatter`** — Reads `ToolMeta(category, returns)` from the registry and groups 48 tools into DATA / COMPUTE / FILTER / OUTPUT sections.
+*   **Execution Phases**: The template guides the LLM through 5 phases: COLLECT → FILTER → ENRICH → ANALYZE → OUTPUT. Not all phases are required for every task.
+*   **Autonomous Output Rules**: The agent is instructed to never ask the user for IDs or configuration it can discover via tools. For example, if asked to output to Bitable without an `app_token`, the agent must call `create_feishu_bitable` autonomously.
+*   **Tool Disambiguation**: Similar tools are explicitly distinguished in descriptions (e.g., `search_products` = Amazon direct search; `xiyou_keyword_analysis` = third-party Xiyouzhaoci database).
+*   **Negative Constraints**: Only use parameters in the tool's schema. One tool call per turn. No hallucinated data.
 
 ## 2. Token Management & Cost Control
 
-*   **Understand Token Limits**: Be aware of the context window limits of both local and cloud models.
+*   **Cloud-Only Token Budget**: The `MCPAgent` tracks cumulative cloud token usage separately from local tokens. Only cloud API calls (Gemini, Claude) count toward the budget (default: 50,000 tokens). Local model tokens are free and unlimited.
+*   **Budget Enforcement**: When cloud tokens exceed the budget, the agent forces a final summary from collected data and notifies the user that remaining work will use batch API. The agent does NOT hard-fail.
 *   **Leverage Local Models for Pre-processing**: For large text inputs (e.g., raw HTML, long customer reviews), use the `IntelligenceRouter` to automatically dispatch simple cleaning or summarization tasks to the local Llama.cpp model first.
-*   **Batching**: For high-volume, non-time-sensitive tasks, explore batch processing options (currently a future feature for cloud providers).
+*   **Batch Fallback**: When the agent's cloud token budget is exhausted during a complex research task, `batch_route_and_execute()` can process remaining items asynchronously at lower priority.
+*   **Token Tracking Fields**:
+    *   `session.token_usage` — total tokens across all providers (informational).
+    *   `session.cloud_token_usage` — cloud-only tokens (budget-relevant).
+*   **GeminiProvider Token Reporting**: Now reads `usage_metadata.total_token_count` from responses, with `count_tokens()` fallback for older API versions.
 
 ## 3. Model Selection Strategies
 
