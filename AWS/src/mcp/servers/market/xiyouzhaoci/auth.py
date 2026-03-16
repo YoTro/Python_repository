@@ -12,7 +12,13 @@ class XiyouZhaociAuth:
     Handles SMS code and login to get the token.
     """
 
-    def __init__(self, token_file: str = "config/xiyouzhaoci_token.json"):
+    # Default: <project_root>/config/xiyouzhaoci_token.json
+    _DEFAULT_TOKEN_FILE = os.path.join(
+        os.path.dirname(__file__), "..", "..", "..", "..", "..", "config", "xiyouzhaoci_token.json"
+    )
+
+    def __init__(self, token_file: str = None):
+        token_file = token_file or os.path.abspath(self._DEFAULT_TOKEN_FILE)
         self.session = requests.Session(impersonate="chrome")
         self.base_url = "https://api.xiyouzhaoci.com"
         self.token_file = token_file

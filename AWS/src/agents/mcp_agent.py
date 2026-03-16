@@ -4,130 +4,236 @@ import logging
 from typing import Any, Optional
 from src.agents.base_agent import BaseAgent
 from src.intelligence.providers.base import BaseLLMProvider
+from src.intelligence.router import TaskCategory
 from src.mcp.client import get_mcp_client
 from src.agents.session import AgentSessionManager, AgentSession
+from src.agents.prompts.prompt_builder import PromptBuilder
+from src.registry.tools import tool_registry
 
 logger = logging.getLogger(__name__)
+
+_MAX_DUPLICATE_CALLS = 2   # abort tool loop after N identical consecutive calls
+_DEFAULT_TOKEN_BUDGET = 50000  # cumulative *cloud* token threshold before switching to batch
+_LOCAL_PROVIDERS = {"local", "llama_cpp", "llama"}  # provider names that run locally (free)
+
 
 class MCPAgent(BaseAgent):
     """
     Agent that uses a ReAct-style loop to dynamically interact with MCP Tools.
     Maintains memory and context across turns using AgentSession.
+
+    Token-budget strategy:
+      - Steps are for progress display only, NOT a hard failure limit.
+      - Cumulative cloud token usage is tracked (local model tokens are free).
+      - When cloud usage exceeds the budget, the agent forces a final summary
+        and notifies the user that remaining work switches to batch API.
     """
-    def __init__(self, provider: BaseLLMProvider, session_mgr: Optional[AgentSessionManager] = None):
+    def __init__(
+        self,
+        provider: BaseLLMProvider,
+        session_mgr: Optional[AgentSessionManager] = None,
+        token_budget: int = _DEFAULT_TOKEN_BUDGET,
+    ):
         super().__init__(provider)
         self.mcp = get_mcp_client()
         self.session_mgr = session_mgr or AgentSessionManager()
+        self._prompt_builder = PromptBuilder()
+        self.token_budget = token_budget
+
+    # ── helpers ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _accum_tokens(session: AgentSession, response_obj) -> None:
+        """Accumulate token usage; only cloud tokens count toward the budget."""
+        if not response_obj or not response_obj.token_usage:
+            return
+        session.token_usage += response_obj.token_usage
+        if response_obj.provider_name not in _LOCAL_PROVIDERS:
+            session.cloud_token_usage += response_obj.token_usage
+
+    @staticmethod
+    def _parse_tool_call(response: str) -> tuple[Optional[str], Optional[dict]]:
+        """Extract (action, action_input) from an LLM response. Returns (None, None) on failure."""
+        try:
+            if "```json" in response:
+                json_str = response.split("```json")[1].split("```")[0].strip()
+            elif "{" in response and "}" in response:
+                json_str = response[response.find("{"):response.rfind("}") + 1]
+            else:
+                return None, None
+            call = json.loads(json_str)
+            return call.get("action"), call.get("action_input", {})
+        except Exception:
+            return None, None
+
+    async def _force_final_answer(self, session: AgentSession, system_message: str, reason: str) -> str:
+        """
+        Ask the LLM one last time to produce a Final Answer using
+        all the data it has already collected.
+        """
+        session.add_message(
+            role="tool", name="system",
+            content=(
+                f"SYSTEM: {reason} "
+                "You MUST now produce your Final Answer using ALL the data you have collected so far. "
+                "Do NOT call any more tools. Start your reply with 'Final Answer:'."
+            ),
+        )
+        conversation = session.format_history_as_text()
+        response_obj = await self.router.route_and_execute(
+            conversation, system_message=system_message, category=TaskCategory.DEEP_REASONING
+        )
+        response = response_obj.text if response_obj else ""
+        self._accum_tokens(session, response_obj)
+        session.add_message(role="assistant", content=response)
+
+        if "Final Answer:" in response:
+            return response.split("Final Answer:")[-1].strip()
+        # LLM still didn't comply — return whatever it said
+        return response.strip()
+
+    # ── main loop ─────────────────────────────────────────────────────────
 
     async def run(self, query: str, session_id: str = "default_session", callback=None) -> str:
         # 1. Load or Create Session
         session = self.session_mgr.load(session_id)
         if not session:
             session = self.session_mgr.create(session_id=session_id)
-            
+
         # Add the new query if it's not a resumed session without a query
         if query:
             session.add_message(role="user", content=query)
-            
-        tools = await self.mcp.list_tools()
-        
-        tool_descriptions = []
-        for t in tools:
-            tool_descriptions.append(
-                f"Tool Name: {t.name}\nDescription: {t.description}\nInput Schema: {json.dumps(t.inputSchema)}"
-            )
-        
-        tools_str = "\n\n".join(tool_descriptions)
 
-        system_message = f"""You are an AWS (Amazon Web Scraper) MCP Agent capable of deep market research.
-You have access to the following tools:
+        system_message = self._prompt_builder.build(
+            tool_registry, max_steps=session.max_steps, token_budget=self.token_budget
+        )
 
-{tools_str}
+        # Duplicate tool call tracking
+        last_tool_call = None
+        duplicate_count = 0
+        budget_exceeded = False
 
-To answer the user's query, you can use these tools to gather information.
-If you need to use a tool, you MUST reply with a JSON block in this exact format:
-```json
-{{
-    "action": "tool_name",
-    "action_input": {{"arg1": "value"}}
-}}
-```
-
-After you output the JSON block, STOP writing. The system will provide you with the Observation.
-Once you have gathered enough information to answer the user, reply with your final answer prefixed with "Final Answer: ".
-"""
-        
-        # 2. Execution Loop
-        while session.current_step < session.max_steps:
+        # 2. Execution Loop — steps are for progress display, NOT a hard cap
+        while True:
             session.current_step += 1
-            logger.info(f"MCPAgent [{session.session_id}] Iteration {session.current_step}/{session.max_steps}")
-            
+            logger.info(
+                f"MCPAgent [{session.session_id}] Step {session.current_step} "
+                f"(cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
+                f"total: {session.token_usage})"
+            )
+
             # Persist progress
             self.session_mgr.save(session)
-            
+
+            # Progress callback
             if callback:
                 try:
                     await callback.on_progress(
                         step_index=session.current_step,
                         total_steps=session.max_steps,
                         step_name=f"Agent Reasoning (Step {session.current_step})",
-                        message="Consulting LLM or fetching tool data..."
+                        message=(
+                            f"Cloud tokens: {session.cloud_token_usage}/{self.token_budget}. "
+                            "Consulting LLM or fetching tool data..."
+                        ),
                     )
                 except Exception as e:
                     logger.warning(f"Agent callback on_progress failed: {e}")
-            
-            # Format history for the LLM
+
+            # ── Token budget check ────────────────────────────────────────
+            if not budget_exceeded and session.cloud_token_usage >= self.token_budget:
+                budget_exceeded = True
+                logger.warning(
+                    f"Cloud token budget exceeded ({session.cloud_token_usage}/{self.token_budget}). "
+                    "Forcing final summary."
+                )
+                if callback:
+                    try:
+                        await callback.on_progress(
+                            step_index=session.current_step,
+                            total_steps=session.max_steps,
+                            step_name="Token Budget Exceeded",
+                            message=(
+                                f"Cloud token usage ({session.cloud_token_usage}) exceeded "
+                                f"budget ({self.token_budget}). Switching to batch mode for "
+                                "remaining analysis. Generating summary of collected data..."
+                            ),
+                        )
+                    except Exception:
+                        pass
+
+                answer = await self._force_final_answer(
+                    session, system_message,
+                    reason=(
+                        f"Cloud token budget exhausted ({session.cloud_token_usage} cloud tokens used). "
+                        "Remaining analysis will be processed via batch API."
+                    ),
+                )
+                session.status = "completed"
+                self.session_mgr.save(session)
+                return answer
+
+            # ── LLM call ──────────────────────────────────────────────────
             conversation = session.format_history_as_text()
-            
-            # CORE CHANGE: Use router instead of direct provider call
-            response_obj = await self.router.route_and_execute(conversation, system_message=system_message)
+
+            response_obj = await self.router.route_and_execute(
+                conversation, system_message=system_message, category=TaskCategory.DEEP_REASONING
+            )
             response = response_obj.text if response_obj else ""
-            logger.debug(f"LLM Response via {response_obj.provider_name if response_obj else 'N/A'}: {response}")
-            
+            self._accum_tokens(session, response_obj)
+            logger.debug(
+                f"LLM Response via {response_obj.provider_name if response_obj else 'N/A'}: "
+                f"{len(response)} chars, {response_obj.token_usage if response_obj else 0} tokens"
+            )
+
+            # ── Final Answer detection ────────────────────────────────────
             if "Final Answer:" in response:
                 final_answer = response.split("Final Answer:")[-1].strip()
                 session.add_message(role="assistant", content=response)
                 session.status = "completed"
                 self.session_mgr.save(session)
                 return final_answer
-            
-            # Try to parse tool call
-            action = None
-            action_input = None
-            try:
-                if "```json" in response:
-                    json_str = response.split("```json")[1].split("```")[0].strip()
-                    call = json.loads(json_str)
-                    action = call.get("action")
-                    action_input = call.get("action_input", {})
-                elif "{" in response and "}" in response:
-                    # Fallback for LLMs that forget backticks
-                    json_str = response[response.find("{"):response.rfind("}")+1]
-                    call = json.loads(json_str)
-                    action = call.get("action")
-                    action_input = call.get("action_input", {})
-            except Exception as e:
-                logger.warning(f"Failed to parse tool call from LLM response: {e}")
-            
-            # Record Assistant's thought/action
+
+            # ── Parse tool call ───────────────────────────────────────────
+            action, action_input = self._parse_tool_call(response)
             session.add_message(role="assistant", content=response)
-            
+
             if action:
+                # Duplicate tool call detection
+                current_call = (action, json.dumps(action_input, sort_keys=True))
+                if current_call == last_tool_call:
+                    duplicate_count += 1
+                    if duplicate_count >= _MAX_DUPLICATE_CALLS:
+                        logger.warning(
+                            f"Duplicate tool call detected {duplicate_count} times: "
+                            f"{action}({action_input}). Injecting hint."
+                        )
+                        session.add_message(
+                            role="tool", name="system",
+                            content=(
+                                f"ERROR: You have called {action} with identical arguments "
+                                f"{duplicate_count} times. The result will be the same. "
+                                f"Either change the arguments (e.g. increment 'page') or "
+                                f"produce your Final Answer from the data you already have."
+                            ),
+                        )
+                        duplicate_count = 0
+                        last_tool_call = None
+                        continue
+                else:
+                    duplicate_count = 1
+                    last_tool_call = current_call
+
                 logger.info(f"LLM called tool: {action} with args {action_input}")
                 try:
                     result = await self.mcp.call_tool_json(action, action_input)
                     observation = json.dumps(result, ensure_ascii=False)
                 except Exception as e:
                     observation = f"Error calling tool: {e}"
-                
-                # Record Tool's observation
+
                 session.add_message(role="tool", content=observation, name=action)
             else:
-                # If it didn't call a tool and didn't say Final Answer, assume it's conversing
+                # No tool call and no Final Answer — assume conversational reply
                 session.status = "completed"
                 self.session_mgr.save(session)
                 return response.strip()
-
-        session.status = "failed"
-        self.session_mgr.save(session)
-        return "Agent reached maximum iterations without completing the task."

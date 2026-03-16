@@ -111,12 +111,13 @@ class FeishuClient:
             .build()
 
         response = self.client.im.v1.message.patch(request)
-        
+
         if not response.success():
             logger.error(f"Feishu update card failed: {response.code}, {response.msg}")
             return {"success": False, "error": response.msg, "code": response.code}
-        
-        return {"success": True, "data": lark.JSON.marshal(response.data)}
+
+        # PatchMessageResponse has no data attribute, just confirm success
+        return {"success": True}
 
     def get_chat_list(self, page_size: int = 20):
         """

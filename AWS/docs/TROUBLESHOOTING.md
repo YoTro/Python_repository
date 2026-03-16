@@ -43,7 +43,29 @@ This guide provides solutions to common issues you might encounter while develop
         *   `llama-cpp-python` installation and GPU support (`n_gpu_layers=-1` for Metal/CUDA).
         *   Use `tests/test_local_llm_direct.py` for isolated troubleshooting of the local model.
 
-## 3. Environment & Import Issues
+## 3. Agent Behavior Issues
+
+*   **Agent asks user for Bitable ID / table_id instead of creating one**:
+    *   **Cause**: The system prompt's Autonomous Output Rules were missing or the agent's LLM didn't follow them.
+    *   **Solution**: The `mcp_agent_system.md` template now includes explicit rules: if the user requests Bitable output without providing `app_token`, the agent must call `create_feishu_bitable` autonomously. If this still occurs, check that `PromptBuilder` is being used (not an inline system prompt).
+
+*   **Agent stops at step N with "Agent reached maximum iterations"**:
+    *   **Cause**: In the old architecture, `max_steps` was a hard limit. This has been replaced with cloud token budgeting.
+    *   **Solution**: `max_steps` is now for progress display only. The real limit is `token_budget` (default 50,000 cloud tokens). When exceeded, the agent forces a final summary instead of failing. If you see this error, you may be running an outdated `mcp_agent.py`.
+
+*   **Agent confuses `xiyou_keyword_analysis` with `search_products`**:
+    *   **Cause**: With 48 tools listed flat, the LLM could not distinguish similar tools.
+    *   **Solution**: Tools are now grouped by category (DATA/COMPUTE/FILTER/OUTPUT) in the system prompt. Tool descriptions include explicit disambiguation: "[Third-party Xiyouzhaoci tool, NOT Amazon search]".
+
+*   **Agent calls the same tool with identical arguments in a loop**:
+    *   **Cause**: LLM reasoning failure, often caused by weak model routing (e.g., local model handling `DEEP_REASONING` tasks).
+    *   **Solution**: Three safeguards are in place: (1) `DEEP_REASONING` is forced for all agent calls, (2) duplicate detection after 2 identical calls injects a correction hint, (3) `ToolRegistry._validate_arguments()` strips hallucinated parameters.
+
+*   **`Xiyouzhaoci auth token not found` — agent doesn't auto-authenticate**:
+    *   **Cause**: The Xiyouzhaoci token file is missing and the agent didn't trigger the auto-SMS flow.
+    *   **Solution**: `_xiyou_auth_required()` in `market/tools.py` auto-sends SMS when `XIYOUZHAOCI_PHONE` env var is set. Ensure the env var is configured.
+
+## 4. Environment & Import Issues
 
 *   **`ImportError: attempted relative import with no known parent package`**:
     *   **Cause**: You're running a submodule directly (e.g., `python src/mcp/server.py`) instead of as part of the package or via an absolute path setup.

@@ -25,7 +25,8 @@ class AgentSession(BaseModel):
     tenant_id: str = "default"
     user_id: str = "default"
     history: List[AgentMessage] = Field(default_factory=list)
-    token_usage: int = 0
+    token_usage: int = 0           # total (cloud + local)
+    cloud_token_usage: int = 0      # cloud API tokens only (budget-relevant)
     max_steps: int = 15
     current_step: int = 0
     status: str = "active"  # active, suspended_for_human, completed, failed

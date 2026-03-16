@@ -32,5 +32,12 @@ social_tools = [
     )
 ]
 
+_SOCIAL_META = {
+    "tiktok_search": ("DATA", "view count and trend direction"),
+    "meta_ad_search": ("DATA", "active ad count"),
+    "social_score": ("COMPUTE", "composite virality score 0-100"),
+}
+
 for tool in social_tools:
-    tool_registry.register_tool(tool, handle_social_tool)
+    cat, ret = _SOCIAL_META.get(tool.name, ("DATA", ""))
+    tool_registry.register_tool(tool, handle_social_tool, category=cat, returns=ret)
