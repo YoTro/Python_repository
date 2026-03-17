@@ -1,0 +1,629 @@
+{
+  "metadata": {
+    "description": "Amazon Best Sellers Rank (BSR) page URLs for all major top-level categories on Amazon.com (US marketplace)",
+    "base_url": "https://www.amazon.com/Best-Sellers/zgbs/",
+    "url_pattern": "https://www.amazon.com/Best-Sellers-{slug}/zgbs/{dept}/{node_id}",
+    "marketplace": "Amazon.com (US)",
+    "last_verified": "2025-03",
+    "notes": "BSR pages update hourly. Node IDs are stable but Amazon may occasionally restructure categories. Subcategory BSR URLs follow the same pattern with more specific node IDs."
+  },
+  "categories": [
+    {
+      "id": 1,
+      "name": "Amazon Devices & Accessories",
+      "slug": "amazon-devices",
+      "dept": "amazon-devices",
+      "node_id": "2102313011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Amazon-Devices-Accessories/zgbs/amazon-devices/",
+      "description": "Amazon Echo, Fire TV, Kindle, Ring, and related accessories"
+    },
+    {
+      "id": 2,
+      "name": "Amazon Renewed",
+      "slug": "amazon-renewed",
+      "dept": "amazon-renewed",
+      "node_id": "12653393011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Amazon-Renewed/zgbs/amazon-renewed/",
+      "description": "Renewed (refurbished) products certified by Amazon"
+    },
+    {
+      "id": 3,
+      "name": "Appliances",
+      "slug": "appliances",
+      "dept": "appliances",
+      "node_id": "2619526011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Appliances/zgbs/appliances/",
+      "description": "Home appliances including refrigerators, washers, ovens, and small appliances"
+    },
+    {
+      "id": 4,
+      "name": "Apps & Games",
+      "slug": "mobile-apps",
+      "dept": "mobile-apps",
+      "node_id": "2350150011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Appstore-Android/zgbs/mobile-apps/",
+      "description": "Android apps and games on Amazon Appstore"
+    },
+    {
+      "id": 5,
+      "name": "Arts, Crafts & Sewing",
+      "slug": "arts-crafts",
+      "dept": "arts-crafts",
+      "node_id": "2617941011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Arts-Crafts-Sewing/zgbs/arts-crafts/",
+      "description": "Art supplies, craft materials, sewing and knitting supplies"
+    },
+    {
+      "id": 6,
+      "name": "Audible Books & Originals",
+      "slug": "audible",
+      "dept": "audible",
+      "node_id": "2549711011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Audible-Books-Originals/zgbs/audible/",
+      "description": "Audiobooks and Audible original content"
+    },
+    {
+      "id": 7,
+      "name": "Automotive",
+      "slug": "automotive",
+      "dept": "automotive",
+      "node_id": "15690151",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Automotive/zgbs/automotive/",
+      "description": "Car parts, accessories, tools, and car care products"
+    },
+    {
+      "id": 8,
+      "name": "Baby",
+      "slug": "baby-products",
+      "dept": "baby-products",
+      "node_id": "165796011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Baby-Products/zgbs/baby-products/",
+      "description": "Baby gear, feeding, diapers, nursery, and baby care"
+    },
+    {
+      "id": 9,
+      "name": "Beauty & Personal Care",
+      "slug": "beauty",
+      "dept": "beauty",
+      "node_id": "11055981",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Beauty-Personal-Care/zgbs/beauty/",
+      "description": "Makeup, skincare, hair care, fragrances, and personal care products"
+    },
+    {
+      "id": 10,
+      "name": "Books",
+      "slug": "books",
+      "dept": "books",
+      "node_id": "1",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Books/zgbs/books/",
+      "description": "All physical and digital books across all genres"
+    },
+    {
+      "id": 11,
+      "name": "Camera & Photo Products",
+      "slug": "photo",
+      "dept": "photo",
+      "node_id": "502394",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Camera-Photo/zgbs/photo/",
+      "description": "Cameras, lenses, camera accessories, and photography equipment"
+    },
+    {
+      "id": 12,
+      "name": "Cell Phones & Accessories",
+      "slug": "wireless",
+      "dept": "wireless",
+      "node_id": "2335752011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Cell-Phones-Accessories/zgbs/wireless/",
+      "description": "Smartphones, cases, chargers, screen protectors, and mobile accessories"
+    },
+    {
+      "id": 13,
+      "name": "Clothing, Shoes & Jewelry",
+      "slug": "apparel",
+      "dept": "apparel",
+      "node_id": "7141123011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Clothing-Shoes-Jewelry/zgbs/apparel/",
+      "description": "Men's, women's, and children's clothing, footwear, and jewelry"
+    },
+    {
+      "id": 14,
+      "name": "Collectibles & Fine Art",
+      "slug": "collectibles",
+      "dept": "collectibles",
+      "node_id": "4991426011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Collectibles-Fine-Art/zgbs/collectibles/",
+      "description": "Collectible coins, trading cards, fine art, and memorabilia"
+    },
+    {
+      "id": 15,
+      "name": "Computers",
+      "slug": "computers",
+      "dept": "computers",
+      "node_id": "541966",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Computers-Add-Ons/zgbs/computers/",
+      "description": "Laptops, desktops, monitors, peripherals, and computer components"
+    },
+    {
+      "id": 16,
+      "name": "Digital Music",
+      "slug": "dmusic",
+      "dept": "dmusic",
+      "node_id": "624868011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Digital-Music/zgbs/dmusic/",
+      "description": "Digital music downloads and albums"
+    },
+    {
+      "id": 17,
+      "name": "Electronics",
+      "slug": "electronics",
+      "dept": "electronics",
+      "node_id": "172282",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Electronics/zgbs/electronics/",
+      "description": "TVs, audio equipment, smart home devices, and consumer electronics"
+    },
+    {
+      "id": 18,
+      "name": "Garden & Outdoor",
+      "slug": "lawn-garden",
+      "dept": "lawn-garden",
+      "node_id": "2972638011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Patio-Lawn-Garden/zgbs/lawn-garden/",
+      "description": "Patio furniture, gardening tools, grills, and outdoor living"
+    },
+    {
+      "id": 19,
+      "name": "Grocery & Gourmet Food",
+      "slug": "grocery",
+      "dept": "grocery",
+      "node_id": "16310101",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Grocery-Gourmet-Food/zgbs/grocery/",
+      "description": "Pantry staples, snacks, beverages, and specialty gourmet foods"
+    },
+    {
+      "id": 20,
+      "name": "Handmade Products",
+      "slug": "handmade",
+      "dept": "handmade",
+      "node_id": "11260432011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Handmade-Products/zgbs/handmade/",
+      "description": "Artisan and handcrafted products across all categories"
+    },
+    {
+      "id": 21,
+      "name": "Health & Household",
+      "slug": "hpc",
+      "dept": "hpc",
+      "node_id": "3760901",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Health-Personal-Care/zgbs/hpc/",
+      "description": "Vitamins, supplements, over-the-counter medications, medical supplies, and household health products"
+    },
+    {
+      "id": 22,
+      "name": "Home & Kitchen",
+      "slug": "kitchen",
+      "dept": "kitchen",
+      "node_id": "1055398",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Home-Kitchen/zgbs/kitchen/",
+      "description": "Cookware, bedding, bath, furniture, home décor, and storage"
+    },
+    {
+      "id": 23,
+      "name": "Industrial & Scientific",
+      "slug": "industrial",
+      "dept": "industrial",
+      "node_id": "468642",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Industrial-Scientific/zgbs/industrial/",
+      "description": "Lab equipment, safety gear, fasteners, janitorial supplies, and industrial tools"
+    },
+    {
+      "id": 24,
+      "name": "Kindle Store",
+      "slug": "digital-text",
+      "dept": "digital-text",
+      "node_id": "133141011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Kindle-Store/zgbs/digital-text/",
+      "description": "Kindle ebooks, Kindle Unlimited titles, and digital magazines"
+    },
+    {
+      "id": 25,
+      "name": "Luggage & Travel Gear",
+      "slug": "luggage",
+      "dept": "luggage",
+      "node_id": "9479199011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Luggage-Travel-Gear/zgbs/luggage/",
+      "description": "Suitcases, backpacks, travel accessories, and packing organizers"
+    },
+    {
+      "id": 26,
+      "name": "Movies & TV",
+      "slug": "dvd",
+      "dept": "dvd",
+      "node_id": "2625373011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Movies-TV/zgbs/dvd/",
+      "description": "DVDs, Blu-rays, 4K UHD, and TV series box sets"
+    },
+    {
+      "id": 27,
+      "name": "Music",
+      "slug": "music",
+      "dept": "music",
+      "node_id": "5174",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Music/zgbs/music/",
+      "description": "CDs, vinyl records, and physical music media"
+    },
+    {
+      "id": 28,
+      "name": "Musical Instruments",
+      "slug": "musical-instruments",
+      "dept": "musical-instruments",
+      "node_id": "11091801",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Musical-Instruments/zgbs/musical-instruments/",
+      "description": "Guitars, keyboards, drums, DJ equipment, and music accessories"
+    },
+    {
+      "id": 29,
+      "name": "Office Products",
+      "slug": "office-products",
+      "dept": "office-products",
+      "node_id": "1064954",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Office-Products/zgbs/office-products/",
+      "description": "Office supplies, printers, shredders, pens, and desk accessories"
+    },
+    {
+      "id": 30,
+      "name": "Pet Supplies",
+      "slug": "pet-supplies",
+      "dept": "pet-supplies",
+      "node_id": "2619533011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Pet-Supplies/zgbs/pet-supplies/",
+      "description": "Dog, cat, fish, bird, and small animal food, treats, and accessories"
+    },
+    {
+      "id": 31,
+      "name": "Prime Video",
+      "slug": "instant-video",
+      "dept": "instant-video",
+      "node_id": "2858778011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Amazon-Video/zgbs/instant-video/",
+      "description": "Amazon Prime Video digital streaming content"
+    },
+    {
+      "id": 32,
+      "name": "Software",
+      "slug": "software",
+      "dept": "software",
+      "node_id": "229534",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Software/zgbs/software/",
+      "description": "PC and Mac software including antivirus, productivity, and games"
+    },
+    {
+      "id": 33,
+      "name": "Sports & Outdoors",
+      "slug": "sporting-goods",
+      "dept": "sporting-goods",
+      "node_id": "3375251",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Sports-Outdoors/zgbs/sporting-goods/",
+      "description": "Exercise equipment, team sports, outdoor recreation, and athletic apparel"
+    },
+    {
+      "id": 34,
+      "name": "Tools & Home Improvement",
+      "slug": "tools",
+      "dept": "tools",
+      "node_id": "468240",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Tools-Home-Improvement/zgbs/tools/",
+      "description": "Power tools, hand tools, hardware, lighting, and plumbing"
+    },
+    {
+      "id": 35,
+      "name": "Toys & Games",
+      "slug": "toys-and-games",
+      "dept": "toys-and-games",
+      "node_id": "165793011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Toys-Games/zgbs/toys-and-games/",
+      "description": "Action figures, board games, puzzles, dolls, and outdoor toys"
+    },
+    {
+      "id": 36,
+      "name": "Video Games",
+      "slug": "videogames",
+      "dept": "videogames",
+      "node_id": "468642",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Video-Games/zgbs/videogames/",
+      "description": "Console games, PC games, gaming accessories, and gift cards"
+    }
+  ],
+  "notable_subcategories": [
+    {
+      "parent": "Books",
+      "name": "Mystery, Thriller & Suspense",
+      "node_id": "18",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Books-Mystery-Thriller-Suspense/zgbs/books/18"
+    },
+    {
+      "parent": "Books",
+      "name": "Romance",
+      "node_id": "23",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Books-Romance/zgbs/books/23"
+    },
+    {
+      "parent": "Books",
+      "name": "Science Fiction & Fantasy",
+      "node_id": "25",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Books-Science-Fiction-Fantasy/zgbs/books/25"
+    },
+    {
+      "parent": "Books",
+      "name": "Children's Books",
+      "node_id": "4",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Books-Childrens/zgbs/books/4"
+    },
+    {
+      "parent": "Books",
+      "name": "Business & Money",
+      "node_id": "2",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Books-Business-Money/zgbs/books/2"
+    },
+    {
+      "parent": "Books",
+      "name": "Self-Help",
+      "node_id": "2690",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Books-Self-Help/zgbs/books/2690"
+    },
+    {
+      "parent": "Kindle Store",
+      "name": "Kindle eBooks - Literature & Fiction",
+      "node_id": "2484784011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Kindle-Store-Literature-Fiction/zgbs/digital-text/2484784011"
+    },
+    {
+      "parent": "Kindle Store",
+      "name": "Kindle eBooks - Mystery, Thriller & Suspense",
+      "node_id": "2484785011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Kindle-Store-Mystery-Thriller-Suspense/zgbs/digital-text/2484785011"
+    },
+    {
+      "parent": "Electronics",
+      "name": "Headphones",
+      "node_id": "172541",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Electronics-Headphones/zgbs/electronics/172541"
+    },
+    {
+      "parent": "Electronics",
+      "name": "Televisions",
+      "node_id": "172659",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Electronics-Televisions/zgbs/electronics/172659"
+    },
+    {
+      "parent": "Electronics",
+      "name": "Wearable Technology",
+      "node_id": "9013907011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Electronics-Wearable-Technology/zgbs/electronics/9013907011"
+    },
+    {
+      "parent": "Electronics",
+      "name": "Security Cameras & Surveillance",
+      "node_id": "228013",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Electronics-Security-Surveillance/zgbs/electronics/228013"
+    },
+    {
+      "parent": "Computers",
+      "name": "Laptops",
+      "node_id": "565108",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Computers-Accessories-Laptop-Computers/zgbs/computers/565108"
+    },
+    {
+      "parent": "Computers",
+      "name": "Computer Monitors",
+      "node_id": "1292115011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Computers-Accessories-Computer-Monitors/zgbs/computers/1292115011"
+    },
+    {
+      "parent": "Computers",
+      "name": "External Hard Drives",
+      "node_id": "595048",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Computers-Accessories-External-Hard-Drives/zgbs/computers/595048"
+    },
+    {
+      "parent": "Home & Kitchen",
+      "name": "Coffee, Tea & Espresso",
+      "node_id": "289809",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Home-Kitchen-Coffee-Tea-Espresso/zgbs/kitchen/289809"
+    },
+    {
+      "parent": "Home & Kitchen",
+      "name": "Bedding",
+      "node_id": "3732921",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Home-Kitchen-Bedding/zgbs/kitchen/3732921"
+    },
+    {
+      "parent": "Home & Kitchen",
+      "name": "Cookware",
+      "node_id": "289797",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Home-Kitchen-Cookware/zgbs/kitchen/289797"
+    },
+    {
+      "parent": "Health & Household",
+      "name": "Vitamins & Dietary Supplements",
+      "node_id": "6943919011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Health-Personal-Care-Vitamins-Supplements/zgbs/hpc/6943919011"
+    },
+    {
+      "parent": "Health & Household",
+      "name": "Medical Supplies & Equipment",
+      "node_id": "3760901",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Health-Personal-Care-Medical-Supplies-Equipment/zgbs/hpc/3760901"
+    },
+    {
+      "parent": "Clothing, Shoes & Jewelry",
+      "name": "Women's Fashion",
+      "node_id": "1040660",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Clothing-Shoes-Jewelry-Women/zgbs/apparel/1040660"
+    },
+    {
+      "parent": "Clothing, Shoes & Jewelry",
+      "name": "Men's Fashion",
+      "node_id": "1040658",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Clothing-Shoes-Jewelry-Men/zgbs/apparel/1040658"
+    },
+    {
+      "parent": "Clothing, Shoes & Jewelry",
+      "name": "Girls' Fashion",
+      "node_id": "1040664",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Clothing-Shoes-Jewelry-Girls/zgbs/apparel/1040664"
+    },
+    {
+      "parent": "Clothing, Shoes & Jewelry",
+      "name": "Boys' Fashion",
+      "node_id": "1040662",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Clothing-Shoes-Jewelry-Boys/zgbs/apparel/1040662"
+    },
+    {
+      "parent": "Sports & Outdoors",
+      "name": "Exercise & Fitness",
+      "node_id": "3407731",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Sports-Outdoors-Exercise-Fitness/zgbs/sporting-goods/3407731"
+    },
+    {
+      "parent": "Sports & Outdoors",
+      "name": "Outdoor Recreation",
+      "node_id": "706814011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Sports-Outdoors-Outdoor-Recreation/zgbs/sporting-goods/706814011"
+    },
+    {
+      "parent": "Pet Supplies",
+      "name": "Dog Supplies",
+      "node_id": "2975312011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Pet-Supplies-Dog/zgbs/pet-supplies/2975312011"
+    },
+    {
+      "parent": "Pet Supplies",
+      "name": "Cat Supplies",
+      "node_id": "2975313011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Pet-Supplies-Cats/zgbs/pet-supplies/2975313011"
+    },
+    {
+      "parent": "Grocery & Gourmet Food",
+      "name": "Snack Foods",
+      "node_id": "6502672011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Grocery-Gourmet-Food-Snack-Foods/zgbs/grocery/6502672011"
+    },
+    {
+      "parent": "Grocery & Gourmet Food",
+      "name": "Coffee",
+      "node_id": "16318451",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Grocery-Gourmet-Food-Coffee/zgbs/grocery/16318451"
+    },
+    {
+      "parent": "Automotive",
+      "name": "Interior Accessories",
+      "node_id": "15706751",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Automotive-Interior-Accessories/zgbs/automotive/15706751"
+    },
+    {
+      "parent": "Automotive",
+      "name": "Car Care",
+      "node_id": "15690151",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Automotive-Car-Care/zgbs/automotive/15690151"
+    },
+    {
+      "parent": "Video Games",
+      "name": "PlayStation 5 Games",
+      "node_id": "10066761011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Video-Games-PlayStation-5/zgbs/videogames/10066761011"
+    },
+    {
+      "parent": "Video Games",
+      "name": "Xbox Series X & S Games",
+      "node_id": "9805591011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Video-Games-Xbox-Series-X-S/zgbs/videogames/9805591011"
+    },
+    {
+      "parent": "Video Games",
+      "name": "Nintendo Switch Games",
+      "node_id": "7096071011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Video-Games-Nintendo-Switch/zgbs/videogames/7096071011"
+    },
+    {
+      "parent": "Toys & Games",
+      "name": "Building Sets & Blocks",
+      "node_id": "166044011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Toys-Games-Building-Sets-Blocks/zgbs/toys-and-games/166044011"
+    },
+    {
+      "parent": "Toys & Games",
+      "name": "Action Figures & Statues",
+      "node_id": "166015011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Toys-Games-Action-Figures-Statues/zgbs/toys-and-games/166015011"
+    },
+    {
+      "parent": "Musical Instruments",
+      "name": "Guitars",
+      "node_id": "33896011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Musical-Instruments-Guitars/zgbs/musical-instruments/33896011"
+    },
+    {
+      "parent": "Tools & Home Improvement",
+      "name": "Power & Hand Tools",
+      "node_id": "552928",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Tools-Home-Improvement-Power-Hand-Tools/zgbs/tools/552928"
+    },
+    {
+      "parent": "Office Products",
+      "name": "Pens & Writing Instruments",
+      "node_id": "1069242",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Office-Products-Pens-Writing-Instruments/zgbs/office-products/1069242"
+    },
+    {
+      "parent": "Camera & Photo Products",
+      "name": "Digital Cameras",
+      "node_id": "281052",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Camera-Photo-Digital-Cameras/zgbs/photo/281052"
+    },
+    {
+      "parent": "Cell Phones & Accessories",
+      "name": "Cases",
+      "node_id": "2407748011",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Cell-Phones-Accessories-Cases/zgbs/wireless/2407748011"
+    },
+    {
+      "parent": "Beauty & Personal Care",
+      "name": "Skin Care",
+      "node_id": "11060451",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Beauty-Personal-Care-Skin-Care/zgbs/beauty/11060451"
+    },
+    {
+      "parent": "Beauty & Personal Care",
+      "name": "Hair Care",
+      "node_id": "11057241",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Beauty-Personal-Care-Hair-Care/zgbs/beauty/11057241"
+    },
+    {
+      "parent": "Industrial & Scientific",
+      "name": "Safety & Security",
+      "node_id": "571068",
+      "bsr_url": "https://www.amazon.com/Best-Sellers-Industrial-Scientific-Safety-Security/zgbs/industrial/571068"
+    }
+  ],
+  "additional_bsr_list_types": {
+    "description": "Amazon also maintains parallel ranking lists for trending/gifting insights",
+    "new_releases_base_url": "https://www.amazon.com/gp/new-releases/",
+    "movers_shakers_base_url": "https://www.amazon.com/gp/movers-and-shakers/",
+    "most_wished_for_base_url": "https://www.amazon.com/gp/most-wished-for/",
+    "most_gifted_base_url": "https://www.amazon.com/gp/most-gifted/",
+    "examples": [
+      {
+        "type": "New Releases - Electronics",
+        "url": "https://www.amazon.com/gp/new-releases/electronics/"
+      },
+      {
+        "type": "Movers & Shakers - Toys",
+        "url": "https://www.amazon.com/gp/movers-and-shakers/toys-and-games/"
+      },
+      {
+        "type": "Most Wished For - Beauty",
+        "url": "https://www.amazon.com/gp/most-wished-for/beauty/"
+      }
+    ]
+  }
+}

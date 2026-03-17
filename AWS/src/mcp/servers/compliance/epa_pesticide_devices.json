@@ -1,0 +1,216 @@
+{
+  "source": "https://www.epa.gov/pesticides/pesticide-devices-guide-consumers",
+  "last_updated": "2025-10-06",
+  "title": "EPA Pesticide Devices: A Guide for Consumers",
+  "regulation_framework": {
+    "law": "FIFRA (Federal Insecticide, Fungicide and Rodenticide Act)",
+    "device_definition": "Any instrument or contrivance (other than a firearm) intended for trapping, destroying, repelling, or mitigating any pest.",
+    "key_distinction": "Devices work by physical or mechanical means (e.g., electricity, UV light, filtration) and do not contain a pesticidal substance. Pesticides are substances or mixtures intended to prevent, destroy, repel, or mitigate pests.",
+    "registration_required": false,
+    "premarket_review_required": false,
+    "establishment_number_required": true,
+    "epa_regulation_type": "Misbranding enforcement (FIFRA § 2(q), 40 C.F.R. pt. 156)"
+  },
+  "label_requirements": {
+    "must_include": [
+      "EPA Establishment Number (indicates production facility, NOT product approval)",
+      "Directions for use"
+    ],
+    "must_not_include": [
+      "EPA Registration Number (that would indicate a registered pesticide, not a device)",
+      "False or misleading claims"
+    ],
+    "notes": "An EPA Establishment Number on device packaging does NOT indicate the product has been reviewed for safety or efficacy, nor does it imply EPA product approval, registration, certification, or endorsement."
+  },
+  "exempt_from_fifra_device_regulation": [
+    {
+      "type": "User-dependent devices",
+      "description": "Devices that depend more upon the performance of the user than the device itself",
+      "examples": ["Flyswatters"]
+    },
+    {
+      "type": "Vertebrate animal traps",
+      "description": "Devices that trap vertebrate animals",
+      "examples": ["Mouse snap traps", "Raccoon cages", "Bear traps"]
+    },
+    {
+      "type": "HEPA filters with limited claims",
+      "description": "HEPA filters that limit claims to particle size and do not claim to purify air or mitigate microorganisms"
+    },
+    {
+      "type": "Water filters with limited claims",
+      "description": "Water filters that limit claims to taste, odor, or sediment and do not claim to purify water or mitigate microorganisms"
+    },
+    {
+      "type": "Firearms",
+      "description": "Explicitly excluded from FIFRA device definition; regulated by ATF",
+      "examples": ["Rifles used to control feral hogs"]
+    },
+    {
+      "type": "Pesticide application equipment sold separately",
+      "description": "Equipment used to apply pesticides sold and distributed separately from the pesticide itself",
+      "examples": ["Standalone sprayers sold without herbicide"]
+    },
+    {
+      "type": "Non-pesticidal air treatment products",
+      "description": "Air treatment products that do not claim to purify the air or kill pests; regulated by CPSC instead"
+    }
+  ],
+  "regulated_device_categories": [
+    {
+      "category": "Ultraviolet Light Units",
+      "description": "Claim to kill, inactivate, or suppress growth of microorganisms such as fungi, bacteria, or viruses; also used to attract insects or kill plant pathogens.",
+      "examples": [
+        "Water treatment UV units",
+        "Air treatment UV units",
+        "Antimicrobial UV lamps",
+        "Individual water purification UV devices",
+        "UV devices for powdery mildew on strawberries"
+      ],
+      "conditions": "Must not contain or be sold with a pesticidal substance (e.g., silver, zinc, copper) to qualify as a device rather than a pesticide.",
+      "additional_notes": "Some UV light devices used in FDA-regulated healthcare settings may be dually regulated by both EPA and FDA.",
+      "references": [
+        "EPA Compliance Advisory on UV Lights",
+        "OAR COVID-19 UV-C Devices Webinar"
+      ]
+    },
+    {
+      "category": "Air Purifiers, Filters, or Air Treatment Devices",
+      "description": "Claim to reduce microorganisms, unqualified organic contaminants, unqualified allergens, or purify the air.",
+      "examples": [
+        "Air filters with pesticidal claims",
+        "UV light air purifiers",
+        "Ozone generators",
+        "Plasma generators",
+        "Bipolar ionization generators",
+        "Photocatalytic air treatment devices",
+        "Combination air treatment products"
+      ],
+      "conditions": "Products that create ions from the air are generally regulated as devices unless they contain or are sold with a pesticidal substance or have a pesticidal coating.",
+      "subcategories": [
+        {
+          "name": "Bipolar Ionization Devices",
+          "description": "Technology generating positively and negatively charged particles; used in HVAC or portable air purifiers.",
+          "warning": "Has potential to generate ozone and other harmful by-products indoors. EPA recommends devices meeting UL 2998 standard (Zero Ozone Emissions certification).",
+          "standard": "UL 2998 (Environmental Claim Validation Procedure for Zero Ozone Emissions from Air Cleaners)"
+        },
+        {
+          "name": "Photocatalytic Air/Surface Treatment Products",
+          "description": "Use materials with photocatalytic properties (e.g., titanium dioxide) to generate reactive oxygen species.",
+          "warning": "Photocatalytic products in liquid, dust, or coating form are considered pesticides, not devices, and require FIFRA Section 3 registration."
+        }
+      ]
+    },
+    {
+      "category": "Hypochlorous Acid Generators (including Electrolyzed Water)",
+      "description": "Claim to kill, inactivate, or suppress growth of microorganisms including fungi, algae, bacteria, or viruses.",
+      "examples": [
+        "Electrolyzed water generators",
+        "Hypochlorous acid generators"
+      ],
+      "conditions": "Considered devices when sold alone. If sold or distributed with a substance (e.g., salt) or output solutions, may be part of a pesticide product requiring registration.",
+      "regulatory_notes": "EPA issued a tolerance exemption on September 14, 2022 for hypochlorous acid residues on food-contact surfaces in public eating places (Federal Register 2022-19799).",
+      "safety_warning": "EPA recommends electrolyzed water generated by these devices not be ingested or applied to the human body."
+    },
+    {
+      "category": "Water Purifiers or Water Treatment Units",
+      "description": "Claim to kill, inactivate, or suppress growth of fungi, algae, bacteria, viruses, or cysts.",
+      "examples": [
+        "Drinking water filter units (microbial removal by physical/mechanical means)",
+        "Pool and spa electrolysis units",
+        "Ozonation units (gaseous or aqueous)",
+        "Ozone bubble generation technology",
+        "Algal bloom treatment units"
+      ],
+      "conditions": "Must not contain any substance intended to disinfect the water. If they do, they are pesticide products requiring registration.",
+      "exclusions": "Filters limiting claims to taste, odor, or sediment without purification or microbial mitigation claims are NOT regulated under FIFRA."
+    },
+    {
+      "category": "Insect Devices",
+      "description": "Claim to kill or entrap insects and similar pests through physical means, including UV light or ozone.",
+      "examples": [
+        "Black-light traps",
+        "Bug zappers (including hand-held or racquet-type)",
+        "Insect traps",
+        "Fly ribbons / fly paper / sticky traps (without attractant)",
+        "Glue boards (without attractant)",
+        "Electric flea combs"
+      ],
+      "conditions": "Must not be sold with a pesticidal substance to qualify as a device."
+    },
+    {
+      "category": "Gopher and Rodent Control Systems",
+      "description": "Claim to control subterranean animals via carbon monoxide generation or subterranean explosion.",
+      "examples": [
+        "Carbon monoxide generators",
+        "Subterranean explosive devices"
+      ],
+      "conditions": "Must be sold or distributed without a substance. If sold with a substance, registration as a pesticide is required."
+    },
+    {
+      "category": "Sound, Airwave, and Vibration Generators",
+      "description": "Claim to repel pests such as birds, mice, and underground animals.",
+      "examples": [
+        "Carbide cannons (~125 dB sound emitters)",
+        "Rotating arm devices",
+        "High frequency (ultrasonic) sound generators",
+        "Mole thumpers",
+        "Pinwheel vibrators",
+        "Non-lethal bear sound-based deterrents (not regulated as firearm by ATF)"
+      ]
+    },
+    {
+      "category": "Gamma Irradiation Units",
+      "description": "Claim to treat insects, mold, and other microorganisms on raw agricultural commodities and other inanimate objects.",
+      "conditions": "Regulated under FIFRA unless otherwise exempt."
+    }
+  ],
+  "not_devices_commonly_mistaken": [
+    {
+      "product_type": "Combination products (device + pesticidal substance)",
+      "reason": "A filter that physically traps microbial pests AND incorporates a pesticidal substance that kills them is an antimicrobial pesticide product, not a device.",
+      "regulation": "Requires EPA registration as a pesticide product."
+    },
+    {
+      "product_type": "Metal ion-generating products (e.g., silver ions)",
+      "reason": "Products that generate metal ions (silver, zinc, copper) as the pesticidal agent contain a pesticidal substance and are generally pesticides, not devices.",
+      "regulation": "Requires EPA registration as a pesticide product."
+    },
+    {
+      "product_type": "Apparatus sold with a substance to generate a pesticide",
+      "reason": "An apparatus sold with a substance (e.g., salt) used to generate a pesticide is generally considered a pesticide, not a device.",
+      "regulation": "Requires EPA registration as a pesticide product."
+    },
+    {
+      "product_type": "Pesticidal coatings / self-cleaning products",
+      "reason": "Products impregnated with ingredients claiming to be 'self-cleaning' or products in liquid, dust, or coating form that claim to kill viruses/bacteria are generally pesticides.",
+      "regulation": "Requires EPA registration as a pesticide product."
+    },
+    {
+      "product_type": "Pesticide application equipment sold with a pesticide",
+      "reason": "Application equipment packaged or sold with a registered pesticide must be included in the pesticide registration; it is not classified as a device.",
+      "regulation": "Registered along with the pesticide under 40 C.F.R. § 152.3."
+    }
+  ],
+  "dual_regulation_cases": {
+    "description": "Some products meet both the FIFRA device definition (EPA) and the FFDCA device definition (FDA) and are dually regulated.",
+    "examples": [
+      "Ventilator filters",
+      "CPAP accessory treatment devices",
+      "Air purifiers in FDA-regulated healthcare settings",
+      "UV light devices in FDA-regulated healthcare settings"
+    ]
+  },
+  "consumer_guidance": {
+    "reporting_misbranded_devices": "https://echo.epa.gov/report-environmental-violations",
+    "tips": [
+      "Use devices consistent with precautionary language and directions for use.",
+      "Contact the manufacturer or seller directly with questions on proper product use.",
+      "Look for an EPA Establishment Number (not Registration Number) on device packaging.",
+      "An EPA Establishment Number does NOT mean the product's safety or efficacy has been reviewed by EPA.",
+      "Ask companies applying a pesticidal solution generated on-site for the product's EPA Registration Number.",
+      "An unregistered output solution from a device that is a pesticide cannot be sold or distributed without violating FIFRA."
+    ]
+  },
+  "state_regulation_note": "Some states impose additional requirements for devices, including registration and efficacy data review before sale. Compliance with federal FIFRA does not guarantee legal sale in all states. See AAPCO (https://aapco.org) for state lead agency contacts."
+}

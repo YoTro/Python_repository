@@ -1,0 +1,1344 @@
+{
+  "metadata": {
+    "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "last_verified": "2026-03-17",
+    "schema_version": "4",
+    "conventions": {
+      "price_entry_shape": {
+        "price": "number (USD)",
+        "unit": "always 'USD'",
+        "billing_unit": "per_1M_tokens | per_1000_requests | per_hour",
+        "dimension": "input | output | cache_write | cache_read | server_tool_use"
+      },
+      "lookup_key_pattern": "{canonical_model_id}#{tier}#{dimension}",
+      "tier_values": "standard | batch | long_context_gt200k | fast_mode",
+      "resolution_flow": "any_string → model_string_index → canonical_id → lookup key",
+      "model_string_normalization": "s.strip().lower() (no models/ prefix in Claude API)",
+      "multipliers": "In 'modifiers' block only. Price entries contain absolute values.",
+      "token_counts": "In 'tool_overhead' block only. See _pricing_formula.",
+      "combinability_rule": "NOT_AVAILABLE_WITH > STACKS_WITH",
+      "opus_sonnet_4_6_flat": "Opus 4.6 and Sonnet 4.6: flat 1M context, no long-context surcharge. Source: platform.claude.com/docs/en/about-claude/pricing — 'A 900k-token request is billed at the same per-token rate as a 9k-token request.'",
+      "schema_integrity": "All lookup keys are canonical_ids. Verified at build time."
+    }
+  },
+  "model_string_index": {
+    "claude-opus-4-6": {
+      "canonical_id": "claude-opus-4-6",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-sonnet-4-6": {
+      "canonical_id": "claude-sonnet-4-6",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-opus-4-5": {
+      "canonical_id": "claude-opus-4-5",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-opus-4-1": {
+      "canonical_id": "claude-opus-4-1",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-opus-4-0": {
+      "canonical_id": "claude-opus-4-0",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-sonnet-4-5": {
+      "canonical_id": "claude-sonnet-4-5",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-sonnet-4-0": {
+      "canonical_id": "claude-sonnet-4-0",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-sonnet-3-7": {
+      "canonical_id": "claude-sonnet-3-7",
+      "is_alias": false,
+      "is_deprecated": true
+    },
+    "claude-haiku-4-5": {
+      "canonical_id": "claude-haiku-4-5",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-haiku-3-5": {
+      "canonical_id": "claude-haiku-3-5",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-opus-3": {
+      "canonical_id": "claude-opus-3",
+      "is_alias": false,
+      "is_deprecated": true
+    },
+    "claude-haiku-3": {
+      "canonical_id": "claude-haiku-3",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-opus-4-6-20250514": {
+      "canonical_id": "claude-opus-4-6",
+      "is_alias": true,
+      "is_deprecated": false
+    },
+    "claude-opus-4-5-20251101": {
+      "canonical_id": "claude-opus-4-5",
+      "is_alias": true,
+      "is_deprecated": false
+    },
+    "claude-opus-4-1-20250219": {
+      "canonical_id": "claude-opus-4-1",
+      "is_alias": true,
+      "is_deprecated": false
+    },
+    "claude-opus-4-0-20250514": {
+      "canonical_id": "claude-opus-4-0",
+      "is_alias": true,
+      "is_deprecated": false
+    },
+    "claude-sonnet-4-6-20250514": {
+      "canonical_id": "claude-sonnet-4-6",
+      "is_alias": true,
+      "is_deprecated": false
+    },
+    "claude-sonnet-4-5-20251101": {
+      "canonical_id": "claude-sonnet-4-5",
+      "is_alias": true,
+      "is_deprecated": false
+    },
+    "claude-sonnet-4-0-20250514": {
+      "canonical_id": "claude-sonnet-4-0",
+      "is_alias": true,
+      "is_deprecated": false
+    },
+    "claude-sonnet-3-7-20250219": {
+      "canonical_id": "claude-sonnet-3-7",
+      "is_alias": true,
+      "is_deprecated": true
+    },
+    "claude-haiku-4-5-20251001": {
+      "canonical_id": "claude-haiku-4-5",
+      "is_alias": true,
+      "is_deprecated": false
+    },
+    "claude-haiku-3-5-20241022": {
+      "canonical_id": "claude-haiku-3-5",
+      "is_alias": true,
+      "is_deprecated": false
+    },
+    "claude-3-opus-20240229": {
+      "canonical_id": "claude-opus-3",
+      "is_alias": true,
+      "is_deprecated": true
+    },
+    "claude-3-haiku-20240307": {
+      "canonical_id": "claude-haiku-3",
+      "is_alias": true,
+      "is_deprecated": false
+    }
+  },
+  "lookup": {
+    "claude-opus-4-6#standard#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-opus-4-6#standard#output": {
+      "price": 25.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-opus-4-6#standard#cache_write_5m": {
+      "price": 6.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-opus-4-6#standard#cache_write_1h": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-opus-4-6#standard#cache_read": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-opus-4-6#batch#input": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-6#batch#output": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-6#fast_mode#input": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "multiplier_vs_standard": 6
+    },
+    "claude-opus-4-6#fast_mode#output": {
+      "price": 150.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "multiplier_vs_standard": 6
+    },
+    "claude-sonnet-4-6#standard#input": {
+      "price": 3.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-sonnet-4-6#standard#output": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-sonnet-4-6#standard#cache_write_5m": {
+      "price": 3.75,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-sonnet-4-6#standard#cache_write_1h": {
+      "price": 6.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-sonnet-4-6#standard#cache_read": {
+      "price": 0.3,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-sonnet-4-6#batch#input": {
+      "price": 1.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-sonnet-4-6#batch#output": {
+      "price": 7.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-5#standard#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-opus-4-5#standard#output": {
+      "price": 25.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-opus-4-5#standard#cache_write_5m": {
+      "price": 6.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-opus-4-5#standard#cache_write_1h": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-opus-4-5#standard#cache_read": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-opus-4-5#batch#input": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-5#batch#output": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-1#standard#input": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-opus-4-1#standard#output": {
+      "price": 75.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-opus-4-1#standard#cache_write_5m": {
+      "price": 18.75,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-opus-4-1#standard#cache_write_1h": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-opus-4-1#standard#cache_read": {
+      "price": 1.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-opus-4-1#batch#input": {
+      "price": 7.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-1#batch#output": {
+      "price": 37.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-0#standard#input": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-opus-4-0#standard#output": {
+      "price": 75.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-opus-4-0#standard#cache_write_5m": {
+      "price": 18.75,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-opus-4-0#standard#cache_write_1h": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-opus-4-0#standard#cache_read": {
+      "price": 1.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-opus-4-0#batch#input": {
+      "price": 7.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-0#batch#output": {
+      "price": 37.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-sonnet-4-5#standard#input": {
+      "price": 3.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-sonnet-4-5#standard#output": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-sonnet-4-5#standard#cache_write_5m": {
+      "price": 3.75,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-sonnet-4-5#standard#cache_write_1h": {
+      "price": 6.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-sonnet-4-5#standard#cache_read": {
+      "price": 0.3,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-sonnet-4-5#batch#input": {
+      "price": 1.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-sonnet-4-5#batch#output": {
+      "price": 7.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-sonnet-4-5#long_context_gt200k#input": {
+      "price": 6.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "threshold_input_tokens": 200000,
+      "note": "All tokens billed at this rate when total input > 200k"
+    },
+    "claude-sonnet-4-5#long_context_gt200k#output": {
+      "price": 22.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "Billed at this rate when input threshold is exceeded"
+    },
+    "claude-sonnet-4-0#standard#input": {
+      "price": 3.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-sonnet-4-0#standard#output": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-sonnet-4-0#standard#cache_write_5m": {
+      "price": 3.75,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-sonnet-4-0#standard#cache_write_1h": {
+      "price": 6.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-sonnet-4-0#standard#cache_read": {
+      "price": 0.3,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-sonnet-4-0#batch#input": {
+      "price": 1.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-sonnet-4-0#batch#output": {
+      "price": 7.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-sonnet-4-0#long_context_gt200k#input": {
+      "price": 6.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "threshold_input_tokens": 200000,
+      "note": "All tokens billed at this rate when total input > 200k"
+    },
+    "claude-sonnet-4-0#long_context_gt200k#output": {
+      "price": 22.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "Billed at this rate when input threshold is exceeded"
+    },
+    "claude-sonnet-3-7#standard#input": {
+      "price": 3.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-sonnet-3-7#standard#output": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-sonnet-3-7#standard#cache_write_5m": {
+      "price": 3.75,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-sonnet-3-7#standard#cache_write_1h": {
+      "price": 6.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-sonnet-3-7#standard#cache_read": {
+      "price": 0.3,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-sonnet-3-7#batch#input": {
+      "price": 1.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-sonnet-3-7#batch#output": {
+      "price": 7.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-haiku-4-5#standard#input": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-haiku-4-5#standard#output": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-haiku-4-5#standard#cache_write_5m": {
+      "price": 1.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-haiku-4-5#standard#cache_write_1h": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-haiku-4-5#standard#cache_read": {
+      "price": 0.1,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-haiku-4-5#batch#input": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-haiku-4-5#batch#output": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-haiku-3-5#standard#input": {
+      "price": 0.8,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-haiku-3-5#standard#output": {
+      "price": 4.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-haiku-3-5#standard#cache_write_5m": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-haiku-3-5#standard#cache_write_1h": {
+      "price": 1.6,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-haiku-3-5#standard#cache_read": {
+      "price": 0.08,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-haiku-3-5#batch#input": {
+      "price": 0.4,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-haiku-3-5#batch#output": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-3#standard#input": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-opus-3#standard#output": {
+      "price": 75.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-opus-3#standard#cache_write_5m": {
+      "price": 18.75,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-opus-3#standard#cache_write_1h": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-opus-3#standard#cache_read": {
+      "price": 1.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-opus-3#batch#input": {
+      "price": 7.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-3#batch#output": {
+      "price": 37.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-haiku-3#standard#input": {
+      "price": 0.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-haiku-3#standard#output": {
+      "price": 1.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-haiku-3#standard#cache_write_5m": {
+      "price": 0.3,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-haiku-3#standard#cache_write_1h": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-haiku-3#standard#cache_read": {
+      "price": 0.025,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-haiku-3#batch#input": {
+      "price": 0.125,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-haiku-3#batch#output": {
+      "price": 0.625,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    }
+  },
+  "models": [
+    {
+      "id": "claude-opus-4-6",
+      "display_name": "Claude Opus 4.6",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 1000000,
+        "long_context_behavior": "flat_1M_no_surcharge",
+        "note": "900k-token request billed at same rate as 9k-token request"
+      },
+      "tiers_available": [
+        "standard",
+        "batch",
+        "fast_mode"
+      ],
+      "_lookup_key_prefix": "claude-opus-4-6"
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "display_name": "Claude Sonnet 4.6",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 1000000,
+        "long_context_behavior": "flat_1M_no_surcharge",
+        "note": "900k-token request billed at same rate as 9k-token request"
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-sonnet-4-6"
+    },
+    {
+      "id": "claude-opus-4-5",
+      "display_name": "Claude Opus 4.5",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 200000,
+        "long_context_behavior": "standard_200k_only"
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-opus-4-5"
+    },
+    {
+      "id": "claude-opus-4-1",
+      "display_name": "Claude Opus 4.1",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 200000,
+        "long_context_behavior": "standard_200k_only"
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-opus-4-1"
+    },
+    {
+      "id": "claude-opus-4-0",
+      "display_name": "Claude Opus 4",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 200000,
+        "long_context_behavior": "standard_200k_only"
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-opus-4-0"
+    },
+    {
+      "id": "claude-sonnet-4-5",
+      "display_name": "Claude Sonnet 4.5",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 200000,
+        "beta_tokens": 1000000,
+        "beta_header": "context-1m-2025-08-07",
+        "beta_requires": "usage_tier_4_or_custom_rate_limit",
+        "long_context_behavior": "surcharge_gt200k",
+        "long_context_tier_key": "long_context_gt200k"
+      },
+      "tiers_available": [
+        "standard",
+        "batch",
+        "long_context_gt200k"
+      ],
+      "_lookup_key_prefix": "claude-sonnet-4-5"
+    },
+    {
+      "id": "claude-sonnet-4-0",
+      "display_name": "Claude Sonnet 4",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 200000,
+        "beta_tokens": 1000000,
+        "beta_header": "context-1m-2025-08-07",
+        "beta_requires": "usage_tier_4_or_custom_rate_limit",
+        "long_context_behavior": "surcharge_gt200k",
+        "long_context_tier_key": "long_context_gt200k"
+      },
+      "tiers_available": [
+        "standard",
+        "batch",
+        "long_context_gt200k"
+      ],
+      "_lookup_key_prefix": "claude-sonnet-4-0"
+    },
+    {
+      "id": "claude-sonnet-3-7",
+      "display_name": "Claude Sonnet 3.7",
+      "status": "deprecated",
+      "deprecated": true,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 200000,
+        "long_context_behavior": "standard_200k_only"
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-sonnet-3-7"
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "display_name": "Claude Haiku 4.5",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 200000,
+        "long_context_behavior": "standard_200k_only"
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-haiku-4-5"
+    },
+    {
+      "id": "claude-haiku-3-5",
+      "display_name": "Claude Haiku 3.5",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 200000,
+        "long_context_behavior": "standard_200k_only"
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-haiku-3-5"
+    },
+    {
+      "id": "claude-opus-3",
+      "display_name": "Claude Opus 3",
+      "status": "deprecated",
+      "deprecated": true,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 200000,
+        "long_context_behavior": "standard_200k_only"
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-opus-3"
+    },
+    {
+      "id": "claude-haiku-3",
+      "display_name": "Claude Haiku 3",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 200000,
+        "long_context_behavior": "standard_200k_only"
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-haiku-3"
+    }
+  ],
+  "modifiers": {
+    "prompt_caching": {
+      "type": "multiplier_on_base_input",
+      "base_ref": "lookup['{model_id}#standard#input'].price",
+      "variants": {
+        "cache_write_5m": {
+          "lookup_key": "{model_id}#standard#cache_write_5m",
+          "factor": 1.25,
+          "ttl_minutes": 5,
+          "break_even_reads": 1
+        },
+        "cache_write_1h": {
+          "lookup_key": "{model_id}#standard#cache_write_1h",
+          "factor": 2.0,
+          "ttl_minutes": 60,
+          "break_even_reads": 2
+        },
+        "cache_read": {
+          "lookup_key": "{model_id}#standard#cache_read",
+          "factor": 0.1,
+          "savings_pct": 90
+        }
+      },
+      "api_response_fields": {
+        "cache_write": "cache_creation_input_tokens",
+        "cache_read": "cache_read_input_tokens"
+      },
+      "ttl_selection_note": "API does not return TTL in response. Select cache_write_5m or cache_write_1h based on your cache_control config. Default to cache_write_5m if unknown.",
+      "stacks_with": [
+        "batch",
+        "long_context_gt200k",
+        "data_residency_us",
+        "fast_mode"
+      ],
+      "not_available_with": []
+    },
+    "batch": {
+      "type": "multiplier_on_standard",
+      "factor": 0.5,
+      "base_ref": "lookup['{model_id}#standard#input|output'].price",
+      "lookup_keys": [
+        "{model_id}#batch#input",
+        "{model_id}#batch#output"
+      ],
+      "stacks_with": [
+        "prompt_caching",
+        "long_context_gt200k"
+      ],
+      "not_available_with": [
+        "fast_mode"
+      ],
+      "precedence_note": "NOT_AVAILABLE_WITH > STACKS_WITH"
+    },
+    "data_residency_us": {
+      "type": "multiplier",
+      "factor": 1.1,
+      "activation": "inference_geo=US",
+      "applies_to_dimensions": [
+        "input",
+        "output",
+        "cache_write_5m",
+        "cache_write_1h",
+        "cache_read"
+      ],
+      "applies_to_model_ids": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-opus-4-5",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5",
+        "claude-opus-4-1",
+        "claude-opus-4-0",
+        "claude-sonnet-4-0",
+        "claude-haiku-3-5"
+      ],
+      "applies_to_future_models": true,
+      "stacks_with": [
+        "batch",
+        "prompt_caching",
+        "fast_mode",
+        "long_context_gt200k"
+      ],
+      "not_available_with": [],
+      "application_order": "applied_last_after_all_other_modifiers"
+    },
+    "fast_mode": {
+      "type": "multiplier_on_standard",
+      "factor": 6.0,
+      "applies_to_model_ids": [
+        "claude-opus-4-6"
+      ],
+      "lookup_keys": [
+        "claude-opus-4-6#fast_mode#input",
+        "claude-opus-4-6#fast_mode#output"
+      ],
+      "stacks_with": [
+        "prompt_caching",
+        "data_residency_us"
+      ],
+      "not_available_with": [
+        "batch"
+      ],
+      "precedence_note": "NOT_AVAILABLE_WITH > STACKS_WITH",
+      "availability": "research_preview"
+    },
+    "long_context_gt200k": {
+      "type": "tier_switch",
+      "threshold_input_tokens": 200000,
+      "applies_to_model_ids": [
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-0"
+      ],
+      "lookup_keys": [
+        "{model_id}#long_context_gt200k#input",
+        "{model_id}#long_context_gt200k#output"
+      ],
+      "threshold_calculation": "sum(input_tokens + cache_creation_input_tokens + cache_read_input_tokens) > 200000",
+      "all_tokens_charged_at_premium": true,
+      "stacks_with": [
+        "batch",
+        "prompt_caching"
+      ],
+      "not_available_with": [],
+      "activation": "beta header context-1m-2025-08-07"
+    }
+  },
+  "tool_overhead": {
+    "_pricing_formula": "cost_usd = additional_tokens * lookup[f'{model_id}#standard#input']['price'] / 1_000_000",
+    "_usage_note": "These tokens are added to input_tokens in every API call where tools are active. They are invisible in the API response but billable.",
+    "tool_use_system_prompt": {
+      "applies_when": "at_least_1_tool_provided",
+      "zero_when": "tool_choice=none AND tools=[]",
+      "by_model_id": {
+        "claude-opus-4-6": {
+          "auto_or_none": 346,
+          "any_or_tool": 313
+        },
+        "claude-opus-4-5": {
+          "auto_or_none": 346,
+          "any_or_tool": 313
+        },
+        "claude-opus-4-1": {
+          "auto_or_none": 346,
+          "any_or_tool": 313
+        },
+        "claude-opus-4-0": {
+          "auto_or_none": 346,
+          "any_or_tool": 313
+        },
+        "claude-sonnet-4-6": {
+          "auto_or_none": 346,
+          "any_or_tool": 313
+        },
+        "claude-sonnet-4-5": {
+          "auto_or_none": 346,
+          "any_or_tool": 313
+        },
+        "claude-sonnet-4-0": {
+          "auto_or_none": 346,
+          "any_or_tool": 313
+        },
+        "claude-sonnet-3-7": {
+          "auto_or_none": 346,
+          "any_or_tool": 313
+        },
+        "claude-haiku-4-5": {
+          "auto_or_none": 346,
+          "any_or_tool": 313
+        },
+        "claude-haiku-3-5": {
+          "auto_or_none": 264,
+          "any_or_tool": 340
+        },
+        "claude-opus-3": {
+          "auto_or_none": 530,
+          "any_or_tool": 281
+        },
+        "claude-haiku-3": {
+          "auto_or_none": 264,
+          "any_or_tool": 340
+        }
+      }
+    },
+    "individual_tools": {
+      "bash_tool": {
+        "additional_input_tokens": 245
+      },
+      "text_editor_tool": {
+        "text_editor_20250429": {
+          "additional_input_tokens": 700,
+          "applies_to": "claude_4x"
+        },
+        "text_editor_20250124": {
+          "additional_input_tokens": 700,
+          "applies_to": "claude_sonnet_3_7"
+        }
+      },
+      "computer_use_tool": {
+        "system_prompt_overhead_tokens": {
+          "min": 466,
+          "max": 499
+        },
+        "tool_definition_tokens": {
+          "claude_4x": 735,
+          "claude_sonnet_3_7": 735
+        }
+      }
+    }
+  },
+  "tools_pricing": {
+    "web_search": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1000_requests",
+      "dimension": "server_tool_use",
+      "note": "Per search; errors not billed; result tokens billed at model input rate"
+    },
+    "web_fetch": {
+      "price": 0.0,
+      "unit": "USD",
+      "billing_unit": "per_1000_requests",
+      "dimension": "server_tool_use",
+      "note": "No charge; fetched content billed as input tokens"
+    },
+    "code_execution": {
+      "price": 0.05,
+      "unit": "USD",
+      "billing_unit": "per_hour",
+      "dimension": "server_tool_use",
+      "free_hours_per_org_per_month": 1550,
+      "minimum_billing_minutes": 5,
+      "free_when_combined_with": [
+        "web_search_20260209",
+        "web_fetch_20260209"
+      ]
+    }
+  }
+}

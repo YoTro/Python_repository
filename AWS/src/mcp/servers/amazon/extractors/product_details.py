@@ -62,7 +62,19 @@ class ProductDetailsExtractor(AmazonBaseScraper):
             rating_span = soup.select_one('i.a-icon-star span.a-icon-alt')
             product.rating = parse_rating(rating_span.get_text(strip=True)) if rating_span else None
             
-        # 4. Fulfillment
+        # 4. Past Month Sales
+        if product.past_month_sales is None:
+            # Try social proofing span first
+            sales_span = soup.find('span', id='social-proofing-faceout-title-tk_bought')
+            if not sales_span:
+                # Fallback to broader search in text
+                sales_text = soup.find(string=re.compile(r'bought in past month', re.I))
+                if sales_text:
+                    product.past_month_sales = parse_integer(sales_text)
+            else:
+                product.past_month_sales = parse_integer(sales_span.get_text(strip=True))
+
+        # 5. Fulfillment
         fba_span = soup.find('span', id='tabular-buybox-truncate-0')
         if fba_span and "Amazon" in fba_span.get_text():
             product.is_fba = True

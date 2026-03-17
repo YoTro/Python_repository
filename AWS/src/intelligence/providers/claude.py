@@ -6,6 +6,7 @@ from typing import Optional, TypeVar, Type
 from pydantic import BaseModel
 import anthropic
 from .base import BaseLLMProvider
+from .price_manager import PriceManager
 from src.intelligence.dto import LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -14,14 +15,14 @@ T = TypeVar("T", bound=BaseModel)
 
 # Priority order for model selection
 _MODEL_PRIORITIES = [
+    "claude-3-5-sonnet-20241022",
     "claude-3-opus-20240229",
-    "claude-3-sonnet-20240229",
     "claude-3-haiku-20240307",
 ]
 
 class ClaudeProvider(BaseLLMProvider):
     """
-    Claude (Anthropic) provider using the official anthropic SDK.
+    Claude (Anthropic) provider with Cost Calculation.
     """
 
     def __init__(self,
@@ -34,12 +35,23 @@ class ClaudeProvider(BaseLLMProvider):
 
         self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
         self.model_name = model_name or _MODEL_PRIORITIES[0]
+        self.price_manager = PriceManager(provider="claude")
         logger.info(f"ClaudeProvider initialized with model: {self.model_name}")
 
     async def count_tokens(self, prompt: str, system_message: Optional[str] = None) -> int:
-        # Anthropic doesn't have a direct token counting API like OpenAI/Gemini.
-        # We use a rough estimate.
-        return len(prompt) // 4
+        try:
+            kwargs = dict(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            if system_message:
+                kwargs["system"] = system_message
+            
+            response = await self.client.messages.count_tokens(**kwargs)
+            return response.input_tokens
+        except Exception as e:
+            logger.warning(f"Claude token count failed, falling back to estimate: {e}")
+            return len(prompt) // 4
 
     async def generate_text(self, prompt: str, system_message: Optional[str] = None) -> LLMResponse:
         try:
@@ -58,11 +70,38 @@ class ClaudeProvider(BaseLLMProvider):
                 if block.type == "text":
                     text_content += block.text
             
+            # Claude usage contains detailed caching tokens
+            usage = response.usage
+            input_tokens = usage.input_tokens
+            output_tokens = usage.output_tokens
+            
+            # Handle prompt caching if present in the SDK version
+            cache_read = getattr(usage, "cache_read_input_tokens", 0)
+            cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
+            
+            # In simple billing, we sum them, but PriceManager could be expanded for caching
+            total_usage = input_tokens + output_tokens
+            
+            cost = self.price_manager.calculate_cost(
+                model_name=self.model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=input_tokens # Claude context threshold check
+            )
+
             return LLMResponse(
                 text=text_content,
                 provider_name="claude",
                 model_name=self.model_name,
-                token_usage=response.usage.input_tokens + response.usage.output_tokens
+                token_usage=total_usage,
+                cost=cost,
+                currency=self.price_manager.currency,
+                metadata={
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_read_tokens": cache_read,
+                    "cache_creation_tokens": cache_creation
+                }
             )
         except Exception as e:
             logger.error(f"Claude text generation failed: {e}")

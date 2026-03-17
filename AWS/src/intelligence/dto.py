@@ -10,4 +10,5 @@ class LLMResponse:
     model_name: str
     token_usage: int = 0
     cost: float = 0.0
+    currency: str = "USD"
     metadata: Dict[str, Any] = field(default_factory=dict)

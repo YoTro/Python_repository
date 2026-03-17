@@ -19,6 +19,33 @@ async def handle_send_card(name: str, arguments: dict) -> list[TextContent]:
     elif name == "send_feishu_message":
         result = await asyncio.to_thread(feishu.send_text_message, arguments["receive_id_type"], arguments["receive_id"], arguments["text"])
     
+    elif name == "send_feishu_data_file":
+        result = await asyncio.to_thread(
+            feishu.send_data_as_file, 
+            arguments["receive_id_type"], 
+            arguments["receive_id"], 
+            arguments["data"], 
+            filename=arguments.get("filename", "export.csv")
+        )
+    
+    elif name == "send_feishu_url_file":
+        result = await asyncio.to_thread(
+            feishu.send_url_as_file,
+            arguments["receive_id_type"],
+            arguments["receive_id"],
+            arguments["url"],
+            filename=arguments.get("filename", "downloaded_file")
+        )
+    
+    elif name == "send_feishu_local_file":
+        result = await asyncio.to_thread(
+            feishu.send_local_file,
+            arguments["receive_id_type"],
+            arguments["receive_id"],
+            arguments["file_path"],
+            filename=arguments.get("filename")
+        )
+    
     # FUTURE: elif name == "send_dingtalk_card": ...
     
     else:
@@ -50,6 +77,52 @@ tools = [
                 "text": {"type": "string"}
             },
             "required": ["receive_id_type", "receive_id", "text"]
+        }
+    ),
+    Tool(
+        name="send_feishu_data_file",
+        description="Convert data (list of dicts) into a CSV file and send it directly to a Feishu chat.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"]},
+                "receive_id": {"type": "string"},
+                "data": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "List of dictionaries representing the table data"
+                },
+                "filename": {"type": "string", "default": "export.csv"}
+            },
+            "required": ["receive_id_type", "receive_id", "data"]
+        }
+    ),
+    Tool(
+        name="send_feishu_url_file",
+        description="Download a file from a URL and send it as a Feishu file attachment.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"]},
+                "receive_id": {"type": "string"},
+                "url": {"type": "string", "description": "The URL of the file to download"},
+                "filename": {"type": "string", "description": "Optional name for the file (extension will be guessed if missing)"}
+            },
+            "required": ["receive_id_type", "receive_id", "url"]
+        }
+    ),
+    Tool(
+        name="send_feishu_local_file",
+        description="Upload a local file and send it as a Feishu file attachment.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"]},
+                "receive_id": {"type": "string"},
+                "file_path": {"type": "string", "description": "Local path to the file"},
+                "filename": {"type": "string", "description": "Optional custom name for the attachment"}
+            },
+            "required": ["receive_id_type", "receive_id", "file_path"]
         }
     )
 ]

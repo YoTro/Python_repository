@@ -61,6 +61,22 @@ async def handle_write_bitable(name: str, arguments: dict) -> list[TextContent]:
         result = await asyncio.to_thread(feishu.copy_bitable, arguments["app_token"], arguments["name"], folder_token=arguments.get("folder_token"), user_access_token=user_token)
     elif name == "create_feishu_bitable_field":
         result = await asyncio.to_thread(feishu.create_bitable_field, arguments["app_token"], arguments["table_id"], arguments["field_name"], field_type=arguments.get("field_type", 1), user_access_token=user_token)
+    elif name == "batch_update_feishu_bitable_records":
+        result = await asyncio.to_thread(
+            feishu.batch_update_bitable_records,
+            arguments["app_token"],
+            arguments["table_id"],
+            arguments["updates"],
+            user_access_token=user_token
+        )
+    elif name == "populate_feishu_bitable_records":
+        result = await asyncio.to_thread(
+            feishu.populate_bitable_records,
+            arguments["app_token"],
+            arguments["table_id"],
+            arguments["records"],
+            user_access_token=user_token
+        )
     else:
         raise ValueError(f"Unknown tool: {name}")
 
@@ -191,6 +207,47 @@ tools = [
                 "user_access_token": {"type": "string"}
             },
             "required": ["app_token", "table_id", "field_name"]
+        }
+    ),
+    Tool(
+        name="batch_update_feishu_bitable_records",
+        description="Batch update multiple records in a Feishu Bitable.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "app_token": {"type": "string"},
+                "table_id": {"type": "string"},
+                "updates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "record_id": {"type": "string"},
+                            "fields": {"type": "object"}
+                        },
+                        "required": ["record_id", "fields"]
+                    }
+                },
+                "user_access_token": {"type": "string"}
+            },
+            "required": ["app_token", "table_id", "updates"]
+        }
+    ),
+    Tool(
+        name="populate_feishu_bitable_records",
+        description="Efficiently populate a new table starting from row 1 by reusing default empty rows.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "app_token": {"type": "string"},
+                "table_id": {"type": "string"},
+                "records": {
+                    "type": "array",
+                    "items": {"type": "object", "description": "Fields for each record"}
+                },
+                "user_access_token": {"type": "string"}
+            },
+            "required": ["app_token", "table_id", "records"]
         }
     )
 ]

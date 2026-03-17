@@ -14,8 +14,9 @@ class ResourceRegistry:
     """
     def __init__(self, base_dir: str = None):
         if base_dir is None:
-            # Default to scanning all servers directories
-            base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers")
+            # Default to scanning all servers directories under src/mcp/servers
+            # __file__ is in src/registry/, so .. is src/, then mcp/servers
+            base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mcp", "servers")
         self.base_dir = base_dir
         self._resource_map = {} # Mapping of URI to local file path
 

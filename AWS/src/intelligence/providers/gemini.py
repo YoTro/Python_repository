@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from google import genai
 from google.genai import types
 from .base import BaseLLMProvider
+from .price_manager import PriceManager
 from src.intelligence.dto import LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -17,8 +18,7 @@ T = TypeVar("T", bound=BaseModel)
 
 class GeminiProvider(BaseLLMProvider):
     """
-    Ultra-robust Gemini Provider with Auto-Model-Discovery.
-    Never hardcodes model names; finds the best available model on the fly.
+    Ultra-robust Gemini Provider with Auto-Model-Discovery and Cost Calculation.
     """
 
     def __init__(self,
@@ -32,6 +32,7 @@ class GeminiProvider(BaseLLMProvider):
 
         self.client = genai.Client(api_key=self.api_key)
         self.batch_threshold = batch_threshold
+        self.price_manager = PriceManager()
 
         self.model_name = self._discover_best_model(model_name)
         logger.info(f"GeminiProvider initialized with discovered model: {self.model_name}")
@@ -49,9 +50,9 @@ class GeminiProvider(BaseLLMProvider):
                     available.append(m.name)
 
             priorities = [
-                "models/gemini-1.5-pro-latest",
-                "models/gemini-1.5-flash-latest",
-                "models/gemini-1.0-pro",
+                "models/gemini-2.5-flash",
+                "models/gemini-1.5-flash",
+                "models/gemini-1.5-pro",
             ]
 
             if preferred and preferred in available:
@@ -61,10 +62,10 @@ class GeminiProvider(BaseLLMProvider):
                 if p in available:
                     return p
 
-            return available[0] if available else "models/gemini-1.0-pro"
+            return available[0] if available else "models/gemini-1.5-flash"
         except Exception as e:
             logger.error(f"Failed to list models: {e}. Falling back to default.")
-            return "models/gemini-1.0-pro"
+            return "models/gemini-1.5-flash"
 
     async def count_tokens(self, prompt: str, system_message: Optional[str] = None) -> int:
         try:
@@ -92,13 +93,27 @@ class GeminiProvider(BaseLLMProvider):
             )
             
             usage = getattr(response, "usage_metadata", None)
-            token_count = usage.total_token_count if usage else await self.count_tokens(prompt, system_message)
+            input_tokens = usage.prompt_token_count if usage else await self.count_tokens(prompt, system_message)
+            output_tokens = usage.candidates_token_count if usage else 0
+            total_tokens = input_tokens + output_tokens
+
+            cost = self.price_manager.calculate_cost(
+                model_name=self.model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens
+            )
 
             return LLMResponse(
                 text=response.text,
                 provider_name="gemini",
                 model_name=self.model_name,
-                token_usage=token_count
+                token_usage=total_tokens,
+                cost=cost,
+                currency=self.price_manager.currency,
+                metadata={
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens
+                }
             )
         except Exception as e:
             logger.error(f"Gemini text generation failed: {e}")
@@ -163,14 +178,28 @@ class GeminiProvider(BaseLLMProvider):
             # Since we're asking for a schema, the text should be valid JSON
             text_response = response.text
             
-            usage = response.usage_metadata
-            token_count = usage.total_token_count if usage else 0
+            usage = getattr(response, "usage_metadata", None)
+            input_tokens = usage.prompt_token_count if usage else 0
+            output_tokens = usage.candidates_token_count if usage else 0
+            total_tokens = input_tokens + output_tokens
+
+            cost = self.price_manager.calculate_cost(
+                model_name=self.model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens
+            )
             
             return LLMResponse(
                 text=text_response,
                 provider_name="gemini",
                 model_name=self.model_name,
-                token_usage=token_count
+                token_usage=total_tokens,
+                cost=cost,
+                currency=self.price_manager.currency,
+                metadata={
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens
+                }
             )
         except Exception as e:
             logger.error(f"Structured generation failed on {self.model_name}: {e}")
