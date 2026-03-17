@@ -74,6 +74,19 @@ This script automatically detects your OS and injects the `aws-market-intelligen
 }
 ```
 
-## 6. Error Handling
+## 7. Featured Tool Capabilities
 
-When a tool call fails, handlers should catch the exception and return a `TextContent` object containing a structured error message (e.g., starting with `❌ Error:` or `⚠️ Warning:`). This prevents the MCP Server from crashing and allows the calling LLM to read the error and attempt to self-correct its JSON arguments.
+### Output & Delivery (L2)
+*   **`populate_feishu_bitable_records`**: Reuses initial empty rows in a new Bitable to ensure data starts from Row 1. Preferred for new exports.
+*   **`send_feishu_local_file`**: Uploads a local file (like a Xiyouzhaoci export) and sends it as an IM attachment.
+*   **`send_feishu_url_file`**: Downloads a file from a URL and forwards it as a Feishu attachment.
+*   **`send_feishu_data_file`**: Converts raw list-of-dicts data into a CSV and sends it as an attachment.
+
+### Market Intelligence (L1)
+*   **`xiyou_keyword_analysis`**: Requests keyword traffic and competitor data from Xiyouzhaoci, returning a local file path.
+*   **`xiyou_asin_lookup`**: Reverse-lookups keywords for an ASIN via Xiyouzhaoci.
+
+### Compliance核查 (L2)
+*   **`check_amazon_restriction`**: Keyword-based lookup in local Amazon restricted products database.
+*   **`check_epa`**: Checks if product keywords trigger EPA FIFRA pesticide device regulations.
+

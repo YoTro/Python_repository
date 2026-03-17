@@ -12,11 +12,11 @@ class TimeEstimator:
     """
     
     WORKFLOW_AVERAGES = {
-        "amazon_bsr": 45.0,  # Baseline 45 seconds
+        "amazon_bsr": 30.0,  # Baseline 30 seconds
         # Add others as needed
     }
     
-    AGENT_BASELINE_PER_ITERATION = 12.0  # Approx 12s per ReAct loop (LLM + Tool)
+    AGENT_BASELINE_PER_ITERATION = 6.0  # Approx 12s per ReAct loop (LLM + Tool)
     
     @classmethod
     def estimate_workflow(cls, workflow_name: str, params: dict = None) -> str:
