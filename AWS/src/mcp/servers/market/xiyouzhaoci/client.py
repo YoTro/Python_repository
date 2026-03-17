@@ -17,16 +17,17 @@ class XiyouZhaociAPI:
     Supports ASIN reverse-lookup and keyword (search term) analysis.
     """
 
-    # Default: <project_root>/config/xiyouzhaoci_token.json
-    _DEFAULT_TOKEN_FILE = os.path.join(
-        os.path.dirname(__file__), "..", "..", "..", "..", "..", "config", "xiyouzhaoci_token.json"
-    )
+    # Calculate project root relative to this file
+    _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
+    
+    # Default paths based on project root
+    _DEFAULT_TOKEN_FILE = os.path.join(_PROJECT_ROOT, "config", "xiyouzhaoci_token.json")
+    _DEFAULT_DATA_DIR = os.path.join(_PROJECT_ROOT, "data")
 
     def __init__(self, token_file: str = None):
-        token_file = token_file or os.path.abspath(self._DEFAULT_TOKEN_FILE)
+        self.token_file = token_file or self._DEFAULT_TOKEN_FILE
         self.session = requests.Session(impersonate="chrome")
         self.base_url = "https://api.xiyouzhaoci.com"
-        self.token_file = token_file
         self.auth_token = self._load_token()
 
         self.common_headers = {

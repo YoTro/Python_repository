@@ -33,11 +33,12 @@ It employs a **Hybrid Intelligence** model:
 ### 3. Robust Microservice Tool Servers
 *   **Amazon Domain**: 16+ focused async scrapers (BSR, Reviews, Stock) using `curl_cffi` for TLS impersonation.
 *   **Market & Social**: Integrated adapters for SellerSprite, Lingxing, TikTok, and Meta trends.
-*   **Intelligence Router**: Automatically routes tasks between Cloud APIs (Gemini/Claude) and Local LLMs (Llama.cpp/Ollama) based on cost and complexity.
+*   **Intelligence Router**: Automatically routes tasks between Cloud APIs (Gemini/Claude) and Local LLMs (Llama.cpp/Ollama) based on cost and complexity, now with full cost transparency.
+*   **Precise Cost Tracking**: A universal `PriceManager` provides real-time, per-request cost calculation for all supported cloud LLMs (Gemini, Claude), handling complex tiered pricing and model-specific surcharges.
 
 ### 4. Advanced Feishu (Lark) Bot Integration
-*   **Interactive Commands**: Trigger deterministic workflows and get live progress bars with **Dynamic ETA** updates.
-*   **Bitable Reporting**: Automatically generates structured reports in Feishu Multi-dimensional tables.
+*   **Interactive Commands**: Trigger deterministic workflows and get live progress bars with **Dynamic ETA** and cumulative **cost** updates.
+*   **Robust Bitable Reporting**: Automatically generates structured reports, now with dynamic field creation to prevent schema mismatch errors.
 
 ---
 
@@ -51,7 +52,51 @@ It employs a **Hybrid Intelligence** model:
    pip install -r requirements.txt
    ```
 3. **Environment Variables**:
-   Create a `.env` file in the project root with your API keys (Gemini, Anthropic, Feishu).
+   Copy the template below and save it as `.env` in the project root:
+
+   ```dotenv
+   # ── LLM Providers ──────────────────────────────────────────
+   GEMINI_API_KEY=your_gemini_api_key_here
+   ANTHROPIC_API_KEY=your_anthropic_api_key_here   # Required only when using Claude
+
+   # Default provider: "gemini" | "claude"
+   DEFAULT_LLM_PROVIDER=gemini
+
+   # Path to local GGUF model file (optional, for offline mode)
+   LOCAL_MODEL_PATH=models/llm/your_model.gguf
+
+   # ── Feishu / Lark Bots ─────────────────────────────────────
+   # Naming rule: FEISHU_{BOT_NAME_UPPER}_{FIELD}
+   # Add as many bots as needed by following the same pattern.
+
+   # amazon_bot (primary bot)
+   FEISHU_AMAZON_BOT_APP_ID=
+   FEISHU_AMAZON_BOT_APP_SECRET=
+   FEISHU_AMAZON_BOT_USER_ACCESS_TOKEN=   # Optional: for user-level Bitable access
+   FEISHU_AMAZON_BOT_WEBHOOK_URL=         # Optional: for incoming webhook messages
+
+   # test_bot (secondary / staging bot)
+   FEISHU_TEST_BOT_APP_ID=
+   FEISHU_TEST_BOT_APP_SECRET=
+   FEISHU_TEST_BOT_USER_ACCESS_TOKEN=
+   FEISHU_TEST_BOT_WEBHOOK_URL=
+
+   # ── Third-party Services ───────────────────────────────────
+   SELLERSPRITE_EMAIL=
+   SELLERSPRITE_PASSWORD=
+   XIYOUZHAOCI_PHONE=
+   ```
+
+   | Variable | Required | Description |
+   |---|---|---|
+   | `GEMINI_API_KEY` | When using Gemini | Google AI Studio API key |
+   | `ANTHROPIC_API_KEY` | When using Claude | Anthropic Console API key |
+   | `DEFAULT_LLM_PROVIDER` | No (default: `gemini`) | Active LLM backend |
+   | `LOCAL_MODEL_PATH` | No | Path to GGUF model for offline inference |
+   | `FEISHU_*_APP_ID` | For Feishu bot | Lark Open Platform App ID |
+   | `FEISHU_*_APP_SECRET` | For Feishu bot | Lark Open Platform App Secret |
+   | `FEISHU_*_USER_ACCESS_TOKEN` | No | User-level token for Bitable write access |
+   | `FEISHU_*_WEBHOOK_URL` | No | Incoming webhook URL for the bot |
 
 ---
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 import logging
 import re
+from typing import Optional
 from src.core.scraper import AmazonBaseScraper
+from src.core.utils.parser_helper import parse_integer
 
 logger = logging.getLogger(__name__)
 
@@ -35,26 +37,21 @@ class PastMonthSalesExtractor(AmazonBaseScraper):
             return result
 
         # Method 1: Exact match based on the provided HTML structure
-        match = re.search(r'<span id="social-proofing-faceout-title-tk_bought"[^>]*>.*?<span class="a-text-bold">([^<]+) bought</span>.*?<span>\s*in past month</span>', html, re.DOTALL | re.IGNORECASE)
+        match = re.search(r'<span id="social-proofing-faceout-title-tk_bought"[^>]*>(.*?)</span>', html, re.DOTALL | re.IGNORECASE)
         if match:
-            result["PastMonthSales"] = match.group(1).strip()
-            logger.debug(f"Found sales via primary regex: {result['PastMonthSales']}")
+            raw_val = match.group(1).strip()
+            result["PastMonthSales"] = parse_integer(raw_val)
+            logger.debug(f"Found sales via primary regex: {raw_val} -> {result['PastMonthSales']}")
             return result
 
         # Method 2: Broader regex for various possible layouts
         # Matches e.g., "4K+ bought in past month" or "800+ bought in past month"
-        match = re.search(r'>\s*([0-9KkM\+]+)\s+bought in past month\s*<', html, re.IGNORECASE)
+        match = re.search(r'([0-9KkM\+\.]+)\s+bought in past month', html, re.IGNORECASE)
         if match:
-            result["PastMonthSales"] = match.group(1).strip()
-            logger.debug(f"Found sales via fallback regex: {result['PastMonthSales']}")
+            raw_val = match.group(1).strip()
+            result["PastMonthSales"] = parse_integer(raw_val)
+            logger.debug(f"Found sales via fallback regex: {raw_val} -> {result['PastMonthSales']}")
             return result
             
-        # Method 3: Look for the text across tags
-        match = re.search(r'([0-9KkM\+]+)\s*bought\s*</span>\s*<span>\s*in past month', html, re.IGNORECASE)
-        if match:
-            result["PastMonthSales"] = match.group(1).strip()
-            logger.debug(f"Found sales via cross-tag regex: {result['PastMonthSales']}")
-            return result
-
         logger.info(f"No 'past month sales' data found for ASIN {asin}.")
         return result

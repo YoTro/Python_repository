@@ -71,24 +71,30 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |    (Deterministic Pipeline)  |             |    (LLM-driven, Exploratory)     |
 |                              |             |                                  |
 |  WorkflowRegistry:           |             |  Constraint Boundaries:          |
-|    "product_screening"       |             |  +-------------------------+     |
-|    "competitor_monitor"      |             |  | allowed_tools[ ]        |     |
-|    "review_analysis"         |             |  | max_steps: N (display)  |     |
-|    "replenish_alert"         |             |  | token_budget: N (cloud) |     |
-|    ...register(name, fn)     |             |  | human_in_loop: true     |     |
-|                              |             |  | (High-risk confirmation) |     |
-|  Execution Engine:           |             |  +-------------------------+     |
-|  for step in steps:          |             |                                  |
-|    checkpoint.save()  ───────┼─ Resume ───┼── session.save()                 |
+|    "product_screening"       |             |  +---------------------------+     |
+|    "competitor_monitor"      |             |  | allowed_tools[ ]          |     |
+|    "review_analysis"         |             |  | max_steps: N (display)    |     |
+|    "replenish_alert"         |             |  | token_budget: N (cloud)   |     |
+|    ...register(name, fn)     |             |  | cumulative_cost: $ (cloud)|     |
+|                              |             |  | dynamic_step_extension    |     |
+|  Execution Engine:           |             |  | convergence_hints: true   |     |
+|  for step in steps:          |             |  +---------------------------+     |
+|    checkpoint.save()  ───────┼─ Resume ───┼── session.save() (inc. cost)     |
 |    result = step.run() ──────┼────────────┼── tool = agent.decide()          |
 |    if not items: break       |             |                                  |
-|                              |             |  System Prompt Architecture:     |
-|  Step Tri-primitives:        |             |   · .md template (editable)      |
-|  +----------------------+    |             |   · PromptBuilder (assembly)     |
-|  | EnrichStep  ─────────┼────┼── MCP Client|   · ToolCatalogFormatter         |
-|  | ProcessStep ─────────┼────┼── Intel Router  (groups by category)          |
-|  | FilterStep  (Python) |    |             |  Autonomous output rules:        |
-|  +----------------------+    |             |  · Auto-create Bitable if no ID  |
+|                              |             |  Step Logic:                     |
+|  Step Tri-primitives:        |             |   1. Check steps vs budget/cost  |
+|  +----------------------+    |             |   2. If steps > max:             |
+|  | EnrichStep  ─────────┼────┼── MCP Client|      - Budget > 20%: +5 steps    |
+|  | ProcessStep ─────────┼────┼── Intel Router      - Budget < 20%: Force Final |
+|  | FilterStep  (Python) |    |             |                                  |
+|  +----------------------+    |             |  System Prompt Architecture:     |
+|                              |             |   · .md template (editable)      |
+|                              |             |   · PromptBuilder (assembly)     |
+|                              |             |   · ToolCatalogFormatter         |
+|                              |             |  Autonomous output rules:        |
+|                              |             |  · Auto-populate Bitable (robust)|
+|                              |             |  · Direct File Attachments       |
 |                              |             |                                  |
 +==============|===============+             +=================|================+
                |                                               |
@@ -105,10 +111,12 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   tool_name       category   server            returns                       |
 |   ─────────────── ────────── ───────────────── ──────────────────────────── |
 |   search_products DATA       amazon-server     list of products w/ ASIN      |
+|   xiyou_analysis  DATA       market-server     local xlsx file path          |
 |   calc_profit     COMPUTE    finance-server    profit margin as decimal      |
 |   check_epa       FILTER     compliance-server EPA requirement status        |
-|   add_bitable_rec OUTPUT     output-server     created record ID             |
-|   ...  (48 tools total across 7 domain servers)                              |
+|   populate_bitable OUTPUT    output-server     created record ID (robust)    |
+|   send_local_file  OUTPUT    output-server     Feishu attachment confirmation|
+|   ...  (52 tools total across 7 domain servers)                              |
 |                                                                              |
 |   [Single-User] Memory dict, no filtering                                    |
 |   [Ext Point #4] Per-tenant tool visibility control                          |
@@ -124,12 +132,11 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                                                                              |
 |   +--------------------+  +--------------------+  +--------------------+    |
 |   |   amazon-server    |  |   market-server    |  |   social-server    |    |
-|   |                    |  |                    |  |                    |    |
+|   |                    |  | (inc. Xiyouzhaoci) |  |                    |    |
 |   | search_products    |  | keyword_analysis   |  | tiktok_trend       |    |
-|   | get_details        |  | ad_traffic_ratio   |  | meta_ad_density    |    |
-|   | get_bsr            |  | bsr_competitors    |  | pinterest_interest |    |
-|   | get_fba_fees       |  | seller_origin      |  |                    |    |
-|   | get_dimensions     |  |                    |  |                    |    |
+|   | get_details        |  | asin_reverse_look  |  | meta_ad_density    |    |
+|   | get_bsr            |  | seller_origin      |  | pinterest_interest |    |
+|   | get_past_sales     |  |                    |  |                    |    |
 |   +--------------------+  +--------------------+  +--------------------+    |
 |           |                        |                        |                |
 |           +------------------------+------------------------+                |
@@ -143,17 +150,12 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                                                                              |
 |   +--------------------+  +--------------------+  +--------------------+    |
 |   |   finance-server   |  | compliance-server  |  |   output-server    |    |
-|   |                    |  |                    |  |                    |    |
-|   | calc_profit        |  | patent_check       |  | write_bitable      |    |
-|   | calc_margin        |  | epa_check          |  | send_card          |    |
-|   | calc_cost_ratio    |  | trademark_check    |  | create_doc         |    |
-|   | estimate_ads       |  |                    |  | export_csv         |    |
-|   +--------------------+  +--------------------+  | export_json        |    |
-|                                                    +--------------------+    |
-|                                                                              |
-|   [Single-User] Credentials from .env                                        |
-|   [Ext Point #5] Vault reads per-tenant API Keys                             |
-+==============================|===============================================+
+|   |                    |  | (Local JSON lookup)|  | (Direct IM attach) |    |
+|   | calc_profit        |  | restriction_check  |  | populate_bitable   |    |
+|   | calc_margin        |  | epa_check          |  | send_local_file    |    |
+|   | calc_cost_ratio    |  | patent_risk_calc   |  | send_url_file      |    |
+|   | estimate_ads       |  |                    |  | send_data_file     |    |
+|   +--------------------+  +--------------------+  +--------------------+    |
                                |
                                v
 +==============================================================================+
@@ -162,7 +164,13 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   Unified LLM call entry for ProcessStep and MCP Agent                       |
 |   route_and_execute(prompt, category?) --> LLMResponse                       |
 |                                                                              |
-+==============================================================================+
+|   ── Cost & Billing ──────────────────────────────────────────────────────   |
+|   +──────────────────────────────────────────────────────────────────────+   |
+|   |  PriceManager provides universal cost calculation for all providers. |   |
+|   |  - Reads from provider-specific JSON configs (e.g., gemini_pricing)  |   |
+|   |  - Handles complex tiered pricing (Gemini) and surcharges (Claude).  |   |
+|   |  - Cost is populated into every LLMResponse.                           |   |
+|   +──────────────────────────────────────────────────────────────────────+   |
 |                                                                              |
 |   ── Compute Targets ──────────────────────────────────────────────────────  |
 |                                                                              |
@@ -302,7 +310,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   ── Response DTO ──────────────────────────────────────────────────────────  |
 |                                                                              |
 |   LLMResponse = {                                                            |
-|     text, provider_name, model_name, token_usage, cost, metadata             |
+|     text, provider_name, model_name, token_usage, cost, currency, metadata   |
 |   }                                                                          |
 |   Standardized across all providers for unified downstream handling.          |
 |                                                                              |
@@ -670,24 +678,25 @@ The router serves both orchestration tracks through a single `IntelligenceRouter
 - **Workflow Track**: `ProcessStep` declares a `compute_target` (PURE_PYTHON / LOCAL_LLM / CLOUD_LLM). The step maps this to a `TaskCategory` and calls `ctx.router.batch_route_and_execute()`. Results are cached per `(job_id, step_name, item_id)` to avoid redundant LLM calls on workflow resume.
 - **Agent Track**: `BaseAgent` receives the router in its constructor. The `MCPAgent` calls `router.route_and_execute()` in each iteration of its ReAct loop, forced to `DEEP_REASONING` since agent tasks are exploratory by nature.
 
-### 5.8 Agent Token Budget Strategy
+### 5.8 Agent Budget Strategy (Tokens & Cost)
 
-The `MCPAgent` tracks cumulative token usage across all LLM calls, but only **cloud** tokens count toward the budget:
+The `MCPAgent` tracks cumulative token usage and monetary cost across all LLM calls, but only **cloud** usage counts toward the budget:
 
 | Metric | Tracked In | Budget-Relevant |
 |---|---|---|
 | `session.token_usage` | All providers (total) | No (informational) |
 | `session.cloud_token_usage` | Cloud providers only | Yes (triggers batch switch) |
+| `session.total_cost` | Cloud providers only | Yes (for budget alerts) |
 
 **Local model tokens are free** — they consume local compute, not API credits. When the local model is strong enough to handle agent reasoning, the agent loop runs without any budget constraint.
 
-When `cloud_token_usage >= token_budget` (default 50,000):
+When `cloud_token_usage >= token_budget` (default 1,000,000):
 1. Progress callback notifies user: "Switching to batch mode"
 2. Agent injects a forced summarization prompt
 3. LLM produces Final Answer from all data collected so far
 4. Session status → `completed` (not `failed`)
 
-`max_steps` remains as a **progress display counter** — it does NOT terminate the agent.
+`max_steps` remains as a **progress display counter** — it does NOT terminate the agent. The `total_cost` is displayed in real-time in logs and callbacks.
 
 ### 5.9 Agent System Prompt Architecture
 

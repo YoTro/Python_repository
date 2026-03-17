@@ -1,0 +1,4511 @@
+{
+  "metadata": {
+    "source": "https://ai.google.dev/gemini-api/docs/pricing",
+    "last_verified": "2026-03-17",
+    "currency": "USD",
+    "schema_version": "4",
+    "conventions": {
+      "null": "feature not available for this tier / model combination",
+      "0": "available at no charge (free tier active)",
+      "price_fields": "always number type, unit defined by the sibling billing_unit field",
+      "billing_unit_values": [
+        "USD_per_1M_tokens",
+        "USD_per_image",
+        "USD_per_second",
+        "USD_per_1M_tokens_per_hour",
+        "USD_per_1000_queries",
+        "USD_per_1000_prompts"
+      ],
+      "context_tiers": {
+        "lte_200k": "prompt total token count <= 200,000",
+        "gt_200k": "prompt total token count > 200,000 (all tokens billed at this rate)"
+      },
+      "grounding_free_allowance_unit": "RPD (requests per day) — uniform across all models",
+      "image_output_schema": "single billing_unit=USD_per_image; token_count field documents token consumption for reference only — it does NOT change the billing_unit",
+      "caching_read_ratio": "cache read price = input price × ratio (documented per model for verification)"
+    },
+    "model_string_normalization": "Strip leading 'models/' prefix, then lowercase. GeminiProvider: s.removeprefix('models/').strip().lower()",
+    "lookup_key_pattern": "{model_string}#{tier}#{direction}#{modality}[#{context_tier|resolution|variant}]  |  tier = standard_free | standard_paid | batch_free | batch_paid  |  direction = input | output | cache_read | cache_storage | grounding_search | grounding_maps | image_gen"
+  },
+  "model_string_index": {
+    "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
+    "gemini-3.1-pro-preview-customtools": "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite-preview",
+    "gemini-3.1-flash-image-preview": "gemini-3.1-flash-image-preview",
+    "gemini-3-flash-preview": "gemini-3-flash-preview",
+    "gemini-3-pro-image-preview": "gemini-3-pro-image-preview",
+    "gemini-2.5-pro": "gemini-2.5-pro",
+    "gemini-2.5-flash": "gemini-2.5-flash",
+    "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
+    "gemini-2.5-flash-image": "gemini-2.5-flash-image",
+    "gemini-2.5-flash-native-audio-preview-12-2025": "gemini-2.5-flash-native-audio-live",
+    "gemini-2.5-flash-preview-tts": "gemini-2.5-flash-tts",
+    "gemini-2.5-pro-preview-tts": "gemini-2.5-pro-tts",
+    "gemini-2.5-computer-use-preview-10-2025": "gemini-2.5-computer-use-preview",
+    "gemini-2.0-flash": "gemini-2.0-flash",
+    "gemini-2.0-flash-001": "gemini-2.0-flash",
+    "gemini-2.0-flash-lite": "gemini-2.0-flash-lite",
+    "gemini-2.0-flash-lite-001": "gemini-2.0-flash-lite",
+    "gemini-robotics-er-1.5-preview": "gemini-robotics-er-1.5",
+    "gemini-embedding-001": "gemini-embedding-001",
+    "imagen-4.0-generate-001": "imagen-4",
+    "imagen-4.0-ultra-generate-001": "imagen-4",
+    "imagen-4.0-fast-generate-001": "imagen-4",
+    "imagen-3.0-generate-002": "imagen-3",
+    "veo-3.1-generate-preview": "veo-3.1",
+    "veo-3.1-fast-generate-preview": "veo-3.1",
+    "veo-3.0-generate-001": "veo-3",
+    "veo-3.0-fast-generate-001": "veo-3",
+    "veo-2.0-generate-001": "veo-2",
+    "gemma-3": "gemma-3"
+  },
+  "lookup": {
+    "gemini-3.1-pro-preview#standard_paid#input#image#lte_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#input#image#gt_200k": {
+      "price": 4.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#input#text#lte_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#input#text#gt_200k": {
+      "price": 4.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#input#video#lte_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#input#video#gt_200k": {
+      "price": 4.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#output#text#lte_200k": {
+      "price": 12.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#output#text#gt_200k": {
+      "price": 18.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#cache_read#image#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#cache_read#image#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#cache_read#text#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#cache_read#text#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#cache_read#video#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#cache_read#video#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#standard_paid#cache_storage": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-pro-preview#standard_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000
+    },
+    "gemini-3.1-pro-preview#batch_paid#input#image#lte_200k": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#input#image#gt_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#input#text#lte_200k": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#input#text#gt_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#input#video#lte_200k": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#input#video#gt_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#output#text#lte_200k": {
+      "price": 6.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#output#text#gt_200k": {
+      "price": 9.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#cache_read#image#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#cache_read#image#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#cache_read#text#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#cache_read#text#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#cache_read#video#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#cache_read#video#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#batch_paid#cache_storage": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-pro-preview#batch_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#input#image#lte_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#input#image#gt_200k": {
+      "price": 4.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#input#text#lte_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#input#text#gt_200k": {
+      "price": 4.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#input#video#lte_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#input#video#gt_200k": {
+      "price": 4.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#output#text#lte_200k": {
+      "price": 12.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#output#text#gt_200k": {
+      "price": 18.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#cache_read#image#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#cache_read#image#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#cache_read#text#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#cache_read#text#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#cache_read#video#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#cache_read#video#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#cache_storage": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-pro-preview-customtools#standard_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#input#image#lte_200k": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#input#image#gt_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#input#text#lte_200k": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#input#text#gt_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#input#video#lte_200k": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#input#video#gt_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#output#text#lte_200k": {
+      "price": 6.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#output#text#gt_200k": {
+      "price": 9.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#cache_read#image#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#cache_read#image#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#cache_read#text#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#cache_read#text#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#cache_read#video#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#cache_read#video#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#cache_storage": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-pro-preview-customtools#batch_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-3.1-flash-lite-preview#standard_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.1-flash-lite-preview#standard_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.1-flash-lite-preview#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.1-flash-lite-preview#standard_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.1-flash-lite-preview#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.1-flash-lite-preview#standard_paid#input#image": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#standard_paid#input#audio": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#standard_paid#input#text": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#standard_paid#input#video": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#standard_paid#output#text": {
+      "price": 1.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#standard_paid#cache_read#image": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#standard_paid#cache_read#audio": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#standard_paid#cache_read#text": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#standard_paid#cache_read#video": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#standard_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#standard_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000
+    },
+    "gemini-3.1-flash-lite-preview#batch_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.1-flash-lite-preview#batch_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.1-flash-lite-preview#batch_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.1-flash-lite-preview#batch_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.1-flash-lite-preview#batch_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.1-flash-lite-preview#batch_paid#input#image": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#batch_paid#input#audio": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#batch_paid#input#text": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#batch_paid#input#video": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#batch_paid#output#text": {
+      "price": 0.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#batch_paid#cache_read#image": {
+      "price": 0.0125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#batch_paid#cache_read#audio": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#batch_paid#cache_read#text": {
+      "price": 0.0125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#batch_paid#cache_read#video": {
+      "price": 0.0125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#batch_paid#cache_storage": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite-preview#batch_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000
+    },
+    "gemini-3.1-flash-image-preview#standard_paid#input#image": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-image-preview#standard_paid#input#text": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-image-preview#standard_paid#output#text": {
+      "price": 3.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-image-preview#standard_paid#output#image#512px": {
+      "price": 0.045,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "512px"
+    },
+    "gemini-3.1-flash-image-preview#standard_paid#output#image#1024x1024px": {
+      "price": 0.067,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "1024x1024px"
+    },
+    "gemini-3.1-flash-image-preview#standard_paid#output#image#2048x2048px": {
+      "price": 0.101,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "2048x2048px"
+    },
+    "gemini-3.1-flash-image-preview#standard_paid#output#image#4096x4096px": {
+      "price": 0.151,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "4096x4096px"
+    },
+    "gemini-3.1-flash-image-preview#standard_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000
+    },
+    "gemini-3.1-flash-image-preview#batch_paid#input#image": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-image-preview#batch_paid#input#text": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-image-preview#batch_paid#output#text": {
+      "price": 1.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-image-preview#batch_paid#output#image#512px": {
+      "price": 0.022,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "512px"
+    },
+    "gemini-3.1-flash-image-preview#batch_paid#output#image#1024x1024px": {
+      "price": 0.034,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "1024x1024px"
+    },
+    "gemini-3.1-flash-image-preview#batch_paid#output#image#2048x2048px": {
+      "price": 0.05,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "2048x2048px"
+    },
+    "gemini-3.1-flash-image-preview#batch_paid#output#image#4096x4096px": {
+      "price": 0.076,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "4096x4096px"
+    },
+    "gemini-3-flash-preview#standard_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3-flash-preview#standard_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3-flash-preview#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3-flash-preview#standard_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3-flash-preview#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3-flash-preview#standard_free#cache_read#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3-flash-preview#standard_free#cache_read#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3-flash-preview#standard_free#cache_read#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3-flash-preview#standard_free#cache_read#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3-flash-preview#standard_paid#input#image": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#standard_paid#input#audio": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#standard_paid#input#text": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#standard_paid#input#video": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#standard_paid#output#text": {
+      "price": 3.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#standard_paid#cache_read#image": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#standard_paid#cache_read#audio": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#standard_paid#cache_read#text": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#standard_paid#cache_read#video": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#standard_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#standard_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000
+    },
+    "gemini-3-flash-preview#batch_paid#input#image": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#batch_paid#input#audio": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#batch_paid#input#text": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#batch_paid#input#video": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#batch_paid#output#text": {
+      "price": 1.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#batch_paid#cache_read#image": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#batch_paid#cache_read#audio": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#batch_paid#cache_read#text": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#batch_paid#cache_read#video": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#batch_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#batch_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-3-pro-image-preview#standard_paid#input#image#billing_unit": {
+      "price": "USD_per_image",
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "billing_unit"
+    },
+    "gemini-3-pro-image-preview#standard_paid#input#image#token_count": {
+      "price": 560,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "token_count"
+    },
+    "gemini-3-pro-image-preview#standard_paid#input#image#price": {
+      "price": 0.0011,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "price"
+    },
+    "gemini-3-pro-image-preview#standard_paid#input#text#billing_unit": {
+      "price": "USD_per_1M_tokens",
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "billing_unit"
+    },
+    "gemini-3-pro-image-preview#standard_paid#input#text#lte_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3-pro-image-preview#standard_paid#input#text#gt_200k": {
+      "price": 4.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3-pro-image-preview#standard_paid#output#text#lte_200k": {
+      "price": 12.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3-pro-image-preview#standard_paid#output#text#gt_200k": {
+      "price": 18.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3-pro-image-preview#standard_paid#output#image#1024x1024px": {
+      "price": 0.134,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "1024x1024px"
+    },
+    "gemini-3-pro-image-preview#standard_paid#output#image#2048x2048px": {
+      "price": 0.134,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "2048x2048px"
+    },
+    "gemini-3-pro-image-preview#standard_paid#output#image#4096x4096px": {
+      "price": 0.24,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "4096x4096px"
+    },
+    "gemini-3-pro-image-preview#standard_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000
+    },
+    "gemini-3-pro-image-preview#batch_paid#input#image#billing_unit": {
+      "price": "USD_per_image",
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "billing_unit"
+    },
+    "gemini-3-pro-image-preview#batch_paid#input#image#token_count": {
+      "price": 560,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "token_count"
+    },
+    "gemini-3-pro-image-preview#batch_paid#input#image#price": {
+      "price": 0.0006,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "price"
+    },
+    "gemini-3-pro-image-preview#batch_paid#input#text#billing_unit": {
+      "price": "USD_per_1M_tokens",
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "billing_unit"
+    },
+    "gemini-3-pro-image-preview#batch_paid#input#text#lte_200k": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3-pro-image-preview#batch_paid#input#text#gt_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3-pro-image-preview#batch_paid#output#text#lte_200k": {
+      "price": 6.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3-pro-image-preview#batch_paid#output#text#gt_200k": {
+      "price": 9.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3-pro-image-preview#batch_paid#output#image#1024x1024px": {
+      "price": 0.067,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "1024x1024px"
+    },
+    "gemini-3-pro-image-preview#batch_paid#output#image#2048x2048px": {
+      "price": 0.067,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "2048x2048px"
+    },
+    "gemini-3-pro-image-preview#batch_paid#output#image#4096x4096px": {
+      "price": 0.12,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "4096x4096px"
+    },
+    "gemini-2.5-pro#standard_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-pro#standard_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-pro#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-pro#standard_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-pro#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-pro#standard_paid#input#image#lte_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#standard_paid#input#image#gt_200k": {
+      "price": 2.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#standard_paid#input#text#lte_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#standard_paid#input#text#gt_200k": {
+      "price": 2.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#standard_paid#input#video#lte_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#standard_paid#input#video#gt_200k": {
+      "price": 2.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#standard_paid#output#text#lte_200k": {
+      "price": 10.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#standard_paid#output#text#gt_200k": {
+      "price": 15.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#standard_paid#cache_read#image#lte_200k": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#standard_paid#cache_read#image#gt_200k": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#standard_paid#cache_read#text#lte_200k": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#standard_paid#cache_read#text#gt_200k": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#standard_paid#cache_read#video#lte_200k": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#standard_paid#cache_read#video#gt_200k": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#standard_paid#cache_storage": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-pro#standard_paid#grounding_search": {
+      "price": 35.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.5-pro#standard_paid#grounding_maps": {
+      "price": 25.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 10000
+    },
+    "gemini-2.5-pro#batch_paid#input#image#lte_200k": {
+      "price": 0.625,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#batch_paid#input#image#gt_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#batch_paid#input#text#lte_200k": {
+      "price": 0.625,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#batch_paid#input#text#gt_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#batch_paid#input#video#lte_200k": {
+      "price": 0.625,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#batch_paid#input#video#gt_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#batch_paid#output#text#lte_200k": {
+      "price": 5.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#batch_paid#output#text#gt_200k": {
+      "price": 7.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#batch_paid#cache_read#image#lte_200k": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#batch_paid#cache_read#image#gt_200k": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#batch_paid#cache_read#text#lte_200k": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#batch_paid#cache_read#text#gt_200k": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#batch_paid#cache_read#video#lte_200k": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#batch_paid#cache_read#video#gt_200k": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#batch_paid#cache_storage": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-pro#batch_paid#grounding_search": {
+      "price": 35.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.5-flash#standard_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash#standard_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash#standard_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash#standard_paid#input#image": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#standard_paid#input#audio": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#standard_paid#input#text": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#standard_paid#input#video": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#standard_paid#output#text": {
+      "price": 2.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#standard_paid#cache_read#image": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#standard_paid#cache_read#audio": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#standard_paid#cache_read#text": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#standard_paid#cache_read#video": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#standard_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-flash#standard_paid#grounding_search": {
+      "price": 35.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.5-flash#standard_paid#grounding_maps": {
+      "price": 25.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.5-flash#batch_paid#input#image": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#batch_paid#input#audio": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#batch_paid#input#text": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#batch_paid#input#video": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#batch_paid#output#text": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#batch_paid#cache_read#image": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#batch_paid#cache_read#audio": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#batch_paid#cache_read#text": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#batch_paid#cache_read#video": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#batch_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-flash#batch_paid#grounding_search": {
+      "price": 35.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.5-flash-lite#standard_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-lite#standard_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-lite#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-lite#standard_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-lite#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-lite#standard_paid#input#image": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#standard_paid#input#audio": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#standard_paid#input#text": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#standard_paid#input#video": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#standard_paid#output#text": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#standard_paid#cache_read#image": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#standard_paid#cache_read#audio": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#standard_paid#cache_read#text": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#standard_paid#cache_read#video": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#standard_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#standard_paid#grounding_search": {
+      "price": 35.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.5-flash-lite#standard_paid#grounding_maps": {
+      "price": 25.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.5-flash-lite#batch_paid#input#image": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#batch_paid#input#audio": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#batch_paid#input#text": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#batch_paid#input#video": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#batch_paid#output#text": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#batch_paid#cache_read#image": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#batch_paid#cache_read#audio": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#batch_paid#cache_read#text": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#batch_paid#cache_read#video": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#batch_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#batch_paid#grounding_search": {
+      "price": 35.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.5-flash-image#standard_paid#input#image": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-image#standard_paid#input#text": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-image#standard_paid#output#text": {
+      "price": 2.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-image#standard_paid#output#image#up_to_1024x1024px": {
+      "price": 0.039,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "up_to_1024x1024px"
+    },
+    "gemini-2.5-flash-image#batch_paid#input#image": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-image#batch_paid#input#text": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-image#batch_paid#output#text": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-image#batch_paid#output#image#up_to_1024x1024px": {
+      "price": 0.0195,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "up_to_1024x1024px"
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025#standard_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025#standard_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025#standard_free#output#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025#standard_paid#input#audio": {
+      "price": 3.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025#standard_paid#input#text": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025#standard_paid#input#video": {
+      "price": 3.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025#standard_paid#output#text": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-native-audio-preview-12-2025#standard_paid#output#audio": {
+      "price": 12.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-preview-tts#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-preview-tts#standard_free#output#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.5-flash-preview-tts#standard_paid#input#text": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-preview-tts#standard_paid#output#audio": {
+      "price": 10.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-preview-tts#batch_paid#input#text": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-preview-tts#batch_paid#output#audio": {
+      "price": 5.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-pro-preview-tts#standard_paid#input#text": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-pro-preview-tts#standard_paid#output#audio": {
+      "price": 20.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-pro-preview-tts#batch_paid#input#text": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-pro-preview-tts#batch_paid#output#audio": {
+      "price": 10.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-computer-use-preview-10-2025#standard_paid#input#image#lte_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-computer-use-preview-10-2025#standard_paid#input#image#gt_200k": {
+      "price": 2.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-computer-use-preview-10-2025#standard_paid#input#text#lte_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-computer-use-preview-10-2025#standard_paid#input#text#gt_200k": {
+      "price": 2.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-computer-use-preview-10-2025#standard_paid#input#video#lte_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-computer-use-preview-10-2025#standard_paid#input#video#gt_200k": {
+      "price": 2.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-computer-use-preview-10-2025#standard_paid#output#text#lte_200k": {
+      "price": 10.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-computer-use-preview-10-2025#standard_paid#output#text#gt_200k": {
+      "price": 15.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.0-flash#standard_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash#standard_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash#standard_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash#standard_free#cache_read#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash#standard_free#cache_read#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash#standard_free#cache_read#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash#standard_free#cache_read#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash#standard_free#image_gen#up_to_1024x1024px": {
+      "price": 0.039,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "up_to_1024x1024px"
+    },
+    "gemini-2.0-flash#standard_paid#input#image": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#standard_paid#input#audio": {
+      "price": 0.7,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#standard_paid#input#text": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#standard_paid#input#video": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#standard_paid#output#text": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#standard_paid#cache_read#image": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#standard_paid#cache_read#audio": {
+      "price": 0.175,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#standard_paid#cache_read#text": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#standard_paid#cache_read#video": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#standard_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.0-flash#standard_paid#grounding_search": {
+      "price": 35.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.0-flash#standard_paid#grounding_maps": {
+      "price": 25.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.0-flash#standard_paid#image_gen#up_to_1024x1024px": {
+      "price": 0.039,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "up_to_1024x1024px"
+    },
+    "gemini-2.0-flash#batch_paid#input#image": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#batch_paid#input#audio": {
+      "price": 0.35,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#batch_paid#input#text": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#batch_paid#input#video": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#batch_paid#output#text": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#batch_paid#cache_read#image": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#batch_paid#cache_read#audio": {
+      "price": 0.175,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#batch_paid#cache_read#text": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#batch_paid#cache_read#video": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash#batch_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.0-flash#batch_paid#grounding_search": {
+      "price": 35.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.0-flash#batch_paid#image_gen#up_to_1024x1024px": {
+      "price": 0.0195,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "up_to_1024x1024px"
+    },
+    "gemini-2.0-flash-001#standard_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-001#standard_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-001#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-001#standard_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-001#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-001#standard_free#cache_read#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-001#standard_free#cache_read#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-001#standard_free#cache_read#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-001#standard_free#cache_read#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-001#standard_free#image_gen#up_to_1024x1024px": {
+      "price": 0.039,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "up_to_1024x1024px"
+    },
+    "gemini-2.0-flash-001#standard_paid#input#image": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#standard_paid#input#audio": {
+      "price": 0.7,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#standard_paid#input#text": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#standard_paid#input#video": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#standard_paid#output#text": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#standard_paid#cache_read#image": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#standard_paid#cache_read#audio": {
+      "price": 0.175,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#standard_paid#cache_read#text": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#standard_paid#cache_read#video": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#standard_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#standard_paid#grounding_search": {
+      "price": 35.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.0-flash-001#standard_paid#grounding_maps": {
+      "price": 25.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.0-flash-001#standard_paid#image_gen#up_to_1024x1024px": {
+      "price": 0.039,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "up_to_1024x1024px"
+    },
+    "gemini-2.0-flash-001#batch_paid#input#image": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#batch_paid#input#audio": {
+      "price": 0.35,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#batch_paid#input#text": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#batch_paid#input#video": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#batch_paid#output#text": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#batch_paid#cache_read#image": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#batch_paid#cache_read#audio": {
+      "price": 0.175,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#batch_paid#cache_read#text": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#batch_paid#cache_read#video": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#batch_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.0-flash-001#batch_paid#grounding_search": {
+      "price": 35.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-2.0-flash-001#batch_paid#image_gen#up_to_1024x1024px": {
+      "price": 0.0195,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "resolution": "up_to_1024x1024px"
+    },
+    "gemini-2.0-flash-lite#standard_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-lite#standard_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-lite#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-lite#standard_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-lite#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-lite#standard_paid#input#image": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite#standard_paid#input#audio": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite#standard_paid#input#text": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite#standard_paid#input#video": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite#standard_paid#output#text": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite#batch_paid#input#image": {
+      "price": 0.0375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite#batch_paid#input#audio": {
+      "price": 0.0375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite#batch_paid#input#text": {
+      "price": 0.0375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite#batch_paid#input#video": {
+      "price": 0.0375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite#batch_paid#output#text": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite-001#standard_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-lite-001#standard_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-lite-001#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-lite-001#standard_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-lite-001#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-2.0-flash-lite-001#standard_paid#input#image": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite-001#standard_paid#input#audio": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite-001#standard_paid#input#text": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite-001#standard_paid#input#video": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite-001#standard_paid#output#text": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite-001#batch_paid#input#image": {
+      "price": 0.0375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite-001#batch_paid#input#audio": {
+      "price": 0.0375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite-001#batch_paid#input#text": {
+      "price": 0.0375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite-001#batch_paid#input#video": {
+      "price": 0.0375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.0-flash-lite-001#batch_paid#output#text": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.5-preview#standard_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-robotics-er-1.5-preview#standard_free#input#audio": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-robotics-er-1.5-preview#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-robotics-er-1.5-preview#standard_free#input#video": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-robotics-er-1.5-preview#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-robotics-er-1.5-preview#standard_paid#input#image": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.5-preview#standard_paid#input#audio": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.5-preview#standard_paid#input#text": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.5-preview#standard_paid#input#video": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.5-preview#standard_paid#output#text": {
+      "price": 2.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.5-preview#standard_paid#grounding_search": {
+      "price": 35.0,
+      "billing_unit": "USD_per_1000_prompts",
+      "is_free": false,
+      "free_rpd": 1500
+    },
+    "gemini-embedding-001#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-embedding-001#standard_paid#input#text": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-embedding-001#batch_paid#input#text": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "imagen-4.0-generate-001#standard_paid#output#image#imagen-4.0-fast-generate-001": {
+      "price": 0.02,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "variant": "imagen-4.0-fast-generate-001"
+    },
+    "imagen-4.0-generate-001#standard_paid#output#image#imagen-4.0-generate-001": {
+      "price": 0.04,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "variant": "imagen-4.0-generate-001"
+    },
+    "imagen-4.0-generate-001#standard_paid#output#image#imagen-4.0-ultra-generate-001": {
+      "price": 0.06,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "variant": "imagen-4.0-ultra-generate-001"
+    },
+    "imagen-4.0-ultra-generate-001#standard_paid#output#image#imagen-4.0-fast-generate-001": {
+      "price": 0.02,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "variant": "imagen-4.0-fast-generate-001"
+    },
+    "imagen-4.0-ultra-generate-001#standard_paid#output#image#imagen-4.0-generate-001": {
+      "price": 0.04,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "variant": "imagen-4.0-generate-001"
+    },
+    "imagen-4.0-ultra-generate-001#standard_paid#output#image#imagen-4.0-ultra-generate-001": {
+      "price": 0.06,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "variant": "imagen-4.0-ultra-generate-001"
+    },
+    "imagen-4.0-fast-generate-001#standard_paid#output#image#imagen-4.0-fast-generate-001": {
+      "price": 0.02,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "variant": "imagen-4.0-fast-generate-001"
+    },
+    "imagen-4.0-fast-generate-001#standard_paid#output#image#imagen-4.0-generate-001": {
+      "price": 0.04,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "variant": "imagen-4.0-generate-001"
+    },
+    "imagen-4.0-fast-generate-001#standard_paid#output#image#imagen-4.0-ultra-generate-001": {
+      "price": 0.06,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "variant": "imagen-4.0-ultra-generate-001"
+    },
+    "imagen-3.0-generate-002#standard_paid#output#image#imagen-3.0-generate-002": {
+      "price": 0.03,
+      "billing_unit": "USD_per_image",
+      "is_free": false,
+      "variant": "imagen-3.0-generate-002"
+    },
+    "veo-3.1-generate-preview#standard_paid#output#video#veo-3.1-generate-preview#720p": {
+      "price": 0.4,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "720p",
+      "variant": "veo-3.1-generate-preview"
+    },
+    "veo-3.1-generate-preview#standard_paid#output#video#veo-3.1-generate-preview#1080p": {
+      "price": 0.4,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "1080p",
+      "variant": "veo-3.1-generate-preview"
+    },
+    "veo-3.1-generate-preview#standard_paid#output#video#veo-3.1-generate-preview#4k": {
+      "price": 0.6,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "4k",
+      "variant": "veo-3.1-generate-preview"
+    },
+    "veo-3.1-generate-preview#standard_paid#output#video#veo-3.1-fast-generate-preview#720p": {
+      "price": 0.15,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "720p",
+      "variant": "veo-3.1-fast-generate-preview"
+    },
+    "veo-3.1-generate-preview#standard_paid#output#video#veo-3.1-fast-generate-preview#1080p": {
+      "price": 0.15,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "1080p",
+      "variant": "veo-3.1-fast-generate-preview"
+    },
+    "veo-3.1-generate-preview#standard_paid#output#video#veo-3.1-fast-generate-preview#4k": {
+      "price": 0.35,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "4k",
+      "variant": "veo-3.1-fast-generate-preview"
+    },
+    "veo-3.1-fast-generate-preview#standard_paid#output#video#veo-3.1-generate-preview#720p": {
+      "price": 0.4,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "720p",
+      "variant": "veo-3.1-generate-preview"
+    },
+    "veo-3.1-fast-generate-preview#standard_paid#output#video#veo-3.1-generate-preview#1080p": {
+      "price": 0.4,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "1080p",
+      "variant": "veo-3.1-generate-preview"
+    },
+    "veo-3.1-fast-generate-preview#standard_paid#output#video#veo-3.1-generate-preview#4k": {
+      "price": 0.6,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "4k",
+      "variant": "veo-3.1-generate-preview"
+    },
+    "veo-3.1-fast-generate-preview#standard_paid#output#video#veo-3.1-fast-generate-preview#720p": {
+      "price": 0.15,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "720p",
+      "variant": "veo-3.1-fast-generate-preview"
+    },
+    "veo-3.1-fast-generate-preview#standard_paid#output#video#veo-3.1-fast-generate-preview#1080p": {
+      "price": 0.15,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "1080p",
+      "variant": "veo-3.1-fast-generate-preview"
+    },
+    "veo-3.1-fast-generate-preview#standard_paid#output#video#veo-3.1-fast-generate-preview#4k": {
+      "price": 0.35,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "4k",
+      "variant": "veo-3.1-fast-generate-preview"
+    },
+    "veo-3.0-generate-001#standard_paid#output#video#veo-3.0-generate-001#all_resolutions": {
+      "price": 0.4,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "all_resolutions",
+      "variant": "veo-3.0-generate-001"
+    },
+    "veo-3.0-generate-001#standard_paid#output#video#veo-3.0-fast-generate-001#all_resolutions": {
+      "price": 0.15,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "all_resolutions",
+      "variant": "veo-3.0-fast-generate-001"
+    },
+    "veo-3.0-fast-generate-001#standard_paid#output#video#veo-3.0-generate-001#all_resolutions": {
+      "price": 0.4,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "all_resolutions",
+      "variant": "veo-3.0-generate-001"
+    },
+    "veo-3.0-fast-generate-001#standard_paid#output#video#veo-3.0-fast-generate-001#all_resolutions": {
+      "price": 0.15,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "all_resolutions",
+      "variant": "veo-3.0-fast-generate-001"
+    },
+    "veo-2.0-generate-001#standard_paid#output#video#veo-2.0-generate-001#all_resolutions": {
+      "price": 0.35,
+      "billing_unit": "USD_per_second",
+      "is_free": false,
+      "resolution": "all_resolutions",
+      "variant": "veo-2.0-generate-001"
+    },
+    "gemma-3#standard_free#input#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemma-3#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemma-3#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemma-3#standard_free#cache_read#image": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemma-3#standard_free#cache_read#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemma-3#standard_free#cache_storage": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": true
+    }
+  },
+  "models": [
+    {
+      "id": "gemini-3.1-pro-preview",
+      "model_strings": [
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-preview-customtools"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null,
+              "video": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null,
+            "grounding_google_search": null,
+            "grounding_google_maps": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 2.0,
+                "gt_200k": 4.0
+              },
+              "image": {
+                "lte_200k": 2.0,
+                "gt_200k": 4.0
+              },
+              "video": {
+                "lte_200k": 2.0,
+                "gt_200k": 4.0
+              }
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 12.0,
+                "gt_200k": 18.0
+              }
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 0.2,
+                "gt_200k": 0.4
+              },
+              "image": {
+                "lte_200k": 0.2,
+                "gt_200k": 0.4
+              },
+              "video": {
+                "lte_200k": 0.2,
+                "gt_200k": 0.4
+              },
+              "_ratio_vs_input": "0.10"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 4.5
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_queries",
+              "free_rpd": null,
+              "free_monthly_prompts": 5000,
+              "paid_price": 14.0
+            },
+            "grounding_google_maps": null
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null,
+              "video": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 1.0,
+                "gt_200k": 2.0
+              },
+              "image": {
+                "lte_200k": 1.0,
+                "gt_200k": 2.0
+              },
+              "video": {
+                "lte_200k": 1.0,
+                "gt_200k": 2.0
+              }
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 6.0,
+                "gt_200k": 9.0
+              }
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 0.2,
+                "gt_200k": 0.4
+              },
+              "image": {
+                "lte_200k": 0.2,
+                "gt_200k": 0.4
+              },
+              "video": {
+                "lte_200k": 0.2,
+                "gt_200k": 0.4
+              },
+              "_ratio_vs_input": "0.20"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 4.5
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_queries",
+              "free_rpd": 1500,
+              "paid_price": 14.0
+            },
+            "grounding_google_maps": null
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-3.1-flash-lite-preview",
+      "model_strings": [
+        "gemini-3.1-flash-lite-preview"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0,
+              "video": 0,
+              "audio": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.25,
+              "image": 0.25,
+              "video": 0.25,
+              "audio": 0.5
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 1.5
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.025,
+              "image": 0.025,
+              "video": 0.025,
+              "audio": 0.05,
+              "_ratio_vs_input": "0.10"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 1.0
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_queries",
+              "free_rpd": null,
+              "free_monthly_prompts": 5000,
+              "paid_price": 14.0
+            },
+            "grounding_google_maps": null
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0,
+              "video": 0,
+              "audio": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.125,
+              "image": 0.125,
+              "video": 0.125,
+              "audio": 0.25
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.75
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.0125,
+              "image": 0.0125,
+              "video": 0.0125,
+              "audio": 0.025,
+              "_ratio_vs_input": "0.10"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 0.5
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_queries",
+              "free_rpd": null,
+              "free_monthly_prompts": 5000,
+              "paid_price": 14.0
+            },
+            "grounding_google_maps": null
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-3.1-flash-image-preview",
+      "model_strings": [
+        "gemini-3.1-flash-image-preview"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text",
+        "image"
+      ],
+      "thinking": true,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null
+            },
+            "output": {
+              "text": null,
+              "image": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.5,
+              "image": 0.5
+            },
+            "output": {
+              "text": {
+                "billing_unit": "USD_per_1M_tokens",
+                "price": 3.0
+              },
+              "image": {
+                "billing_unit": "USD_per_image",
+                "by_resolution": {
+                  "512px": {
+                    "token_count": 747,
+                    "price": 0.045
+                  },
+                  "1024x1024px": {
+                    "token_count": 1120,
+                    "price": 0.067
+                  },
+                  "2048x2048px": {
+                    "token_count": 1680,
+                    "price": 0.101
+                  },
+                  "4096x4096px": {
+                    "token_count": 2520,
+                    "price": 0.151
+                  }
+                },
+                "_token_rate_ref": "60.00 USD per 1M tokens"
+              }
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_queries",
+              "free_rpd": null,
+              "free_monthly_prompts": 5000,
+              "paid_price": 14.0
+            },
+            "grounding_google_maps": null
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null
+            },
+            "output": {
+              "text": null,
+              "image": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.25,
+              "image": 0.25
+            },
+            "output": {
+              "text": {
+                "billing_unit": "USD_per_1M_tokens",
+                "price": 1.5
+              },
+              "image": {
+                "billing_unit": "USD_per_image",
+                "by_resolution": {
+                  "512px": {
+                    "token_count": 747,
+                    "price": 0.022
+                  },
+                  "1024x1024px": {
+                    "token_count": 1120,
+                    "price": 0.034
+                  },
+                  "2048x2048px": {
+                    "token_count": 1680,
+                    "price": 0.05
+                  },
+                  "4096x4096px": {
+                    "token_count": 2520,
+                    "price": 0.076
+                  }
+                },
+                "_token_rate_ref": "30.00 USD per 1M tokens"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-3-flash-preview",
+      "model_strings": [
+        "gemini-3-flash-preview"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0,
+              "video": 0,
+              "audio": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0,
+              "video": 0,
+              "audio": 0
+            },
+            "context_caching_storage": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.5,
+              "image": 0.5,
+              "video": 0.5,
+              "audio": 1.0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 3.0
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.05,
+              "image": 0.05,
+              "video": 0.05,
+              "audio": 0.1,
+              "_ratio_vs_input": "0.10"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 1.0
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_queries",
+              "free_rpd": null,
+              "free_monthly_prompts": 5000,
+              "paid_price": 14.0
+            },
+            "grounding_google_maps": null
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null,
+              "video": null,
+              "audio": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.25,
+              "image": 0.25,
+              "video": 0.25,
+              "audio": 0.5
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 1.5
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.05,
+              "image": 0.05,
+              "video": 0.05,
+              "audio": 0.1,
+              "_note": "batch caching pricing same as standard (not yet separately implemented)"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 1.0
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_queries",
+              "free_rpd": 1500,
+              "paid_price": 14.0
+            },
+            "grounding_google_maps": null
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-3-pro-image-preview",
+      "model_strings": [
+        "gemini-3-pro-image-preview"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text",
+        "image"
+      ],
+      "thinking": true,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "text": null,
+              "image": null
+            },
+            "output": {
+              "text": null,
+              "image": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "text": {
+                "billing_unit": "USD_per_1M_tokens",
+                "lte_200k": 2.0,
+                "gt_200k": 4.0
+              },
+              "image": {
+                "billing_unit": "USD_per_image",
+                "token_count": 560,
+                "price": 0.0011,
+                "_token_rate_ref": "2.00 USD per 1M tokens (560 tokens × $2.00/1M = $0.00112 ≈ $0.0011)"
+              }
+            },
+            "output": {
+              "text": {
+                "billing_unit": "USD_per_1M_tokens",
+                "lte_200k": 12.0,
+                "gt_200k": 18.0
+              },
+              "image": {
+                "billing_unit": "USD_per_image",
+                "by_resolution": {
+                  "1024x1024px": {
+                    "token_count": 1120,
+                    "price": 0.134
+                  },
+                  "2048x2048px": {
+                    "token_count": 1120,
+                    "price": 0.134
+                  },
+                  "4096x4096px": {
+                    "token_count": 2000,
+                    "price": 0.24
+                  }
+                },
+                "_token_rate_ref": "120.00 USD per 1M tokens",
+                "_note": "1K and 2K share identical token_count (1120) per official docs"
+              }
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_queries",
+              "free_rpd": null,
+              "free_monthly_prompts": 5000,
+              "paid_price": 14.0
+            },
+            "grounding_google_maps": null
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "text": null,
+              "image": null
+            },
+            "output": {
+              "text": null,
+              "image": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "text": {
+                "billing_unit": "USD_per_1M_tokens",
+                "lte_200k": 1.0,
+                "gt_200k": 2.0
+              },
+              "image": {
+                "billing_unit": "USD_per_image",
+                "token_count": 560,
+                "price": 0.0006,
+                "_token_rate_ref": "1.00 USD per 1M tokens (560 tokens × $1.00/1M = $0.00056 ≈ $0.0006)"
+              }
+            },
+            "output": {
+              "text": {
+                "billing_unit": "USD_per_1M_tokens",
+                "lte_200k": 6.0,
+                "gt_200k": 9.0
+              },
+              "image": {
+                "billing_unit": "USD_per_image",
+                "by_resolution": {
+                  "1024x1024px": {
+                    "token_count": 1120,
+                    "price": 0.067
+                  },
+                  "2048x2048px": {
+                    "token_count": 1120,
+                    "price": 0.067
+                  },
+                  "4096x4096px": {
+                    "token_count": 2000,
+                    "price": 0.12
+                  }
+                },
+                "_token_rate_ref": "60.00 USD per 1M tokens",
+                "_note": "1K and 2K share identical token_count (1120) per official docs"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "model_strings": [
+        "gemini-2.5-pro"
+      ],
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0,
+              "video": 0,
+              "audio": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 1.25,
+                "gt_200k": 2.5
+              },
+              "image": {
+                "lte_200k": 1.25,
+                "gt_200k": 2.5
+              },
+              "video": {
+                "lte_200k": 1.25,
+                "gt_200k": 2.5
+              },
+              "audio": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 10.0,
+                "gt_200k": 15.0
+              }
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 0.125,
+                "gt_200k": 0.25
+              },
+              "image": {
+                "lte_200k": 0.125,
+                "gt_200k": 0.25
+              },
+              "video": {
+                "lte_200k": 0.125,
+                "gt_200k": 0.25
+              },
+              "audio": null,
+              "_ratio_vs_input": "0.10"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 4.5
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 35.0
+            },
+            "grounding_google_maps": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 10000,
+              "paid_price": 25.0
+            }
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null,
+              "video": null,
+              "audio": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 0.625,
+                "gt_200k": 1.25
+              },
+              "image": {
+                "lte_200k": 0.625,
+                "gt_200k": 1.25
+              },
+              "video": {
+                "lte_200k": 0.625,
+                "gt_200k": 1.25
+              },
+              "audio": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 5.0,
+                "gt_200k": 7.5
+              }
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 0.125,
+                "gt_200k": 0.25
+              },
+              "image": {
+                "lte_200k": 0.125,
+                "gt_200k": 0.25
+              },
+              "video": {
+                "lte_200k": 0.125,
+                "gt_200k": 0.25
+              },
+              "audio": null,
+              "_ratio_vs_input": "0.20"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 4.5
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 35.0
+            },
+            "grounding_google_maps": null
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "model_strings": [
+        "gemini-2.5-flash"
+      ],
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0,
+              "video": 0,
+              "audio": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null,
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 500,
+              "paid_price": null
+            },
+            "grounding_google_maps": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 500,
+              "paid_price": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.3,
+              "image": 0.3,
+              "video": 0.3,
+              "audio": 1.0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 2.5
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.03,
+              "image": 0.03,
+              "video": 0.03,
+              "audio": 0.1,
+              "_ratio_vs_input": "0.10"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 1.0
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 35.0
+            },
+            "grounding_google_maps": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 25.0
+            }
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null,
+              "video": null,
+              "audio": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.15,
+              "image": 0.15,
+              "video": 0.15,
+              "audio": 0.5
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 1.25
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.03,
+              "image": 0.03,
+              "video": 0.03,
+              "audio": 0.1,
+              "_ratio_vs_input": "0.20"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 1.0
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 35.0
+            },
+            "grounding_google_maps": null
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-2.5-flash-lite",
+      "model_strings": [
+        "gemini-2.5-flash-lite"
+      ],
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0,
+              "video": 0,
+              "audio": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null,
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 500,
+              "paid_price": null
+            },
+            "grounding_google_maps": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 500,
+              "paid_price": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.1,
+              "image": 0.1,
+              "video": 0.1,
+              "audio": 0.3
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.4
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.01,
+              "image": 0.01,
+              "video": 0.01,
+              "audio": 0.03,
+              "_ratio_vs_input": "0.10"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 1.0
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 35.0
+            },
+            "grounding_google_maps": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 25.0
+            }
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null,
+              "video": null,
+              "audio": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.05,
+              "image": 0.05,
+              "video": 0.05,
+              "audio": 0.15
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.2
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.01,
+              "image": 0.01,
+              "video": 0.01,
+              "audio": 0.03,
+              "_ratio_vs_input": "0.20"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 1.0
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 35.0
+            },
+            "grounding_google_maps": null
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-2.5-flash-image",
+      "model_strings": [
+        "gemini-2.5-flash-image"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text",
+        "image"
+      ],
+      "thinking": false,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null
+            },
+            "output": {
+              "text": null,
+              "image": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.3,
+              "image": 0.3
+            },
+            "output": {
+              "text": {
+                "billing_unit": "USD_per_1M_tokens",
+                "price": 2.5
+              },
+              "image": {
+                "billing_unit": "USD_per_image",
+                "up_to_1024x1024px": {
+                  "token_count": 1290,
+                  "price": 0.039
+                },
+                "_token_rate_ref": "30.00 USD per 1M tokens"
+              }
+            }
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null
+            },
+            "output": {
+              "text": null,
+              "image": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.15,
+              "image": 0.15
+            },
+            "output": {
+              "text": {
+                "billing_unit": "USD_per_1M_tokens",
+                "price": 1.25
+              },
+              "image": {
+                "billing_unit": "USD_per_image",
+                "up_to_1024x1024px": {
+                  "token_count": 1290,
+                  "price": 0.0195
+                },
+                "_token_rate_ref": "15.00 USD per 1M tokens"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-2.5-flash-native-audio-live",
+      "model_strings": [
+        "gemini-2.5-flash-native-audio-preview-12-2025"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "audio",
+        "video"
+      ],
+      "output_modalities": [
+        "text",
+        "audio"
+      ],
+      "thinking": true,
+      "context_window_tokens": null,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "audio": 0,
+              "video": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "audio": 0
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.5,
+              "audio": 3.0,
+              "video": 3.0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 2.0,
+              "audio": 12.0
+            }
+          }
+        },
+        "batch": null
+      }
+    },
+    {
+      "id": "gemini-2.5-flash-tts",
+      "model_strings": [
+        "gemini-2.5-flash-preview-tts"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "audio"
+      ],
+      "thinking": false,
+      "context_window_tokens": null,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "audio": 0
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.5
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "audio": 10.0
+            }
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "audio": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.25
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "audio": 5.0
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-2.5-pro-tts",
+      "model_strings": [
+        "gemini-2.5-pro-preview-tts"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "audio"
+      ],
+      "thinking": false,
+      "context_window_tokens": null,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "audio": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 1.0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "audio": 20.0
+            }
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "audio": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.5
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "audio": 10.0
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-2.5-computer-use-preview",
+      "model_strings": [
+        "gemini-2.5-computer-use-preview-10-2025"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": false,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null,
+              "video": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 1.25,
+                "gt_200k": 2.5
+              },
+              "image": {
+                "lte_200k": 1.25,
+                "gt_200k": 2.5
+              },
+              "video": {
+                "lte_200k": 1.25,
+                "gt_200k": 2.5
+              }
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": {
+                "lte_200k": 10.0,
+                "gt_200k": 15.0
+              }
+            }
+          }
+        },
+        "batch": null
+      }
+    },
+    {
+      "id": "gemini-2.0-flash",
+      "model_strings": [
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-001"
+      ],
+      "status": "deprecated",
+      "deprecated": true,
+      "deprecation_shutdown_date": "2026-06-01",
+      "migration_target": "gemini-2.5-flash",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "output_modalities": [
+        "text",
+        "image"
+      ],
+      "thinking": false,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0,
+              "video": 0,
+              "audio": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0,
+              "video": 0,
+              "audio": 0
+            },
+            "context_caching_storage": null,
+            "image_generation": {
+              "billing_unit": "USD_per_image",
+              "up_to_1024x1024px": {
+                "token_count": 1290,
+                "price": 0.039
+              }
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 500,
+              "paid_price": null
+            },
+            "grounding_google_maps": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 500,
+              "paid_price": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.1,
+              "image": 0.1,
+              "video": 0.1,
+              "audio": 0.7
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.4
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.025,
+              "image": 0.025,
+              "video": 0.025,
+              "audio": 0.175,
+              "_ratio_vs_input": "0.25"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 1.0
+            },
+            "image_generation": {
+              "billing_unit": "USD_per_image",
+              "up_to_1024x1024px": {
+                "token_count": 1290,
+                "price": 0.039
+              },
+              "_token_rate_ref": "30.00 USD per 1M tokens"
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 35.0
+            },
+            "grounding_google_maps": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 25.0
+            }
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null,
+              "video": null,
+              "audio": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            },
+            "image_generation": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.05,
+              "image": 0.05,
+              "video": 0.05,
+              "audio": 0.35
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.2
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.025,
+              "image": 0.025,
+              "video": 0.025,
+              "audio": 0.175,
+              "_ratio_vs_input": "0.50"
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 1.0
+            },
+            "image_generation": {
+              "billing_unit": "USD_per_image",
+              "up_to_1024x1024px": {
+                "token_count": 1290,
+                "price": 0.0195
+              },
+              "_token_rate_ref": "15.00 USD per 1M tokens"
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 35.0
+            },
+            "grounding_google_maps": null
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-2.0-flash-lite",
+      "model_strings": [
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash-lite-001"
+      ],
+      "status": "deprecated",
+      "deprecated": true,
+      "deprecation_shutdown_date": "2026-06-01",
+      "migration_target": "gemini-2.5-flash-lite",
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": false,
+      "context_window_tokens": 1000000,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0,
+              "video": 0,
+              "audio": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null,
+            "grounding_google_search": null,
+            "grounding_google_maps": null
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.075,
+              "image": 0.075,
+              "video": 0.075,
+              "audio": 0.075
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.3
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null,
+            "grounding_google_search": null,
+            "grounding_google_maps": null
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null,
+              "image": null,
+              "video": null,
+              "audio": null
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.0375,
+              "image": 0.0375,
+              "video": 0.0375,
+              "audio": 0.0375
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.15
+            },
+            "context_caching_read": null,
+            "context_caching_storage": null,
+            "grounding_google_search": null,
+            "grounding_google_maps": null
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-robotics-er-1.5",
+      "model_strings": [
+        "gemini-robotics-er-1.5-preview"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window_tokens": null,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0,
+              "video": 0,
+              "audio": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 500,
+              "paid_price": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.3,
+              "image": 0.3,
+              "video": 0.3,
+              "audio": 1.0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 2.5
+            },
+            "grounding_google_search": {
+              "billing_unit": "USD_per_1000_prompts",
+              "free_rpd": 1500,
+              "paid_price": 35.0
+            }
+          }
+        },
+        "batch": null
+      }
+    },
+    {
+      "id": "gemini-embedding-001",
+      "model_strings": [
+        "gemini-embedding-001"
+      ],
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [],
+      "thinking": false,
+      "context_window_tokens": null,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.15
+            }
+          }
+        },
+        "batch": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": null
+            }
+          },
+          "paid_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0.075
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "imagen-4",
+      "model_strings": [
+        "imagen-4.0-generate-001",
+        "imagen-4.0-ultra-generate-001",
+        "imagen-4.0-fast-generate-001"
+      ],
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "image"
+      ],
+      "thinking": false,
+      "context_window_tokens": null,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "output": {
+              "billing_unit": "USD_per_image",
+              "image": null
+            }
+          },
+          "paid_tier": {
+            "output": {
+              "billing_unit": "USD_per_image",
+              "imagen-4.0-fast-generate-001": 0.02,
+              "imagen-4.0-generate-001": 0.04,
+              "imagen-4.0-ultra-generate-001": 0.06
+            }
+          }
+        },
+        "batch": null
+      }
+    },
+    {
+      "id": "imagen-3",
+      "model_strings": [
+        "imagen-3.0-generate-002"
+      ],
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "image"
+      ],
+      "thinking": false,
+      "context_window_tokens": null,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "output": {
+              "billing_unit": "USD_per_image",
+              "image": null
+            }
+          },
+          "paid_tier": {
+            "output": {
+              "billing_unit": "USD_per_image",
+              "imagen-3.0-generate-002": 0.03
+            }
+          }
+        },
+        "batch": null
+      }
+    },
+    {
+      "id": "veo-3.1",
+      "model_strings": [
+        "veo-3.1-generate-preview",
+        "veo-3.1-fast-generate-preview"
+      ],
+      "status": "preview",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "video",
+        "audio"
+      ],
+      "thinking": false,
+      "context_window_tokens": null,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "output": {
+              "billing_unit": "USD_per_second",
+              "video": null
+            }
+          },
+          "paid_tier": {
+            "output": {
+              "billing_unit": "USD_per_second",
+              "veo-3.1-generate-preview": {
+                "720p": 0.4,
+                "1080p": 0.4,
+                "4k": 0.6
+              },
+              "veo-3.1-fast-generate-preview": {
+                "720p": 0.15,
+                "1080p": 0.15,
+                "4k": 0.35
+              }
+            }
+          }
+        },
+        "batch": null
+      }
+    },
+    {
+      "id": "veo-3",
+      "model_strings": [
+        "veo-3.0-generate-001",
+        "veo-3.0-fast-generate-001"
+      ],
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "video",
+        "audio"
+      ],
+      "thinking": false,
+      "context_window_tokens": null,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "output": {
+              "billing_unit": "USD_per_second",
+              "video": null
+            }
+          },
+          "paid_tier": {
+            "output": {
+              "billing_unit": "USD_per_second",
+              "veo-3.0-generate-001": {
+                "all_resolutions": 0.4
+              },
+              "veo-3.0-fast-generate-001": {
+                "all_resolutions": 0.15
+              }
+            }
+          }
+        },
+        "batch": null
+      }
+    },
+    {
+      "id": "veo-2",
+      "model_strings": [
+        "veo-2.0-generate-001"
+      ],
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "video"
+      ],
+      "thinking": false,
+      "context_window_tokens": null,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "output": {
+              "billing_unit": "USD_per_second",
+              "video": null
+            }
+          },
+          "paid_tier": {
+            "output": {
+              "billing_unit": "USD_per_second",
+              "veo-2.0-generate-001": {
+                "all_resolutions": 0.35
+              }
+            }
+          }
+        },
+        "batch": null
+      }
+    },
+    {
+      "id": "gemma-3",
+      "model_strings": [
+        "gemma-3"
+      ],
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": false,
+      "context_window_tokens": null,
+      "pricing": {
+        "standard": {
+          "free_tier": {
+            "input": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0
+            },
+            "output": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0
+            },
+            "context_caching_read": {
+              "billing_unit": "USD_per_1M_tokens",
+              "text": 0,
+              "image": 0
+            },
+            "context_caching_storage": {
+              "billing_unit": "USD_per_1M_tokens_per_hour",
+              "price": 0
+            }
+          },
+          "paid_tier": null
+        },
+        "batch": null
+      }
+    }
+  ],
+  "tools_pricing": {
+    "google_search": {
+      "billing_unit": "USD_per_1000_prompts",
+      "free_tier": {
+        "flash_and_flash_lite_shared_rpd": 500,
+        "pro_models_rpd": null
+      },
+      "paid_tier": {
+        "flash_and_flash_lite_free_rpd": 1500,
+        "pro_models_free_rpd": 1500,
+        "gemini_3x_paid_price": 14.0,
+        "gemini_2x_paid_price": 35.0
+      }
+    },
+    "google_maps": {
+      "billing_unit": "USD_per_1000_prompts",
+      "free_tier": {
+        "flash_and_flash_lite_shared_rpd": 500,
+        "pro_models_rpd": null
+      },
+      "paid_tier": {
+        "flash_and_flash_lite_free_rpd": 1500,
+        "pro_models_free_rpd": 10000,
+        "paid_price": 25.0
+      }
+    },
+    "code_execution": {
+      "free_tier_price": 0,
+      "paid_tier_price": 0
+    },
+    "url_context": {
+      "free_tier_price": 0,
+      "paid_tier": "charged as input tokens at per-model rate"
+    },
+    "file_search": {
+      "billing_unit": "USD_per_1M_tokens",
+      "embedding_cost": 0.15,
+      "retrieved_doc_tokens": "charged as regular input tokens at per-model rate"
+    }
+  }
+}

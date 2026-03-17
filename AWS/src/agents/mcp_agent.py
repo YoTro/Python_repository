@@ -13,7 +13,7 @@ from src.registry.tools import tool_registry
 logger = logging.getLogger(__name__)
 
 _MAX_DUPLICATE_CALLS = 2   # abort tool loop after N identical consecutive calls
-_DEFAULT_TOKEN_BUDGET = 50000  # cumulative *cloud* token threshold before switching to batch
+_DEFAULT_TOKEN_BUDGET = 1000000  # cumulative *cloud* token threshold before switching to batch
 _LOCAL_PROVIDERS = {"local", "llama_cpp", "llama"}  # provider names that run locally (free)
 
 
@@ -44,12 +44,19 @@ class MCPAgent(BaseAgent):
 
     @staticmethod
     def _accum_tokens(session: AgentSession, response_obj) -> None:
-        """Accumulate token usage; only cloud tokens count toward the budget."""
-        if not response_obj or not response_obj.token_usage:
+        """Accumulate token usage and monetary cost."""
+        if not response_obj:
             return
-        session.token_usage += response_obj.token_usage
-        if response_obj.provider_name not in _LOCAL_PROVIDERS:
-            session.cloud_token_usage += response_obj.token_usage
+            
+        if response_obj.token_usage:
+            session.token_usage += response_obj.token_usage
+            if response_obj.provider_name not in _LOCAL_PROVIDERS:
+                session.cloud_token_usage += response_obj.token_usage
+        
+        if hasattr(response_obj, "cost") and response_obj.cost:
+            session.total_cost += response_obj.cost
+            if hasattr(response_obj, "currency"):
+                session.currency = response_obj.currency
 
     @staticmethod
     def _parse_tool_call(response: str) -> tuple[Optional[str], Optional[dict]]:
@@ -112,15 +119,47 @@ class MCPAgent(BaseAgent):
         last_tool_call = None
         duplicate_count = 0
         budget_exceeded = False
+        step_extensions = 0          # number of grace-period extensions granted
+        _MAX_EXTENSIONS = 2          # hard cap: at most 2 extensions (10 extra steps total)
 
-        # 2. Execution Loop — steps are for progress display, NOT a hard cap
+        # 2. Execution Loop
         while True:
             session.current_step += 1
             logger.info(
-                f"MCPAgent [{session.session_id}] Step {session.current_step} "
+                f"MCPAgent [{session.session_id}] Step {session.current_step}/{session.max_steps} "
                 f"(cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
-                f"total: {session.token_usage})"
+                f"cost: {session.total_cost:.4f} {session.currency})"
             )
+
+            # ── Step limit and Token budget management ────────────────────
+            
+            # Scenario A: Steps exceeded but Token budget is healthy (>20% left)
+            if session.current_step > session.max_steps:
+                if session.cloud_token_usage < (self.token_budget * 0.8) and step_extensions < _MAX_EXTENSIONS:
+                    # Grant a grace period of 5 steps
+                    step_extensions += 1
+                    old_max = session.max_steps
+                    session.max_steps += 5
+                    logger.info(f"Step limit {old_max} reached, but budget is healthy. Extending to {session.max_steps} (extension {step_extensions}/{_MAX_EXTENSIONS}).")
+                    session.add_message(
+                        role="tool", name="system",
+                        content=(
+                            f"SYSTEM: You have reached the initial step limit ({old_max}). "
+                            "Because you still have sufficient token budget, I have granted you 5 more steps. "
+                            f"This is grace extension {step_extensions}/{_MAX_EXTENSIONS}. "
+                            "Please focus on CONVERGING your research and provide a Final Answer soon."
+                        )
+                    )
+                else:
+                    # Token budget is tight or steps really exhausted — force closure
+                    logger.warning(f"Step limit {session.max_steps} reached and budget is low. Forcing final answer.")
+                    answer = await self._force_final_answer(
+                        session, system_message,
+                        reason=f"Step limit ({session.max_steps}) reached. Please summarize your findings."
+                    )
+                    session.status = "completed"
+                    self.session_mgr.save(session)
+                    return answer
 
             # Persist progress
             self.session_mgr.save(session)
@@ -133,14 +172,15 @@ class MCPAgent(BaseAgent):
                         total_steps=session.max_steps,
                         step_name=f"Agent Reasoning (Step {session.current_step})",
                         message=(
-                            f"Cloud tokens: {session.cloud_token_usage}/{self.token_budget}. "
-                            "Consulting LLM or fetching tool data..."
+                            f"Cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
+                            f"Cost: {session.total_cost:.4f} {session.currency}. "
+                            "Consulting LLM..."
                         ),
                     )
                 except Exception as e:
                     logger.warning(f"Agent callback on_progress failed: {e}")
 
-            # ── Token budget check ────────────────────────────────────────
+            # Scenario B: Hard Token budget exceeded
             if not budget_exceeded and session.cloud_token_usage >= self.token_budget:
                 budget_exceeded = True
                 logger.warning(

@@ -1,0 +1,931 @@
+{
+  "metadata": {
+    "source": "https://sellercentral.amazon.com/help/hub/reference/external/G200164330",
+    "marketplace": "Amazon.com (US)",
+    "last_reviewed": "2025-10",
+    "disclaimer": "This JSON is for reference only. Policies change frequently. Always verify current requirements directly in Amazon Seller Central before listing. Sellers are responsible for compliance with all applicable federal and state laws.",
+    "policy_principle": "Do not assume a product is permitted because it is not explicitly listed in prohibited examples, or because an existing ASIN exists. When in doubt, do not list."
+  },
+  "restricted_categories": [
+    {
+      "id": "alcohol",
+      "name": "Alcohol",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164160",
+      "approval_required": true,
+      "allowed": [
+        "Alcoholic beverages sold by pre-approved selling partners",
+        "Non-alcoholic beverages with 0% alcohol-by-volume",
+        "Non-alcoholic beverages with greater than 0% and less than 0.5% alcohol-by-volume sold by pre-approved selling partners",
+        "Alcohol-related accessories and products, including corkscrews, decanters, and containers",
+        "Alcohol-related memorabilia and collectibles that do not contain alcohol",
+        "Distillation kits used for distilling oil, water, or other non-alcoholic beverages or products"
+      ],
+      "prohibited": [
+        "Alcoholic and non-alcoholic beverages over 0.0% alcohol-by-volume (except from pre-approved selling partners)",
+        "Alcohol distillation kits that reference alcohol making (e.g., beer, wine, and spirits)",
+        "Liquor licenses",
+        "Any product marketed for customers over 21 years of age",
+        "Any product that encapsulates raw alcohol"
+      ]
+    },
+    {
+      "id": "animals_animal_related",
+      "name": "Animals & Animal-Related Products",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164370",
+      "approval_required": false,
+      "allowed": [
+        "Live insects (e.g., bait worms, feeder insects)",
+        "Live shellfish and crustaceans intended for human consumption (e.g., live lobster, clams)",
+        "Faux/synthetic animal products (e.g., faux fur, faux feathers)",
+        "Pet food and treats",
+        "Pet supplies and accessories",
+        "Taxidermy of non-endangered, legally obtained animals with documentation",
+        "Mounted insects and butterfly displays (legally sourced)"
+      ],
+      "prohibited": [
+        "Live pets (dogs, cats, birds, hamsters, reptiles, fish, etc.)",
+        "Livestock and farm animals",
+        "Plant pests (e.g., invasive insects, nematodes not approved for agricultural use)",
+        "Endangered or threatened species or their parts (fur, feathers, ivory, bones, shells) regulated under CITES or ESA",
+        "Marine mammals or their parts (regulated under Marine Mammal Protection Act)",
+        "Products made from shark fins",
+        "Products made from cat or dog fur",
+        "Migratory bird feathers (regulated under Migratory Bird Treaty Act)",
+        "Illegal wildlife products without proper CITES permits",
+        "Bear bile products",
+        "Seal products (restricted under US Marine Mammal Protection Act)"
+      ]
+    },
+    {
+      "id": "art_fine_art",
+      "name": "Art - Fine Art",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164720",
+      "approval_required": true,
+      "allowed": [
+        "One-of-a-kind original works by a named living artist (paintings, drawings, photographs)",
+        "Limited edition fine art prints with certificate of authenticity",
+        "Secondary-sale works (resale of authenticated art previously sold)",
+        "Photography prints by named artist",
+        "Two-dimensional artwork (paintings, prints, drawings)"
+      ],
+      "prohibited": [
+        "Three-dimensional artwork (sculptures) — not permitted in Amazon Fine Art Store",
+        "Archaeological or anthropological art",
+        "Mass-produced decorative art or posters",
+        "Promotional posters (e.g., movie, music, or brand posters)",
+        "Artwork without a named artist",
+        "Textile art",
+        "Unlicensed reproductions or copies of copyrighted artworks",
+        "Art listed without proper provenance or authenticity documentation"
+      ]
+    },
+    {
+      "id": "art_home_decor",
+      "name": "Art - Home Decor",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164720",
+      "approval_required": true,
+      "allowed": [
+        "Mass-produced decorative wall art and prints",
+        "Home decor artwork with proper licensing",
+        "Decorative posters and canvas prints (non-promotional)"
+      ],
+      "prohibited": [
+        "Unlicensed use of copyrighted images or artwork",
+        "Products making false claims of being original fine art",
+        "Confederate flag imagery and similar offensive materials (see Offensive Materials category)",
+        "Promotional branded merchandise without authorization"
+      ]
+    },
+    {
+      "id": "automotive_powersports",
+      "name": "Automotive and Powersports",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164410",
+      "approval_required": true,
+      "allowed": [
+        "Auto parts and accessories with accurate fitment data",
+        "Tires complying with DOT safety standards",
+        "Powersports parts and accessories with correct FITMENT/YMME data",
+        "Automotive chemicals meeting safety and labeling requirements",
+        "OBD-II diagnostic tools for personal vehicle use"
+      ],
+      "prohibited": [
+        "Products that defeat emissions controls (e.g., catalytic converter deletes, EGR deletes, DPF deletes)",
+        "Engine defeat devices not meeting EPA Certificate of Conformity (COC) requirements",
+        "Street use of off-road-only exhaust systems or tuners that violate Clean Air Act",
+        "Airbag components not meeting FMVSS standards",
+        "Seatbelts and safety restraints not meeting federal standards",
+        "Products marketed to circumvent state vehicle inspection requirements",
+        "Odometer rollback devices",
+        "VIN alteration tools"
+      ]
+    },
+    {
+      "id": "composite_wood",
+      "name": "Composite Wood Products",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/GQHQGBTD7XB7EECN",
+      "approval_required": false,
+      "allowed": [
+        "Composite wood products that comply with TSCA Title VI (formaldehyde emission standards)",
+        "Products with CARB Phase 2 compliant certification",
+        "Solid wood products (not composite)",
+        "Products with third-party EPA-recognized TSCA Title VI TPC certification"
+      ],
+      "prohibited": [
+        "Composite wood products (hardwood plywood, medium-density fiberboard, particleboard) not meeting TSCA Title VI formaldehyde emission standards",
+        "Products containing regulated composite wood that does not meet EPA TSCA Title VI standards",
+        "Products without required TSCA Title VI compliance documentation or labeling"
+      ]
+    },
+    {
+      "id": "cosmetics_skin_hair_care",
+      "name": "Cosmetics and Skin and Hair Care",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164470",
+      "approval_required": false,
+      "allowed": [
+        "FDA-compliant cosmetics with complete ingredient lists (INCI format)",
+        "Shampoos, conditioners, lotions, and makeup meeting labeling requirements",
+        "Sunscreens meeting FDA OTC drug monograph requirements",
+        "Hair care products without prohibited ingredients",
+        "Properly labeled professional-use cosmetics",
+        "Minoxidil products with 5% or less concentration (OTC)",
+        "Hydrogen peroxide products up to 12% concentration for cosmetic use"
+      ],
+      "prohibited": [
+        "Contact lenses (require prescription and are classified as medical devices)",
+        "Products with more than 5% minoxidil",
+        "Products with more than 12% hydrogen peroxide",
+        "Body washes or scrubs with microbeads (polyethylene microplastics)",
+        "Products containing prohibited FDA ingredients (e.g., mercury, chloroform, bithionol)",
+        "Products making drug claims (e.g., 'cures acne', 'treats eczema') without FDA drug approval",
+        "Products claiming to be 'FDA approved' (FDA does not approve cosmetics)",
+        "Products with false or misleading labeling",
+        "Cosmetics tested on animals (if marketed as cruelty-free but are not)",
+        "Products not labeled in English",
+        "Prescription-only cosmetic drugs (e.g., tretinoin, prescription-strength retinoids)"
+      ]
+    },
+    {
+      "id": "cpap_cleaning",
+      "name": "CPAP Cleaning and Disinfecting Devices",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/GQHQGBTD7XB7EECN",
+      "approval_required": false,
+      "allowed": [
+        "CPAP cleaning devices cleared by FDA as Class II medical devices",
+        "Manual CPAP cleaning supplies (brushes, soap, wipes) without pesticidal claims",
+        "CPAP mask wipes and cleaning solutions meeting FDA standards"
+      ],
+      "prohibited": [
+        "Ozone-based CPAP sanitizers not cleared by the FDA (FDA issued warning letters against these)",
+        "UV-light CPAP cleaners making unsubstantiated efficacy claims",
+        "Devices claiming to disinfect CPAP equipment without FDA 510(k) clearance",
+        "Products marketed to sanitize CPAP accessories using ozone without FDA authorization"
+      ]
+    },
+    {
+      "id": "currency_coins_cash",
+      "name": "Currency, Coins, Cash Equivalents, and Gift Cards",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164450",
+      "approval_required": true,
+      "allowed": [
+        "Collectible coins in the Collectible Coins category (with prior Amazon approval)",
+        "Numismatic coins with proper grading and authentication",
+        "Coin collecting supplies and albums",
+        "Antique currency with clear collectible intent and proper labeling"
+      ],
+      "prohibited": [
+        "Paper money (US or foreign) as legal tender",
+        "Imitation or counterfeit currency",
+        "Commemorative medals marketed as currency",
+        "Altered legal tender (e.g., coins with holes, modified bills)",
+        "Gift cards (all brands, including Amazon gift cards)",
+        "Prepaid debit cards",
+        "Money orders or traveler's checks",
+        "Fake checks or novelty checks resembling real financial instruments",
+        "Counterfeit coins or paper money",
+        "Official government documents (passports, IDs, police badges, birth certificates) — real or fake"
+      ]
+    },
+    {
+      "id": "dietary_supplements",
+      "name": "Dietary Supplements",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/201829010",
+      "approval_required": false,
+      "allowed": [
+        "Supplements with FDA-compliant labeling (product name, quantity, Supplement Facts panel, manufacturer info in English)",
+        "Supplements in original, sealed, tamper-evident packaging",
+        "Supplements not containing FDA-prohibited ingredients",
+        "Products with Certificate of Analysis (CoA) from ISO/IEC 17025-accredited lab",
+        "Products with Letter of Guarantee from manufacturer",
+        "Vitamins, minerals, herbs, and amino acids meeting all labeling requirements"
+      ],
+      "prohibited": [
+        "Supplements containing FDA-prohibited or controlled substance ingredients",
+        "CBD (cannabidiol) products — classified as Schedule I controlled substance for supplement purposes",
+        "Products claiming to diagnose, cure, treat, or prevent any disease (drug claims without approval)",
+        "Products with 'FDA approved' labeling (FDA does not approve dietary supplements)",
+        "Supplements with ingredients not recognized as safe (GRAS) or not complying with New Dietary Ingredient (NDI) requirements",
+        "Products without complete Supplement Facts panel",
+        "Products not sealed in original manufacturer packaging",
+        "Weight loss supplements making unsubstantiated extreme claims",
+        "Supplements containing ephedra/ephedrine alkaloids",
+        "Products containing androstenedione or other anabolic steroid precursors",
+        "Products marketed as sexual enhancement drugs containing undisclosed pharmaceutical ingredients"
+      ]
+    },
+    {
+      "id": "drugs_paraphernalia",
+      "name": "Drugs and Drug Paraphernalia",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164490",
+      "approval_required": false,
+      "allowed": [
+        "OTC medications meeting FDA requirements with proper labeling",
+        "Medically approved drug testing kits",
+        "Drug education materials and books",
+        "Legally sold herbal products not classified as controlled substances"
+      ],
+      "prohibited": [
+        "Prescription drugs of any kind",
+        "Controlled substances (Schedule I–V) including marijuana/cannabis, heroin, cocaine, methamphetamine",
+        "Vaccines, antibiotics, and prescription biologics",
+        "Drug paraphernalia designed for illicit drug use (pipes, bongs, syringes marketed for drug use)",
+        "Precursor chemicals used to manufacture controlled substances",
+        "Products marketed to pass drug tests (masking agents)",
+        "Synthetic cannabinoids (e.g., K2, Spice)",
+        "Bath salts or designer drugs with psychoactive properties",
+        "Nitrous oxide chargers marketed for recreational inhalation",
+        "Poppers (amyl/butyl nitrite) marketed as recreational inhalants",
+        "Any product marketed for illegal drug use"
+      ]
+    },
+    {
+      "id": "electronics",
+      "name": "Electronics",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164510",
+      "approval_required": false,
+      "allowed": [
+        "Electronics that are legal for sale in the US",
+        "Electronics complying with applicable industry standards (FCC, UL, CE)",
+        "Electronics that do not interfere with other electronic devices",
+        "Electronics that do not circumvent technical controls",
+        "Radio frequency devices with valid FCC ID",
+        "Lithium batteries meeting UN38.3 and DOT requirements with proper documentation"
+      ],
+      "prohibited": [
+        "Cell phone signal boosters/jammers (illegal under FCC regulations)",
+        "GPS jammers",
+        "Radar jammers or detectors (illegal in some states)",
+        "IMSI catchers (stingrays) marketed to general public",
+        "Devices that unlock cell phones in violation of DMCA",
+        "Streaming media players enabling unauthorized access to copyrighted content (preloaded Kodi boxes)",
+        "SIM card cloning devices",
+        "Electronic devices that emit RF radiation above FCC limits without FCC authorization",
+        "Products marketed to intercept communications without consent",
+        "Chip tuning/ECU flash tools marketed specifically to circumvent emissions controls",
+        "Radio frequency devices without FCC ID where required"
+      ]
+    },
+    {
+      "id": "explosives_weapons",
+      "name": "Explosives, Weapons, and Related Items",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164550",
+      "approval_required": false,
+      "allowed": [
+        "Non-lethal ammunition (rubber bullets, bean bag rounds) for law enforcement use",
+        "BB guns and air guns (with proper age and use disclaimers)",
+        "Knives and multi-tools used for hunting, fishing, or camping (non-prohibited types)",
+        "Crossbows and compound bows",
+        "Safety and trigger locks for firearms",
+        "Gun cleaning kits and legally sold accessories (non-conversion)",
+        "Muzzleloaders and black powder firearms (where federally legal)",
+        "Blank-firing replica firearms (clearly marked)",
+        "Firearm parts not regulated as firearms (e.g., stocks, grips, sights)"
+      ],
+      "prohibited": [
+        "Firearms (handguns, rifles, shotguns) — no exceptions",
+        "Fully automatic weapons or conversion kits (e.g., auto sears, switches)",
+        "Suppressors/silencers (require NFA registration, not sold on Amazon)",
+        "Bump stocks and binary triggers (federally regulated or banned)",
+        "High-capacity magazines where prohibited by state or federal law",
+        "Short-barreled rifles or shotguns without NFA documentation",
+        "Undetectable firearms (3D printed guns, ghost guns)",
+        "Explosive devices of any kind",
+        "Switchblades, ballistic knives, gravity knives (where federally prohibited)",
+        "Disguised weapons (belt buckle knives, cane swords, lipstick tasers)",
+        "Brass knuckles (illegal in many US states)",
+        "Tasers and stun guns marketed for offensive use",
+        "Incendiary rounds or tracer ammunition",
+        "Armor-piercing ammunition",
+        "Assault weapon accessories (e.g., forward pistol grips on pistols creating illegal NFA items)",
+        "Pellet guns marketed to look exactly like real firearms"
+      ]
+    },
+    {
+      "id": "export_controls",
+      "name": "Export Controls",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200625240",
+      "approval_required": false,
+      "allowed": [
+        "EAR99 items with no export control restrictions to permitted countries",
+        "Products with valid US export license where required",
+        "Publicly available technology and software with EAR license exception"
+      ],
+      "prohibited": [
+        "Items on the US Commerce Control List (CCL) sold without proper export license",
+        "Dual-use technology exported to sanctioned countries (OFAC list: Cuba, Iran, North Korea, Syria, Russia for controlled items)",
+        "Military items requiring State Department ITAR license",
+        "Encryption technology exported in violation of EAR",
+        "Nuclear, chemical, or biological materials subject to export controls",
+        "Night vision equipment exported without license",
+        "Products sold to denied parties on the BIS Denied Parties List"
+      ]
+    },
+    {
+      "id": "food_beverage",
+      "name": "Food & Beverage",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164670",
+      "approval_required": false,
+      "allowed": [
+        "FDA-registered food products with compliant labeling (Nutrition Facts, ingredient list, allergen declarations)",
+        "Foods meeting applicable safety standards (FSMA, HACCP)",
+        "Packaged foods with clearly marked expiration or best-by dates",
+        "USDA-inspected meat and poultry (refrigerated or frozen, from approved sellers)",
+        "Organic products with valid USDA organic certification",
+        "Food products not containing prohibited or controlled ingredients"
+      ],
+      "prohibited": [
+        "Betel nut products",
+        "Products containing horse meat",
+        "Kaffir lime leaves imported from Thailand (agricultural import restriction)",
+        "Raw or undercooked animal products not meeting USDA/FDA standards",
+        "Foie gras in states where prohibited (e.g., California)",
+        "Unpasteurized (raw) milk or dairy products for human consumption",
+        "Products containing controlled substances (e.g., khat, coca leaf products)",
+        "Absinthe with thujone above legal limits",
+        "Products with false or misleading health claims",
+        "Food products without required FDA labeling or allergen declarations",
+        "Shark fin products (prohibited in many US states)",
+        "Recalled food products",
+        "Food products past expiration date"
+      ]
+    },
+    {
+      "id": "gambling_lottery",
+      "name": "Gambling & Lottery",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164590",
+      "approval_required": false,
+      "allowed": [
+        "Non-functional slot machines for display or novelty purposes",
+        "Casino-themed toys and games (non-functional gambling devices)",
+        "Poker chips and playing cards for recreational use",
+        "Board games and card games with gambling themes",
+        "Books about gambling strategy"
+      ],
+      "prohibited": [
+        "Lottery tickets (state or otherwise)",
+        "Scratch-off lottery tickets",
+        "Coin-operated slot machines that pay out money or credits",
+        "Online gambling software or accounts",
+        "Sports betting accounts or credits",
+        "Any product that facilitates illegal gambling activity",
+        "Bingo machines used for cash-prize games",
+        "Raffle tickets"
+      ]
+    },
+    {
+      "id": "hazardous_prohibited",
+      "name": "Hazardous and Prohibited Items",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164570",
+      "approval_required": false,
+      "allowed": [
+        "Hazardous materials with proper safety data sheets (SDS) and FBA hazmat pre-approval",
+        "Consumer products with small quantities of regulated chemicals meeting CPSC requirements",
+        "Properly packaged and labeled household chemicals (cleaners, solvents) complying with OSHA HazCom",
+        "Lithium batteries meeting UN38.3 transport requirements with documentation"
+      ],
+      "prohibited": [
+        "Aerosols or compressed gas canisters not meeting DOT hazmat standards",
+        "Products containing asbestos",
+        "Products containing polychlorinated biphenyls (PCBs)",
+        "Products containing lead above legal limits in consumer goods",
+        "Radioactive materials for consumer use",
+        "Medical waste or sharps containers not properly sealed",
+        "Pyrotechnics and fireworks",
+        "Flammable solids or self-reactive substances not meeting packaging requirements",
+        "Products containing mercury (e.g., mercury thermometers, certain batteries) without proper labeling",
+        "Chlorofluorocarbon (CFC) products",
+        "Products containing banned pesticide substances (e.g., DDT, chlordane)"
+      ]
+    },
+    {
+      "id": "human_parts_burial",
+      "name": "Human Parts & Burial Artifacts",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164650",
+      "approval_required": false,
+      "allowed": [
+        "Anatomical models and replicas for medical/educational purposes (clearly synthetic)",
+        "Medical skeletons or replica bones made of plastic or resin",
+        "Hair extensions and wigs (commercially produced)",
+        "Donated blood and tissue for medical purposes through licensed institutions only"
+      ],
+      "prohibited": [
+        "Real human skulls, bones, or skeletal remains",
+        "Human organs, tissues, or blood for commercial sale",
+        "Native American burial artifacts and funerary objects (NAGPRA protected)",
+        "Items removed from burial sites in violation of applicable laws",
+        "Products made from real human remains",
+        "Hair from prisoners or exploitation victims",
+        "Human embryos or fetuses"
+      ]
+    },
+    {
+      "id": "jewelry_precious_gems",
+      "name": "Jewelry & Precious Gems",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200166630",
+      "approval_required": true,
+      "allowed": [
+        "Authentic jewelry with accurate metal type and purity labeling (e.g., 14K gold, 925 silver)",
+        "Gemstones with accurate quality disclosures (carat, cut, color, clarity for diamonds)",
+        "Lab-created gemstones clearly labeled as synthetic",
+        "Costume jewelry clearly labeled as non-precious",
+        "Watches with authentic brand authorization"
+      ],
+      "prohibited": [
+        "Counterfeit or fake designer jewelry (e.g., fake Cartier, Tiffany)",
+        "Jewelry with inaccurate metal content labeling (e.g., gold-plated sold as solid gold)",
+        "Diamonds or gemstones sold without proper grading disclosure",
+        "Blood diamonds or conflict diamonds (Kimberley Process non-compliance)",
+        "Jewelry made with ivory or products from endangered species",
+        "Lead-containing jewelry marketed for children (violates CPSIA)",
+        "Cadmium-containing jewelry above legal limits"
+      ]
+    },
+    {
+      "id": "laser_products",
+      "name": "Laser Products",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/201689020",
+      "approval_required": false,
+      "allowed": [
+        "Laser pointers classified as Class I (safe under all conditions) or Class II (low power, visible)",
+        "Laser levels and measuring tools (Class I or II)",
+        "Laser printers and optical disc drives (built-in lasers, Class I)",
+        "FDA-cleared laser medical or cosmetic devices",
+        "Class IIIa/3R laser pointers under 5mW with proper safety labeling"
+      ],
+      "prohibited": [
+        "Children's toys with lasers exceeding hazard Class I",
+        "Class IIIB (3B) and Class IV (4) lasers unless authorized for sale by FDA Center for Devices and Radiological Health (CDRH)",
+        "Laser pointers above 5mW marketed for general use",
+        "Handheld lasers marketed to shine at aircraft (illegal under 18 U.S.C. § 39A)",
+        "High-power laser modules without CDRH variance or exemption",
+        "Laser products without required FDA radiation safety labeling"
+      ]
+    },
+    {
+      "id": "lighting",
+      "name": "Lighting",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/GQHQGBTD7XB7EECN",
+      "approval_required": false,
+      "allowed": [
+        "LED, CFL, and incandescent bulbs meeting FTC Lighting Facts label requirements",
+        "Luminaires (light fixtures) meeting UL or ETL safety certification standards",
+        "Specialty lighting (grow lights, stage lights) with proper labeling",
+        "Energy Star certified lighting products",
+        "Bulbs meeting applicable DOE energy efficiency standards"
+      ],
+      "prohibited": [
+        "General service incandescent lamps not meeting DOE energy efficiency standards (largely phased out)",
+        "Lighting products with false energy efficiency claims",
+        "Luminaires without required UL or equivalent safety certification",
+        "UV germicidal lamps making unsubstantiated pesticidal claims without EPA device compliance",
+        "Lighting products failing FCC Part 15 limits for electromagnetic interference"
+      ]
+    },
+    {
+      "id": "lock_picking_theft",
+      "name": "Lock Picking & Theft Devices",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200685320",
+      "approval_required": false,
+      "allowed": [
+        "Lock picks and locksmith tools marketed for legitimate locksmithing professionals",
+        "Bump keys marketed for locksport or professional locksmithing",
+        "Practice locks for lockpicking hobbyists (locksport)",
+        "Lock picking books and educational materials for legitimate use"
+      ],
+      "prohibited": [
+        "Devices specifically designed or marketed to steal vehicles (e.g., relay attack amplifiers for keyless entry theft)",
+        "Jamming devices that block car key fob signals to enable theft",
+        "Slim jims and car opening tools marketed for vehicle theft",
+        "RFID blocking bypass tools marketed for theft",
+        "Any lock bypass or picking tool marketed explicitly for illegal entry or theft",
+        "Master key systems for restricted systems (e.g., apartment complex master keys)"
+      ]
+    },
+    {
+      "id": "medical_devices",
+      "name": "Medical Devices and Accessories",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164650",
+      "approval_required": false,
+      "allowed": [
+        "FDA-cleared or FDA-approved Class I and Class II medical devices",
+        "OTC medical devices with proper labeling (e.g., blood pressure monitors, thermometers, bandages)",
+        "Prescription medical devices sold only to licensed medical professionals with proper documentation",
+        "Class I exempt devices (e.g., tongue depressors, bandages, manual stethoscopes)",
+        "Hearing aids (OTC hearing aids post-2022 FDA rule)",
+        "FDA-registered diabetic test strips that are not adulterated or misbranded"
+      ],
+      "prohibited": [
+        "Class III medical devices without FDA Premarket Approval (PMA)",
+        "Prescription-only devices sold to general consumers without authorization",
+        "Unapproved or counterfeit medical devices",
+        "Diabetic test strips obtained through fraudulent means (Medicare/Medicaid diversion)",
+        "Devices incorporating Class IIIB or IV lasers without FDA authorization",
+        "Devices making claims to diagnose or treat disease without FDA clearance",
+        "Non-FDA-cleared COVID-19 diagnostic tests",
+        "Devices banned by FDA (e.g., powdered surgeon's gloves, certain neurovascular catheters)"
+      ]
+    },
+    {
+      "id": "offensive_controversial",
+      "name": "Offensive and Controversial Materials",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164670",
+      "approval_required": false,
+      "allowed": [
+        "Historical books, documentaries, and educational materials about controversial topics",
+        "Satirical products with clear satirical intent",
+        "Products representing cultural heritage from the community they represent"
+      ],
+      "prohibited": [
+        "Products that promote, glorify, or celebrate hatred, violence, or discrimination based on race, religion, national origin, gender, sexual orientation, disability, or other protected characteristics",
+        "Nazi, white supremacist, or KKK memorabilia and paraphernalia",
+        "Confederate battle flag merchandise (removed from Amazon's catalog)",
+        "Products that glorify or celebrate mass shootings, genocides, or terrorist acts",
+        "Products depicting minors in a sexual manner",
+        "Products using slurs or hate speech as their primary design element",
+        "Blackface imagery or other historically offensive racial caricatures",
+        "Products mocking victims of atrocities or tragedies"
+      ]
+    },
+    {
+      "id": "other_restricted",
+      "name": "Other Restricted Products",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200685320",
+      "approval_required": false,
+      "allowed": [
+        "Legally sold real estate listings through Amazon's approved channels",
+        "Legitimate subscriptions and memberships",
+        "Legal fireworks in states where permitted (seller must comply with state laws)"
+      ],
+      "prohibited": [
+        "Real estate (prohibited except through authorized channels)",
+        "Spy phones or tracking devices marketed for covert surveillance without consent",
+        "Fake or fraudulent reviews or review manipulation services",
+        "Products that infringe on intellectual property rights",
+        "Recalled products",
+        "Products marketed with false or unsubstantiated health claims",
+        "Items associated with human trafficking",
+        "Pyramid scheme or multi-level marketing enrollment kits",
+        "Works depicting child exploitation or non-consensual sexual acts"
+      ]
+    },
+    {
+      "id": "pesticides",
+      "name": "Pest Control Products and Pesticides",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/external/202115120",
+      "approval_required": false,
+      "allowed": [
+        "EPA-registered pesticides with valid EPA Registration Number on label",
+        "Pesticide devices with valid EPA Establishment Number (e.g., bug zappers, ultrasonic repellers, UV traps)",
+        "Minimum risk pesticides exempt from registration under FIFRA 25(b) with compliant labeling",
+        "FIFRA-exempt pesticidal devices (e.g., mechanical traps, flyswatters)",
+        "Pesticides registered for the intended use and labeled correctly for US sale"
+      ],
+      "prohibited": [
+        "Unregistered pesticides not qualifying for an exemption",
+        "Pesticides with false or misleading efficacy claims",
+        "Pesticides not registered for their claimed use (e.g., a pesticide only registered for agricultural use sold for home use)",
+        "Cancelled or suspended EPA-registered pesticides",
+        "Pesticides in packaging that does not match the EPA-approved label",
+        "Products making pesticidal claims without EPA registration or FIFRA exemption",
+        "Pesticides banned by EPA (e.g., DDT, chlordane, aldrin)",
+        "Pesticide devices without EPA Establishment Number making efficacy claims beyond what data supports"
+      ]
+    },
+    {
+      "id": "plants_seeds",
+      "name": "Plant and Seed Products",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164650",
+      "approval_required": false,
+      "allowed": [
+        "Non-invasive plant species legally sold domestically",
+        "Seeds for legal crops and flowers with proper labeling",
+        "USDA APHIS-approved imported plants with phytosanitary certificates",
+        "Noxious weed-free certified seeds",
+        "Tissue culture plants from approved domestic sources"
+      ],
+      "prohibited": [
+        "Cannabis seeds or cannabis plants (Schedule I controlled substance)",
+        "Plants or seeds on the Federal Noxious Weed list",
+        "Invasive plant species prohibited from sale or transport by USDA or state agencies",
+        "Imported plants without required USDA APHIS phytosanitary permits",
+        "Endangered plant species protected under CITES or ESA",
+        "Kaffir lime trees/plants imported from Thailand",
+        "Seeds marketed for drug production (e.g., poppies marketed for opium yield)"
+      ]
+    },
+    {
+      "id": "postage_stamps",
+      "name": "Postage Meters and Stamps",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164650",
+      "approval_required": false,
+      "allowed": [
+        "Collectible/philatelic stamps clearly intended for collecting (not postage use)",
+        "Stamp collecting accessories (albums, mounts, hinges)",
+        "Canceled stamps (clearly used/cancelled)"
+      ],
+      "prohibited": [
+        "Unused postage stamps for mailing purposes (USPS has sole authority)",
+        "Postage meters or meter ink machines (only authorized USPS vendors may sell)",
+        "Counterfeit postage stamps",
+        "Prepaid postage labels not obtained through official channels",
+        "Products intended to defraud postal services"
+      ]
+    },
+    {
+      "id": "prohibited_claims",
+      "name": "Prohibited Product Claims",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/G202024200",
+      "approval_required": false,
+      "allowed": [
+        "Structure/function claims for supplements with proper FDA disclaimer (e.g., 'supports immune health*' with disclaimer)",
+        "Accurate and truthful product descriptions with substantiated claims",
+        "Comparative claims with valid data and FTC-compliant substantiation"
+      ],
+      "prohibited": [
+        "Disease claims for supplements or cosmetics without FDA drug approval (e.g., 'cures cancer', 'treats diabetes')",
+        "Miracle cure claims without scientific substantiation",
+        "'FDA approved' claims for products FDA does not approve (supplements, cosmetics, food)",
+        "Guaranteed extreme weight loss or muscle gain claims without evidence",
+        "Unsubstantiated environmental claims (e.g., 'biodegradable', 'eco-friendly', 'carbon neutral') without certification",
+        "Claims that a product is effective against COVID-19 or other diseases without FDA authorization",
+        "'As seen on TV' claims that are false",
+        "Testimonial or endorsement claims that do not reflect typical results",
+        "Claims that imply a product has been endorsed or approved by a government agency when it has not"
+      ]
+    },
+    {
+      "id": "recalled_products",
+      "name": "Recalled Products",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164580",
+      "approval_required": false,
+      "allowed": [
+        "Products that have been cleared or remediated after a voluntary recall with documentation",
+        "Products that were subject to a recall but have been corrected and meet current safety standards"
+      ],
+      "prohibited": [
+        "Any product subject to a mandatory or voluntary recall by CPSC, FDA, NHTSA, or other agency",
+        "Products subject to a safety warning or stop-sale order",
+        "Recalled children's products of any kind",
+        "Recalled automotive parts (NHTSA recalls)",
+        "Recalled food, drug, or dietary supplement products",
+        "Recalled medical devices"
+      ]
+    },
+    {
+      "id": "recycling_electronics",
+      "name": "Recycling Electronics",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164650",
+      "approval_required": false,
+      "allowed": [
+        "Refurbished electronics that are fully functional and meet Amazon's renewed standards",
+        "Used electronics sold accurately as used",
+        "Electronics recycling bins/containers for consumer collection"
+      ],
+      "prohibited": [
+        "Non-functional electronics sold as functional",
+        "Electronics containing hazardous materials (CRTs with lead, PCBs) sold for consumer use without proper handling disclosure",
+        "E-waste sold for resale without disclosure of non-functionality",
+        "Electronics in violation of state e-waste disposal laws (e.g., some states require manufacturer take-back)"
+      ]
+    },
+    {
+      "id": "refrigerants",
+      "name": "Refrigerants: Ozone-Depleting Substances and Substitutes",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164650",
+      "approval_required": false,
+      "allowed": [
+        "EPA SNAP-approved refrigerants sold to certified technicians (Section 608 certified)",
+        "Refrigerants in containers under 2 lbs for self-contained small appliances (EPA exemption)",
+        "HFO refrigerants and other non-ozone-depleting substitutes approved under EPA SNAP program"
+      ],
+      "prohibited": [
+        "CFC refrigerants (e.g., R-11, R-12) — banned under Clean Air Act",
+        "HCFC refrigerants (e.g., R-22) sold to non-certified purchasers after phasedown",
+        "Refrigerants in containers over 2 lbs sold to non-EPA Section 608 certified technicians",
+        "Refrigerants vented intentionally into the atmosphere",
+        "Counterfeit or non-SNAP-approved refrigerant substitutes",
+        "Refrigerants sold in violation of EPA Clean Air Act Section 608 requirements"
+      ]
+    },
+    {
+      "id": "strike_anywhere_matches",
+      "name": "Strike Anywhere Matches",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164650",
+      "approval_required": false,
+      "allowed": [
+        "Safety matches (strike-on-box only)",
+        "Windproof lighters and survival fire starters",
+        "Waterproof matches in survival kits (safety type)"
+      ],
+      "prohibited": [
+        "Strike anywhere matches (prohibited from sale on Amazon due to DOT hazmat shipping restrictions — classified as a flammable solid)",
+        "Matches in bulk quantities violating DOT hazmat rules"
+      ]
+    },
+    {
+      "id": "surveillance_equipment",
+      "name": "Surveillance Equipment",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164720",
+      "approval_required": false,
+      "allowed": [
+        "Home security cameras with clear disclosure in product listings",
+        "Baby monitors",
+        "Nanny cameras sold with full disclosure of the recording capability",
+        "Network monitoring tools for IT/cybersecurity professionals",
+        "GPS trackers marketed for asset tracking with owner consent",
+        "Dash cameras for vehicles"
+      ],
+      "prohibited": [
+        "Covert surveillance devices marketed explicitly for spying without consent (e.g., hidden cameras in smoke detectors, clocks, pens marketed for clandestine recording)",
+        "GPS trackers marketed to track individuals without their knowledge or consent",
+        "Wiretapping or phone interception devices",
+        "Software marketed for covert phone monitoring (stalkerware)",
+        "Spy equipment marketed for corporate espionage",
+        "Devices marketed to intercept communications in violation of the Electronic Communications Privacy Act (ECPA)"
+      ]
+    },
+    {
+      "id": "tobacco",
+      "name": "Tobacco & Tobacco-Related Products",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164700",
+      "approval_required": false,
+      "allowed": [
+        "Cigarette cases and holders",
+        "Cigar cutters and holders",
+        "Lighters (non-novelty, complying with CPSC lighter safety standard 16 CFR Part 1212)",
+        "Tobacco humidors",
+        "Ashtrays",
+        "Pipes and pipe cleaning tools",
+        "Cigarette rolling machines and papers (for legal tobacco use)",
+        "Beer and wine making kits (analogous leniency)"
+      ],
+      "prohibited": [
+        "Cigarettes, cigars, pipe tobacco, smokeless tobacco, and chewing tobacco",
+        "Electronic cigarettes (e-cigarettes) and vaping devices",
+        "Vape juice/e-liquid (nicotine or otherwise)",
+        "Nicotine pouches and oral nicotine products",
+        "Hookah tobacco (shisha)",
+        "Herbal cigarettes or bidis",
+        "Smokeless tobacco (snus, dip, chew)",
+        "Any tobacco product that has not received FDA PMTA (Premarket Tobacco Application) authorization",
+        "Flavored e-cigarettes or vaping products (banned by FDA for most flavors)",
+        "Synthetic nicotine products without FDA authorization",
+        "Tobacco products marketed to minors"
+      ]
+    },
+    {
+      "id": "warranties_service_plans",
+      "name": "Warranties, Service Plans, Contracts, and Guarantees",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200685320",
+      "approval_required": false,
+      "allowed": [
+        "Extended warranty plans offered by Amazon's own warranty partners (Amazon-authorized)",
+        "Manufacturer warranties included with physical products",
+        "Legitimate third-party protection plans from Amazon-approved providers"
+      ],
+      "prohibited": [
+        "Third-party warranties, service plans, or protection plans not approved by Amazon",
+        "Extended warranties sold as standalone products by unauthorized third parties",
+        "Service contracts or maintenance agreements sold independently",
+        "Guarantee products that misrepresent coverage or are not backed by a legitimate insurer"
+      ]
+    },
+    {
+      "id": "upholstered_furniture_bedding",
+      "name": "Upholstered Furniture, Bedding, & Other Quilted Products",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/GQHQGBTD7XB7EECN",
+      "approval_required": false,
+      "allowed": [
+        "Upholstered furniture with required law label (Textile Fiber Products Identification Act)",
+        "Bedding and mattresses with proper fill content labeling",
+        "Products meeting applicable state flammability standards (e.g., California TB 117-2013)",
+        "Quilts, comforters, and pillows with accurate fill content labeling"
+      ],
+      "prohibited": [
+        "Upholstered furniture without required law labels (illegal under TFPIA)",
+        "Products using prohibited fill materials",
+        "Mattresses not meeting applicable flammability standards (16 CFR Part 1633)",
+        "Children's sleepwear not meeting flammability requirements (16 CFR Parts 1615/1616)",
+        "Products with mislabeled fill content (e.g., labeled as down but containing other fill)"
+      ]
+    },
+    {
+      "id": "federal_emissions_epa_coc",
+      "name": "Federal Emissions – Products Requiring EPA Certificate of Conformity",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164410",
+      "approval_required": false,
+      "allowed": [
+        "New engines, vehicles, and equipment with valid EPA Certificate of Conformity (COC)",
+        "CARB-compliant products sold in California with Executive Order number",
+        "Off-road-only products clearly labeled and sold for off-road use only",
+        "EPA-certified small engines (lawn mowers, generators, chainsaws) with EPA emission label"
+      ],
+      "prohibited": [
+        "Fuel-powered engines or vehicles without EPA COC (violates Clean Air Act)",
+        "Engines or vehicles sold for street use that only have off-road COC",
+        "Emission defeat devices (tuners, ECU flashes) marketed for street use",
+        "Catalytic converter removal kits for road-use vehicles",
+        "EGR/DPF delete kits marketed for on-road vehicles",
+        "Non-compliant small off-road engines (SORE) or recreational vehicles",
+        "Marine engines without EPA COC"
+      ]
+    },
+    {
+      "id": "childrens_footwear",
+      "name": "Children's Footwear",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/GQHQGBTD7XB7EECN",
+      "approval_required": false,
+      "allowed": [
+        "Children's footwear meeting CPSIA requirements",
+        "Footwear tested by CPSC-accepted third-party laboratory with Children's Product Certificate (CPC)",
+        "Footwear without lead in surface coatings above 90ppm or total lead above 100ppm",
+        "Footwear with accurate size labeling and country of origin"
+      ],
+      "prohibited": [
+        "Children's footwear with lead content above CPSIA limits (>90ppm surface coating, >100ppm total)",
+        "Children's footwear with phthalate content above CPSIA limits",
+        "Footwear without required CPC (Children's Product Certificate)",
+        "Children's footwear without third-party CPSC-accepted lab testing",
+        "Footwear with small parts posing choking hazard not labeled appropriately",
+        "Drawstring-equipped children's footwear not meeting ASTM F1816 guidelines"
+      ]
+    },
+    {
+      "id": "childrens_apparel",
+      "name": "Children's Apparel",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/GQHQGBTD7XB7EECN",
+      "approval_required": false,
+      "allowed": [
+        "Children's clothing meeting CPSIA, CPSC, and FTC labeling requirements",
+        "Children's sleepwear meeting CPSC flammability standards (16 CFR Parts 1615/1616)",
+        "Children's apparel with Children's Product Certificate (CPC) from CPSC-accepted lab",
+        "Clothing with accurate fiber content and care labeling (FTC Textile Rules)"
+      ],
+      "prohibited": [
+        "Children's apparel with lead or phthalates above CPSIA limits",
+        "Children's sleepwear not meeting 16 CFR Parts 1615/1616 flammability requirements",
+        "Drawstring-equipped children's upper outerwear violating ASTM F1816",
+        "Children's apparel without required CPC",
+        "Clothing with inaccurate fiber content labeling (FTC violation)",
+        "Children's clothing with small parts or decorative elements posing choking hazard"
+      ]
+    },
+    {
+      "id": "automotive_tires_wheels",
+      "name": "Automotive Tires, Wheels, and Rims",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/200164410",
+      "approval_required": false,
+      "allowed": [
+        "DOT-compliant tires with proper DOT serial number and UTQG rating",
+        "OEM-spec replacement wheels and rims",
+        "Off-road or track-use tires clearly marked as not for street use",
+        "New tires manufactured within the last 6 years (many states/Amazon require this)",
+        "Winter and all-season tires meeting applicable DOT standards"
+      ],
+      "prohibited": [
+        "Tires without DOT certification",
+        "Tires marketed for street use that are not DOT-rated",
+        "Tires that are structurally unsafe or past recommended service life",
+        "Counterfeit tires or tires with falsified DOT numbers",
+        "Used tires (prohibited in Amazon's catalog for safety reasons)",
+        "Tires with tire age over acceptable limits without disclosure",
+        "Wheels that do not meet SAE or industry load rating standards"
+      ]
+    },
+    {
+      "id": "washington_state_expanded_polystyrene",
+      "name": "Washington State Expanded Polystyrene",
+      "seller_central_ref": "https://sellercentral.amazon.com/gp/help/GQHQGBTD7XB7EECN",
+      "approval_required": false,
+      "allowed": [
+        "Expanded polystyrene (EPS/Styrofoam) products sold outside Washington State",
+        "Non-EPS or recyclable alternative foam packaging products sold in Washington State",
+        "EPS products that qualify for specific exemptions under Washington State law (RCW 70A.530)"
+      ],
+      "prohibited": [
+        "Expanded polystyrene (EPS) food service products sold to Washington State customers (banned effective January 1, 2023 under RCW 70A.530)",
+        "Polystyrene foam cups, plates, bowls, and containers sold for food service use in Washington State",
+        "EPS loose-fill packaging peanuts sold for commercial use in Washington State"
+      ]
+    }
+  ]
+}

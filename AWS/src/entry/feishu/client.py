@@ -119,6 +119,133 @@ class FeishuClient:
         # PatchMessageResponse has no data attribute, just confirm success
         return {"success": True}
 
+    def upload_file(self, file_path: str, file_name: str, file_type: str = "stream"):
+        """
+        Upload a file to Feishu to get a file_key.
+        file_type: 'stream', 'all', 'pdf', 'doc', 'xls', 'ppt'
+        """
+        from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
+        
+        file = open(file_path, "rb")
+        request = CreateFileRequest.builder() \
+            .request_body(CreateFileRequestBody.builder()
+                          .file_type(file_type)
+                          .file_name(file_name)
+                          .file(file)
+                          .build()) \
+            .build()
+
+        response = self.client.im.v1.file.create(request)
+        file.close()
+
+        if not response.success():
+            logger.error(f"Feishu upload file failed: {response.code}, {response.msg}")
+            return {"success": False, "error": response.msg, "code": response.code}
+        
+        return {"success": True, "file_key": response.data.file_key}
+
+    def send_file_message(self, receive_id_type: str, receive_id: str, file_key: str):
+        """
+        Send a file message using a file_key.
+        """
+        content = json.dumps({"file_key": file_key})
+        request = CreateMessageRequest.builder() \
+            .receive_id_type(receive_id_type) \
+            .request_body(CreateMessageRequestBody.builder()
+                          .receive_id(receive_id)
+                          .msg_type("file")
+                          .content(content)
+                          .build()) \
+            .build()
+
+        response = self.client.im.v1.message.create(request)
+        
+        if not response.success():
+            logger.error(f"Feishu send file message failed: {response.code}, {response.msg}")
+            return {"success": False, "error": response.msg, "code": response.code}
+        
+        return {"success": True, "data": lark.JSON.marshal(response.data)}
+
+    def send_data_as_file(self, receive_id_type: str, receive_id: str, data: list[dict], filename: str = "export.csv"):
+        """
+        Helper: Convert list of dicts to a temporary CSV and send it.
+        """
+        import csv
+        import tempfile
+        
+        if not data:
+            return {"success": False, "error": "No data to send"}
+
+        # Create a temp file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='', encoding='utf-8-sig') as f:
+            writer = csv.DictWriter(f, fieldnames=data[0].keys())
+            writer.writeheader()
+            writer.writerows(data)
+            temp_path = f.name
+
+        try:
+            # Upload
+            upload_res = self.upload_file(temp_path, filename, file_type="stream")
+            if not upload_res.get("success"):
+                return upload_res
+            
+            # Send
+            return self.send_file_message(receive_id_type, receive_id, upload_res["file_key"])
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def send_url_as_file(self, receive_id_type: str, receive_id: str, url: str, filename: str = "downloaded_file"):
+        """
+        Download a file from URL and send it as a Feishu file attachment.
+        """
+        import requests
+        import tempfile
+        
+        try:
+            response = requests.get(url, stream=True, timeout=30)
+            response.raise_for_status()
+            
+            # Try to guess extension from content-type or URL if not in filename
+            if "." not in filename:
+                ext = ".bin"
+                content_type = response.headers.get('content-type', '')
+                if 'spreadsheet' in content_type or 'excel' in content_type:
+                    ext = ".xlsx"
+                elif 'csv' in content_type:
+                    ext = ".csv"
+                elif 'pdf' in content_type:
+                    ext = ".pdf"
+                filename += ext
+
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                for chunk in response.iter_content(chunk_size=8192):
+                    tmp.write(chunk)
+                temp_path = tmp.name
+
+            try:
+                return self.send_local_file(receive_id_type, receive_id, temp_path, filename)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    
+        except Exception as e:
+            logger.error(f"Failed to download and send URL as file: {e}")
+            return {"success": False, "error": str(e)}
+
+    def send_local_file(self, receive_id_type: str, receive_id: str, file_path: str, filename: str = None):
+        """
+        Complete flow: Upload local file and send it as a Feishu attachment.
+        """
+        if not filename:
+            filename = os.path.basename(file_path)
+            
+        upload_res = self.upload_file(file_path, filename)
+        if not upload_res.get("success"):
+            return upload_res
+            
+        return self.send_file_message(receive_id_type, receive_id, upload_res["file_key"])
+
     def get_chat_list(self, page_size: int = 20):
         """
         Get list of chats (groups) the bot is in.
@@ -160,12 +287,15 @@ class FeishuClient:
         """
         from lark_oapi.api.bitable.v1 import ListAppTableRecordRequest
         
-        request = ListAppTableRecordRequest.builder() \
+        builder = ListAppTableRecordRequest.builder() \
             .app_token(app_token) \
             .table_id(table_id) \
-            .view_id(view_id) \
-            .page_size(page_size) \
-            .build()
+            .page_size(page_size)
+        
+        if view_id:
+            builder.view_id(view_id)
+            
+        request = builder.build()
 
         # If user_access_token is provided, use it to override the default client auth
         option = lark.RequestOption.builder().user_access_token(user_access_token).build() if user_access_token else None
@@ -265,6 +395,25 @@ class FeishuClient:
             return {"success": False, "error": response.msg, "code": response.code}
             
         return {"success": True, "data": lark.JSON.marshal(response.data)}
+
+    def list_bitable_fields(self, app_token: str, table_id: str, user_access_token: str = None):
+        """Lists all fields (columns) in a specific Bitable table."""
+        from lark_oapi.api.bitable.v1 import ListAppTableFieldRequest
+        
+        request = ListAppTableFieldRequest.builder() \
+            .app_token(app_token) \
+            .table_id(table_id) \
+            .page_size(100) \
+            .build()
+            
+        option = lark.RequestOption.builder().user_access_token(user_access_token).build() if user_access_token else None
+        response = self.client.bitable.v1.app_table_field.list(request, option)
+        
+        if not response.success():
+            logger.error(f"Feishu list bitable fields failed: {response.code}, {response.msg}")
+            return {"success": False, "error": response.msg, "code": response.code, "items": []}
+            
+        return {"success": True, "items": json.loads(lark.JSON.marshal(response.data.items))}
 
     def list_bitable_tables(self, app_token: str, user_access_token: str = None):
         """
@@ -384,10 +533,107 @@ class FeishuClient:
             
             if not response.success():
                 logger.error(f"Feishu batch add records failed: {response.code}, {response.msg}")
+                if response.code == 1254405:
+                    # Diagnose which field name is missing
+                    field_names = list(chunk[0].keys()) if chunk else []
+                    logger.error(f"FieldNameNotFound Diagnosis: Fields sent: {field_names}. "
+                                 f"Check for case sensitivity, spaces, or missing fields in the target table.")
                 results.append({"success": False, "error": response.msg, "code": response.code})
             else:
                 results.append({"success": True, "data": lark.JSON.marshal(response.data)})
                 
+        return results
+
+    def batch_update_bitable_records(self, app_token: str, table_id: str, updates: list[dict], user_access_token: str = None):
+        """
+        Batch update existing records.
+        updates: list of {"record_id": str, "fields": dict}
+        """
+        from lark_oapi.api.bitable.v1 import BatchUpdateAppTableRecordRequest, BatchUpdateAppTableRecordRequestBody, AppTableRecord
+
+        chunk_size = 100
+        results = []
+
+        for i in range(0, len(updates), chunk_size):
+            chunk = updates[i:i + chunk_size]
+            records = [
+                AppTableRecord.builder().record_id(u["record_id"]).fields(u["fields"]).build()
+                for u in chunk
+            ]
+
+            request = BatchUpdateAppTableRecordRequest.builder() \
+                .app_token(app_token) \
+                .table_id(table_id) \
+                .request_body(BatchUpdateAppTableRecordRequestBody.builder()
+                              .records(records)
+                              .build()) \
+                .build()
+
+            option = lark.RequestOption.builder().user_access_token(user_access_token).build() if user_access_token else None
+            response = self.client.bitable.v1.app_table_record.batch_update(request, option)
+
+            if not response.success():
+                logger.error(f"Feishu batch update records failed: {response.code}, {response.msg}")
+                if response.code == 1254405:
+                    # Diagnose which field name is missing
+                    field_names = list(chunk[0]["fields"].keys()) if chunk else []
+                    logger.error(f"FieldNameNotFound Diagnosis (Update): Fields sent: {field_names}. "
+                                 f"Check for case sensitivity, spaces, or missing fields in the target table.")
+                results.append({"success": False, "error": response.msg, "code": response.code})
+            else:
+                results.append({"success": True, "data": lark.JSON.marshal(response.data)})
+
+        return results
+
+    def populate_bitable_records(self, app_token: str, table_id: str, records_list: list[dict], user_access_token: str = None):
+        """
+        Robustly populate a Bitable. Ensures all fields exist before writing.
+        First, it reuses existing empty rows (update), then appends the rest (create).
+        """
+        if not records_list:
+            logger.warning("populate_bitable_records called with empty records_list.")
+            return []
+
+        # 1. Ensure all columns (fields) exist
+        try:
+            target_fields = set(records_list[0].keys())
+            existing_fields_res = self.list_bitable_fields(app_token, table_id, user_access_token)
+            
+            if not existing_fields_res.get("success"):
+                logger.error("Could not verify fields before populating, proceeding with risk.")
+            else:
+                existing_field_names = {item['field_name'] for item in existing_fields_res["items"]}
+                missing_fields = target_fields - existing_field_names
+                
+                if missing_fields:
+                    logger.info(f"Found missing fields in Bitable: {missing_fields}. Attempting to create them.")
+                    for field_name in missing_fields:
+                        # Assuming text field (type=1) is a safe default.
+                        self.create_bitable_field(app_token, table_id, field_name, user_access_token=user_access_token)
+        except Exception as e:
+            logger.error(f"Error during pre-flight field check: {e}")
+
+        # 2. Proceed with populating data
+        results = []
+        existing_res = self.list_bitable_records(app_token, table_id, page_size=100, user_access_token=user_access_token)
+        existing_ids = []
+        if existing_res.get("success"):
+            items = json.loads(existing_res["items"]) if existing_res["items"] else []
+            existing_ids = [item["record_id"] for item in items]
+
+        # Update existing default rows
+        update_count = min(len(existing_ids), len(records_list))
+        if update_count > 0:
+            updates = [{"record_id": existing_ids[i], "fields": records_list[i]} for i in range(update_count)]
+            results.extend(self.batch_update_bitable_records(app_token, table_id, updates, user_access_token))
+            logger.info(f"Updated {update_count} existing rows in table {table_id}")
+
+        # Append remaining new records
+        remaining = records_list[update_count:]
+        if remaining:
+            results.extend(self.batch_add_bitable_records(app_token, table_id, remaining, user_access_token))
+            logger.info(f"Added {len(remaining)} new rows to table {table_id}")
+
         return results
 
     def delete_all_bitable_records(self, app_token: str, table_id: str, user_access_token: str = None):
