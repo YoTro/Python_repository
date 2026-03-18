@@ -20,6 +20,11 @@
         "lte_200k": "prompt total token count <= 200,000",
         "gt_200k": "prompt total token count > 200,000 (all tokens billed at this rate)"
       },
+      "thinking_tokens_note": {
+        "api_response_field": "usage_metadata.thoughts_token_count",
+        "billing": "charged_at_output_price",
+        "formula": "(candidates_token_count + thoughts_token_count) * output_price / 1_000_000"
+      },
       "grounding_free_allowance_unit": "RPD (requests per day) — uniform across all models",
       "image_output_schema": "single billing_unit=USD_per_image; token_count field documents token consumption for reference only — it does NOT change the billing_unit",
       "caching_read_ratio": "cache read price = input price × ratio (documented per model for verification)"

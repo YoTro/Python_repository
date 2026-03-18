@@ -586,22 +586,15 @@ The Intelligence Router (`src/intelligence/`) is the system's **cost-aware AI di
 
 ### 5.2 Task Auto-Classification
 
-When a caller does not specify a `compute_target`, the router classifies the task automatically:
+When a caller does not specify a `compute_target`, the router classifies the task using a hybrid approach:
 
-1. Extract the first 300 characters of the prompt.
-2. Send to the LOCAL model with a classification meta-prompt.
-3. Match the response against the `TaskCategory` enum.
-4. If LOCAL is unavailable or classification fails, default to `DEEP_REASONING` (cloud).
-
-```
-TaskCategory         → Routed To   Typical Use Cases
-─────────────────────────────────────────────────────────────
-SIMPLE_CLEANING      → LOCAL       Whitespace normalization, format fixing
-DATA_EXTRACTION      → LOCAL       Structured field extraction from text
-SIMPLE_CHAT          → LOCAL       FAQ-style short answers
-DEEP_REASONING       → CLOUD       Multi-step analysis, synthesis, patent risk
-CREATIVE_WRITING     → CLOUD       Report generation, listing copywriting
-```
+1.  **Heuristic Pre-screening (<1ms)**: Executes high-speed keyword and length-based rules.
+    *   **Complexity**: Prompts > 4000 chars → `DEEP_REASONING`.
+    *   **Intent**: Keywords like `analyze`, `compare` → `DEEP_REASONING`.
+    *   **Extraction**: Keywords like `extract`, `find` (if < 2000 chars) → `DATA_EXTRACTION`.
+    *   **Cleaning**: Keywords like `clean`, `format` (if < 1000 chars) → `SIMPLE_CLEANING`.
+2.  **Model Classification**: If heuristics don't match, the first 400 characters are sent to the LOCAL model.
+3.  **Data Logging**: All classification decisions (including prompt previews, rules triggered, and confidence) are logged to `data/intelligence/raw_prompts.jsonl` for future model distillation and fine-tuning.
 
 ### 5.3 End-to-End Dispatch Flow
 
@@ -610,29 +603,23 @@ CREATIVE_WRITING     → CLOUD       Report generation, listing copywriting
 │                                                                          │
 │  router.route_and_execute(prompt, category=None)                        │
 │    │                                                                     │
-│    ├─ 1. CLASSIFY ──────────────────────────────────────────────────┐   │
+│    ├─ 1. CLASSIFY & LOG ────────────────────────────────────────────┐   │
 │    │   category provided?                                            │   │
 │    │   ├─ YES → use as-is                                           │   │
-│    │   └─ NO  → _classify_task(prompt[:300]) via LOCAL model        │   │
-│    │            (timeout 120s; fallback: DEEP_REASONING)            │   │
+│    │   └─ NO  → 1. Run _run_heuristics() (Zero cost)                │   │
+│    │            2. Fallback: _classify_task() via LOCAL model       │   │
+│    │            3. Log result to raw_prompts.jsonl                  │   │
 │    │                                                                 │   │
 │    ├─ 2. ROUTE ─────────────────────────────────────────────────────┤   │
-│    │   LOCAL provider available?                                     │   │
-│    │   ├─ YES + category ∈ {SIMPLE_*, EXTRACTION, CHAT}            │   │
-│    │   │   └─► LlamaCppProvider.generate_text()                     │   │
-│    │   │       └─► OutputParser.clean_for_feishu(response)          │   │
-│    │   │                                                             │   │
-│    │   └─ Otherwise (DEEP_REASONING / CREATIVE / LOCAL unavailable) │   │
-│    │       └─► CloudProvider.generate_text() or generate_structured()│   │
-│    │                                                                 │   │
-│    ├─ 3. ERROR HANDLING ────────────────────────────────────────────┤   │
-│    │   LOCAL timeout     → FallbackHandler(LOCAL_MODEL_TIMEOUT)     │   │
-│    │   Cloud unavailable → FallbackHandler(CLOUD_API_UNAVAILABLE)   │   │
-│    │                       └─► Enqueue to async retry queue          │   │
-│    │                           Spawn background consumer (10s backoff)│   │
+...
 │    │   Auth error        → Return critical error LLMResponse        │   │
 │    │                                                                 │   │
-│    └─ 4. RETURN ────────────────────────────────────────────────────┘   │
+│    ├─ 4. COST CALCULATION (PriceManager) ───────────────────────────┤   │
+│    │   - Support for Gemini "Thinking Tokens" (billed as output)     │   │
+│    │   - Support for "Prompt Caching" (cheaper cache_read price)     │   │
+│    │   - Precise tiered pricing (>200k context)                      │   │
+│    │                                                                 │   │
+│    └─ 5. RETURN ────────────────────────────────────────────────────┘   │
 │       LLMResponse { text, provider_name, model_name,                     │
 │                     token_usage, cost, metadata }                        │
 └──────────────────────────────────────────────────────────────────────────┘

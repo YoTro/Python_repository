@@ -40,15 +40,22 @@ This guide provides essential information for developers to understand, maintain
 3.  Expose it as an MCP Tool in `src/mcp/servers/amazon/tools.py`.
 
 ### B. Adding a New Workflow Definition
-1.  Create a file in `src/workflows/definitions/` (e.g., `market_report.py`).
-2.  Use the `@WorkflowRegistry.register("name")` decorator.
-3.  Compose your logic using `ProcessStep`, `FilterStep`, or `EnrichStep`.
-4.  **Important**: To call tools, use `ctx.mcp.call_tool_json("tool_name", arguments)`.
+1.  **Create the Logic**: Create a file in `src/workflows/definitions/` (e.g., `market_report.py`).
+2.  **Define the Builder**: Use the `@WorkflowRegistry.register("name")` decorator on a function that returns a list of steps.
+3.  **Trigger Registration**: **CRITICAL**: Import your new module in `src/workflows/definitions/__init__.py`. Without this, the decorator will not execute, and the workflow will not be registered.
+4.  **Compose Steps**: Use `ProcessStep`, `FilterStep`, or `EnrichStep`.
+    *   To call tools, use `ctx.mcp.call_tool_json("tool_name", arguments)`.
+5.  **Validation**: Run `python main.py --list-workflows` (if supported) or verify the registration via unit tests.
 
 ### C. Adding a New MCP Tool
-1.  Locate the relevant domain in `src/mcp/servers/`.
-2.  In `tools.py`, define the `Tool` object (Name, Description, InputSchema).
-3.  Register with metadata:
+1.  **Locate the Domain**: Decide which server the tool belongs to (e.g., `src/mcp/servers/finance/`). If it's a new domain, create a new folder.
+2.  **Define the Logic and Handler**:
+    *   Write your core logic within that domain.
+    *   Implement an `async` handler function that accepts `name: str` and `arguments: dict` as parameters.
+    *   This handler function should execute your core logic and return a `list[mcp.types.TextContent]`.
+    *   *Example Signature*: `async def my_tool_handler(name: str, arguments: dict) -> list[mcp.types.TextContent]:`
+3.  **Define the MCP Tool Object**: In the domain's `tools.py` (or sub-module), instantiate a `mcp.types.Tool` object with a unique `name`, a clear `description` (crucial for LLMs), and an `inputSchema` (JSON Schema).
+4.  **Register the Tool**: Call `tool_registry.register_tool` to link your tool object with its handler function and metadata.
     ```python
     tool_registry.register_tool(
         tool, handler,
@@ -57,7 +64,7 @@ This guide provides essential information for developers to understand, maintain
     )
     ```
     The `category` controls grouping in the agent's system prompt. The `returns` description helps the LLM plan which tools to chain.
-4.  If it's a new domain (e.g., `advertising`), create the folder and register its import in `src/registry/tools.py`.
+5.  **Import the Tools**: If it's a new domain (e.g., `advertising`), create the folder and ensure its `tools.py` is imported in `src/registry/tools.py` to make the tools discoverable.
 
 ### D. Modifying the Agent System Prompt
 The agent prompt is a 3-layer system — you should rarely need to touch code:
@@ -71,6 +78,12 @@ To add a new execution phase or constraint, edit the `.md` file directly — no 
 When writing a new Feishu command or Workflow step:
 *   **Static ETA**: Update `TimeEstimator` in `src/core/telemetry/tracker.py` with your baseline.
 *   **Dynamic Progress**: Ensure your workflow step calls `callback.on_progress()` to trigger the `TelemetryTracker` moving-average calculation.
+
+### G. Improving Router Intelligence
+The `IntelligenceRouter` uses a hybrid classification system to minimize cloud costs.
+1.  **Adding Heuristic Rules**: Edit `_run_heuristics` in `src/intelligence/router/__init__.py`. Add keywords or length constraints in the prioritized order (Complexity -> Intent -> Constraint).
+2.  **Managing Logs**: All classification inputs are logged to `data/intelligence/raw_prompts.jsonl`. Use these logs to identify common misclassifications and extract datasets for model distillation.
+3.  **Feedback Loop**: Call `record_feedback(session_id, ground_truth)` to record corrections. This helps track misclassification rates for specific heuristic rules.
 
 ## 4. Testing Protocols
 

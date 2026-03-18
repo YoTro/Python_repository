@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Default config file path
 _DEFAULTS_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "config", "workflow_defaults.yaml"
+    os.path.dirname(__file__), "..", "..", "..", "config", "workflow_defaults.yaml"
 )
 
 _defaults_cache: Optional[dict] = None

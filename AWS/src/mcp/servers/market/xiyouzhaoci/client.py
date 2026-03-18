@@ -320,6 +320,83 @@ class XiyouZhaociAPI:
             ),
         )
 
+    # ── Multi-ASIN Comparison (v4) ──────────────────────────────────────
+
+    def compare_asins(self, country: str, asins: List[str], period: str = "last7days") -> dict:
+        """
+        Compare multiple ASINs (max 20) for common keywords.
+        Period options: 'last7days', 'last30days', etc.
+        """
+        if len(asins) > 20:
+            logger.warning(f"Comparing {len(asins)} ASINs, but max supported is 20. Truncating.")
+            asins = asins[:20]
+
+        url = f"{self.base_url}/v4/asins/compare/list/resource"
+        asins_str = ",".join(asins)
+        
+        payload = {
+            "resource": {"country": country, "asins": asins},
+            "asins": asins,
+            "country": country,
+            "query": "",
+            "page": 1,
+            "pageSize": 50,
+            "orders": [{"field": "follow", "order": "desc", "value": ""}],
+            "filters": [],
+            "rangeFilters": [],
+            "cycleFilter": {
+                "cycle": "daily",
+                "period": period,
+                "startCycle": {"startDate": "", "endDate": ""},
+                "endCycle": {"startDate": "", "endDate": ""}
+            },
+            "tableType": "multiAsinsComparisonList"
+        }
+        
+        headers = self.common_headers.copy()
+        headers["request-url"] = f"/detail/asin_compare/look_up/{country}/{asins_str}"
+        headers["krs-ver"] = self._krs_ver()
+
+        logger.info(f"Comparing {len(asins)} ASINs in {country} for period {period}")
+        try:
+            response = self.session.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error initiating ASIN comparison: {e}")
+            return {}
+
+    def export_compare_data(self, country: str, asins: List[str], period: str = "last7days", output_dir: str = "data") -> str:
+        """
+        Full Multi-ASIN comparison export flow: compare → poll → download xlsx.
+        Returns path to downloaded file, or empty string on failure.
+        """
+        compare_result = self.compare_asins(country, asins, period)
+        if not compare_result:
+            return ""
+
+        resource_id = (
+            compare_result.get("data", {}).get("resourceId")
+            or compare_result.get("resourceId")
+        )
+        if not resource_id:
+            logger.error(f"No resourceId in comparison response: {compare_result}")
+            return ""
+
+        logger.info(f"Got resourceId {resource_id} for ASIN comparison, polling...")
+
+        asins_str = ",".join(asins)
+        return self._poll_and_download(
+            resource_id=resource_id,
+            status_url=f"{self.base_url}/v4/resource/status",
+            status_payload={
+                "resource": {"country": country, "asins": asins},
+                "resourceId": str(resource_id),
+            },
+            request_url_header=f"/detail/asin_compare/look_up/{country}/{asins_str}",
+            output_path=os.path.join(output_dir, f"{country}_compare_{asins[0]}_{resource_id}.xlsx"),
+        )
+
 
 if __name__ == "__main__":
     api = XiyouZhaociAPI()
@@ -332,6 +409,9 @@ if __name__ == "__main__":
 
     if mode == "asin":
         path = api.export_asin_data("US", sys.argv[2] if len(sys.argv) > 2 else "B0BSYD2VV6")
+    elif mode == "compare":
+        asins = sys.argv[2].split(",") if len(sys.argv) > 2 else ["B08X4615SC", "B07BJN11KV"]
+        path = api.export_compare_data("US", asins)
     else:
         path = api.export_keyword_data("US", sys.argv[2] if len(sys.argv) > 2 else "iphone case")
 
