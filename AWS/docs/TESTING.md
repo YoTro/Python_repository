@@ -58,12 +58,15 @@ Verifies individual LLM providers (`GeminiProvider`, `ClaudeProvider`, `LlamaCpp
     ```
 
 ### E. Intelligence Routing & Fallback Tests
-Confirms the `IntelligenceRouter`'s task classification, model routing, and `FallbackHandler` logic are sound.
-*   **Location**: Potentially new tests for `src/intelligence/router/` and `src/intelligence/fallback.py`.
+Confirms the `IntelligenceRouter`'s task classification (including heuristic rules), model routing, and `FallbackHandler` logic are sound.
+*   **Location**: `tests/test_gemini_advanced_pricing.py` (Price Manager), `src/intelligence/router/` (Router logic).
+*   **Key Coverage**:
+    *   **Advanced Pricing**: Verifies thinking tokens, prompt caching, and tiered pricing calculations.
+    *   **Heuristics**: Confirms keyword and length-based pre-screening rules trigger correctly.
+    *   **Classification Logging**: Verifies that classification results are appended to `data/intelligence/raw_prompts.jsonl`.
 *   **Command**:
     ```bash
-    # Example (specific tests to be written)
-    # PYTHONPATH=. venv311/bin/pytest tests/test_intelligence_router.py
+    PYTHONPATH=. venv311/bin/python -m pytest tests/test_gemini_advanced_pricing.py
     ```
 
 ### F. Import Integrity Tests

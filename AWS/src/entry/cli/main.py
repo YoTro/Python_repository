@@ -12,6 +12,8 @@ if project_root not in sys.path:
 
 from src.core.utils.config_helper import ConfigHelper
 from src.gateway import APIGateway
+from src.workflows.registry import WorkflowRegistry
+import src.workflows.definitions # Ensure all decorators are executed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,10 +52,20 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--workflow", type=str, help="Name of the workflow to run (e.g., product_screening)")
     group.add_argument("--explore", type=str, help="Natural language query for the MCP Agent to explore")
+    group.add_argument("--list-workflows", action="store_true", help="List all available workflows")
     
     parser.add_argument("--params", type=str, help="JSON string of parameters for the workflow", default="{}")
     
     args = parser.parse_args()
+
+    if args.list_workflows:
+        from src.workflows.registry import WorkflowRegistry
+        workflows = WorkflowRegistry.list_workflows()
+        print("\n[Available Workflows]")
+        for wf in workflows:
+            print(f" - {wf}")
+        print()
+        return
 
     import json
     try:

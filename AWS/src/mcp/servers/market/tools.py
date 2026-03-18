@@ -146,6 +146,33 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
             "error": "Export failed. Check logs for details.",
         }))]
 
+    elif name == "xiyou_asin_compare_keywords":
+        api = _get_xiyou_api()
+        auth_response = _xiyou_auth_required(api)
+        if auth_response:
+            return auth_response
+        
+        country = arguments.get("country", "US")
+        asins = arguments["asins"]
+        period = arguments.get("period", "last7days")
+        output_dir = arguments.get("output_dir", "data")
+
+        file_path = await asyncio.to_thread(api.export_compare_data, country, asins, period, output_dir)
+        if file_path:
+            return [TextContent(type="text", text=json.dumps({
+                "status": "success",
+                "asins": asins,
+                "country": country,
+                "period": period,
+                "file_path": file_path,
+            }))]
+        return [TextContent(type="text", text=json.dumps({
+            "status": "failed",
+            "asins": asins,
+            "country": country,
+            "error": "Export failed. Check logs for details.",
+        }))]
+
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
@@ -225,6 +252,20 @@ market_tools = [
             "required": ["asin"],
         },
     ),
+    Tool(
+        name="xiyou_asin_compare_keywords",
+        description="[Third-party Xiyouzhaoci tool] Compare multiple ASINs (up to 20) for common keywords and performance. Returns a local xlsx file.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asins": {"type": "array", "items": {"type": "string"}, "description": "List of Amazon ASINs to compare (max 20)"},
+                "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
+                "period": {"type": "string", "default": "last7days", "description": "Time period for data (e.g., 'last7days', 'last30days')"},
+                "output_dir": {"type": "string", "default": "data", "description": "Local directory for the downloaded xlsx"},
+            },
+            "required": ["asins"],
+        },
+    ),
 ]
 
 _MARKET_META = {
@@ -235,6 +276,7 @@ _MARKET_META = {
     "xiyou_verify_sms": ("DATA", "authentication status"),
     "xiyou_keyword_analysis": ("DATA", "xlsx file with ASINs, traffic data, ranking trends (third-party)"),
     "xiyou_asin_lookup": ("DATA", "xlsx file with reverse-lookup keywords for an ASIN (third-party)"),
+    "xiyou_asin_compare_keywords": ("DATA", "xlsx file with multi-ASIN keyword comparison data (third-party)"),
 }
 
 for tool in market_tools:
