@@ -16,6 +16,10 @@ This document outlines best practices for interacting with the LLMs integrated i
 ## 2. Token Management & Cost Control
 
 *   **Cloud-Only Token Budget**: The `MCPAgent` tracks cumulative cloud token usage separately from local tokens. Only cloud API calls (Gemini, Claude) count toward the budget (default: 50,000 tokens). Local model tokens are free and unlimited.
+*   **Gemini Advanced Pricing Support**: The `PriceManager` accurately handles modern Gemini billing features:
+    *   **Thinking Tokens**: For models like `gemini-2.0-flash-thinking`, the `thoughts_token_count` is included in the output token billing.
+    *   **Prompt Caching**: If a request hits the Gemini cache, the `cached_content_token_count` is automatically deducted from the regular input count and billed at a significantly lower `cache_read` rate.
+    *   **Tiered Pricing**: Automatic switching between `lte_200k` and `gt_200k` pricing tiers based on the prompt size.
 *   **Budget Enforcement**: When cloud tokens exceed the budget, the agent forces a final summary from collected data and notifies the user that remaining work will use batch API. The agent does NOT hard-fail.
 *   **Leverage Local Models for Pre-processing**: For large text inputs (e.g., raw HTML, long customer reviews), use the `IntelligenceRouter` to automatically dispatch simple cleaning or summarization tasks to the local Llama.cpp model first.
 *   **Batch Fallback**: When the agent's cloud token budget is exhausted during a complex research task, `batch_route_and_execute()` can process remaining items asynchronously at lower priority.

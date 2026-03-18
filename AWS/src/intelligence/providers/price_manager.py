@@ -28,7 +28,7 @@ class PriceManager:
             if not os.path.exists(self.config_path):
                 logger.warning(f"Pricing config for {self.provider} not found at {self.config_path}")
                 return {}
-            with open(self.config_path, "r") as f:
+            with open(self.config_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
             logger.error(f"Failed to load {self.provider} pricing config: {e}")
@@ -65,18 +65,38 @@ class PriceManager:
         canonical_model = self.normalize_model_name(model_name)
         
         if self.provider == "gemini":
-            # Gemini Pattern: {model}#{tier}#{direction}#{modality}#{context_tier}
-            # Note: Gemini JSON often uses 'standard_paid' instead of 'standard'
+            # 1. Extract detailed token counts from kwargs (default to 0)
+            cached_tokens = kwargs.get("cached_content_token_count", 0)
+            thoughts_tokens = kwargs.get("thoughts_token_count", 0)
+            
+            # 2. Prepare billing parameters
             gemini_tier = tier if "_" in tier else f"{tier}_paid"
-            total_tokens = input_tokens + output_tokens
-            context_tier = "gt_200k" if total_tokens > 200000 else "lte_200k"
+            # Context tier is typically determined by total input (prompt) tokens
+            context_tier = "gt_200k" if input_tokens > 200000 else "lte_200k"
             
+            # 3. Construct lookup keys
             in_key = f"{canonical_model}#{gemini_tier}#input#text#{context_tier}"
-            if in_key not in self.lookup: in_key = f"{canonical_model}#{gemini_tier}#input#text"
-            
+            cache_key = f"{canonical_model}#{gemini_tier}#cache_read#text#{context_tier}"
             out_key = f"{canonical_model}#{gemini_tier}#output#text#{context_tier}"
-            if out_key not in self.lookup: out_key = f"{canonical_model}#{gemini_tier}#output#text"
             
+            # Fallback for models without tiered pricing or missing keys
+            if in_key not in self.lookup: in_key = f"{canonical_model}#{gemini_tier}#input#text"
+            if out_key not in self.lookup: out_key = f"{canonical_model}#{gemini_tier}#output#text"
+            if cache_key not in self.lookup: cache_key = f"{canonical_model}#{gemini_tier}#cache_read#text"
+
+            # 4. Extract prices (per 1M tokens)
+            in_price = self.lookup.get(in_key, {}).get("price", 0.0)
+            out_price = self.lookup.get(out_key, {}).get("price", 0.0)
+            cache_price = self.lookup.get(cache_key, {}).get("price", 0.0)
+
+            # 5. Precise calculation:
+            # Input = (non-cached part * input price) + (cached part * cache read price)
+            input_cost = (max(0, input_tokens - cached_tokens) * in_price) + (cached_tokens * cache_price)
+            # Output = (regular output + thoughts tokens) * output price
+            output_cost = (output_tokens + thoughts_tokens) * out_price
+            
+            return round((input_cost + output_cost) / 1000000.0, 10)
+
         elif self.provider == "claude":
             # Claude Pattern: {model}#{tier}#{dimension}
             in_key = f"{canonical_model}#{tier}#input"
