@@ -9,6 +9,7 @@ from src.mcp.client import get_mcp_client
 from src.agents.session import AgentSessionManager, AgentSession
 from src.agents.prompts.prompt_builder import PromptBuilder
 from src.registry.tools import tool_registry
+from src.core.utils.context import ContextPropagator
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +102,21 @@ class MCPAgent(BaseAgent):
 
     # ── main loop ─────────────────────────────────────────────────────────
 
-    async def run(self, query: str, session_id: str = "default_session", callback=None) -> str:
+    async def run(
+        self, 
+        query: str, 
+        session_id: str = "default_session", 
+        callback=None,
+        context: Optional[dict] = None
+    ) -> str:
         # 1. Load or Create Session
         session = self.session_mgr.load(session_id)
         if not session:
             session = self.session_mgr.create(session_id=session_id)
+        
+        # Merge external context (chat_id, etc.) if provided
+        if context:
+            session.context.update(context)
 
         # Add the new query if it's not a resumed session without a query
         if query:
@@ -123,157 +134,161 @@ class MCPAgent(BaseAgent):
         _MAX_EXTENSIONS = 2          # hard cap: at most 2 extensions (10 extra steps total)
 
         # 2. Execution Loop
-        while True:
-            session.current_step += 1
-            logger.info(
-                f"MCPAgent [{session.session_id}] Step {session.current_step}/{session.max_steps} "
-                f"(cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
-                f"cost: {session.total_cost:.4f} {session.currency})"
-            )
-
-            # ── Step limit and Token budget management ────────────────────
-            
-            # Scenario A: Steps exceeded but Token budget is healthy (>20% left)
-            if session.current_step > session.max_steps:
-                if session.cloud_token_usage < (self.token_budget * 0.8) and step_extensions < _MAX_EXTENSIONS:
-                    # Grant a grace period of 5 steps
-                    step_extensions += 1
-                    old_max = session.max_steps
-                    session.max_steps += 5
-                    logger.info(f"Step limit {old_max} reached, but budget is healthy. Extending to {session.max_steps} (extension {step_extensions}/{_MAX_EXTENSIONS}).")
-                    session.add_message(
-                        role="tool", name="system",
-                        content=(
-                            f"SYSTEM: You have reached the initial step limit ({old_max}). "
-                            "Because you still have sufficient token budget, I have granted you 5 more steps. "
-                            f"This is grace extension {step_extensions}/{_MAX_EXTENSIONS}. "
-                            "Please focus on CONVERGING your research and provide a Final Answer soon."
-                        )
-                    )
-                else:
-                    # Token budget is tight or steps really exhausted — force closure
-                    logger.warning(f"Step limit {session.max_steps} reached and budget is low. Forcing final answer.")
-                    answer = await self._force_final_answer(
-                        session, system_message,
-                        reason=f"Step limit ({session.max_steps}) reached. Please summarize your findings."
-                    )
-                    session.status = "completed"
-                    self.session_mgr.save(session)
-                    return answer
-
-            # Persist progress
-            self.session_mgr.save(session)
-
-            # Progress callback
-            if callback:
-                try:
-                    await callback.on_progress(
-                        step_index=session.current_step,
-                        total_steps=session.max_steps,
-                        step_name=f"Agent Reasoning (Step {session.current_step})",
-                        message=(
-                            f"Cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
-                            f"Cost: {session.total_cost:.4f} {session.currency}. "
-                            "Consulting LLM..."
-                        ),
-                    )
-                except Exception as e:
-                    logger.warning(f"Agent callback on_progress failed: {e}")
-
-            # Scenario B: Hard Token budget exceeded
-            if not budget_exceeded and session.cloud_token_usage >= self.token_budget:
-                budget_exceeded = True
-                logger.warning(
-                    f"Cloud token budget exceeded ({session.cloud_token_usage}/{self.token_budget}). "
-                    "Forcing final summary."
+        token = ContextPropagator.set_all(session.context)
+        try:
+            while True:
+                session.current_step += 1
+                logger.info(
+                    f"MCPAgent [{session.session_id}] Step {session.current_step}/{session.max_steps} "
+                    f"(cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
+                    f"cost: {session.total_cost:.4f} {session.currency})"
                 )
+
+                # ── Step limit and Token budget management ────────────────────
+                
+                # Scenario A: Steps exceeded but Token budget is healthy (>20% left)
+                if session.current_step > session.max_steps:
+                    if session.cloud_token_usage < (self.token_budget * 0.8) and step_extensions < _MAX_EXTENSIONS:
+                        # Grant a grace period of 5 steps
+                        step_extensions += 1
+                        old_max = session.max_steps
+                        session.max_steps += 5
+                        logger.info(f"Step limit {old_max} reached, but budget is healthy. Extending to {session.max_steps} (extension {step_extensions}/{_MAX_EXTENSIONS}).")
+                        session.add_message(
+                            role="tool", name="system",
+                            content=(
+                                f"SYSTEM: You have reached the initial step limit ({old_max}). "
+                                "Because you still have sufficient token budget, I have granted you 5 more steps. "
+                                f"This is grace extension {step_extensions}/{_MAX_EXTENSIONS}. "
+                                "Please focus on CONVERGING your research and provide a Final Answer soon."
+                            )
+                        )
+                    else:
+                        # Token budget is tight or steps really exhausted — force closure
+                        logger.warning(f"Step limit {session.max_steps} reached and budget is low. Forcing final answer.")
+                        answer = await self._force_final_answer(
+                            session, system_message,
+                            reason=f"Step limit ({session.max_steps}) reached. Please summarize your findings."
+                        )
+                        session.status = "completed"
+                        self.session_mgr.save(session)
+                        return answer
+
+                # Persist progress
+                self.session_mgr.save(session)
+
+                # Progress callback
                 if callback:
                     try:
                         await callback.on_progress(
                             step_index=session.current_step,
                             total_steps=session.max_steps,
-                            step_name="Token Budget Exceeded",
+                            step_name=f"Agent Reasoning (Step {session.current_step})",
                             message=(
-                                f"Cloud token usage ({session.cloud_token_usage}) exceeded "
-                                f"budget ({self.token_budget}). Switching to batch mode for "
-                                "remaining analysis. Generating summary of collected data..."
+                                f"Cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
+                                f"Cost: {session.total_cost:.4f} {session.currency}. "
+                                "Consulting LLM..."
                             ),
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Agent callback on_progress failed: {e}")
 
-                answer = await self._force_final_answer(
-                    session, system_message,
-                    reason=(
-                        f"Cloud token budget exhausted ({session.cloud_token_usage} cloud tokens used). "
-                        "Remaining analysis will be processed via batch API."
-                    ),
+                # Scenario B: Hard Token budget exceeded
+                if not budget_exceeded and session.cloud_token_usage >= self.token_budget:
+                    budget_exceeded = True
+                    logger.warning(
+                        f"Cloud token budget exceeded ({session.cloud_token_usage}/{self.token_budget}). "
+                        "Forcing final summary."
+                    )
+                    if callback:
+                        try:
+                            await callback.on_progress(
+                                step_index=session.current_step,
+                                total_steps=session.max_steps,
+                                step_name="Token Budget Exceeded",
+                                message=(
+                                    f"Cloud token usage ({session.cloud_token_usage}) exceeded "
+                                    f"budget ({self.token_budget}). Switching to batch mode for "
+                                    "remaining analysis. Generating summary of collected data..."
+                                ),
+                            )
+                        except Exception:
+                            pass
+
+                    answer = await self._force_final_answer(
+                        session, system_message,
+                        reason=(
+                            f"Cloud token budget exhausted ({session.cloud_token_usage} cloud tokens used). "
+                            "Remaining analysis will be processed via batch API."
+                        ),
+                    )
+                    session.status = "completed"
+                    self.session_mgr.save(session)
+                    return answer
+
+                # ── LLM call ──────────────────────────────────────────────────
+                conversation = session.format_history_as_text()
+
+                response_obj = await self.router.route_and_execute(
+                    conversation, system_message=system_message, category=TaskCategory.DEEP_REASONING
                 )
-                session.status = "completed"
-                self.session_mgr.save(session)
-                return answer
+                response = response_obj.text if response_obj else ""
+                self._accum_tokens(session, response_obj)
+                logger.debug(
+                    f"LLM Response via {response_obj.provider_name if response_obj else 'N/A'}: "
+                    f"{len(response)} chars, {response_obj.token_usage if response_obj else 0} tokens"
+                )
 
-            # ── LLM call ──────────────────────────────────────────────────
-            conversation = session.format_history_as_text()
+                # ── Final Answer detection ────────────────────────────────────
+                if "Final Answer:" in response:
+                    final_answer = response.split("Final Answer:")[-1].strip()
+                    session.add_message(role="assistant", content=response)
+                    session.status = "completed"
+                    self.session_mgr.save(session)
+                    return final_answer
 
-            response_obj = await self.router.route_and_execute(
-                conversation, system_message=system_message, category=TaskCategory.DEEP_REASONING
-            )
-            response = response_obj.text if response_obj else ""
-            self._accum_tokens(session, response_obj)
-            logger.debug(
-                f"LLM Response via {response_obj.provider_name if response_obj else 'N/A'}: "
-                f"{len(response)} chars, {response_obj.token_usage if response_obj else 0} tokens"
-            )
-
-            # ── Final Answer detection ────────────────────────────────────
-            if "Final Answer:" in response:
-                final_answer = response.split("Final Answer:")[-1].strip()
+                # ── Parse tool call ───────────────────────────────────────────
+                action, action_input = self._parse_tool_call(response)
                 session.add_message(role="assistant", content=response)
-                session.status = "completed"
-                self.session_mgr.save(session)
-                return final_answer
 
-            # ── Parse tool call ───────────────────────────────────────────
-            action, action_input = self._parse_tool_call(response)
-            session.add_message(role="assistant", content=response)
+                if action:
+                    # Duplicate tool call detection
+                    current_call = (action, json.dumps(action_input, sort_keys=True))
+                    if current_call == last_tool_call:
+                        duplicate_count += 1
+                        if duplicate_count >= _MAX_DUPLICATE_CALLS:
+                            logger.warning(
+                                f"Duplicate tool call detected {duplicate_count} times: "
+                                f"{action}({action_input}). Injecting hint."
+                            )
+                            session.add_message(
+                                role="tool", name="system",
+                                content=(
+                                    f"ERROR: You have called {action} with identical arguments "
+                                    f"{duplicate_count} times. The result will be the same. "
+                                    f"Either change the arguments (e.g. increment 'page') or "
+                                    f"produce your Final Answer from the data you already have."
+                                ),
+                            )
+                            duplicate_count = 0
+                            last_tool_call = None
+                            continue
+                    else:
+                        duplicate_count = 1
+                        last_tool_call = current_call
 
-            if action:
-                # Duplicate tool call detection
-                current_call = (action, json.dumps(action_input, sort_keys=True))
-                if current_call == last_tool_call:
-                    duplicate_count += 1
-                    if duplicate_count >= _MAX_DUPLICATE_CALLS:
-                        logger.warning(
-                            f"Duplicate tool call detected {duplicate_count} times: "
-                            f"{action}({action_input}). Injecting hint."
-                        )
-                        session.add_message(
-                            role="tool", name="system",
-                            content=(
-                                f"ERROR: You have called {action} with identical arguments "
-                                f"{duplicate_count} times. The result will be the same. "
-                                f"Either change the arguments (e.g. increment 'page') or "
-                                f"produce your Final Answer from the data you already have."
-                            ),
-                        )
-                        duplicate_count = 0
-                        last_tool_call = None
-                        continue
+                    logger.info(f"LLM called tool: {action} with args {action_input}")
+                    try:
+                        result = await self.mcp.call_tool_json(action, action_input)
+                        observation = json.dumps(result, ensure_ascii=False)
+                    except Exception as e:
+                        observation = f"Error calling tool: {e}"
+
+                    session.add_message(role="tool", content=observation, name=action)
                 else:
-                    duplicate_count = 1
-                    last_tool_call = current_call
-
-                logger.info(f"LLM called tool: {action} with args {action_input}")
-                try:
-                    result = await self.mcp.call_tool_json(action, action_input)
-                    observation = json.dumps(result, ensure_ascii=False)
-                except Exception as e:
-                    observation = f"Error calling tool: {e}"
-
-                session.add_message(role="tool", content=observation, name=action)
-            else:
-                # No tool call and no Final Answer — assume conversational reply
-                session.status = "completed"
-                self.session_mgr.save(session)
-                return response.strip()
+                    # No tool call and no Final Answer — assume conversational reply
+                    session.status = "completed"
+                    self.session_mgr.save(session)
+                    return response.strip()
+        finally:
+            ContextPropagator.reset(token)

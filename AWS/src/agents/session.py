@@ -35,6 +35,7 @@ class AgentSession(BaseModel):
     created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    context: Dict[str, Any] = Field(default_factory=dict) # NEW: store runtime context (chat_id, etc.)
 
     def add_message(self, role: str, content: str, name: Optional[str] = None):
         self.history.append(AgentMessage(role=role, content=content, name=name))

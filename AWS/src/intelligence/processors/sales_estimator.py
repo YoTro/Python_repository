@@ -3,6 +3,8 @@ import logging
 import pandas as pd
 import numpy as np
 import re
+import json
+import os
 from sklearn.linear_model import LinearRegression
 from typing import List, Dict, Optional, Union
 from src.core.models.product import Product
@@ -11,15 +13,18 @@ logger = logging.getLogger(__name__)
 
 class SalesRankRegressor:
     """
-    Advanced UCLA Sales-Rank Regressor with Seasonality Corrections.
-    Moved internally to SalesEstimator to simplify module structure.
+    Advanced UCLA Sales-Rank Regressor with Category-specific calibration.
+    Supports pre-calculated parameters, dynamic fitting, and social proof calibration.
     """
 
     def __init__(self):
         self.model = LinearRegression()
-        self.theta = None
-        self.r_squared = None
-        self.is_fitted = False
+        # Defaults to a conservative general average
+        self.theta = 1.5
+        self.intercept_c = 15.0
+        self.r_squared = 0.90
+        self.is_fitted = True # Defaults to True so fallback works
+        self.is_monthly_calibrated = True
         self.feature_cols = []
 
     def _extract_rank(self, rank_str: str) -> Optional[int]:
@@ -30,137 +35,114 @@ class SalesRankRegressor:
             return int(nums[-1].replace(',', ''))
         return None
 
-    def fit(self, data_input: Union[pd.DataFrame, List[Dict], List[Product]], 
-            rank_col: str = 'sales_rank', 
-            sales_col: str = 'orders', 
-            date_col: str = 'time') -> bool:
-        
-        if isinstance(data_input, pd.DataFrame):
-            df = data_input.copy()
-        else:
-            normalized = []
-            for item in data_input:
-                if isinstance(item, Product):
-                    normalized.append(item.model_dump())
-                else:
-                    normalized.append(item)
-            df = pd.DataFrame(normalized)
+    def set_parameters(self, theta: float, c: float, r_squared: Optional[float] = None):
+        """Manually set pre-calculated parameters."""
+        self.theta = theta
+        self.intercept_c = c
+        self.r_squared = r_squared
+        self.is_fitted = True
+        self.is_monthly_calibrated = True # Uses the ln(Sales) = (c - ln(Rank-1))/theta formula
 
-        if rank_col not in df.columns or sales_col not in df.columns:
-            logger.error(f"Required columns {rank_col} or {sales_col} not found.")
+    def fit_with_past_month_data(self, ranks: List[int], sales: List[int], coefficient: float = 1.2) -> bool:
+        """
+        Calibrate model using Amazon's "Past Month Sales" (social proof) data.
+        Formula: ln(Rank-1) = -theta * ln(Sales * coefficient) + c
+        """
+        valid_data = [(r, s) for r, s in zip(ranks, sales) if r and s and r > 1 and s > 0]
+        if len(valid_data) < 3:
+            logger.error("Insufficient data for past month calibration.")
             return False
 
-        data = df.copy()
-        data['Rank_Num'] = data[rank_col].apply(self._extract_rank)
-        data['Sales_Num'] = pd.to_numeric(data[sales_col], errors='coerce')
-        
-        if date_col in data.columns:
-            data[date_col] = pd.to_datetime(data[date_col])
-            data['Month'] = data[date_col].dt.month
-            data['Is_Weekend'] = data[date_col].dt.dayofweek.isin([5, 6]).astype(int)
-        else:
-            data['Month'] = 1
-            data['Is_Weekend'] = 0
-
-        mask = (data['Sales_Num'] > 0) & (data['Rank_Num'] > 1)
-        clean_data = data[mask]
-
-        if len(clean_data) < 10:
-            logger.error(f"Not enough data for regression (found {len(clean_data)} rows).")
-            return False
-
-        y = np.log(clean_data['Sales_Num']).values
-        X = pd.DataFrame({
-            'ln_rank': np.log(clean_data['Rank_Num'] - 1)
-        })
-        
-        month_dummies = pd.get_dummies(clean_data['Month'], prefix='Month', drop_first=True)
-        X = pd.concat([X, month_dummies], axis=1)
-        X['Is_Weekend'] = clean_data['Is_Weekend']
-        
-        self.feature_cols = X.columns.tolist()
+        df = pd.DataFrame(valid_data, columns=['rank', 'sales'])
+        X = np.log(df['sales'].values * coefficient).reshape(-1, 1)
+        y = np.log(df['rank'].values - 1)
 
         self.model.fit(X, y)
         self.r_squared = self.model.score(X, y)
-        
-        slope_ln_rank = self.model.coef_[0]
-        self.theta = -1.0 / slope_ln_rank if slope_ln_rank != 0 else 0
+        self.theta = -float(self.model.coef_[0])
+        self.intercept_c = float(self.model.intercept_)
         
         self.is_fitted = True
-        logger.info(f"Model fitted. R2: {self.r_squared:.4f}, Theta: {self.theta:.4f}")
+        self.is_monthly_calibrated = True
+        logger.info(f"Calibration complete. R2: {self.r_squared:.4f}, Theta: {self.theta:.4f}, C: {self.intercept_c:.4f}")
         return True
 
-    def predict(self, rank: int, month: int = 1, is_weekend: int = 0, multiplier: float = 7.0) -> float:
-        if not self.is_fitted: raise ValueError("Model not fitted.")
-        if rank <= 1: return 0.0
-
-        feat_dict = {col: 0.0 for col in self.feature_cols}
-        feat_dict['ln_rank'] = np.log(rank - 1)
+    def predict(self, rank: int) -> float:
+        """Predict monthly sales based on BSR."""
+        if not self.is_fitted or rank <= 1: return 0.0
         
-        month_col = f'Month_{month}'
-        if month_col in feat_dict:
-            feat_dict[month_col] = 1.0
-        
-        if 'Is_Weekend' in feat_dict:
-            feat_dict['Is_Weekend'] = float(is_weekend)
-            
-        X_pred = pd.DataFrame([feat_dict])[self.feature_cols]
-        ln_q_daily = self.model.predict(X_pred)[0]
-        q_daily = np.exp(ln_q_daily)
-        
-        return float(q_daily * multiplier)
-
-    def get_summary(self) -> Dict:
-        return {"theta_elasticity": self.theta, "r_squared": self.r_squared, "features_used": self.feature_cols}
-
+        # ln(Sales) = (c - ln(Rank-1)) / theta
+        try:
+            ln_sales = (self.intercept_c - np.log(rank - 1)) / self.theta
+            return float(np.exp(ln_sales))
+        except Exception as e:
+            logger.error(f"Prediction error for rank {rank}: {e}")
+            return 0.0
 
 class SalesEstimator:
     """
-    Intelligence Processor that wraps the UCLA Sales-Rank Regression logic.
-    Provides Agents with deterministic sales estimates based on BSR.
+    Intelligence Processor that manages BSR-to-Sales conversion.
+    Loads category-specific parameters from a central configuration.
     """
     
-    def __init__(self, training_data_path: Optional[str] = None):
-        self.regressor = SalesRankRegressor()
-        self.is_ready = False
+    def __init__(self, config_path: Optional[str] = None):
+        self.default_regressor = SalesRankRegressor()
+        self.category_params: Dict[str, Dict] = {}
         
-        if training_data_path:
-            self.load_and_train(training_data_path)
-        else:
-            self._apply_global_defaults()
-
-    def _apply_global_defaults(self):
-        self.regressor.theta = 1.5 
-        self.regressor.is_fitted = True
+        # Load pre-calculated parameters
+        if not config_path:
+            config_path = os.path.join(os.path.dirname(__file__), "config", "amazon_sales_estimator.json")
+            
+        self._load_config(config_path)
         self.is_ready = True
 
-    def load_and_train(self, csv_path: str):
+    def _load_config(self, path: str):
+        if not os.path.exists(path):
+            logger.warning(f"Sales estimator config not found at {path}. Using defaults.")
+            return
+
         try:
-            df = pd.read_csv(csv_path)
-            success = self.regressor.fit(df)
-            if success:
-                self.is_ready = True
-                logger.info(f"SalesEstimator trained successfully using {csv_path}")
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                for param in data.get("parameters", []):
+                    node_id = param.get("node_id")
+                    if node_id:
+                        self.category_params[str(node_id)] = param
+            logger.info(f"Loaded {len(self.category_params)} category-specific sales parameters.")
         except Exception as e:
-            logger.error(f"Failed to train SalesEstimator: {e}")
+            logger.error(f"Failed to load sales estimator config: {e}")
+
+    def _get_regressor_for_product(self, product: Product) -> SalesRankRegressor:
+        """Get a specialized regressor if category info is available, else default."""
+        if product.category_node_id and str(product.category_node_id) in self.category_params:
+            params = self.category_params[str(product.category_node_id)]
+            reg = SalesRankRegressor()
+            reg.set_parameters(theta=params['theta'], c=params['c'], r_squared=params.get('r_squared'))
+            return reg
+        return self.default_regressor
 
     def estimate_monthly_sales(self, product: Product) -> int:
         if not product.sales_rank or product.sales_rank <= 1:
             return 0
             
-        if not self.is_ready:
-            logger.warning("SalesEstimator not trained. Using heuristic.")
-            return int(100000 / product.sales_rank) if product.sales_rank > 0 else 0
+        regressor = self._get_regressor_for_product(product)
+        return int(regressor.predict(product.sales_rank))
 
-        try:
-            weekly = self.regressor.predict(product.sales_rank)
-            return int(weekly * 4)
-        except Exception as e:
-            logger.error(f"Error estimating sales for {product.asin}: {e}")
-            return 0
+    def calibrate_with_market_data(self, products: List[Product], node_id: Optional[str] = None):
+        """Dynamically calibrate parameters based on a list of products with 'past_month_sales'."""
+        ranks = [p.sales_rank for p in products if p.sales_rank and p.past_month_sales]
+        sales = [p.past_month_sales for p in products if p.sales_rank and p.past_month_sales]
+        
+        if self.default_regressor.fit_with_past_month_data(ranks, sales):
+            logger.info("Default SalesEstimator calibrated with provided market data.")
+            if node_id:
+                # Cache for future use in this session
+                summary = self.default_regressor.__dict__.copy() # Simplified
+                self.category_params[str(node_id)] = {
+                    "theta": self.default_regressor.theta,
+                    "c": self.default_regressor.intercept_c,
+                    "r_squared": self.default_regressor.r_squared
+                }
 
     def batch_estimate(self, products: List[Product]) -> Dict[str, int]:
-        results = {}
-        for p in products:
-            results[p.asin] = self.estimate_monthly_sales(p)
-        return results
+        return {p.asin: self.estimate_monthly_sales(p) for p in products}

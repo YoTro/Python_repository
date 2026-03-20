@@ -16,14 +16,17 @@ async def handle_send_card(name: str, arguments: dict) -> list[TextContent]:
     if name == "send_feishu_webhook":
         result = await asyncio.to_thread(feishu.send_webhook_message, arguments["webhook_url"], arguments["text"])
     
-    elif name == "send_feishu_message":
-        result = await asyncio.to_thread(feishu.send_text_message, arguments["receive_id_type"], arguments["receive_id"], arguments["text"])
+    elif name == "send_feishu_text":
+        result = await asyncio.to_thread(feishu.send_text_message, arguments.get("receive_id_type"), arguments.get("receive_id"), arguments["text"])
+    
+    elif name == "send_feishu_card":
+        result = await asyncio.to_thread(feishu.send_card_message, arguments.get("receive_id_type"), arguments.get("receive_id"), arguments["text"])
     
     elif name == "send_feishu_data_file":
         result = await asyncio.to_thread(
             feishu.send_data_as_file, 
-            arguments["receive_id_type"], 
-            arguments["receive_id"], 
+            arguments.get("receive_id_type"), 
+            arguments.get("receive_id"), 
             arguments["data"], 
             filename=arguments.get("filename", "export.csv")
         )
@@ -31,8 +34,8 @@ async def handle_send_card(name: str, arguments: dict) -> list[TextContent]:
     elif name == "send_feishu_url_file":
         result = await asyncio.to_thread(
             feishu.send_url_as_file,
-            arguments["receive_id_type"],
-            arguments["receive_id"],
+            arguments.get("receive_id_type"),
+            arguments.get("receive_id"),
             arguments["url"],
             filename=arguments.get("filename", "downloaded_file")
         )
@@ -40,8 +43,8 @@ async def handle_send_card(name: str, arguments: dict) -> list[TextContent]:
     elif name == "send_feishu_local_file":
         result = await asyncio.to_thread(
             feishu.send_local_file,
-            arguments["receive_id_type"],
-            arguments["receive_id"],
+            arguments.get("receive_id_type"),
+            arguments.get("receive_id"),
             arguments["file_path"],
             filename=arguments.get("filename")
         )
@@ -67,62 +70,71 @@ tools = [
         }
     ),
     Tool(
-        name="send_feishu_message",
-        description="Send a text message to a Feishu user or group chat.",
+        name="send_feishu_text",
+        description="Sends a simple text message to a Feishu chat. If receive_id or receive_id_type are not provided, it will attempt to use the chat_id from the current conversation context.",
         inputSchema={
             "type": "object",
             "properties": {
-                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"]},
-                "receive_id": {"type": "string"},
-                "text": {"type": "string"}
+                "text": {"type": "string", "description": "Plain text content for the message"},
+                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"], "description": "Optional. The type of receive ID (e.g., 'open_id', 'chat_id'). If not provided, attempts to resolve from context."},
+                "receive_id": {"type": "string", "description": "Optional. The ID of the recipient (user or chat group). If not provided, attempts to resolve from context."}
             },
-            "required": ["receive_id_type", "receive_id", "text"]
+            "required": ["text"]
+        }
+    ),
+    Tool(
+        name="send_feishu_card",
+        description="Sends a formatted card message to a Feishu chat. If receive_id or receive_id_type are not provided, it will attempt to use the chat_id from the current conversation context.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Markdown formatted content for the card message"},
+                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"], "description": "Optional. The type of receive ID (e.g., 'open_id', 'chat_id'). If not provided, attempts to resolve from context."},
+                "receive_id": {"type": "string", "description": "Optional. The ID of the recipient (user or chat group). If not provided, attempts to resolve from context."}
+            },
+            "required": ["text"]
         }
     ),
     Tool(
         name="send_feishu_data_file",
-        description="Convert data (list of dicts) into a CSV file and send it directly to a Feishu chat.",
+        description="Converts a list of dictionaries into a CSV file and sends it to a Feishu chat. If receive_id or receive_id_type are not provided, it will attempt to use the chat_id from the current conversation context.",
         inputSchema={
             "type": "object",
             "properties": {
-                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"]},
-                "receive_id": {"type": "string"},
-                "data": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                    "description": "List of dictionaries representing the table data"
-                },
-                "filename": {"type": "string", "default": "export.csv"}
+                "data": {"type": "array", "items": {"type": "object"}, "description": "List of dictionaries to be converted to CSV"},
+                "filename": {"type": "string", "description": "Optional custom name for the CSV file (e.g., 'report.csv')"},
+                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"], "description": "Optional. The type of receive ID (e.g., 'open_id', 'chat_id'). If not provided, attempts to resolve from context."},
+                "receive_id": {"type": "string", "description": "Optional. The ID of the recipient (user or chat group). If not provided, attempts to resolve from context."}
             },
-            "required": ["receive_id_type", "receive_id", "data"]
+            "required": ["data"]
         }
     ),
     Tool(
         name="send_feishu_url_file",
-        description="Download a file from a URL and send it as a Feishu file attachment.",
+        description="Downloads a file from a given URL and sends it as an attachment to a Feishu chat. If receive_id or receive_id_type are not provided, it will attempt to use the chat_id from the current conversation context.",
         inputSchema={
             "type": "object",
             "properties": {
-                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"]},
-                "receive_id": {"type": "string"},
-                "url": {"type": "string", "description": "The URL of the file to download"},
-                "filename": {"type": "string", "description": "Optional name for the file (extension will be guessed if missing)"}
+                "url": {"type": "string", "description": "URL of the file to download and send"},
+                "filename": {"type": "string", "description": "Optional custom name for the attachment"},
+                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"], "description": "Optional. The type of receive ID (e.g., 'open_id', 'chat_id'). If not provided, attempts to resolve from context."},
+                "receive_id": {"type": "string", "description": "Optional. The ID of the recipient (user or chat group). If not provided, attempts to resolve from context."}
             },
-            "required": ["receive_id_type", "receive_id", "url"]
+            "required": ["url"]
         }
     ),
     Tool(
         name="send_feishu_local_file",
-        description="Upload a local file and send it as a Feishu file attachment.",
+        description="Uploads a local file and sends it as an attachment to a Feishu chat. If receive_id or receive_id_type are not provided, it will attempt to use the chat_id from the current conversation context.",
         inputSchema={
             "type": "object",
             "properties": {
-                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"]},
-                "receive_id": {"type": "string"},
-                "file_path": {"type": "string", "description": "Local path to the file"},
-                "filename": {"type": "string", "description": "Optional custom name for the attachment"}
+                "file_path": {"type": "string", "description": "Local path to the file to send"},
+                "filename": {"type": "string", "description": "Optional custom name for the attachment"},
+                "receive_id_type": {"type": "string", "enum": ["open_id", "user_id", "union_id", "email", "chat_id"], "description": "Optional. The type of receive ID (e.g., 'open_id', 'chat_id'). If not provided, attempts to resolve from context."},
+                "receive_id": {"type": "string", "description": "Optional. The ID of the recipient (user or chat group). If not provided, attempts to resolve from context."}
             },
-            "required": ["receive_id_type", "receive_id", "file_path"]
+            "required": ["file_path"]
         }
     )
 ]

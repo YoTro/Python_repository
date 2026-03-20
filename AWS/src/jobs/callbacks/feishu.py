@@ -125,7 +125,11 @@ class FeishuCallback(JobCallback):
                     self._record_failure()
             else:
                 result = await asyncio.to_thread(
-                    self.feishu.update_card_message, self._progress_message_id, text
+                    self.feishu.update_card_message,
+                    self._progress_message_id,
+                    text,
+                    receive_id_type="chat_id",
+                    receive_id=self.chat_id,
                 )
                 if result.get("success"):
                     self._record_success()

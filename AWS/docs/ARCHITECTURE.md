@@ -17,6 +17,8 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   |               |  |               |  | --explore  |  |   preset)      |  |
 |   +-------+-------+  +-------+-------+  +-----+------+  +-------+--------+  |
 |           |                  |                |                  |           |
+|           | Context Propag.  |                |                  |           |
+|           | (feishu_chat_id) |                |                  |           |
 |           +------------------+----------------+------------------+           |
 |                              | Unified Request                               |
 |                 (Entry points forward; no routing logic)                     |
