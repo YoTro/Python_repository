@@ -23,7 +23,7 @@ class LlamaCppProvider(BaseLLMProvider):
     
     def __init__(self, 
                  model_path: str, 
-                 n_ctx: int = 4096, 
+                 n_ctx: int = 8192, 
                  n_gpu_layers: int = -1): # -1 means use all GPU layers if available
         
         if Llama is None:

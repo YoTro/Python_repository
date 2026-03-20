@@ -225,8 +225,20 @@ class JobManager:
             session_mgr = AgentSessionManager()
             agent = MCPAgent(router, session_mgr)
             
+            # Prepare runtime context (chat_id, etc.) for task context propagation
+            context = {}
+            if record.request.callback and record.request.callback.target:
+                context["feishu_chat_id"] = record.request.callback.target
+                if "bot_name" in record.request.callback.options:
+                    context["feishu_bot_name"] = record.request.callback.options["bot_name"]
+
             # The job_id acts as the session_id, ensuring 1-to-1 mapping
-            response = await agent.run(query=record.request.intent, session_id=record.job_id, callback=record.callback)
+            response = await agent.run(
+                query=record.request.intent, 
+                session_id=record.job_id, 
+                callback=record.callback,
+                context=context
+            )
             
             record.result = {"intent": record.request.intent, "message": response}
             record.status = JobStatus.COMPLETED

@@ -5,6 +5,7 @@ import logging
 import os
 import json
 from src.core.utils.config_helper import ConfigHelper
+from src.core.utils.context import ContextPropagator
 
 logger = logging.getLogger(__name__)
 
@@ -13,14 +14,17 @@ class FeishuClient:
     Feishu (Lark) API client wrapper using lark-oapi.
     """
     def __init__(self, bot_name: str = None):
-        # Determine which bot to use (default to 'amazon_bot' or config's default_bot)
-        if not bot_name:
-            bot_name = ConfigHelper.get("integrations.feishu.default_bot", "amazon_bot")
+        # Determine which bot to use (default order: explicit arg -> context -> config default)
+        resolved_bot_name = bot_name
+        if not resolved_bot_name:
+            resolved_bot_name = ContextPropagator.get("feishu_bot_name")
+        if not resolved_bot_name:
+            resolved_bot_name = ConfigHelper.get("integrations.feishu.default_bot", "amazon_bot")
 
-        bot_config = ConfigHelper.get_feishu_bot(bot_name)
+        bot_config = ConfigHelper.get_feishu_bot(resolved_bot_name)
 
         if not bot_config:
-            logger.error(f"Feishu bot '{bot_name}' not configured. Set FEISHU_{bot_name.upper()}_APP_ID in .env")
+            logger.error(f"Feishu bot '{resolved_bot_name}' not configured. Set FEISHU_{resolved_bot_name.upper()}_APP_ID in .env")
             self.app_id = ""
             self.app_secret = ""
             self.user_access_token = ""
@@ -32,25 +36,49 @@ class FeishuClient:
             self.webhook_url = bot_config["webhook_url"]
         
         if not self.app_id or not self.app_secret:
-            logger.warning(f"Feishu App ID/Secret missing for bot '{bot_name}'.")
+            logger.warning(f"Feishu App ID/Secret missing for bot '{resolved_bot_name}'.")
 
         self.client = lark.Client.builder() \
             .app_id(self.app_id) \
             .app_secret(self.app_secret) \
             .log_level(lark.LogLevel.INFO) \
             .build()
+    
+    def _resolve_receive_params(self, receive_id_type: Optional[str], receive_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        """
+        Resolves receive_id and receive_id_type, prioritizing explicit arguments,
+        then context variables.
+        """
+        # Prioritize explicitly passed arguments
+        if receive_id and receive_id_type:
+            return receive_id_type, receive_id
+        
+        # Try to get from context if not explicitly provided
+        ctx_chat_id = ContextPropagator.get("feishu_chat_id")
+        logger.info(f"[DEBUG] _resolve_receive_params: ctx_chat_id={ctx_chat_id}, current_context={ContextPropagator.get_all()}") # Added debug log
+        
+        if ctx_chat_id:
+            logger.debug(f"Resolved receive_id from context: {ctx_chat_id}")
+            # Assume 'chat_id' type for context-resolved chat IDs
+            return "chat_id", ctx_chat_id
+        
+        return None, None
 
-    def send_text_message(self, receive_id_type: str, receive_id: str, text: str):
+    def _send_im_message(self, msg_type: str, content: str, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None):
         """
-        Send a simple text message.
-        receive_id_type: 'open_id', 'user_id', 'union_id', 'email', 'chat_id'
+        Generic internal method to send any IM message type.
         """
-        content = json.dumps({"text": text})
+        resolved_receive_id_type, resolved_receive_id = self._resolve_receive_params(receive_id_type, receive_id)
+
+        if not resolved_receive_id:
+            logger.error(f"Feishu send {msg_type} failed: No receive_id provided or resolved from context.")
+            return {"success": False, "error": "请提供您的飞书 `open_id` 或其他 `receive_id` (例如 `email`, `user_id`)，以便我将消息发送给您。"}
+
         request = CreateMessageRequest.builder() \
-            .receive_id_type(receive_id_type) \
+            .receive_id_type(resolved_receive_id_type) \
             .request_body(CreateMessageRequestBody.builder()
-                          .receive_id(receive_id)
-                          .msg_type("text")
+                          .receive_id(resolved_receive_id)
+                          .msg_type(msg_type)
                           .content(content)
                           .build()) \
             .build()
@@ -58,44 +86,100 @@ class FeishuClient:
         response = self.client.im.v1.message.create(request)
         
         if not response.success():
-            logger.error(f"Feishu send message failed: {response.code}, {response.msg}")
+            logger.error(f"Feishu send {msg_type} failed: {response.code}, {response.msg}")
             return {"success": False, "error": response.msg, "code": response.code}
         
         return {"success": True, "data": lark.JSON.marshal(response.data)}
 
-    def send_card_message(self, receive_id_type: str, receive_id: str, text: str):
+    def send_text_message(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, text: str = ""):
         """
-        Send a card message that can be updated later.
+        Send a simple text message.
         """
+        content = json.dumps({"text": text})
+        return self._send_im_message("text", content, receive_id_type, receive_id)
+
+    def send_card_message(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, text: str = ""):
+        """
+        Send a card message. If the text is too long, it's sent as a file attachment instead,
+        with automatic format detection (JSON or TXT).
+        """
+        if len(text) > 8000:  # A safe threshold for Feishu cards
+            import tempfile
+            import os
+            
+            filename = "response.txt"
+            try:
+                json.loads(text)
+                filename = "response.json"
+            except json.JSONDecodeError:
+                pass  # Not JSON, default to .txt
+
+            resolved_receive_id_type, resolved_receive_id = self._resolve_receive_params(receive_id_type, receive_id)
+
+            if not resolved_receive_id:
+                logger.error("Feishu send card as file failed: No receive_id provided or resolved from context.")
+                return {"success": False, "error": "Cannot send file, receive_id is unknown."}
+
+            self.send_text_message(resolved_receive_id_type, resolved_receive_id, f"The response is too large to display in a message card. I am sending it as a {filename} file instead.")
+            
+            temp_path = None
+            try:
+                # Use a suffix to help OS identify the file type
+                with tempfile.NamedTemporaryFile(mode='w', suffix=os.path.splitext(filename)[1], delete=False, encoding='utf-8') as f:
+                    f.write(text)
+                    temp_path = f.name
+                
+                return self.send_local_file(resolved_receive_id_type, resolved_receive_id, temp_path, filename)
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
+
         content = json.dumps({
             "config": {"wide_screen_mode": True},
             "elements": [
                 {"tag": "markdown", "content": text}
             ]
         })
-        
-        request = CreateMessageRequest.builder() \
-            .receive_id_type(receive_id_type) \
-            .request_body(CreateMessageRequestBody.builder()
-                          .receive_id(receive_id)
-                          .msg_type("interactive")
-                          .content(content)
-                          .build()) \
-            .build()
+        return self._send_im_message("interactive", content, receive_id_type, receive_id)
 
-        response = self.client.im.v1.message.create(request)
-        
-        if not response.success():
-            logger.error(f"Feishu send card failed: {response.code}, {response.msg}")
-            return {"success": False, "error": response.msg, "code": response.code}
-        
-        return {"success": True, "data": lark.JSON.marshal(response.data)}
-
-    def update_card_message(self, message_id: str, text: str):
+    def update_card_message(self, message_id: str, text: str, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None):
         """
         Update an existing card message.
-        Note: Feishu only allows patching 'interactive' (card) messages, not raw 'text' messages.
+        If text is too long, sends it as a file and updates the card with a notification.
+        Requires receive_id and receive_id_type to send the file.
         """
+        if len(text) > 8000:  # Safe threshold
+            import tempfile
+            import os
+            
+            filename = "response.txt"
+            try:
+                json.loads(text)
+                filename = "response.json"
+            except json.JSONDecodeError:
+                pass # Not JSON.
+            
+            resolved_receive_id_type, resolved_receive_id = self._resolve_receive_params(receive_id_type, receive_id)
+            
+            if resolved_receive_id:
+                temp_path = None
+                try:
+                    # First, send the large content as a file
+                    with tempfile.NamedTemporaryFile(mode='w', suffix=os.path.splitext(filename)[1], delete=False, encoding='utf-8') as f:
+                        f.write(text)
+                        temp_path = f.name
+                    
+                    self.send_local_file(resolved_receive_id_type, resolved_receive_id, temp_path, filename)
+                    
+                    # Then, update the original card to notify the user
+                    text = f"The response is too large to display in a message card. I have sent it as a {filename} file instead."
+                finally:
+                    if temp_path and os.path.exists(temp_path):
+                        os.remove(temp_path)
+            else:
+                # Fallback to truncation if we can't send a file
+                text = text[:8000] + "\n\n... (message truncated as receiver ID was not available to send as a file)"
+
         content = json.dumps({
             "config": {"wide_screen_mode": True},
             "elements": [
@@ -126,6 +210,7 @@ class FeishuClient:
         """
         from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
         
+        file_path = os.path.normpath(file_path)
         file = open(file_path, "rb")
         request = CreateFileRequest.builder() \
             .request_body(CreateFileRequestBody.builder()
@@ -144,35 +229,27 @@ class FeishuClient:
         
         return {"success": True, "file_key": response.data.file_key}
 
-    def send_file_message(self, receive_id_type: str, receive_id: str, file_key: str):
+    def send_file_message(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, file_key: str = ""):
         """
         Send a file message using a file_key.
         """
         content = json.dumps({"file_key": file_key})
-        request = CreateMessageRequest.builder() \
-            .receive_id_type(receive_id_type) \
-            .request_body(CreateMessageRequestBody.builder()
-                          .receive_id(receive_id)
-                          .msg_type("file")
-                          .content(content)
-                          .build()) \
-            .build()
+        return self._send_im_message("file", content, receive_id_type, receive_id)
 
-        response = self.client.im.v1.message.create(request)
-        
-        if not response.success():
-            logger.error(f"Feishu send file message failed: {response.code}, {response.msg}")
-            return {"success": False, "error": response.msg, "code": response.code}
-        
-        return {"success": True, "data": lark.JSON.marshal(response.data)}
 
-    def send_data_as_file(self, receive_id_type: str, receive_id: str, data: list[dict], filename: str = "export.csv"):
+    def send_data_as_file(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, data: list[dict] = [], filename: str = "export.csv"):
         """
         Helper: Convert list of dicts to a temporary CSV and send it.
         """
         import csv
         import tempfile
         
+        resolved_receive_id_type, resolved_receive_id = self._resolve_receive_params(receive_id_type, receive_id)
+
+        if not resolved_receive_id:
+            logger.error("Feishu send data as file failed: No receive_id provided or resolved from context.")
+            return {"success": False, "error": "请提供您的飞书 `open_id` 或其他 `receive_id` (例如 `email`, `user_id`)，以便我将文件发送给您。"}
+
         if not data:
             return {"success": False, "error": "No data to send"}
 
@@ -190,18 +267,24 @@ class FeishuClient:
                 return upload_res
             
             # Send
-            return self.send_file_message(receive_id_type, receive_id, upload_res["file_key"])
+            return self.send_file_message(resolved_receive_id_type, resolved_receive_id, upload_res["file_key"])
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
-    def send_url_as_file(self, receive_id_type: str, receive_id: str, url: str, filename: str = "downloaded_file"):
+    def send_url_as_file(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, url: str = "", filename: str = "downloaded_file"):
         """
         Download a file from URL and send it as a Feishu file attachment.
         """
         import requests
         import tempfile
         
+        resolved_receive_id_type, resolved_receive_id = self._resolve_receive_params(receive_id_type, receive_id)
+
+        if not resolved_receive_id:
+            logger.error("Feishu send URL as file failed: No receive_id provided or resolved from context.")
+            return {"success": False, "error": "请提供您的飞书 `open_id` 或其他 `receive_id` (例如 `email`, `user_id`)，以便我将文件发送给您。"}
+
         try:
             response = requests.get(url, stream=True, timeout=30)
             response.raise_for_status()
@@ -224,7 +307,7 @@ class FeishuClient:
                 temp_path = tmp.name
 
             try:
-                return self.send_local_file(receive_id_type, receive_id, temp_path, filename)
+                return self.send_local_file(resolved_receive_id_type, resolved_receive_id, temp_path, filename)
             finally:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
@@ -233,10 +316,16 @@ class FeishuClient:
             logger.error(f"Failed to download and send URL as file: {e}")
             return {"success": False, "error": str(e)}
 
-    def send_local_file(self, receive_id_type: str, receive_id: str, file_path: str, filename: str = None):
+    def send_local_file(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, file_path: str = "", filename: str = None):
         """
         Complete flow: Upload local file and send it as a Feishu attachment.
         """
+        resolved_receive_id_type, resolved_receive_id = self._resolve_receive_params(receive_id_type, receive_id)
+
+        if not resolved_receive_id:
+            logger.error("Feishu send local file failed: No receive_id provided or resolved from context.")
+            return {"success": False, "error": "请提供您的飞书 `open_id` 或其他 `receive_id` (例如 `email`, `user_id`)，以便我将文件发送给您。"}
+
         if not filename:
             filename = os.path.basename(file_path)
             

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 import json
 import logging
 import asyncio
@@ -21,9 +22,12 @@ from src.mcp.servers.amazon.extractors.videos import VideoExtractor
 from src.mcp.servers.amazon.extractors.products_num import ProductsNumExtractor
 from src.mcp.servers.amazon.extractors.sales import SalesExtractor
 from src.core.utils.cookie_helper import AmazonCookieHelper
+from src.mcp.servers.amazon.extractors.bsr_category_extractor import BSRCategoryExtractor
 from src.core.data_cache import data_cache
 
 logger = logging.getLogger("mcp-amazon")
+
+BSR_URL_FILE = os.path.join(os.path.dirname(__file__), "amazon_bsr_url.json")
 
 
 def _to_serializable(data):
@@ -180,6 +184,21 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
             host=arguments.get("host", "https://www.amazon.com"),
         )
         return _json_response(result)
+
+    # ── Tier 4: BSR Navigation ───────────────────────────────────────────
+    if name == "get_top_bsr_categories":
+        try:
+            with open(BSR_URL_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return _json_response(data.get("categories", []))
+        except Exception as e:
+            logger.error(f"Error reading BSR URL file: {e}")
+            return [TextContent(type="text", text=f"Error reading BSR data: {str(e)}")]
+
+    if name == "get_bsr_subcategories":
+        extractor = BSRCategoryExtractor()
+        results = await extractor.get_categories_from_page(arguments["url"])
+        return _json_response(results)
 
     return [TextContent(type="text", text=f"Unknown Amazon tool: {name}")]
 
@@ -394,6 +413,22 @@ amazon_tools = [
             "required": ["asin"],
         },
     ),
+    Tool(
+        name="get_top_bsr_categories",
+        description="Lists all top-level Amazon Best Sellers categories (Electronics, Home, etc.) with their entry URLs. Use this as a starting point for market research.",
+        inputSchema={"type": "object", "properties": {}}
+    ),
+    Tool(
+        name="get_bsr_subcategories",
+        description="Dynamically explores subcategories within a specific Amazon BSR category. Pass a parent BSR URL to find more specific niches.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The parent BSR URL to explore (e.g. https://www.amazon.com/Best-Sellers-Electronics/zgbs/electronics/)"}
+            },
+            "required": ["url"]
+        }
+    ),
 ]
 
 _AMAZON_META = {
@@ -414,6 +449,8 @@ _AMAZON_META = {
     "get_dimensions": ("DATA", "product dimensions and weight"),
     "get_product_images": ("DATA", "image URLs"),
     "check_has_videos": ("DATA", "video presence and count"),
+    "get_top_bsr_categories": ("DATA", "list of top-level BSR categories with URLs"),
+    "get_bsr_subcategories": ("DATA", "list of subcategories within a BSR category"),
 }
 
 for tool in amazon_tools:

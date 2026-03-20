@@ -72,7 +72,7 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps({
                 "status": "sms_sent",
                 "phone": masked,
-                "message": f"SMS code sent to {masked}. Call xiyou_verify_sms with the code.",
+                "message": f"SMS code sent to {masked}. Call xiyou_verify_sms with the code.Please reply with xiyou_verify_sms(sms_code=xxxxxx)",
             }))]
         return [TextContent(type="text", text=json.dumps({
             "status": "sms_failed",
@@ -173,6 +173,37 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
             "error": "Export failed. Check logs for details.",
         }))]
 
+    elif name == "xiyou_get_aba_top_asins":
+        api = _get_xiyou_api()
+        auth_response = _xiyou_auth_required(api)
+        if auth_response:
+            return auth_response
+        
+        country = arguments.get("country", "US")
+        search_terms = arguments["search_terms"]
+
+        result = await asyncio.to_thread(api.get_aba_top_asins, country, search_terms)
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
+    elif name == "xiyou_get_search_terms_ranking":
+        api = _get_xiyou_api()
+        auth_response = _xiyou_auth_required(api)
+        if auth_response:
+            return auth_response
+        
+        country = arguments.get("country", "US")
+        query = arguments["query"]
+        page = arguments.get("page", 1)
+        page_size = arguments.get("page_size", 100)
+        field = arguments.get("field", "week")
+        rank_pattern = arguments.get("rank_pattern", "aba")
+
+        result = await asyncio.to_thread(
+            api.get_search_terms_ranking, 
+            country, query, page, page_size, field, rank_pattern
+        )
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
@@ -266,6 +297,34 @@ market_tools = [
             "required": ["asins"],
         },
     ),
+    Tool(
+        name="xiyou_get_aba_top_asins",
+        description="[Third-party Xiyouzhaoci tool] Query top ASINs and their click/conversion share for specific search terms based on ABA ranking data.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "search_terms": {"type": "array", "items": {"type": "string"}, "description": "List of search terms to query (e.g., ['iphone case', 'charger'])"},
+                "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
+            },
+            "required": ["search_terms"],
+        },
+    ),
+    Tool(
+        name="xiyou_get_search_terms_ranking",
+        description="[Third-party Xiyouzhaoci tool] Query search terms ranking based on a root query string (e.g., finding top ranked variations of 'iphone').",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The root query string to search for (e.g., 'iphone')"},
+                "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
+                "page": {"type": "integer", "default": 1, "description": "Page number"},
+                "page_size": {"type": "integer", "default": 100, "description": "Results per page (max 100)"},
+                "field": {"type": "string", "default": "week", "description": "Time period field (e.g., 'week', 'month')"},
+                "rank_pattern": {"type": "string", "default": "aba", "description": "Ranking pattern (e.g., 'aba')"},
+            },
+            "required": ["query"],
+        },
+    ),
 ]
 
 _MARKET_META = {
@@ -277,6 +336,8 @@ _MARKET_META = {
     "xiyou_keyword_analysis": ("DATA", "xlsx file with ASINs, traffic data, ranking trends (third-party)"),
     "xiyou_asin_lookup": ("DATA", "xlsx file with reverse-lookup keywords for an ASIN (third-party)"),
     "xiyou_asin_compare_keywords": ("DATA", "xlsx file with multi-ASIN keyword comparison data (third-party)"),
+    "xiyou_get_aba_top_asins": ("DATA", "JSON containing top ASINs and metrics for specified search terms"),
+    "xiyou_get_search_terms_ranking": ("DATA", "JSON containing search frequency ranks and trends for variations of a query"),
 }
 
 for tool in market_tools:

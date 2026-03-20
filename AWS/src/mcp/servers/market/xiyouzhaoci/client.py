@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from typing import List
 from curl_cffi import requests
 from datetime import datetime
 from urllib.parse import quote
@@ -63,6 +64,31 @@ class XiyouZhaociAPI:
                 logger.error(f"Failed to load token from {self.token_file}: {e}")
         return ""
 
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """
+        Make an HTTP request and handle 401 Unauthorized by reloading the token.
+        """
+        response = self.session.request(method, url, **kwargs)
+        
+        if response.status_code == 401:
+            logger.warning("Received 401 Unauthorized. Attempting to reload token...")
+            new_token = self._load_token()
+            if new_token and new_token != self.auth_token:
+                self.auth_token = new_token
+                self.common_headers["authorization"] = self.auth_token
+                
+                # Update the headers for the retry
+                if "headers" in kwargs:
+                    kwargs["headers"] = kwargs["headers"].copy()
+                    kwargs["headers"]["authorization"] = self.auth_token
+                
+                logger.info("Retrying request with reloaded token.")
+                response = self.session.request(method, url, **kwargs)
+            else:
+                logger.error("401 Unauthorized: Token is missing or invalid. Please re-authenticate.")
+        
+        return response
+
     @property
     def needs_auth(self) -> bool:
         return not self.auth_token
@@ -107,7 +133,7 @@ class XiyouZhaociAPI:
 
         for i in range(max_retries):
             try:
-                response = self.session.post(status_url, headers=headers, json=status_payload)
+                response = self._request("POST", status_url, headers=headers, json=status_payload)
                 response.raise_for_status()
                 status_res = response.json()
             except Exception as e:
@@ -146,6 +172,7 @@ class XiyouZhaociAPI:
         }
         logger.info(f"Downloading {resource_url[:80]}... → {output_path}")
         try:
+            # Download doesn't need _request with 401 handling usually
             response = self.session.get(resource_url, headers=headers)
             response.raise_for_status()
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -188,18 +215,25 @@ class XiyouZhaociAPI:
 
         logger.info(f"Looking up ASIN {asin} in {country}")
         try:
-            response = self.session.post(url, headers=headers, json=payload)
+            response = self._request("POST", url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()
         except Exception as e:
             logger.error(f"Error looking up ASIN {asin}: {e}")
             return {}
 
-    def export_asin_data(self, country: str, asin: str, output_dir: str = "data") -> str:
+    def export_asin_data(self, country: str, asin: str, output_dir: str = None) -> str:
         """
         Full ASIN export flow: lookup → poll → download xlsx.
         Returns path to downloaded file, or empty string on failure.
         """
+        if output_dir is None:
+            output_dir = self._DEFAULT_DATA_DIR
+        elif not os.path.isabs(output_dir):
+            output_dir = os.path.join(self._DEFAULT_DATA_DIR, output_dir)
+        
+        output_dir = os.path.normpath(output_dir)
+
         lookup_result = self.lookup_asin(country, asin)
         if not lookup_result:
             return ""
@@ -260,7 +294,7 @@ class XiyouZhaociAPI:
 
         logger.info(f"Analyzing keyword '{keyword}' in {country}")
         try:
-            response = self.session.post(url, headers=headers, json=payload)
+            response = self._request("POST", url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()
         except Exception as e:
@@ -280,18 +314,25 @@ class XiyouZhaociAPI:
         headers["krs-ver"] = self._krs_ver()
 
         try:
-            response = self.session.post(url, headers=headers, json=payload)
+            response = self._request("POST", url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()
         except Exception as e:
             logger.error(f"Error checking keyword status for '{keyword}': {e}")
             return {}
 
-    def export_keyword_data(self, country: str, keyword: str, output_dir: str = "data") -> str:
+    def export_keyword_data(self, country: str, keyword: str, output_dir: str = None) -> str:
         """
         Full keyword analysis flow: analyze → poll → download xlsx.
         Returns path to downloaded file, or empty string on failure.
         """
+        if output_dir is None:
+            output_dir = self._DEFAULT_DATA_DIR
+        elif not os.path.isabs(output_dir):
+            output_dir = os.path.join(self._DEFAULT_DATA_DIR, output_dir)
+        
+        output_dir = os.path.normpath(output_dir)
+
         analyze_result = self.analyze_keyword(country, keyword)
         if not analyze_result:
             return ""
@@ -359,18 +400,25 @@ class XiyouZhaociAPI:
 
         logger.info(f"Comparing {len(asins)} ASINs in {country} for period {period}")
         try:
-            response = self.session.post(url, headers=headers, json=payload)
+            response = self._request("POST", url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()
         except Exception as e:
             logger.error(f"Error initiating ASIN comparison: {e}")
             return {}
 
-    def export_compare_data(self, country: str, asins: List[str], period: str = "last7days", output_dir: str = "data") -> str:
+    def export_compare_data(self, country: str, asins: List[str], period: str = "last7days", output_dir: str = None) -> str:
         """
         Full Multi-ASIN comparison export flow: compare → poll → download xlsx.
         Returns path to downloaded file, or empty string on failure.
         """
+        if output_dir is None:
+            output_dir = self._DEFAULT_DATA_DIR
+        elif not os.path.isabs(output_dir):
+            output_dir = os.path.join(self._DEFAULT_DATA_DIR, output_dir)
+        
+        output_dir = os.path.normpath(output_dir)
+
         compare_result = self.compare_asins(country, asins, period)
         if not compare_result:
             return ""
@@ -396,6 +444,65 @@ class XiyouZhaociAPI:
             request_url_header=f"/detail/asin_compare/look_up/{country}/{asins_str}",
             output_path=os.path.join(output_dir, f"{country}_compare_{asins[0]}_{resource_id}.xlsx"),
         )
+
+    # ── ABA Ranking Data ────────────────────────────────────────────────
+
+    def get_aba_top_asins(self, country: str, search_terms: List[str]) -> dict:
+        """
+        Query top ASINs for the given search terms based on ABA ranking data.
+        """
+        url = f"{self.base_url}/v2/searchTerms/topAsins"
+        
+        terms_payload = [{"country": country, "searchTerm": term} for term in search_terms]
+        
+        payload = {
+            "biz": {
+                "searchTerms": terms_payload
+            }
+        }
+        
+        headers = self.common_headers.copy()
+        headers["request-url"] = "/detail/ranking_list"
+        headers["krs-ver"] = self._krs_ver()
+
+        logger.info(f"Querying ABA top ASINs for {len(search_terms)} search terms in {country}")
+        try:
+            response = self._request("POST", url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error querying ABA top ASINs: {e}")
+            return {}
+
+    def get_search_terms_ranking(self, country: str, query: str, page: int = 1, page_size: int = 100, field: str = "week", rank_pattern: str = "aba") -> dict:
+        """
+        Query ranking list for search terms based on a query string.
+        """
+        url = f"{self.base_url}/v3/rankingList/searchTerms"
+        
+        payload = {
+            "biz": {
+                "country": country,
+                "filed": field,  # Note: The API misspells 'field' as 'filed'
+                "page": page,
+                "pageSize": page_size,
+                "rankPattern": rank_pattern,
+                "query": query
+            }
+        }
+        
+        headers = self.common_headers.copy()
+        headers["request-url"] = "/detail/ranking_list"
+        headers["krs-ver"] = self._krs_ver()
+
+        logger.info(f"Querying search terms ranking for query '{query}' in {country}")
+        try:
+            response = self._request("POST", url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error querying search terms ranking for '{query}': {e}")
+            return {}
 
 
 if __name__ == "__main__":
