@@ -16,6 +16,8 @@ class Product(BaseModel):
     review_count: Optional[int] = Field(None, description="Total number of reviews received")
     rating: Optional[float] = Field(None, description="Average customer rating (out of 5.0)")
     main_image_url: Optional[str] = Field(None, description="URL of the primary product image")
+    category_name: Optional[str] = Field(None, description="Primary category name")
+    category_node_id: Optional[str] = Field(None, description="Amazon Browse Node ID (for BSR calibration)")
     past_month_sales: Optional[int] = Field(None, description="Estimated unit sales in the last 30 days")
     stock_level: Optional[int] = Field(None, description="Current available stock in cart (if accessible)")
     is_fba: Optional[bool] = Field(None, description="True if the product is Fulfilled by Amazon")

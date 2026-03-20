@@ -78,13 +78,19 @@ This script automatically detects your OS and injects the `aws-market-intelligen
 
 ### Output & Delivery (L2)
 *   **`populate_feishu_bitable_records`**: Reuses initial empty rows in a new Bitable to ensure data starts from Row 1. Preferred for new exports.
-*   **`send_feishu_local_file`**: Uploads a local file (like a Xiyouzhaoci export) and sends it as an IM attachment.
+*   **`send_feishu_local_file`**: Uploads a local file and sends it as an IM attachment.
 *   **`send_feishu_url_file`**: Downloads a file from a URL and forwards it as a Feishu attachment.
 *   **`send_feishu_data_file`**: Converts raw list-of-dicts data into a CSV and sends it as an attachment.
+*   **`send_feishu_text` / `send_feishu_card`**: Sends plain text or markdown cards to Feishu.
+
+> **Note on Feishu Targeting**: All `send_feishu_*` tools (except webhook) now support **Implicit Context Resolution**. If `receive_id` or `receive_id_type` are omitted in the tool call, the system automatically resolves the target `chat_id` from the active conversation context (`feishu_chat_id`). Explicitly provided IDs will always override the context.
 
 ### Market Intelligence (L1)
 *   **`xiyou_keyword_analysis`**: Requests keyword traffic and competitor data from Xiyouzhaoci, returning a local file path.
 *   **`xiyou_asin_lookup`**: Reverse-lookups keywords for an ASIN via Xiyouzhaoci.
+*   **`xiyou_asin_compare_keywords`**: Compares multiple ASINs (up to 20) for common keywords and performance trends.
+*   **`xiyou_get_aba_top_asins`**: Queries top ASINs and their click/conversion shares for specific search terms based on Amazon Brand Analytics (ABA) ranking data.
+*   **`xiyou_get_search_terms_ranking`**: Retrieves search frequency ranks, growth ratios, and trends for variations of a root query string using ABA data.
 
 ### Compliance核查 (L2)
 *   **`check_amazon_restriction`**: Keyword-based lookup in local Amazon restricted products database.

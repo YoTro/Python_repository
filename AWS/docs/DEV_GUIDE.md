@@ -107,3 +107,9 @@ venv311/bin/pytest tests/test_feishu_full_flow.py -s
 *   `src/agents/`: The "Intelligent Orchestrator". ReAct-based exploration with cloud token budgeting.
     *   `src/agents/prompts/`: 3-layer system prompt (`.md` template + builder + catalog formatter).
 *   `src/entry/`: The "Gates". CLI and Bot listeners.
+
+### H. Context Propagation (Feishu Targeting)
+The system uses `src.core.utils.context.ContextPropagator` to pass session-level variables across domain boundaries.
+*   **Targeting**: When a Feishu bot receives a message, it stores the `chat_id` in the context as `feishu_chat_id`.
+*   **Auto-Resolution**: The `FeishuClient` and associated MCP tools (in `src/mcp/servers/output/tools/send_card.py`) automatically check this context if `receive_id` is omitted.
+*   **Usage**: This allows the Agent to call `send_feishu_text(text="done")` without needing to know the user's ID, enabling a more natural "reply-to-current-chat" behavior.
