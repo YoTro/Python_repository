@@ -50,3 +50,26 @@ review_analysis:
 bsr_collection:
   max_pages: 2
   categories: []
+
+category_monopoly_analysis:
+  # Weights for the 7 dimensions (sum should ideally be 1.0)
+  weights:
+    sales_curve_top3: 0.15      # CR3: Percentage of sales held by top 3 products
+    sales_survival_space: 0.10  # Market share of products ranked 20-50
+    brand_concentration: 0.15   # Frequency of the same brand in Top 100
+    seller_background: 0.15     # Ratio of Amazon Retail (FBA/Amz) vs 3P sellers and high-feedback sellers
+    review_curve: 0.15          # Smoothness of review distribution and barrier to entry (avg stars/count)
+    keyword_traffic: 0.15       # Click share concentration of the top 3 ASINs for main keywords (ABA)
+    price_compression: 0.05     # Price band convergence (CV - Coefficient of Variation)
+    ad_traffic_ratio: 0.10      # Percentage of sponsored products in top search results
+
+  # Thresholds and markers
+  thresholds:
+    high_monopoly_score: 75     # Red Ocean: Entry not recommended
+    opportunity_score: 40       # Blue Ocean: Significant opportunity
+    price_cv_compression: 0.15  # CV < 15% indicates intense price war
+    ad_ratio_danger_zone: 0.40  # Ad traffic > 40% indicates high acquisition cost
+    cr3_monopoly_limit: 0.60    # Top 3 > 60% share indicates duopoly/oligopoly
+    review_disparity_threshold: 5.0 # Top 10 has 5x more reviews than bottom 50
+    rating_hard_barrier: 4.5    # Top 10 average rating > 4.5 means no differentiation space
+    mega_seller_feedback: 10000 # Feedback count that classifies a seller as an industry giant
