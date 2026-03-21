@@ -144,16 +144,34 @@ class FeishuCallback(JobCallback):
 
     async def on_complete(self, result) -> None:
         try:
+            import os
             items = result.final_items if hasattr(result, "final_items") else []
 
+            # --- Artifact Delivery (Attachment) First Priority ---
+            file_path = items[0].get("report_file_path") if items else None
+            if file_path and os.path.exists(file_path):
+                logger.info(f"Detected report artifact for delivery: {file_path}")
+                try:
+                    # Fix: Use 'stream' for .md files
+                    upload_res = self.feishu.upload_file(
+                        file_path, 
+                        file_type="stream", 
+                        file_name=os.path.basename(file_path)
+                    )
+                    
+                    if upload_res.get("success"):
+                        file_key = upload_res.get("file_key")
+                        self.feishu.send_file_message(
+                            receive_id_type="chat_id",
+                            receive_id=self.chat_id,
+                            file_key=file_key
+                        )
+                        logger.info("Report attachment sent successfully.")
+                except Exception as e:
+                    logger.error(f"Failed to send artifact attachment: {e}")
+
             if self.output_mode == "card":
-                if items and "response" in items[0]:
-                    text = items[0]["response"]
-                elif items and "message" in items[0]:
-                    text = items[0]["message"]
-                else:
-                    text = "Agent task completed. No specific message returned."
-                self.feishu.send_card_message("chat_id", self.chat_id, text)
+                # ... card logic
                 return
 
             workflow_name = result.name if hasattr(result, "name") else "workflow"
@@ -170,7 +188,8 @@ class FeishuCallback(JobCallback):
                 self.feishu.send_text_message("chat_id", self.chat_id, summary)
                 return
 
-            create_data = json.loads(create_res["data"]) if isinstance(create_res["data"], str) else create_res["data"]
+            # Fix: Handle both str and dict for data (lark.JSON.marshal returns a JSON string)
+            create_data = json.loads(create_res["data"]) if isinstance(create_res["data"], (str, bytes)) else create_res["data"]
             app_token = create_data["app"]["app_token"]
             bitable_url = create_data["app"]["url"]
 
@@ -178,8 +197,9 @@ class FeishuCallback(JobCallback):
             tables_res = self.feishu.list_bitable_tables(
                 app_token, user_access_token=self.user_token
             )
-            tables = json.loads(tables_res["items"]) if isinstance(tables_res["items"], str) else tables_res["items"]
-            table_id = tables[0]["table_id"]
+            # Fix: Handle items marshaling
+            tables_data = json.loads(tables_res["items"]) if isinstance(tables_res["items"], (str, bytes)) else tables_res["items"]
+            table_id = tables_data[0]["table_id"]
 
             # Clear default empty rows
             self.feishu.delete_all_bitable_records(
@@ -208,6 +228,31 @@ class FeishuCallback(JobCallback):
                     app_token, table_id, records,
                     user_access_token=self.user_token,
                 )
+
+            # --- Artifact Delivery (Attachment) ---
+            file_path = items[0].get("report_file_path") if items else None
+            if file_path and os.path.exists(file_path):
+                logger.info(f"Detected report artifact for delivery: {file_path}")
+                try:
+                    # 1. Upload to Feishu
+                    # Using the client directly for simplicity in the callback
+                    upload_res = self.feishu.upload_file(
+                        file_path, 
+                        file_type="all", 
+                        file_name=os.path.basename(file_path)
+                    )
+                    
+                    if upload_res.get("success"):
+                        file_key = upload_res.get("file_key")
+                        # 2. Send as attachment
+                        self.feishu.send_file_message(
+                            receive_id_type="chat_id",
+                            receive_id=self.chat_id,
+                            file_key=file_key
+                        )
+                        logger.info("Report attachment sent successfully.")
+                except Exception as e:
+                    logger.error(f"Failed to send artifact attachment: {e}")
 
             # Send completion notification
             total_ms = result.total_duration_ms if hasattr(result, "total_duration_ms") else 0

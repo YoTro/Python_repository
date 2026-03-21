@@ -1,115 +1,109 @@
-# Developer Guide
+# Developer Guide: Architectural Flow & Extension
 
-This guide provides essential information for developers to understand, maintain, and extend the AWS V2 Hybrid Intelligence Platform. It reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration** architecture.
+This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration** architecture of the AWS V2 Platform. It is organized according to the data flow of a request.
+
+---
 
 ## 1. Environment Setup
 
-1.  **Python Version**: Python 3.11+ is required.
-2.  **Virtual Environment**: 
+1.  **Python Version**: Python 3.11+ required.
+2.  **Environment**: 
     ```bash
     python3.11 -m venv venv311
     source venv311/bin/activate
-    ```
-3.  **Install Dependencies**:
-    ```bash
     pip install -r requirements.txt
-    # For local development/testing
-    pip install pytest pytest-asyncio
     ```
-4.  **Configuration (`.env`)**:
-    ```text
-    GEMINI_API_KEY=your_key
-    ANTHROPIC_API_KEY=your_key
-    DEFAULT_LLM_PROVIDER=gemini
-    FEISHU_AMAZON_BOT_APP_ID=...
-    ```
+3.  **Config**: Populate `.env` with `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, and `FEISHU_*` credentials.
 
-## 2. Core Coding Standards
+---
 
-*   **Type Safety**: Use `from __future__ import annotations` and strict type hinting.
-*   **Domain Isolation**: Implementation logic must stay within its domain server (`src/mcp/servers/<domain>/`).
-*   **Async First**: All I/O, including Tool calls and Scrapers, MUST be `async`.
+## 2. Request Flow: Development by Layer
+
+### Layer 1: Entry Points (`src/entry/`)
+*The "Gates". Where requests first hit the system.*
+
+**How to add a new channel (e.g., Slack/Discord Bot):**
+1.  **Adapter**: Create `src/entry/<channel>/` to listen for webhooks or socket events.
+2.  **Parse**: Identify if the message is a `workflow` command or a natural language `intent` for the Agent.
+3.  **Identify**: Extract the platform-specific `chat_id` and `user_id`.
+4.  **Forward**: Call the appropriate `APIGateway` dispatcher.
+
+### Layer 2: API Gateway (`src/gateway/`)
+*Identity Resolution, Rate Limiting, and Normalization.*
+
+**How to register a new entry point:**
+1.  **Dispatch Method**: Add `dispatch_<channel>_command` to `APIGateway` in `src/gateway/router.py`.
+2.  **Normalization**: Map heterogeneous inputs into a `UnifiedRequest` DTO.
+3.  **Callback Binding**: Inject a `CallbackConfig` (e.g., `type="slack_message"`) so the system knows where to return results.
+
+### Layer 3: Orchestration (`src/workflows/` & `src/agents/`)
+*The "Brains". Deciding HOW to solve the problem.*
+
+**Track A: Deterministic Workflows**
+1.  **Define**: Create `src/workflows/definitions/my_flow.py`.
+2.  **Register**: Use `@WorkflowRegistry.register("name")` and ensure it's imported in `definitions/__init__.py`.
+3.  **Steps**: Compose using `EnrichStep` (fetching), `FilterStep` (logic), or `ProcessStep` (AI reasoning).
+
+**Track B: Exploratory Agents**
+1.  **System Prompt**: Edit the human-readable Markdown template in `src/agents/prompts/mcp_agent_system.md`.
+2.  **Constraints**: Adjust `token_budget` or `max_steps` in the Agent's session config.
+
+### Layer 4: Capabilities & Tools (`src/mcp/servers/`)
+*The "Hands". Where the actual work (scraping, calculating) happens.*
+
+**A. Adding a New Scraper (Amazon Domain)**
+1.  Place script in `src/mcp/servers/amazon/extractors/`.
+2.  Inherit from `AmazonBaseScraper` for built-in proxy and cookie support.
+
+**B. Adding a New MCP Tool**
+1.  **Logic**: Implement an `async` handler in the relevant domain server.
+2.  **Definition**: Create a `mcp.types.Tool` object with a precise description (essential for LLM planning).
+3.  **Registry**: Call `tool_registry.register_tool(tool, handler, category="DATA", returns="...")` in the domain's `tools.py`.
+4.  **Discovery**: Ensure the domain's `tools.py` is imported in `src/registry/tools.py`.
+
+### Layer 5: Intelligence Routing (`src/intelligence/`)
+*Cost-aware LLM Dispatching.*
+
+1.  **Heuristics**: Add high-speed rules to `_run_heuristics` in `src/intelligence/router/` to bypass LLM classification for simple tasks.
+2.  **Pricing**: Update `PriceManager` JSON configs if model costs change.
+3.  **Processors**: Implement complex AI logic (e.g., `MonopolyAnalyzer`) as specialized processors that the orchestrators can call.
+
+### Layer 6: Output & Callbacks (`src/jobs/callbacks/`)
+*Delivery of the final value.*
+
+1.  **Implement**: Subclass `BaseCallback` in `src/jobs/callbacks/`.
+2.  **Progress**: Implement `on_progress` to send real-time "thinking" cards/messages.
+3.  **Factory**: Register your type in `CallbackFactory.create()`.
+4.  **Targeting**: Use `ContextPropagator` to automatically resolve `feishu_chat_id` or similar platform IDs without passing them through every function.
+
+---
+
+## 3. Engineering Standards
+
+*   **Async First**: All I/O MUST be `async`.
+*   **DDD Isolation**: Domain logic stays in `src/mcp/servers/<domain>/`. No cross-domain imports.
 *   **Pydantic Contracts**: Use models in `src/core/models/` for all data exchange.
-*   **No Cross-Imports**: Workflow steps and Agents should **never** import extractors directly. Use the `MCPClient` provided in the context.
+*   **L1/L2 Split**: L1 (Scrapers) write to `DataCache`; L2 (Calculators/Output) read from `DataCache`.
 
-## 3. Extending capabilities
-
-### A. Adding a New Scraper (Amazon Domain)
-1.  Place your script in `src/mcp/servers/amazon/extractors/`.
-2.  Inherit from `src.core.scraper.AmazonBaseScraper`.
-3.  Expose it as an MCP Tool in `src/mcp/servers/amazon/tools.py`.
-
-### B. Adding a New Workflow Definition
-1.  **Create the Logic**: Create a file in `src/workflows/definitions/` (e.g., `market_report.py`).
-2.  **Define the Builder**: Use the `@WorkflowRegistry.register("name")` decorator on a function that returns a list of steps.
-3.  **Trigger Registration**: **CRITICAL**: Import your new module in `src/workflows/definitions/__init__.py`. Without this, the decorator will not execute, and the workflow will not be registered.
-4.  **Compose Steps**: Use `ProcessStep`, `FilterStep`, or `EnrichStep`.
-    *   To call tools, use `ctx.mcp.call_tool_json("tool_name", arguments)`.
-5.  **Validation**: Run `python main.py --list-workflows` (if supported) or verify the registration via unit tests.
-
-### C. Adding a New MCP Tool
-1.  **Locate the Domain**: Decide which server the tool belongs to (e.g., `src/mcp/servers/finance/`). If it's a new domain, create a new folder.
-2.  **Define the Logic and Handler**:
-    *   Write your core logic within that domain.
-    *   Implement an `async` handler function that accepts `name: str` and `arguments: dict` as parameters.
-    *   This handler function should execute your core logic and return a `list[mcp.types.TextContent]`.
-    *   *Example Signature*: `async def my_tool_handler(name: str, arguments: dict) -> list[mcp.types.TextContent]:`
-3.  **Define the MCP Tool Object**: In the domain's `tools.py` (or sub-module), instantiate a `mcp.types.Tool` object with a unique `name`, a clear `description` (crucial for LLMs), and an `inputSchema` (JSON Schema).
-4.  **Register the Tool**: Call `tool_registry.register_tool` to link your tool object with its handler function and metadata.
-    ```python
-    tool_registry.register_tool(
-        tool, handler,
-        category="DATA",      # DATA | COMPUTE | FILTER | OUTPUT
-        returns="list of products with ASIN and price",  # shown to LLM
-    )
-    ```
-    The `category` controls grouping in the agent's system prompt. The `returns` description helps the LLM plan which tools to chain.
-5.  **Import the Tools**: If it's a new domain (e.g., `advertising`), create the folder and ensure its `tools.py` is imported in `src/registry/tools.py` to make the tools discoverable.
-
-### D. Modifying the Agent System Prompt
-The agent prompt is a 3-layer system — you should rarely need to touch code:
-1.  **Edit the template**: `src/agents/prompts/mcp_agent_system.md` — human-readable Markdown with `$tool_catalog` and `$token_budget` variables.
-2.  **Tool catalog is auto-generated**: `tool_catalog_formatter.py` reads `ToolMeta` from the registry and groups tools into DATA/COMPUTE/FILTER/OUTPUT sections.
-3.  **Assembly**: `prompt_builder.py` loads the `.md` template and injects the catalog via `string.Template`.
-
-To add a new execution phase or constraint, edit the `.md` file directly — no code changes needed.
-
-### F. Using Telemetry & ETA
-When writing a new Feishu command or Workflow step:
-*   **Static ETA**: Update `TimeEstimator` in `src/core/telemetry/tracker.py` with your baseline.
-*   **Dynamic Progress**: Ensure your workflow step calls `callback.on_progress()` to trigger the `TelemetryTracker` moving-average calculation.
-
-### G. Improving Router Intelligence
-The `IntelligenceRouter` uses a hybrid classification system to minimize cloud costs.
-1.  **Adding Heuristic Rules**: Edit `_run_heuristics` in `src/intelligence/router/__init__.py`. Add keywords or length constraints in the prioritized order (Complexity -> Intent -> Constraint).
-2.  **Managing Logs**: All classification inputs are logged to `data/intelligence/raw_prompts.jsonl`. Use these logs to identify common misclassifications and extract datasets for model distillation.
-3.  **Feedback Loop**: Call `record_feedback(session_id, ground_truth)` to record corrections. This helps track misclassification rates for specific heuristic rules.
+---
 
 ## 4. Testing Protocols
 
-### Import Integrity
-Every time you move files or add imports, run:
-```bash
-venv311/bin/pytest tests/test_imports.py
-```
+1.  **Import Integrity**: `pytest tests/test_imports.py` (Prevents circular deps).
+2.  **Logic Validation**: `pytest tests/test_core_utils.py` etc.
+3.  **Full-Flow Simulation**: `pytest tests/test_feishu_full_flow.py -s` (Mocks external APIs but runs full Gateway -> Job -> MCP loop).
+4.  **LLM Routing**: `pytest tests/test_gemini_advanced_pricing.py`.
 
-### Full Flow Simulation
-To test the bridge between Feishu, the Workflow Engine, and MCP Tools without hitting real APIs:
-```bash
-venv311/bin/pytest tests/test_feishu_full_flow.py -s
-```
+---
 
-## 5. Directory Mapping (Quick Reference)
+## 5. Directory Mapping (Summary)
 
-*   `src/core/`: The "Kernel". Scrapers, Telemetry, Models, Utils (proxy, config, cookies, CSV, parser, account helpers).
-*   `src/mcp/servers/`: The "Capabilities". Where the actual work happens.
-*   `src/workflows/`: The "Industrial Orchestrator". Deterministic batching.
-*   `src/agents/`: The "Intelligent Orchestrator". ReAct-based exploration with cloud token budgeting.
-    *   `src/agents/prompts/`: 3-layer system prompt (`.md` template + builder + catalog formatter).
-*   `src/entry/`: The "Gates". CLI and Bot listeners.
-
-### H. Context Propagation (Feishu Targeting)
-The system uses `src.core.utils.context.ContextPropagator` to pass session-level variables across domain boundaries.
-*   **Targeting**: When a Feishu bot receives a message, it stores the `chat_id` in the context as `feishu_chat_id`.
-*   **Auto-Resolution**: The `FeishuClient` and associated MCP tools (in `src/mcp/servers/output/tools/send_card.py`) automatically check this context if `receive_id` is omitted.
-*   **Usage**: This allows the Agent to call `send_feishu_text(text="done")` without needing to know the user's ID, enabling a more natural "reply-to-current-chat" behavior.
+*   `src/core/`: Kernel, Models, Telemetry, and shared Utils (Proxy, Cookies, Context).
+*   `src/entry/`: Entry adapters (CLI, Feishu, etc.).
+*   `src/gateway/`: Auth, Rate Limiting, and Unified Dispatching.
+*   `src/jobs/`: Job management, Checkpoints, and Callbacks.
+*   `src/mcp/servers/`: Microservices providing specific tools.
+*   `src/registry/`: The central hub for Tool, Resource, and Prompt discovery.
+*   `src/intelligence/`: LLM Providers, Routing, and AI Processors.
+*   `src/workflows/`: Sequential, deterministic engine.
+*   `src/agents/`: Autonomous, LLM-driven reasoning.

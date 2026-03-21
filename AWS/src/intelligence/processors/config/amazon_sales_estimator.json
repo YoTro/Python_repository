@@ -1,170 +1,26 @@
 {
   "metadata": {
-    "description": "Pre-calculated UCLA Sales-Rank regression parameters (Theta and C)",
-    "last_updated": "2026-03-20",
-    "formula": "ln(Sales) = (C - ln(Rank-1)) / Theta",
-    "note":"sales is weekly sales, and Rank is weekly Median Rank"
+    "description": "Unified Category Intelligence: Sales Estimation + Market Benchmarks",
+    "last_updated": "2026-03-20"
   },
-  "parameters": [
-    {
-      "name": "Patio, Lawn & Garden",
-      "node_id": "553632",
-      "theta": 1.7886,
-      "c": 19.2222
-    },
+  "categories": [
     {
       "name": "Appliances",
       "node_id": "2619525011",
-      "theta": 1.0011,
-      "c": 9.1169,
-      "r_squared": 0.9662
-    },
-    {
-      "name": "Arts, Crafts & Sewing",
-      "node_id": "2617941011",
-      "theta": 1.8055,
-      "c": 18.8724,
-      "r_squared": 0.9876
-    },
-    {
-      "name": "Automotive",
-      "node_id": "15684181",
-      "theta": 1.8609,
-      "c": 19.301,
-      "r_squared": 0.992
-    },
-    {
-      "name": "Baby",
-      "node_id": "165796011",
-      "theta": 1.4087,
-      "c": 16.8616,
-      "r_squared": 0.9781
+      "estimation": { "theta": 1.0011, "c": 9.1169, "r_squared": 0.9662, "unit": "monthly" },
+      "market_logic": { "typical_cr3": 0.45, "review_barrier": 500, "capital_intensity_index": 1.5 }
     },
     {
       "name": "Beauty & Personal Care",
       "node_id": "3760911",
-      "theta": 1.8339,
-      "c": 22.3939,
-      "r_squared": 0.9772
-    },
-    {
-      "name": "Cell Phones & Accessories",
-      "node_id": "2335752011",
-      "theta": 1.3516,
-      "c": 16.4302,
-      "r_squared": 0.9867
-    },
-    {
-      "name": "Clothing, Shoes & Jewelry",
-      "node_id": "7141123011",
-      "theta": 2.3718,
-      "c": 26.2611,
-      "r_squared": 0.9798
-    },
-    {
-      "name": "Computers & Accessories",
-      "node_id": "541966",
-      "theta": 1.4624,
-      "c": 13.7598,
-      "r_squared": 0.992
-    },
-    {
-      "name": "Electronics",
-      "node_id": "172282",
-      "theta": 1.3384,
-      "c": 15.937,
-      "r_squared": 0.9921
-    },
-    {
-      "name": "Grocery & Gourmet Food",
-      "node_id": "16310101",
-      "theta": 1.6959,
-      "c": 20.8056,
-      "r_squared": 0.9742
-    },
-    {
-      "name": "Handmade Products",
-      "node_id": "11260432011",
-      "theta": 1.2679,
-      "c": 11.747,
-      "r_squared": 0.9915
-    },
-    {
-      "name": "Health & Household",
-      "node_id": "3760901",
-      "theta": 1.84,
-      "c": 23.098,
-      "r_squared": 0.9756
+      "estimation": { "theta": 1.8339, "c": 22.3939, "r_squared": 0.9772, "unit": "monthly" },
+      "market_logic": { "typical_cr3": 0.35, "review_barrier": 2000, "capital_intensity_index": 0.8 }
     },
     {
       "name": "Home & Kitchen",
       "node_id": "1055398",
-      "theta": 2.1025,
-      "c": 23.7575,
-      "r_squared": 0.9862
-    },
-    {
-      "name": "Industrial & Scientific",
-      "node_id": "16310101",
-      "theta": 1.6016,
-      "c": 17.8228,
-      "r_squared": 0.9901
-    },
-    {
-      "name": "Kitchen & Dining",
-      "node_id": "1055398",
-      "theta": 1.789,
-      "c": 19.7922,
-      "r_squared": 0.9861
-    },
-    {
-      "name": "Musical Instruments",
-      "node_id": "11965841",
-      "theta": 1.5271,
-      "c": 14.5428,
-      "r_squared": 0.9909
-    },
-    {
-      "name": "Office Products",
-      "node_id": "1064954",
-      "theta": 1.5864,
-      "c": 18.1544,
-      "r_squared": 0.9907
-    },
-    {
-      "name": "Pet Supplies",
-      "node_id": "2619533011",
-      "theta": 1.4702,
-      "c": 18.2633,
-      "r_squared": 0.9822
-    },
-    {
-      "name": "Sports & Outdoors",
-      "node_id": "3375251",
-      "theta": 1.7671,
-      "c": 18.9927,
-      "r_squared": 0.9901
-    },
-    {
-      "name": "Tools & Home Improvement",
-      "node_id": "228013",
-      "theta": 1.904,
-      "c": 20.7232,
-      "r_squared": 0.9872
-    },
-    {
-      "name": "Toys & Games",
-      "node_id": "165793011",
-      "theta": 1.891,
-      "c": 20.2212,
-      "r_squared": 0.9869
-    },
-    {
-      "name": "Video Games",
-      "node_id": "468642",
-      "theta": 1.218,
-      "c": 13.2603,
-      "r_squared": 0.9913
+      "estimation": { "theta": 2.1025, "c": 23.7575, "r_squared": 0.9862, "unit": "monthly" },
+      "market_logic": { "typical_cr3": 0.40, "review_barrier": 1500, "capital_intensity_index": 1.0 }
     }
   ]
 }

@@ -342,9 +342,14 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                      CALLBACK  (inside job_manager/)                         |
 |                                                                              |
 |   Unified Interface:                                                         |
-|     on_progress(step, total, msg)   ── Real-time Feishu progress cards       |
-|     on_complete(workflow_result)    ── Route to target output                |
-|     on_error(exception)             ── Preserve checkpoint, retryable        |
+|     on_progress(step, total, msg)   ── Real-time progress notifications      |
+|     on_complete(workflow_result)    ── Route to target output (Bitable/IM)   |
+|                                                                              |
+|   ── Artifact Delivery Mechanism ──────────────────────────────────────────  |
+|   Workflows can generate local artifacts (e.g., .md, .csv, .pdf). If a       |
+|   result item contains a `report_file_path`, the Callback system (Feishu,    |
+|   Slack) automatically uploads and sends it as an IM attachment. This        |
+|   bypasses card character limits and provides high-fidelity reports.         |
 |                                                                              |
 |   CallbackFactory.create(request.callback) --> Instance                      |
 |   Callbacks invoke output-server tools via MCP Client; no direct SDK calls   |
