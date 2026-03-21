@@ -37,9 +37,9 @@ class CheckpointManager:
     """
 
     def __init__(self, checkpoint_dir: str = None):
-        self.checkpoint_dir = checkpoint_dir or os.path.join(
-            os.path.dirname(__file__), "..", "..", "data", "checkpoints"
-        )
+        self.checkpoint_dir = checkpoint_dir or os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "..", "..", "data", "checkpoints"
+        ))
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
     def _path(self, job_id: str) -> str:

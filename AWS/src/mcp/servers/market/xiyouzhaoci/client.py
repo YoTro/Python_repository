@@ -12,6 +12,12 @@ from .auth import XiyouZhaociAuth
 logger = logging.getLogger(__name__)
 
 
+class XiyouAuthRequiredError(Exception):
+    """Exception raised when Xiyouzhaoci token is missing or expired, and SMS auth is needed."""
+    def __init__(self, message="Xiyouzhaoci token expired or invalid. Re-authentication required."):
+        self.message = message
+        super().__init__(self.message)
+
 class XiyouZhaociAPI:
     """
     API client for Xiyou Zhaoci (西柚找词).
@@ -86,6 +92,7 @@ class XiyouZhaociAPI:
                 response = self.session.request(method, url, **kwargs)
             else:
                 logger.error("401 Unauthorized: Token is missing or invalid. Please re-authenticate.")
+                raise XiyouAuthRequiredError("Xiyouzhaoci token expired or invalid. Re-authentication required.")
         
         return response
 
@@ -470,6 +477,8 @@ class XiyouZhaociAPI:
             response = self._request("POST", url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()
+        except XiyouAuthRequiredError:
+            raise
         except Exception as e:
             logger.error(f"Error querying ABA top ASINs: {e}")
             return {}

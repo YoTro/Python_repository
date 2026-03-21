@@ -76,7 +76,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |    "product_screening"       |             |  +---------------------------+     |
 |    "competitor_monitor"      |             |  | allowed_tools[ ]          |     |
 |    "review_analysis"         |             |  | max_steps: N (display)    |     |
-|    "replenish_alert"         |             |  | token_budget: N (cloud)   |     |
+|    "category_monopoly"       |             |  | token_budget: N (cloud)   |     |
 |    ...register(name, fn)     |             |  | cumulative_cost: $ (cloud)|     |
 |                              |             |  | dynamic_step_extension    |     |
 |  Execution Engine:           |             |  | convergence_hints: true   |     |
@@ -576,7 +576,39 @@ The "Brains". It contains the logic for chaining tools into complex business val
 
 ---
 
-## 5. Intelligence Router Deep Dive
+## 5. Stateful Resilience & Identity Resolution
+
+A critical challenge in long-running agentic workflows (especially those triggered by bots in multi-user environments like Feishu) is maintaining state, handling failures, and delivering results to the correct user.
+
+### 5.1 Checkpoint Architecture (Workflow Track)
+The `CheckpointManager` (`src/jobs/checkpoint/__init__.py`) provides implicit "resume-on-failure" capabilities for deterministic workflows.
+*   **Storage**: Checkpoints are stored in `data/checkpoints/{job_id}.json`.
+*   **Mechanism**: At the completion of every `ProcessStep`, `EnrichStep`, or `FilterStep`, the engine writes the entire `items` array to the JSON file.
+*   **Resume Logic**: If a workflow crashes (e.g., API timeout, anti-bot blocking) and the user triggers a retry for that `job_id`, the `WorkflowEngine` loads the checkpoint, skips all previously completed steps, and injects the cached `items` directly into the next pending step.
+
+### 5.2 Agent Session Memory (Agent Track)
+The `AgentSession` (`src/agents/session.py`) maintains conversational state for exploratory tasks.
+*   **Storage**: Sessions are stored in `data/sessions/{session_id}.json`.
+*   **Tracking**: It tracks the entire React loop history (`messages`), tool calls, and critically, dual-layer token budgets (`token_usage` for local/free models vs `cloud_token_usage` for billed models).
+
+### 5.3 Multi-User Identity Resolution (Feishu/Web)
+When multiple users interact with the Feishu bot, the system ensures that long-running jobs return data to the correct individual chat or group:
+1.  **Entry Point Parsing**: `FeishuClient` or `CommandDispatcher` captures the `chat_id` (representing a user DM or a group chat).
+2.  **UnifiedRequest Construction**: The entry point constructs a `UnifiedRequest` DTO (`src/core/models/request.py`), injecting the `chat_id` into the `callback` field:
+    ```python
+    req = UnifiedRequest(
+        workflow_name="...",
+        callback=CallbackConfig(type="feishu_card", target=chat_id)
+    )
+    ```
+3.  **JobManager Binding**: When `get_job_manager().submit(req)` is called, a unique `job_id` is generated. The `JobRecord` internally binds this `job_id` to the user's `UnifiedRequest` (which holds the `callback.target` = `chat_id`).
+4.  **Asynchronous Execution & Delivery**: The workflow executes in a background thread. Once completed (or failed), the `JobManager` looks up the `JobRecord`, extracts the `CallbackConfig`, instantiates the correct `FeishuCallback`, and sends the final report or error message strictly to the `chat_id` originally bound to that specific `job_id`.
+
+This guarantees that User A never receives User B's market analysis report, even if their background jobs are running concurrently in the same worker pool.
+
+---
+
+## 6. Intelligence Router Deep Dive
 
 The Intelligence Router (`src/intelligence/`) is the system's **cost-aware AI dispatch layer**. It solves a core problem: not every AI task needs a cloud API call. Simple data cleaning can run locally for free, while patent analysis demands cloud-grade reasoning. The router makes this decision automatically, keeping costs low and latency tight.
 
