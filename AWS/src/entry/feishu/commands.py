@@ -96,7 +96,44 @@ class ExtractBSRCommand(BotCommand):
         else:
             feishu_client.send_text_message("chat_id", chat_id, f"❌ 未知类目: {category}")
 
+class AnalyzeCategoryMonopolyCommand(BotCommand):
+    def match(self, text: str) -> bool:
+        return "分析垄断度" in text or "分析类目垄断度" in text
+
+    def execute(self, text: str, chat_id: str):
+        # Extract URL if present
+        match = re.search(r"(https?://www\.amazon\.com[^\s]+)", text)
+        url = match.group(1) if match else None
+        
+        feishu_client = FeishuClient(bot_name=self.bot_name)
+        
+        if not url:
+            feishu_client.send_text_message("chat_id", chat_id, "❌ 请提供要分析的 Amazon Best Sellers 类目 URL。格式：分析垄断度 [URL]")
+            return
+            
+        eta = TimeEstimator.estimate_workflow("category_monopoly_analysis", params={})
+        feishu_client.send_text_message("chat_id", chat_id, f"📊 开始分析该类目垄断度...\n⏱️ 预计耗时: {eta}，由于需要抓取大量 ASIN 数据，请耐心等待。")
+        
+        async def _dispatch_job():
+            try:
+                from src.gateway import APIGateway
+                import src.workflows.definitions.category_monopoly_analysis
+                
+                job_id = APIGateway.dispatch_feishu_command(
+                    workflow_name="category_monopoly_analysis",
+                    params={"url": url},
+                    chat_id=chat_id,
+                    bot_name=self.bot_name
+                )
+                logger.info(f"Monopoly analysis routed to Gateway, job_id={job_id}, bot_name={self.bot_name}")
+            except Exception as e:
+                logger.error(f"Monopoly analysis dispatch failed: {e}")
+                feishu_client.send_text_message("chat_id", chat_id, f"❌ 分析任务启动失败: {e}")
+
+        asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+
 class AgentExploreCommand(BotCommand):
+
     def match(self, text: str) -> bool:
         return True
 
@@ -119,7 +156,12 @@ class AgentExploreCommand(BotCommand):
 
 class CommandDispatcher:
     def __init__(self, bot_name: str = "amazon_bot", loop: Optional[asyncio.AbstractEventLoop] = None):
-        self.commands = [RefreshCookieCommand(bot_name, loop), ExtractBSRCommand(bot_name, loop), AgentExploreCommand(bot_name, loop)]
+        self.commands = [
+            RefreshCookieCommand(bot_name, loop), 
+            ExtractBSRCommand(bot_name, loop), 
+            AnalyzeCategoryMonopolyCommand(bot_name, loop),
+            AgentExploreCommand(bot_name, loop)
+        ]
         
     def dispatch(self, text: str, chat_id: str) -> bool:
         for cmd in self.commands:
