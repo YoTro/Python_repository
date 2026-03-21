@@ -95,6 +95,12 @@ class CategoryMonopolyAnalyzer:
                 "cr3": sales_scores.get("cr3"),
                 "price_cv": sales_scores.get("price_cv"),
                 "avg_rating": sales_scores.get("avg_rating")
+            },
+            "niche_benchmarks": {
+                "median_price": statistics.median([p.get("price", 0) for p in products if p.get("price", 0) > 0]) if products else 0,
+                "avg_reviews_top10": int(statistics.mean([p.get("review_count", 0) for p in sorted_products[:10]])) if len(sorted_products) >= 10 else 0,
+                "avg_reviews_bottom50": int(statistics.mean([p.get("review_count", 0) for p in sorted_products[50:]])) if len(sorted_products) > 50 else 0,
+                "total_estimated_monthly_sales": int(sum(p.get("sales", 0) for p in products))
             }
         }
 

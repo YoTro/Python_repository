@@ -104,11 +104,21 @@ class SalesEstimator:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                for param in data.get("parameters", []):
-                    node_id = param.get("node_id")
-                    if node_id:
-                        self.category_params[str(node_id)] = param
-            logger.info(f"Loaded {len(self.category_params)} category-specific sales parameters.")
+                # Supports new nested structure
+                categories = data.get("categories", [])
+                for cat in categories:
+                    node_id = cat.get("node_id")
+                    est = cat.get("estimation", {})
+                    if node_id and est:
+                        # Map estimation params
+                        self.category_params[str(node_id)] = {
+                            "theta": est.get("theta"),
+                            "c": est.get("c"),
+                            "r_squared": est.get("r_squared"),
+                            "unit": est.get("unit", "monthly"),
+                            "market_logic": cat.get("market_logic", {}) # Carry logic forward
+                        }
+            logger.info(f"Loaded {len(self.category_params)} category profiles.")
         except Exception as e:
             logger.error(f"Failed to load sales estimator config: {e}")
 
@@ -118,6 +128,14 @@ class SalesEstimator:
             params = self.category_params[str(product.category_node_id)]
             reg = SalesRankRegressor()
             reg.set_parameters(theta=params['theta'], c=params['c'], r_squared=params.get('r_squared'))
+            
+            # Adjust if unit is weekly (currently our regressor is monthly-centric)
+            if params.get("unit") == "weekly":
+                # ln(Sales_m) = ln(Sales_w * 4) = ln(Sales_w) + ln(4)
+                # ln(Sales_m) = (c/theta - ln(rank-1)/theta) + ln(4)
+                # new_c = c + theta * ln(4)
+                reg.intercept_c = params['c'] + (params['theta'] * np.log(4))
+                
             return reg
         return self.default_regressor
 
