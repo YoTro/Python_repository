@@ -171,7 +171,20 @@ class FeishuCallback(JobCallback):
                     logger.error(f"Failed to send artifact attachment: {e}")
 
             if self.output_mode == "card":
-                # ... card logic
+                # Handle agent exploration or other text-based results
+                text = "Workflow completed, but no textual response was provided."
+                if items and "response" in items[0]:
+                    text = items[0]["response"]
+                elif items:
+                    # Fallback for generic workflows using card output
+                    text = f"Workflow completed with {len(items)} items. First item: {items[0]}"
+                
+                self.feishu.send_card_message(
+                    receive_id_type="chat_id", 
+                    receive_id=self.chat_id, 
+                    text=text
+                )
+                logger.info("Final result sent via Feishu card successfully.")
                 return
 
             workflow_name = result.name if hasattr(result, "name") else "workflow"

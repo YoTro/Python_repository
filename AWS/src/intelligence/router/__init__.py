@@ -72,7 +72,7 @@ class IntelligenceRouter:
             self.cloud = None
 
     async def route_and_execute(self, prompt: str, category: Optional[TaskCategory] = None, **kwargs) -> LLMResponse:
-        session_id = kwargs.get("session_id", "unknown_session")
+        loadsion_id = kwargs.get("session_id", "unknown_session")
         tenant_id = kwargs.get("tenant_id", "default")
         user_id = kwargs.get("user_id", "default")
 
