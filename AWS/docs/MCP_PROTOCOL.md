@@ -92,6 +92,10 @@ This script automatically detects your OS and injects the `aws-market-intelligen
 *   **`xiyou_get_aba_top_asins`**: Queries top ASINs and their click/conversion shares for specific search terms based on Amazon Brand Analytics (ABA) ranking data.
 *   **`xiyou_get_search_terms_ranking`**: Retrieves search frequency ranks, growth ratios, and trends for variations of a root query string using ABA data.
 
+### Social Media Intelligence (L1/L2 Decoupled)
+*   **`tiktok_fetch_data` (L1)**: Scrapes raw TikTok data (tag metadata, trending videos, and comments) for a product. Data is stored in the internal `DataCache`.
+*   **`tiktok_calculate_virality` (L2)**: Processes cached TikTok data to compute the Promotional Strength Index (PSI), organic leverage, and purchase intent analysis.
+
 ### Compliance核查 (L2)
 *   **`check_amazon_restriction`**: Keyword-based lookup in local Amazon restricted products database.
 *   **`check_epa`**: Checks if product keywords trigger EPA FIFRA pesticide device regulations.
