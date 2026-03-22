@@ -34,7 +34,11 @@ async def handle_social_tool(name: str, arguments: dict) -> list[TextContent]:
         max_comments_per_video = arguments.get("max_comments", 10)
         all_comments = []
         if videos and max_comments_per_video > 0:
-            top_videos = videos[:3]
+            # Filter videos that actually have comments and sort them by comment volume descending
+            videos_with_comments = [v for v in videos if (v.get("stats", {}).get("commentCount", 0) or v.get("comments", 0)) > 0]
+            sorted_videos = sorted(videos_with_comments, key=lambda x: x.get("stats", {}).get("commentCount", 0) or x.get("comments", 0), reverse=True)
+            
+            top_videos = sorted_videos[:3]
             for v in top_videos:
                 v_id = v.get("id")
                 author_id = v.get("author", {}).get("uniqueId")
