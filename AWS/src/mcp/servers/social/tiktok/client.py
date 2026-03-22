@@ -354,7 +354,7 @@ class TikTokClient:
             params = {
                 "WebIdLastTime": str(int(time.time())),
                 "aid": "1988",
-                "app_language": "",
+                "app_language": "en",
                 "app_name": "tiktok_web",
                 "aweme_id": video_id,
                 "browser_language": "en",

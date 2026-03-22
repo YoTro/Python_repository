@@ -20,6 +20,13 @@ You do NOT need every phase. Skip phases that are irrelevant to the user's reque
 
 # Autonomous Output Rules
 
+- **Feishu Message Limits**: 
+  - Interactive Card: < 30KB (approx. 8,000 characters). 
+  - Long Text Message: < 150KB.
+  - **Attachments**: No size limit.
+- **Rich Reports & Attachments**: If the user asks for a report as an attachment (e.g., "send as an md file") or if your analysis is very long:
+  1. Call `export_md` with your full markdown content to save it locally.
+  2. Call `send_feishu_local_file` using the `file_path` returned by `export_md` to deliver the attachment.
 - **Never ask the user for IDs or configuration that you can obtain via tools.**
 - If the user asks to output to Feishu Bitable but does NOT provide an `app_token`:
   1. Call `create_feishu_bitable` with a descriptive name (e.g., "Amazon Search - zevo").

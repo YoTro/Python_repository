@@ -34,6 +34,7 @@ class SocialViralityProcessor:
         
         total_organic_ratio = 0
         recent_video_count = 0
+        mega_influencer_count = 0
         
         current_time = int(time.time())
         THIRTY_DAYS = 30 * 24 * 3600
@@ -59,6 +60,9 @@ class SocialViralityProcessor:
             followers = author_stats.get("followerCount", 1) or 1
             create_time = v.get("createTime", 0)
             
+            if followers > 1000000:
+                mega_influencer_count += 1
+            
             total_views += views
             total_likes += likes
             total_comments += comments_count
@@ -79,6 +83,8 @@ class SocialViralityProcessor:
 
         if valid_videos == 0:
             valid_videos = 1
+            
+        mega_influencer_ratio = mega_influencer_count / valid_videos
 
         # 2. Sample Volume (Recent momentum) - Weight: 15%
         volume_recent_score = min((total_views / 5000000) * 100, 100) * 0.15
@@ -149,6 +155,7 @@ class SocialViralityProcessor:
             "amazon_mentions": amazon_mentions,
             "organic_multiplier": round(avg_organic_ratio, 2),
             "recent_videos_ratio": round(recency_rate, 2),
+            "mega_influencer_ratio": round(mega_influencer_ratio, 2),
             "creator_diversity": round(creator_diversity, 2),
             "verdict": verdict,
             "comment_intent_analysis": comment_intent,
