@@ -56,6 +56,23 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
     elif name == "get_ad_traffic":
         return [TextContent(type="text", text=json.dumps({"ad_spend": 5000, "roas": 2.1}))]
 
+    elif name == "get_deal_history":
+        from src.mcp.servers.market.deals.client import DealHistoryClient
+        client = DealHistoryClient()
+        asin = arguments["asin"]
+        keyword = arguments.get("keyword", "")
+        max_pages = arguments.get("max_pages", 3)
+        deals = await client.get_deal_history(asin, keyword=keyword, max_pages=max_pages)
+        return [TextContent(type="text", text=json.dumps(deals, ensure_ascii=False))]
+
+    elif name == "analyze_promotions":
+        from src.intelligence.processors.promo_analyzer import PromoAnalyzer
+        analyzer = PromoAnalyzer()
+        current_price = arguments.get("current_price", 0.0)
+        deals = arguments.get("deals", [])
+        result = analyzer.analyze(current_price, deals)
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
     # ── Xiyouzhaoci auth ─────────────────────────────────────────────────
 
     elif name == "xiyou_send_sms":
@@ -236,6 +253,35 @@ market_tools = [
         },
     ),
     Tool(
+        name="get_deal_history",
+        description="Fetch off-Amazon deal history for an ASIN from target deal sites (e.g., Slickdeals, DealNews).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin": {"type": "string", "description": "The Amazon ASIN to look up"},
+                "keyword": {"type": "string", "description": "Optional keyword override for the search"},
+                "max_pages": {"type": "integer", "description": "Maximum number of pages to scrape (default: 3)"}
+            },
+            "required": ["asin"],
+        },
+    ),
+    Tool(
+        name="analyze_promotions",
+        description="Analyze promotion frequency, all-time low price, and promo dependency score based on deal history.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "current_price": {"type": "number", "description": "Current selling price of the product"},
+                "deals": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "List of historical deals obtained from get_deal_history"
+                }
+            },
+            "required": ["current_price", "deals"],
+        },
+    ),
+    Tool(
         name="xiyou_send_sms",
         description="Send SMS verification code for Xiyouzhaoci authentication. Usually auto-triggered when token is missing.",
         inputSchema={
@@ -331,6 +377,8 @@ _MARKET_META = {
     "seller_analysis": ("DATA", "seller demographics: US seller %, market concentration"),
     "keyword_data": ("DATA", "search volume and CPC bid"),
     "get_ad_traffic": ("DATA", "ad spend and ROAS estimates"),
+    "get_deal_history": ("DATA", "list of historical deals with dates, prices, and discounts"),
+    "analyze_promotions": ("COMPUTE", "JSON containing promo frequency, all-time low, and dependency score"),
     "xiyou_send_sms": ("DATA", "SMS send confirmation"),
     "xiyou_verify_sms": ("DATA", "authentication status"),
     "xiyou_keyword_analysis": ("DATA", "xlsx file with ASINs, traffic data, ranking trends (third-party)"),

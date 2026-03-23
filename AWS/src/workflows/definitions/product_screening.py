@@ -93,6 +93,26 @@ async def _enrich_fulfillment(item: dict) -> dict:
     return {"fulfilled_by": result.get("FulfilledBy")}
 
 
+async def _enrich_deal_history(item: dict) -> dict:
+    """Fetch off-Amazon deal history, using product title for keyword search."""
+    from src.mcp.servers.market.deals.client import DealHistoryClient
+    
+    # Prioritize using keywords from the title for better off-site search results
+    title = item.get("title", "")
+    brand = item.get("brand", "")
+    
+    # Construct a search query from brand and the first 3-4 words of the title
+    # This is more effective than searching for an ASIN on non-Amazon sites.
+    keyword = brand
+    if title:
+        title_parts = title.replace(brand, "").strip().split()
+        keyword = f"{brand} {' '.join(title_parts[:3])}".strip()
+
+    client = DealHistoryClient()
+    deals = await client.get_deal_history(asin=item["asin"], keyword=keyword)
+    return {"deal_history": deals}
+
+
 # ---------------------------------------------------------------------------
 # Processing functions (Pure Python)
 # ---------------------------------------------------------------------------
@@ -151,6 +171,21 @@ def _calculate_profit(items: list) -> list:
     return items
 
 
+def _analyze_promotions(items: list) -> list:
+    """Calculate promo frequency and risk."""
+    from src.intelligence.processors.promo_analyzer import PromoAnalyzer
+    analyzer = PromoAnalyzer()
+    for item in items:
+        current_price = item.get("price") or 0.0
+        deals = item.get("deal_history", [])
+        analysis = analyzer.analyze(current_price, deals)
+        item["promo_frequency"] = analysis["promo_frequency"]
+        item["all_time_low"] = analysis["all_time_low"]
+        item["promo_dependency_score"] = analysis["promo_dependency_score"]
+        item["promo_risk_level"] = analysis["risk_level"]
+    return items
+
+
 # ---------------------------------------------------------------------------
 # Workflow Builder
 # ---------------------------------------------------------------------------
@@ -200,7 +235,25 @@ def build_product_screening(config: dict) -> Workflow:
         # US seller ratio analysis would go here (requires seller_info extractor)
         # FilterStep("competition_filter", [ThresholdRule("us_seller_ratio", min_val=config.get("us_seller_ratio_min", 0.80))]),
 
-        # ── Stage 3: Cost & Profitability ──
+        # ── Stage 3: Price Stability & Promotion Analysis ──
+        EnrichStep(
+            name="enrich_deal_history",
+            extractor_fn=_enrich_deal_history,
+            parallel=True,
+        ),
+        ProcessStep(
+            name="analyze_promotions",
+            fn=_analyze_promotions,
+            compute_target=ComputeTarget.PURE_PYTHON,
+        ),
+        FilterStep(
+            name="promo_risk_filter",
+            rules=[
+                ThresholdRule("promo_dependency_score", max_val=config.get("promo_dependency_max", 70.0)),
+            ],
+        ),
+
+        # ── Stage 4: Cost & Profitability ──
         ProcessStep(
             name="calculate_profit",
             fn=_calculate_profit,
@@ -214,7 +267,7 @@ def build_product_screening(config: dict) -> Workflow:
             ],
         ),
 
-        # ── Stage 4: Compliance (LLM-assisted) ──
+        # ── Stage 5: Compliance (LLM-assisted) ──
         ProcessStep(
             name="epa_check",
             prompt_template=(
@@ -231,11 +284,11 @@ def build_product_screening(config: dict) -> Workflow:
             ],
         ),
 
-        # ── Stage 5: Advertising Analysis ──
+        # ── Stage 6: Advertising Analysis ──
         # Ad traffic data would come from SellerSprite integration
         # FilterStep("ad_filter", [ThresholdRule("ad_traffic_ratio", max_val=config.get("ad_traffic_ratio_max", 0.20))]),
 
-        # ── Stage 6: Final Synthesis (Cloud LLM) ──
+        # ── Stage 7: Final Synthesis (Cloud LLM) ──
         ProcessStep(
             name="final_synthesis",
             prompt_template=(
