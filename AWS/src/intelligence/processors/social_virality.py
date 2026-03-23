@@ -125,26 +125,57 @@ class SocialViralityProcessor:
             else:
                 verdict = "Medium Virality (Growing Trend)"
                 
-        # 7. Placeholder for Comment Sentiment/Intent Analysis (LLM Integration Point)
-        comment_intent = "Not Analyzed"
+        # 7. Enhanced Comment Sentiment/Intent Analysis
+        comment_analysis = {
+            "total_analyzed": 0,
+            "sentiment": {"positive": 0, "negative": 0, "neutral": 0},
+            "intent": {"purchase": 0, "curiosity": 0, "negative": 0},
+            "summary": "Not Analyzed"
+        }
+        
         if comments_data:
-            # L2 Logic: Using TikTok's native 'is_high_purchase_intent' if available
-            buy_intent_signals = sum(1 for c in comments_data if c.get("is_high_purchase_intent", False))
+            comment_analysis["total_analyzed"] = len(comments_data)
             
-            # Fallback to keyword matching if native flag is not set
-            buy_intent_keywords = ["where", "buy", "link", "price", "need", "want"]
-            keyword_signals = sum(1 for c in comments_data if any(kw in c.get("text", "").lower() for kw in buy_intent_keywords))
+            # Keywords for classification
+            pos_keywords = ["love", "amazing", "great", "best", "want", "need", "wow", "🔥", "😍"]
+            neg_keywords = ["bad", "worst", "expensive", "break", "broke", "scam", "waste", "don't buy"]
+            buy_keywords = ["where", "buy", "link", "price", "how much", "available", "store"]
             
-            total_intent_signals = buy_intent_signals + keyword_signals
+            pos_count = 0
+            neg_count = 0
+            buy_count = 0
             
-            # NOTE for future LLM integration:
-            # If the raw strings from comments_data are fed into a Prompt Template,
-            # an LLM can classify nuanced sentiment (e.g., "I bought this but it broke" vs "Need this now!").
-            # For now, we rely on TikTok's internal ML flags and keyword density.
-            if total_intent_signals > len(comments_data) * 0.1:
-                comment_intent = "High Purchase Intent (Audience wants to buy)"
+            for c in comments_data:
+                text = c.get("text", "").lower()
+                is_high_intent = c.get("is_high_purchase_intent", False)
+                
+                # Sentiment heuristics
+                has_pos = any(kw in text for kw in pos_keywords)
+                has_neg = any(kw in text for kw in neg_keywords)
+                
+                if has_pos and not has_neg:
+                    pos_count += 1
+                elif has_neg:
+                    neg_count += 1
+                
+                # Intent heuristics
+                if is_high_intent or any(kw in text for kw in buy_keywords):
+                    buy_count += 1
+
+            comment_analysis["sentiment"]["positive"] = round(pos_count / len(comments_data), 2)
+            comment_analysis["sentiment"]["negative"] = round(neg_count / len(comments_data), 2)
+            comment_analysis["sentiment"]["neutral"] = round(1 - (comment_analysis["sentiment"]["positive"] + comment_analysis["sentiment"]["negative"]), 2)
+            
+            comment_analysis["intent"]["purchase"] = round(buy_count / len(comments_data), 2)
+            comment_analysis["intent"]["negative"] = comment_analysis["sentiment"]["negative"]
+            comment_analysis["intent"]["curiosity"] = round(1 - (comment_analysis["intent"]["purchase"] + comment_analysis["intent"]["negative"]), 2)
+            
+            if comment_analysis["intent"]["purchase"] > 0.15:
+                comment_analysis["summary"] = "High Purchase Intent (Active buyers)"
+            elif comment_analysis["sentiment"]["positive"] > 0.4:
+                comment_analysis["summary"] = "Strong Positive Sentiment (Brand affinity)"
             else:
-                comment_intent = "Low Purchase Intent (Audience is just entertained)"
+                comment_analysis["summary"] = "Mixed/Low Engagement"
             
         return {
             "strength_score": round(final_score, 2),
@@ -158,7 +189,7 @@ class SocialViralityProcessor:
             "mega_influencer_ratio": round(mega_influencer_ratio, 2),
             "creator_diversity": round(creator_diversity, 2),
             "verdict": verdict,
-            "comment_intent_analysis": comment_intent,
+            "comment_analysis": comment_analysis,
             "metrics": {
                 "historical_volume_contribution": round(volume_historical_score, 2),
                 "recent_volume_contribution": round(volume_recent_score, 2),
