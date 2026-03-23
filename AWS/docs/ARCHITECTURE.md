@@ -441,16 +441,19 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
    4    EnrichStep    bsr_competitors      58 ASIN  -->  competition data
    5    ProcessStep   seller_origin        LOCAL_LLM
    6    FilterStep    us_seller_ratio      58       -->  22 remain
-   7    EnrichStep    fba_fees             22 ASIN  -->  fee data appended
-   8    ProcessStep   profit_calc          PURE_PYTHON
-   9    FilterStep    margin/cost_ratio    22       -->  10 remain
-  10    ProcessStep   epa_check            LOCAL_LLM
-  11    ProcessStep   patent_check         CLOUD_LLM
-  12    FilterStep    compliance           10       -->   7 remain
-  13    EnrichStep    ad_traffic           market-server
-  14    FilterStep    ad_ratio             7        -->   5 remain
-  15    EnrichStep    tiktok + meta        social-server
-  16    ProcessStep   final_synthesis      CLOUD_LLM  --> selection report
+   7    EnrichStep    deal_history         22 ASIN  -->  deal data appended
+   8    ProcessStep   promo_analysis       PURE_PYTHON
+   9    FilterStep    promo_risk_filter    22       -->  18 remain
+  10    EnrichStep    fba_fees             18 ASIN  -->  fee data appended
+  11    ProcessStep   profit_calc          PURE_PYTHON
+  12    FilterStep    margin/cost_ratio    18       -->  10 remain
+  13    ProcessStep   epa_check            LOCAL_LLM
+  14    ProcessStep   patent_check         CLOUD_LLM
+  15    FilterStep    compliance           10       -->   7 remain
+  16    EnrichStep    ad_traffic           market-server
+  17    FilterStep    ad_ratio             7        -->   5 remain
+  18    EnrichStep    tiktok + meta        social-server
+  19    ProcessStep   final_synthesis      CLOUD_LLM  --> selection report
   ────  ────────────  ───────────────────  ────────────────────────────────────
   Each step writes checkpoint on completion; failures resume from last checkpoint
 ```
