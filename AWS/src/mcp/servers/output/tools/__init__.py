@@ -21,7 +21,7 @@ async def handle_output_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         if "bitable" in name:
             return await handle_write_bitable(name, arguments)
-        elif "message" in name or "webhook" in name or "card" in name:
+        elif "message" in name or "webhook" in name or "card" in name or "file" in name:
             return await handle_send_card(name, arguments)
         elif "doc" in name:
             return await handle_create_doc(name, arguments)

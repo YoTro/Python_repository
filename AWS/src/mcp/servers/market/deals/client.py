@@ -18,14 +18,14 @@ class DealHistoryClient:
     """
     def __init__(self):
         self.session = requests.Session(impersonate="chrome")
-        # Header fingerprints inspired by browser behavior
-        self.common_headers = {
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-language': 'en',
-            'sec-ch-ua': '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+        # Base browser fingerprint (safe for most sites)
+        self.base_headers = {
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'accept-language': 'en-US,en;q=0.9',
+            'sec-ch-ua': '"Not(A:Brand";v="99", "Google Chrome";v="146", "Chromium";v="146"',
             'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"macOS"',
-            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
+            'sec-ch-ua-platform': '"Windows"',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
         }
 
     async def get_deal_history(self, asin: str, keyword: str = "", max_pages: int = 3) -> List[Dict[str, Any]]:
@@ -61,6 +61,19 @@ class DealHistoryClient:
         encoded_term = urllib.parse.quote(search_term)
         all_deals = []
         
+        # Site-specific headers with dynamic referer
+        headers = {
+            **self.base_headers,
+            'referer': 'https://slickdeals.net/',
+            'origin': 'https://slickdeals.net',
+            'cache-control': 'max-age=0',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'same-origin',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1'
+        }
+        
         for page in range(1, max_pages + 1):
             url = (
                 f"https://slickdeals.net/search?q={encoded_term}&searchtype=normal"
@@ -70,7 +83,7 @@ class DealHistoryClient:
             )
             
             try:
-                response = await asyncio.to_thread(self.session.get, url, headers=self.common_headers, timeout=15)
+                response = await asyncio.to_thread(self.session.get, url, headers=headers, timeout=15)
                 if response.status_code != 200:
                     logger.warning(f"Slickdeals returned status {response.status_code} on page {page}. Stopping.")
                     break
@@ -92,10 +105,17 @@ class DealHistoryClient:
         encoded_term = urllib.parse.quote(search_term)
         all_deals = []
         
+        # Site-specific headers with dynamic referer
+        headers = {
+            **self.base_headers,
+            'referer': 'https://www.dealnews.com/',
+            'origin': 'https://www.dealnews.com'
+        }
+        
         # 1. Fetch the initial search page to get deal IDs
         url = f"https://www.dealnews.com/s313/Amazon/?search={encoded_term}&sort=featured"
         try:
-            response = await asyncio.to_thread(self.session.get, url, headers=self.common_headers, timeout=15)
+            response = await asyncio.to_thread(self.session.get, url, headers=headers, timeout=15)
             if response.status_code != 200:
                 return []
             
@@ -126,7 +146,7 @@ class DealHistoryClient:
                 h_param = base64.b64encode(json.dumps(payload).replace(" ", "").encode()).decode()
                 
                 async_url = f"https://www.dealnews.com/async/grids/?h={h_param}"
-                async_headers = {**self.common_headers, 'accept': 'dealnews/json, */*; q=0.1'}
+                async_headers = {**headers, 'accept': 'dealnews/json, */*; q=0.1'}
                 
                 resp = await asyncio.to_thread(self.session.get, async_url, headers=async_headers, timeout=15)
                 if resp.status_code == 200 and 'html' in resp.json():

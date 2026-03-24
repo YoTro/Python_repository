@@ -28,13 +28,17 @@ This guide provides solutions to common issues you might encounter while develop
     *   **Cause**: This indicates an `google-generativeai` SDK version mismatch. The codebase uses the `google-genai` SDK (`from google import genai`). Newer API calls were used with an older SDK version.
     *   **Solution**: Upgrade your Google Generative AI SDK: `pip install google-generativeai --upgrade`. Alternatively, ensure `GeminiProvider` uses API calls compatible with your installed SDK version.
 
+*   **LLM Output is Malformed JSON / Raw JSON returned to user**:
+    *   **Cause**: The LLM did not escape special characters (newlines, quotes) inside long string parameters (common with `export_md`).
+    *   **Solution**: The system now uses `OutputParser.parse_dirty_json` to auto-repair these errors. If failure persists, ensure the system prompt includes the `CRITICAL: JSON ESCAPING` constraint.
+
+*   **High Latency for Chinese Prompts (Local Model loading unnecessarily)**:
+    *   **Cause**: Heuristic pre-screening in the `IntelligenceRouter` was missing Chinese keywords, triggering local model classification.
+    *   **Solution**: Heuristics now include keywords like "分析", "提取", "清洗". Check `src/intelligence/router/__init__.py` if custom intents are not routing correctly.
+
 *   **Claude API errors (`403`, `429`, model not available)**:
     *   **Cause**: Invalid API key, rate limiting, or model access not enabled for your Anthropic account.
     *   **Solution**: Verify `ANTHROPIC_API_KEY` in `.env`. The `ClaudeProvider` uses model priority fallback (`claude-3-opus-20240229` → `claude-3-sonnet-20240229` → `claude-3-haiku-20240307`). Check your account's model access at console.anthropic.com.
-
-*   **LLM Output is Malformed JSON / Inconsistent Formatting**:
-    *   **Cause**: The LLM did not strictly follow the expected output format (e.g., unclosed markdown, invalid JSON from local models).
-    *   **Solution**: The `IntelligenceRouter` now applies `OutputParser.clean_for_feishu` to local LLM responses to correct common formatting issues. For cloud LLMs, refine your prompt in `src/intelligence/prompts/` (YAML templates like `review_analysis.yaml`) to be very explicit about the expected JSON/Markdown format and use negative constraints.
 
 *   **Local LLM (`llama.cpp`) Silent or Slow Response**:
     *   **Cause**: The local model might be taking too long to respond, is stuck, or not running efficiently.
@@ -60,6 +64,14 @@ This guide provides solutions to common issues you might encounter while develop
 *   **Agent calls the same tool with identical arguments in a loop**:
     *   **Cause**: LLM reasoning failure, often caused by weak model routing (e.g., local model handling `DEEP_REASONING` tasks).
     *   **Solution**: Three safeguards are in place: (1) `DEEP_REASONING` is forced for all agent calls, (2) duplicate detection after 2 identical calls injects a correction hint, (3) `ToolRegistry._validate_arguments()` strips hallucinated parameters.
+
+*   **`Output domain could not route tool: ...` Error**:
+    *   **Cause**: The centralized `handle_output_tool` aggregator lacks a keyword match for the specific tool name.
+    *   **Solution**: Update the routing logic in `src/mcp/servers/output/tools/__init__.py` to include the new tool's naming pattern.
+
+*   **`send_feishu_local_file` parameter confusion**:
+    *   **Cause**: Distinguishing between `file_path` (source on disk) and `filename` (display name in Feishu).
+    *   **Solution**: Ensure `export_md` is called first to generate the local file. The agent should use the absolute path returned by the tool for `file_path`.
 
 *   **`Xiyouzhaoci auth token not found` — agent doesn't auto-authenticate**:
     *   **Cause**: The Xiyouzhaoci token file is missing and the agent didn't trigger the auto-SMS flow.

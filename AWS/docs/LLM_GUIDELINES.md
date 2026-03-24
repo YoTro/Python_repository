@@ -9,7 +9,7 @@ This document outlines best practices for interacting with the LLMs integrated i
     2.  **`PromptBuilder`** — Loads the `.md` template and injects runtime values via `string.Template` (no Jinja2 dependency).
     3.  **`ToolCatalogFormatter`** — Reads `ToolMeta(category, returns)` from the registry and groups 48 tools into DATA / COMPUTE / FILTER / OUTPUT sections.
 *   **Execution Phases**: The template guides the LLM through 5 phases: COLLECT → FILTER → ENRICH → ANALYZE → OUTPUT. Not all phases are required for every task.
-*   **Autonomous Output Rules**: The agent is instructed to never ask the user for IDs or configuration it can discover via tools. For example, if asked to output to Bitable without an `app_token`, the agent must call `create_feishu_bitable` autonomously.
+*   **Autonomous Output Rules**: Organized into **General Principles** (e.g., discover IDs via tools) and **Feishu-Specific Rules** (e.g., Attachment-First Policy for long reports, Bitable automation). This ensures the agent adapts its output strategy based on the platform.
 *   **Tool Disambiguation**: Similar tools are explicitly distinguished in descriptions (e.g., `search_products` = Amazon direct search; `xiyou_keyword_analysis` = third-party Xiyouzhaoci database).
 *   **Negative Constraints**: Only use parameters in the tool's schema. One tool call per turn. No hallucinated data.
 

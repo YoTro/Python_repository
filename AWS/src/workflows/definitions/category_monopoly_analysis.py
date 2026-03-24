@@ -31,7 +31,6 @@ async def _fetch_bsr_list(items: List[dict], ctx: Any) -> List[dict]:
         logger.error("No URL provided in workflow config for category_monopoly_analysis.")
         return []
     
-    # Scrape up to 2 pages (100 products)
     products = await extractor.get_bestsellers(url, max_pages=2)
     return products
 
@@ -40,21 +39,15 @@ async def _enrich_sales(item: dict) -> dict:
     from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
     extractor = PastMonthSalesExtractor()
     asin = item.get("ASIN") or item.get("asin")
-    if not asin:
-        return {"sales": 0}
+    if not asin: return {"sales": 0}
         
     res = await extractor.get_past_month_sales(asin)
     raw_sales = res.get("PastMonthSales", "0")
-    sales_num = 0
-    if isinstance(raw_sales, str):
+    try:
         clean = raw_sales.replace("+", "").replace(",", "").lower()
-        if "k" in clean:
-            sales_num = int(float(clean.replace("k", "")) * 1000)
-        else:
-            try: sales_num = int(clean)
-            except: sales_num = 0
-    else:
-        sales_num = int(raw_sales)
+        if "k" in clean: sales_num = int(float(clean.replace("k", "")) * 1000)
+        else: sales_num = int(clean)
+    except: sales_num = 0
     return {"sales": sales_num}
 
 async def _enrich_seller_info(item: dict) -> dict:
@@ -63,187 +56,122 @@ async def _enrich_seller_info(item: dict) -> dict:
     from src.mcp.servers.amazon.extractors.feedback import SellerFeedbackExtractor
     
     asin = item.get("ASIN") or item.get("asin")
-    if not asin:
-        return {"seller_type": "Unknown", "seller_id": None, "feedback_count": 0}
+    if not asin: return {"seller_type": "Unknown", "seller_id": None, "feedback_count": 0}
         
-    f_extractor = FulfillmentExtractor()
-    s_extractor = SellerFeedbackExtractor()
-    
+    f_extractor, s_extractor = FulfillmentExtractor(), SellerFeedbackExtractor()
     f_res = await f_extractor.get_fulfillment_info(asin)
     seller_id = f_res.get("SellerId")
-    
     feedback_count = 0
     if seller_id:
         s_res = await s_extractor.get_seller_feedback_count(seller_id)
         feedback_count = s_res.get("FeedbackCount", 0)
-        
-    return {
-        "seller_type": f_res.get("FulfilledBy", "Unknown"),
-        "seller_id": seller_id,
-        "feedback_count": feedback_count
-    }
+    return {"seller_type": f_res.get("FulfilledBy", "Unknown"), "seller_id": seller_id, "feedback_count": feedback_count}
 
 async def _fetch_market_context(items: List[dict], ctx: Any) -> List[dict]:
-    """
-    Fetches ABA keyword data and search page ad ratio.
-    Improved Accuracy: Uses Top 20 titles and a multi-candidate logic.
-    """
+    """Fetches ABA keyword data and search page ad ratio."""
     if not items: return []
-    
-    # 1. Improved Keyword Extraction (Top 20 titles)
     top_titles = [item.get("Title", "") for item in items[:20] if item.get("Title")]
-    titles_str = "\n".join([f"{i+1}. {t}" for i, t in enumerate(top_titles)])
-    
     prompt = (
-        "Analyze these 20 Amazon Best Seller product titles. Your goal is to identify the "
-        "single most accurate CORE search term that a buyer would use to find this whole list.\n\n"
-        "Rules:\n"
-        "- Ignore brand names.\n"
-        "- Ignore attributes like 'Black', 'Pack of 2'.\n"
-        "- Return ONLY the final selected keyword string, no quotes."
+        """Analyze these 20 Amazon Best Seller product titles and identify the single most accurate CORE search term.
+        Ignore brands and attributes. Titles:
+        """
+        f"{top_titles}"
     )
-    
     main_keyword = "unknown niche"
     try:
         from src.intelligence.router import TaskCategory
         if ctx.router:
             res = await ctx.router.route_and_execute(prompt, category=TaskCategory.SIMPLE_CLEANING)
             main_keyword = res.text.strip().replace('"', '').replace("'", "").lower()
-    except Exception as e:
-        logger.warning(f"Keyword extraction failed: {e}")
+    except Exception as e: logger.warning(f"Keyword extraction failed: {e}")
         
     from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
-    api = XiyouZhaociAPI()
-    
-    aba_data = {}
     try:
-        aba_res = await asyncio.to_thread(api.get_aba_top_asins, "US", [main_keyword])
-        if aba_res and "searchTerms" in aba_res and aba_res["searchTerms"]:
-            aba_data = aba_res["searchTerms"][0]
-    except Exception as e:
-        logger.error(f"Failed to fetch ABA data: {e}")
+        aba_res = await asyncio.to_thread(XiyouZhaociAPI().get_aba_top_asins, "US", [main_keyword])
+        ctx.cache["keyword_data"] = aba_res["searchTerms"][0] if aba_res and "searchTerms" in aba_res and aba_res["searchTerms"] else {}
+    except Exception as e: logger.error(f"Failed to fetch ABA data: {e}")
         
     from src.mcp.servers.amazon.extractors.search import SearchExtractor
-    s_extractor = SearchExtractor()
-    search_results = await s_extractor.search(main_keyword, page=1)
-    
+    search_results = await SearchExtractor().search(main_keyword, page=1)
     sponsored_count = sum(1 for r in search_results if getattr(r, 'is_sponsored', False))
-    total_count = len(search_results) or 1
-    ad_ratio = sponsored_count / total_count
-    
-    ctx.cache["keyword_data"] = aba_data
-    ctx.cache["ad_ratio"] = ad_ratio
+    ctx.cache["ad_ratio"] = sponsored_count / (len(search_results) or 1)
     ctx.cache["main_keyword"] = main_keyword
-    
+    return items
+
+async def _enrich_external_intensity(items: List[dict], ctx: Any) -> List[dict]:
+    """Fetches Social (TikTok) and Deal promotion intensity for the category."""
+    main_keyword = ctx.cache.get("main_keyword")
+    if not main_keyword: return items
+
+    from src.mcp.servers.social.tiktok.client import TikTokClient
+    from src.intelligence.processors.social_virality import SocialViralityProcessor
+    try:
+        tag_info = await asyncio.to_thread(TikTokClient().get_tag_info, main_keyword.replace(" ", ""))
+        if tag_info.get("id"):
+            videos = await asyncio.to_thread(TikTokClient().get_hashtag_videos, tag_info["id"], main_keyword.replace(" ", ""), count=20)
+            social_analysis = SocialViralityProcessor().calculate_promotion_strength(videos, tag_metadata=tag_info)
+            ctx.cache.update({"category_social_psi": social_analysis.get("strength_score", 0), "category_social_verdict": social_analysis.get("verdict", "Unknown")})
+        else: ctx.cache.update({"category_social_psi": 0, "category_social_verdict": "No Tag Found"})
+    except Exception as e:
+        logger.error(f"Error during social intensity analysis: {e}")
+        ctx.cache.update({"category_social_psi": 0, "category_social_verdict": "Analysis Failed"})
+        
+    from src.mcp.servers.market.deals.client import DealHistoryClient
+    async def fetch_deal_count(item):
+        return len(await DealHistoryClient().get_deal_history(asin=item.get("ASIN", ""), keyword=item.get("Title", ""), max_pages=1))
+    try:
+        results = await asyncio.gather(*(fetch_deal_count(item) for item in items[:10]))
+        total_deals_found = sum(results)
+        deal_intensity_score = 9 if total_deals_found > 5 else 6 if total_deals_found > 2 else 3 if total_deals_found > 0 else 0
+        ctx.cache["category_deal_intensity"] = deal_intensity_score
+    except Exception as e: logger.error(f"Error during deal intensity analysis: {e}")
+    logger.info(f"External intensity: Social PSI={ctx.cache.get('category_social_psi', 'N/A')}, Deal Intensity={ctx.cache.get('category_deal_intensity', 'N/A')}")
     return items
 
 async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
     """Calculates scores and generates flattened niche benchmarks."""
     from src.intelligence.processors.monopoly_analyzer import CategoryMonopolyAnalyzer
     from src.intelligence.processors.sales_estimator import SalesEstimator
-    import statistics
-    import json
+    import statistics, json
     
     analyzer = CategoryMonopolyAnalyzer()
-    estimator = SalesEstimator()
+    external_data = {"social_psi": ctx.cache.get("category_social_psi"), "deal_intensity": ctx.cache.get("category_deal_intensity")}
+    analysis_input = [{"rank": item.get("Rank", 999), "price": float(str(item.get("Price") or "0").replace("$", "").replace(",", "")), "sales": item.get("sales", 0), "brand": item.get("brand", "Unknown"), "seller_type": item.get("seller_type", "Unknown"), "feedback_count": item.get("feedback_count", 0), "review_count": int(str(item.get("Reviews") or "0").replace(",", "")), "rating": float(str(item.get("Rating") or "0").split(" ")[0])} for item in items]
+    result = analyzer.analyze(analysis_input, keyword_data=ctx.cache.get("keyword_data"), ad_data={"ad_ratio": ctx.cache.get("ad_ratio", 0.3)}, external_data=external_data)
     
-    keyword_data = ctx.cache.get("keyword_data")
-    ad_data = {"ad_ratio": ctx.cache.get("ad_ratio", 0.3)}
-    
-    analysis_input = []
-    for item in items:
-        raw_price = str(item.get("Price") or "$0").replace("$", "").replace(",", "")
-        try: price = float(raw_price)
-        except: price = 0.0
-        raw_rating = str(item.get("Rating") or "0").split(" ")[0]
-        try: rating = float(raw_rating)
-        except: rating = 0.0
-        raw_reviews = str(item.get("Reviews") or "0").replace(",", "")
-        try: reviews = int(raw_reviews)
-        except: reviews = 0
-            
-        analysis_input.append({
-            "rank": item.get("Rank", 999),
-            "price": price,
-            "sales": item.get("sales", 0),
-            "brand": item.get("brand", "Unknown"),
-            "seller_type": item.get("seller_type", "Unknown"),
-            "feedback_count": item.get("feedback_count", 0),
-            "review_count": reviews,
-            "rating": rating,
-        })
-        
-    result = analyzer.analyze(analysis_input, keyword_data=keyword_data, ad_data=ad_data)
-    
-    # Generate image-based context
     prices = [p['price'] for p in analysis_input if p['price'] > 0]
     median_price = statistics.median(prices) if prices else 25.0
-    avg_top_reviews = statistics.mean([p['review_count'] for p in analysis_input[:10]]) if len(analysis_input) >= 10 else 0
-    avg_tail_reviews = statistics.mean([p['review_count'] for p in analysis_input[50:]]) if len(analysis_input) > 50 else 1
-    review_gap = round(avg_top_reviews / max(1, avg_tail_reviews), 1)
-    
+    estimator = SalesEstimator()
     node_id = ctx.config.get("category_node_id")
     baseline = estimator.category_params.get(str(node_id), {}).get("market_logic", {})
-    
-    # Return FLATTENED data for safe template formatting
-    return [{
-        "analysis_result": json.dumps(result, ensure_ascii=False),
-        "main_keyword": ctx.cache.get("main_keyword"),
-        "niche_median_price": f"${median_price:.2f}",
-        "review_disparity": f"{review_gap}x",
-        "recommended_capital": f"${int(median_price * 2500):,}",
-        "industry_typical_cr3": f"{baseline.get('typical_cr3', 0.4) * 100}%",
-        "data_confidence_r2": estimator.category_params.get(str(node_id), {}).get("r_squared", 0.95)
-    }]
+    return [{"analysis_result": json.dumps(result, ensure_ascii=False), "main_keyword": ctx.cache.get("main_keyword"), "niche_median_price": f"${median_price:.2f}", "review_disparity": f"{round((statistics.mean([p['review_count'] for p in analysis_input[:10]]) if len(analysis_input) >= 10 else 0) / max(1, (statistics.mean([p['review_count'] for p in analysis_input[50:]]) if len(analysis_input) > 50 else 1)), 1)}x", "recommended_capital": f"${int(median_price * 2500):,}", "industry_typical_cr3": f"{baseline.get('typical_cr3', 0.4) * 100}%", "data_confidence_r2": estimator.category_params.get(str(node_id), {}).get("r_squared", 0.95), "social_psi": ctx.cache.get("category_social_psi", "N/A"), "social_verdict": ctx.cache.get("category_social_verdict", "N/A"), "deal_intensity": ctx.cache.get("category_deal_intensity", "N/A")}]
 
 async def _prepare_report_artifact(items: List[dict], ctx: Any) -> List[dict]:
     """Saves the report to a local Markdown file."""
-    if not items or "deliver_report" not in items[0]:
-        return items
-        
+    if not items or "deliver_report" not in items[0]: return items
     report_data = items[0]["deliver_report"]
-    
-    # Robust text extraction
-    report_text = None
-    if hasattr(report_data, "text"): # LLMResponse object
-        report_text = report_data.text
-    elif isinstance(report_data, dict):
-        report_text = report_data.get("text")
-    else:
-        report_text = str(report_data)
-    
-    if not report_text or report_text == "None":
-        logger.warning("Report text is empty or 'None', skipping artifact.")
-        return items
-
+    report_text = report_data.text if hasattr(report_data, "text") else report_data.get("text") if isinstance(report_data, dict) else str(report_data)
+    if not report_text or report_text == "None": return items
     import os, tempfile
     from datetime import datetime
-    
     keyword = str(ctx.cache.get("main_keyword", "niche")).replace(" ", "_")
     filename = f"Monopoly_Analysis_{keyword}_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
     file_path = os.path.normpath(os.path.join(tempfile.gettempdir(), filename))
-    
     try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(report_text)
+        with open(file_path, "w", encoding="utf-8") as f: f.write(report_text)
         items[0]["report_file_path"] = file_path
         logger.info(f"Artifact prepared at: {file_path}")
-    except Exception as e:
-        logger.error(f"Failed to write report file: {e}")
-    
+    except Exception as e: logger.error(f"Failed to write report file: {e}")
     return items
-
-# ---------------------------------------------------------------------------
-# Workflow Builder
-# ---------------------------------------------------------------------------
 
 @WorkflowRegistry.register("category_monopoly_analysis")
 def build_category_monopoly_analysis(config: dict) -> Workflow:
-    steps = [
+    return Workflow(name="category_monopoly_analysis", steps=[
         ProcessStep(name="fetch_bsr_top_100", fn=_fetch_bsr_list),
         EnrichStep(name="enrich_sales_data", extractor_fn=_enrich_sales, parallel=True, concurrency=10),
         EnrichStep(name="enrich_seller_background", extractor_fn=_enrich_seller_info, parallel=True, concurrency=5),
         ProcessStep(name="fetch_market_context", fn=_fetch_market_context),
+        ProcessStep(name="enrich_external_intensity", fn=_enrich_external_intensity),
         ProcessStep(name="calculate_monopoly_score", fn=_run_monopoly_analysis),
         ProcessStep(
             name="deliver_report",
@@ -253,15 +181,17 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 "Niche: **{main_keyword}** | Data Confidence (R²): **{data_confidence_r2}**\n\n"
                 "### BENCHMARKS\n"
                 "- Median Price: {niche_median_price}\n"
-                "- Review Disparity: {review_disparity} (Top 10 vs Tail)\n"
-                "- Typical Industry CR3: {industry_typical_cr3}\n\n"
+                "- Review Disparity: {review_disparity}\n"
+                "- Typical Industry CR3: {industry_typical_cr3}\n"
+                "- Social PSI: {social_psi} ({social_verdict})\n"
+                "- Deal Intensity: {deal_intensity}/10\n\n"
                 "### DATA: {analysis_result}\n\n"
                 "### RULES\n"
                 "- 400-550 words. No filler. Trace every claim to a score.\n"
-                "- STRUCTURE: 1. Executive Verdict, 2. Competitive Dynamics, 3. Capital & Barrier Analysis, 4. Pre-Mortem, 5. Tactical Path."
+                "- Analyze Social PSI & Deal Intensity in your final verdict.\n"
+                "- STRUCTURE: 1. Executive Verdict, 2. Competitive Dynamics (incl. Social/Deals), 3. Capital & Barrier Analysis, 4. Pre-Mortem, 5. Tactical Path."
             ),
             compute_target=ComputeTarget.CLOUD_LLM
         ),
         ProcessStep(name="prepare_report_artifact", fn=_prepare_report_artifact)
-    ]
-    return Workflow(name="category_monopoly_analysis", steps=steps)
+    ])
