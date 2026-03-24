@@ -52,16 +52,18 @@ bsr_collection:
   categories: []
 
 category_monopoly_analysis:
-  # Weights for the 7 dimensions (sum should ideally be 1.0)
+  # Weights for the 9 dimensions (sum should be 1.0)
   weights:
     sales_curve_top3: 0.15      # CR3: Percentage of sales held by top 3 products
     sales_survival_space: 0.10  # Market share of products ranked 20-50
-    brand_concentration: 0.15   # Frequency of the same brand in Top 100
-    seller_background: 0.15     # Ratio of Amazon Retail (FBA/Amz) vs 3P sellers and high-feedback sellers
-    review_curve: 0.15          # Smoothness of review distribution and barrier to entry (avg stars/count)
-    keyword_traffic: 0.15       # Click share concentration of the top 3 ASINs for main keywords (ABA)
-    price_compression: 0.05     # Price band convergence (CV - Coefficient of Variation)
-    ad_traffic_ratio: 0.10      # Percentage of sponsored products in top search results
+    brand_concentration: 0.10   # Frequency of the same brand in Top 100
+    seller_background: 0.10     # Ratio of Amazon Retail vs 3P sellers
+    review_curve: 0.15          # Review disparity and rating barrier
+    keyword_traffic: 0.15       # Click share concentration for main keywords (ABA)
+    price_compression: 0.05     # Price band convergence (CV)
+    ad_traffic_ratio: 0.10      # Percentage of sponsored products
+    social_promotion_intensity: 0.05 # Virality score from TikTok
+    deal_promotion_intensity: 0.05   # Frequency of deals on sites like Slickdeals
 
   # Thresholds and markers
   thresholds:
