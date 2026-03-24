@@ -181,18 +181,18 @@ class IntelligenceRouter:
         if p_len > 4000:
             return TaskCategory.DEEP_REASONING
 
-        # Priority 2: High-reasoning intent (often multi-step or abstract)
-        reasoning_keys = ["analyze", "compare", "strategy", "why", "logic", "optimize", "evaluate", "summarize"]
+        # Priority 2: High-reasoning intent
+        reasoning_keys = ["analyze", "compare", "strategy", "why", "logic", "optimize", "evaluate", "summarize", "分析", "对比", "策略", "评估", "总结"]
         if any(k in p_lower for k in reasoning_keys):
             return TaskCategory.DEEP_REASONING
 
         # Priority 3: Medium-complexity extraction
-        extraction_keys = ["extract", "find", "phone number", "email", "regex", "list all", "parse"]
+        extraction_keys = ["extract", "find", "phone number", "email", "regex", "list all", "parse", "提取", "查找", "抓取"]
         if any(k in p_lower for k in extraction_keys) and p_len < 2000:
             return TaskCategory.DATA_EXTRACTION
 
         # Priority 4: Low-complexity string manipulation
-        cleaning_keys = ["clean", "format", "strip", "lowercase", "uppercase", "json-ify", "remove"]
+        cleaning_keys = ["clean", "format", "strip", "lowercase", "uppercase", "json-ify", "remove", "清洗", "格式化", "去重"]
         if any(k in p_lower for k in cleaning_keys) and p_len < 1000:
             return TaskCategory.SIMPLE_CLEANING
 

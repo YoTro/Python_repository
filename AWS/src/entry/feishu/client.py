@@ -91,9 +91,12 @@ class FeishuClient:
         return self._send_im_message("text", content, receive_id_type, receive_id)
 
     def send_card_message(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, text: str = ""):
-        """Send a card message or file if too long."""
+        """Send a card message, truncating if it exceeds Feishu limits."""
+        # Feishu interactive cards have a size limit. ~8000 chars is a safe threshold.
         if len(text) > 8000:
-            return self.send_text_message(receive_id_type, receive_id, "Message too long, please check attachments.")
+            logger.warning(f"Feishu message truncated from {len(text)} to 8000 characters.")
+            truncated_text = text[:7900] + "\n\n...(Content truncated due to Feishu size limits. Please request an attachment for full report)..."
+            text = truncated_text
 
         content = json.dumps({
             "config": {"wide_screen_mode": True},

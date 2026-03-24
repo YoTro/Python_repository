@@ -620,25 +620,25 @@ This guarantees that User A never receives User B's market analysis report, even
 
 The Intelligence Router (`src/intelligence/`) is the system's **cost-aware AI dispatch layer**. It solves a core problem: not every AI task needs a cloud API call. Simple data cleaning can run locally for free, while patent analysis demands cloud-grade reasoning. The router makes this decision automatically, keeping costs low and latency tight.
 
-### 5.1 Design Patterns
+### 6.1 Design Patterns
 
 - **Strategy Pattern**: `BaseLLMProvider` (ABC) defines a uniform interface (`generate_text`, `generate_structured`, `batch_generate_text`, `count_tokens`). Each provider (LlamaCpp, Gemini, Claude) is a concrete strategy, swappable at runtime.
 - **Factory Pattern**: `ProviderFactory.get_provider(type)` instantiates the correct provider based on configuration, with graceful degradation if a provider fails to load.
 - **Chain of Responsibility**: The routing flow cascades through classification → local check → cloud fallback, with each stage deciding whether to handle or pass.
 
-### 5.2 Task Auto-Classification
+### 6.2 Task Auto-Classification
 
 When a caller does not specify a `compute_target`, the router classifies the task using a hybrid approach:
 
-1.  **Heuristic Pre-screening (<1ms)**: Executes high-speed keyword and length-based rules.
-    *   **Complexity**: Prompts > 4000 chars → `DEEP_REASONING`.
-    *   **Intent**: Keywords like `analyze`, `compare` → `DEEP_REASONING`.
-    *   **Extraction**: Keywords like `extract`, `find` (if < 2000 chars) → `DATA_EXTRACTION`.
-    *   **Cleaning**: Keywords like `clean`, `format` (if < 1000 chars) → `SIMPLE_CLEANING`.
-2.  **Model Classification**: If heuristics don't match, the first 400 characters are sent to the LOCAL model.
+1.  **Heuristic Pre-screening (<1ms)**: Executes high-speed keyword and length-based rules in `_run_heuristics`.
+    *   **Priority 1: Context Length**: Prompts > 4,000 chars are forced to `DEEP_REASONING` to prevent local model context collapse.
+    *   **Priority 2: High-Reasoning Intent**: Keywords like `analyze`, `compare`, `strategy`, `evaluate`, `summarize` (including Chinese equivalents like `分析`, `对比`, `总结`) trigger `DEEP_REASONING`.
+    *   **Priority 3: Constrained Extraction**: Keywords like `extract`, `find`, `parse` (if < 2,000 chars) trigger `DATA_EXTRACTION`.
+    *   **Priority 4: Low-Complexity Cleaning**: Keywords like `clean`, `format`, `json-ify` (if < 1,000 chars) trigger `SIMPLE_CLEANING`.
+2.  **Model Classification**: If heuristics don't match, the first 400 characters are sent to the LOCAL model (Llama.cpp) for classification.
 3.  **Data Logging**: All classification decisions (including prompt previews, rules triggered, and confidence) are logged to `data/intelligence/raw_prompts.jsonl` for future model distillation and fine-tuning.
 
-### 5.3 End-to-End Dispatch Flow
+### 6.3 End-to-End Dispatch Flow
 
 ```
 ┌─ Caller: ProcessStep.run() / MCPAgent.think() ──────────────────────────┐
@@ -667,7 +667,7 @@ When a caller does not specify a `compute_target`, the router classifies the tas
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 5.4 Batch Processing
+### 6.4 Batch Processing
 
 `batch_route_and_execute(prompts[], category?)` processes multiple items efficiently:
 
@@ -680,7 +680,7 @@ When a caller does not specify a `compute_target`, the router classifies the tas
 
 This is used by `ProcessStep` in workflows. For example, classifying 58 products' seller origin runs as a single batch routed to LOCAL with concurrency 2.
 
-### 5.5 Fallback & Resilience
+### 6.5 Fallback & Resilience
 
 The `FallbackHandler` uses the **Strategy Pattern** with a dictionary mapping `FailureType` → async handler:
 
@@ -692,7 +692,7 @@ The `FallbackHandler` uses the **Strategy Pattern** with a dictionary mapping `F
 
 **Extension point**: Replace `asyncio.Queue` with Redis + Celery/RQ for multi-user deployments.
 
-### 5.6 Provider Details
+### 6.6 Provider Details
 
 | Provider | Model Priority | Timeout | Concurrency | Key Features |
 |---|---|---|---|---|
@@ -700,14 +700,14 @@ The `FallbackHandler` uses the **Strategy Pattern** with a dictionary mapping `F
 | `GeminiProvider` | `1.5-pro` > `1.5-flash` > `1.0-pro` | API default | 5 | Auto-discovers best available model, structured JSON via `response_mime_type` |
 | `ClaudeProvider` | `opus` > `sonnet` > `haiku` | API default | 5 | Max 4096 output tokens, rough token estimation (`len // 4`) |
 
-### 5.7 Integration with Orchestration Tracks
+### 6.7 Integration with Orchestration Tracks
 
 The router serves both orchestration tracks through a single `IntelligenceRouter` instance created by the `JobManager`:
 
 - **Workflow Track**: `ProcessStep` declares a `compute_target` (PURE_PYTHON / LOCAL_LLM / CLOUD_LLM). The step maps this to a `TaskCategory` and calls `ctx.router.batch_route_and_execute()`. Results are cached per `(job_id, step_name, item_id)` to avoid redundant LLM calls on workflow resume.
 - **Agent Track**: `BaseAgent` receives the router in its constructor. The `MCPAgent` calls `router.route_and_execute()` in each iteration of its ReAct loop, forced to `DEEP_REASONING` since agent tasks are exploratory by nature.
 
-### 5.8 Agent Budget Strategy (Tokens & Cost)
+### 6.8 Agent Budget Strategy (Tokens & Cost)
 
 The `MCPAgent` tracks cumulative token usage and monetary cost across all LLM calls, but only **cloud** usage counts toward the budget:
 
@@ -727,7 +727,7 @@ When `cloud_token_usage >= token_budget` (default 1,000,000):
 
 `max_steps` remains as a **progress display counter** — it does NOT terminate the agent. The `total_cost` is displayed in real-time in logs and callbacks.
 
-### 5.9 Agent System Prompt Architecture
+### 6.9 Agent System Prompt Architecture
 
 The agent system prompt is built from three layers:
 
@@ -744,5 +744,5 @@ ToolCatalogFormatter          Groups 48 tools into 4 categories from ToolMeta
 
 The template includes:
 - **Execution Phases**: COLLECT → FILTER → ENRICH → ANALYZE → OUTPUT
-- **Autonomous Output Rules**: Agent must never ask for IDs it can discover via tools (e.g., auto-create Bitable)
+- **Autonomous Output Rules**: Organized into **General Principles** (e.g., discover IDs via tools) and **Feishu-Specific Rules** (e.g., Attachment-First Policy, Bitable automation).
 - **Tool Disambiguation**: Explicit warnings about similar tools (e.g., `search_products` vs `xiyou_keyword_analysis`)
