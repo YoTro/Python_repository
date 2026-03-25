@@ -177,7 +177,12 @@ class JobManager:
         config = merge_config(req.workflow_name, req.params)
         workflow = WorkflowRegistry.build(req.workflow_name, config)
 
-        ctx = WorkflowContext(job_id=job_id, config=config)
+        ctx = WorkflowContext(
+            job_id=job_id, 
+            tenant_id=req.tenant_id, 
+            user_id=req.user_id, 
+            config=config
+        )
 
         try:
             from src.mcp.client import get_mcp_client
@@ -236,6 +241,8 @@ class JobManager:
             response = await agent.run(
                 query=record.request.intent, 
                 session_id=record.job_id, 
+                tenant_id=record.request.tenant_id,
+                user_id=record.request.user_id,
                 callback=record.callback,
                 context=context
             )

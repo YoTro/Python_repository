@@ -12,8 +12,9 @@ import json
 import asyncio
 import logging
 from datetime import datetime
+from typing import Set
 
-from src.jobs.callbacks.base import JobCallback
+from src.jobs.callbacks.base import JobCallback, CallbackCapability
 from src.core.telemetry.tracker import TelemetryTracker
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,14 @@ class FeishuCallback(JobCallback):
     Callback that pushes progress to Feishu group chat
     and writes final results to a Feishu Bitable.
     """
+
+    @property
+    def capabilities(self) -> Set[CallbackCapability]:
+        return {
+            CallbackCapability.MARKDOWN,
+            CallbackCapability.IMAGE_DISPLAY,
+            CallbackCapability.INTERACTIVE_BUTTONS
+        }
 
     def __init__(
         self,
@@ -113,6 +122,30 @@ class FeishuCallback(JobCallback):
 
     async def _send_progress(self, text: str) -> None:
         try:
+            # Check if this is a structural interaction signal
+            try:
+                if text.strip().startswith("{") and text.strip().endswith("}"):
+                    print(f"DEBUG: JSON signal suspected in _send_progress")
+                    signal = json.loads(text)
+                    if signal.get("_type") == "INTERACTION_REQUIRED":
+                        print(f"DEBUG: Confirmed signal _type: INTERACTION_REQUIRED")
+                        # If we have the necessary capabilities, send a card
+                        print(f"DEBUG: Checking capabilities. Have: {self.capabilities}")
+                        if CallbackCapability.IMAGE_DISPLAY in self.capabilities and \
+                           CallbackCapability.INTERACTIVE_BUTTONS in self.capabilities:
+                            print(f"DEBUG: Capabilities matched! Calling _send_interaction_card")
+                            await self._send_interaction_card(signal)
+                            self._record_success()
+                            return
+                        else:
+                            # Fallback to text
+                            print(f"DEBUG: Capabilities DID NOT match.")
+                            text = signal.get("fallback_text", text)
+            except Exception as e:
+                print(f"DEBUG: Error in signal processing: {str(e)}")
+                logger.error(f"Error parsing interaction signal: {e}")
+                pass # Treat as normal text if JSON fails
+
             if not self._progress_message_id:
                 response = await asyncio.to_thread(
                     self.feishu.send_card_message, "chat_id", self.chat_id, text
@@ -141,6 +174,143 @@ class FeishuCallback(JobCallback):
             self._record_failure()
 
     # ── Completion (blocking — results must be delivered) ────────────────
+
+    async def _send_interaction_card(self, signal: dict) -> None:
+        """Sends a generic rich interactive card driven by the signal's ui_config."""
+        logger.info("Starting _send_interaction_card flow...")
+        interaction_type = signal.get("interaction_type")
+        data = signal.get("data", {})
+        context = signal.get("context", {})
+        ui_config = signal.get("ui_config", {})
+        
+        if interaction_type == "AUTH_QR_SCAN":
+            qr_url = data.get("url")
+            action_name = ui_config.get("action", "UNKNOWN_ACTION")
+            logger.info(f"Interaction details: type={interaction_type}, action={action_name}, url={qr_url}")
+            
+            # Feishu requires an image_key for cards, not a direct URL.
+            image_key = None
+            if qr_url:
+                try:
+                    import aiohttp
+                    import tempfile
+                    import os
+                    logger.info(f"Attempting to download QR from: {qr_url}")
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(qr_url) as resp:
+                            if resp.status == 200:
+                                image_data = await resp.read()
+                                logger.info(f"Download successful. Image size: {len(image_data)} bytes")
+                                
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
+                                    temp_file.write(image_data)
+                                    temp_path = temp_file.name
+                                
+                                logger.info(f"Temporary file created at: {temp_path}. Uploading to Feishu...")
+                                
+                                # Use thread pool for blocking SDK call
+                                if hasattr(self.feishu, "upload_image"):
+                                    logger.info("Calling feishu.upload_image()...")
+                                    upload_res = await asyncio.to_thread(self.feishu.upload_image, temp_path)
+                                else:
+                                    logger.info("feishu.upload_image not found, falling back to upload_file...")
+                                    upload_res = await asyncio.to_thread(
+                                        self.feishu.upload_file, 
+                                        file_path=temp_path, 
+                                        file_type="image", 
+                                        file_name="qr_code.jpg"
+                                    )
+                                
+                                # CRITICAL: Log the FULL response from Feishu
+                                logger.info(f"Feishu UPLOAD RAW RESPONSE: {upload_res}")
+                                
+                                if upload_res.get("success") or upload_res.get("code") == 0:
+                                    # Try all possible fields for image key
+                                    data_obj = upload_res.get("data", upload_res)
+                                    if isinstance(data_obj, str):
+                                        try: data_obj = json.loads(data_obj)
+                                        except: pass
+                                        
+                                    image_key = (
+                                        data_obj.get("image_key") or 
+                                        data_obj.get("file_key") or 
+                                        (data_obj.get("app", {}) if isinstance(data_obj.get("app"), dict) else {}).get("image_key")
+                                    )
+                                    logger.info(f"Extracted image_key: '{image_key}'")
+                                else:
+                                    logger.error(f"Feishu upload failed. Code: {upload_res.get('code')}, Msg: {upload_res.get('msg')}")
+                                
+                                if os.path.exists(temp_path):
+                                    os.remove(temp_path)
+                            else:
+                                logger.error(f"Image download failed with status: {resp.status}")
+                except Exception as e:
+                    logger.error(f"EXCEPTION during QR image processing: {str(e)}", exc_info=True)
+
+            # Build Generic Feishu Interactive Card JSON
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "template": "blue",
+                    "title": {"tag": "plain_text", "content": ui_config.get("title", "🔐 需要认证")}
+                },
+                "elements": [
+                    {
+                        "tag": "div",
+                        "text": {"tag": "lark_md", "content": ui_config.get("description", "请扫描下方二维码完成登录。")}
+                    }
+                ]
+            }
+            
+            if image_key:
+                # IMPORTANT: Ensure the key is a string and not empty
+                image_key_str = str(image_key).strip()
+                if image_key_str and image_key_str != "None":
+                    logger.info(f"Adding IMG element to card with key: {image_key_str}")
+                    card["elements"].append({
+                        "tag": "img",
+                        "img_key": image_key_str,
+                        "alt": {"tag": "plain_text", "content": "登录二维码"},
+                        "mode": "fit_horizontal"
+                    })
+                else:
+                    logger.warning("Extracted image_key is empty or invalid string, using fallback.")
+                    card["elements"].append({
+                        "tag": "div",
+                        "text": {"tag": "lark_md", "content": f"⚠️ 图片上传成功但未拿到有效 Key，请[点击此处查看二维码]({qr_url})"}
+                    })
+            else:
+                logger.warning("No image_key available, using fallback URL element.")
+                card["elements"].append({
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": f"无法显示二维码？[👉 点击此处查看微信登录二维码]({qr_url})"}
+                })
+                
+            card["elements"].extend([
+                {
+                    "tag": "note",
+                    "elements": [{"tag": "plain_text", "content": f"有效期 {data.get('expires_in', 120)} 秒，扫码后请点击下方按钮确认。"}]
+                },
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": ui_config.get("button_text", "我已确认扫码")},
+                            "type": "primary",
+                            "value": {
+                                "action": action_name,
+                                "tenant_id": context.get("tenant_id"),
+                                "job_id": context.get("job_id")
+                            }
+                        }
+                    ]
+                }
+            ])
+            
+            logger.info(f"FINAL CARD JSON TO SEND: {json.dumps(card, ensure_ascii=False)}")
+            send_res = await asyncio.to_thread(self.feishu.send_raw_card, "chat_id", self.chat_id, card)
+            logger.info(f"Feishu send_raw_card response: {send_res}")
 
     async def on_complete(self, result) -> None:
         try:

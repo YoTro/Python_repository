@@ -154,7 +154,7 @@ async def _prepare_report_artifact(items: List[dict], ctx: Any) -> List[dict]:
     if not report_text or report_text == "None": return items
     import os, tempfile
     from datetime import datetime
-    keyword = str(ctx.cache.get("main_keyword", "niche")).replace(" ", "_")
+    keyword = str(ctx.cache.get("main_keyword", "niche")).replace(":", "").replace("*", "").replace(" ", "_")
     filename = f"Monopoly_Analysis_{keyword}_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
     file_path = os.path.normpath(os.path.join(tempfile.gettempdir(), filename))
     try:
