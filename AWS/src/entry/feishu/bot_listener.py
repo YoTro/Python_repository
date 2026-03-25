@@ -18,6 +18,8 @@ if project_root not in sys.path:
 
 from src.core.utils.config_helper import ConfigHelper
 from src.entry.feishu.commands import CommandDispatcher
+from src.jobs.interactions.registry import InteractionRegistry
+import src.jobs.interactions.handlers  # Ensure handlers are registered
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', stream=sys.stdout)
@@ -25,6 +27,7 @@ logger = logging.getLogger("feishu-bot")
 
 # Global Registry
 dispatcher: Optional[CommandDispatcher] = None
+global_bg_loop: Optional[asyncio.AbstractEventLoop] = None
 
 def do_p2_im_message_receive_v1(data: P2ImMessageReceiveV1) -> None:
     try:
@@ -39,12 +42,51 @@ def do_p2_im_message_receive_v1(data: P2ImMessageReceiveV1) -> None:
     except Exception as e:
         logger.error(f"Error: {e}")
 
+def do_p2_card_action_trigger(data: P2CardActionTrigger) -> None:
+    """Handle interactive card button clicks."""
+    try:
+        action_value = {}
+        if hasattr(data, 'event') and hasattr(data.event, 'action') and hasattr(data.event.action, 'value'):
+            action_value = data.event.action.value
+        
+        if isinstance(action_value, str):
+            try:
+                action_value = json.loads(action_value)
+            except:
+                pass
+                
+        action_name = action_value.get("action")
+        if not action_name:
+            logger.warning(f"Card action triggered but no 'action' found in value: {action_value}")
+            return
+
+        logger.info(f"Received card action trigger: {action_name}")
+        
+        # We need to run the async handler in the background loop
+        if global_bg_loop:
+            async def _handle_and_log():
+                try:
+                    result = await InteractionRegistry.handle(action_name, action_value)
+                    logger.info(f"Interaction result: {result}")
+                except Exception as err:
+                    logger.error(f"Error handling interaction {action_name}: {err}")
+
+            asyncio.run_coroutine_threadsafe(_handle_and_log(), global_bg_loop)
+        else:
+            logger.error("Cannot handle card action: Background event loop not ready.")
+            
+    except Exception as e:
+        logger.error(f"Error processing card action: {e}", exc_info=True)
+
+
 event_handler = lark.EventDispatcherHandler.builder("", "") \
     .register_p2_im_message_receive_v1(do_p2_im_message_receive_v1) \
+    .register_p2_card_action_trigger(do_p2_card_action_trigger) \
     .build()
 
 def main():
     global dispatcher
+    global global_bg_loop
     parser = argparse.ArgumentParser(description="Feishu Bot Listener")
     parser.add_argument("--bot", type=str, help="Name of the bot", default="amazon_bot")
     args = parser.parse_args()
@@ -71,6 +113,7 @@ def main():
     threading.Thread(target=bg_tasks_thread, daemon=True).start()
 
     if loop_ready.wait(timeout=5):
+        global_bg_loop = bg_loop
         dispatcher = CommandDispatcher(bot_name=args.bot, loop=bg_loop)
     else:
         sys.exit(1)

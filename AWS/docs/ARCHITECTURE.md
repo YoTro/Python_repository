@@ -354,6 +354,13 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   CallbackFactory.create(request.callback) --> Instance                      |
 |   Callbacks invoke output-server tools via MCP Client; no direct SDK calls   |
 |                                                                              |
+|   ── Stateful Interaction Signals (e.g., QR Login) ────────────────────────  |
+|   1. Tool returns an `INTERACTION_REQUIRED` JSON signal w/ `tenant_id`.      |
+|   2. Callback checks its capabilities (`IMAGE_DISPLAY`, `BUTTONS`).          |
+|   3. Feishu renders an interactive card; CLI gracefully downgrades to Text.  |
+|   4. User click hits Webhook -> `InteractionRegistry.handle(action_name)`.   |
+|   5. Handler validates status (e.g., Xiyou QR) and calls `job_mgr.resume()`. |
+|                                                                              |
 |   +──────────────────+────────────────────────────────────────────────────+ |
 |   | feishu_bitable   | Candidates / Funnel stats / Lineage  (3 tabs)     | |
 |   +──────────────────+────────────────────────────────────────────────────+ |

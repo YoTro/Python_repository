@@ -28,11 +28,16 @@ class XiyouZhaociAPI:
     _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
     
     # Default paths based on project root
-    _DEFAULT_TOKEN_FILE = os.path.join(_PROJECT_ROOT, "config", "xiyouzhaoci_token.json")
     _DEFAULT_DATA_DIR = os.path.join(_PROJECT_ROOT, "data")
 
-    def __init__(self, token_file: str = None):
-        self.token_file = token_file or self._DEFAULT_TOKEN_FILE
+    def __init__(self, tenant_id: str = "default", token_file: str = None):
+        self.tenant_id = tenant_id
+        
+        # Identity-based token isolation
+        config_dir = os.path.join(self._PROJECT_ROOT, "config", "auth")
+        os.makedirs(config_dir, exist_ok=True)
+        
+        self.token_file = token_file or os.path.join(config_dir, f"xiyou_{tenant_id}_token.json")
         self.session = requests.Session(impersonate="chrome")
         self.base_url = "https://api.xiyouzhaoci.com"
         self.auth_token = self._load_token()
@@ -58,7 +63,7 @@ class XiyouZhaociAPI:
         if self.auth_token:
             self.common_headers["authorization"] = self.auth_token
 
-        self.auth = XiyouZhaociAuth(token_file=token_file)
+        self.auth = XiyouZhaociAuth(tenant_id=tenant_id, token_file=self.token_file)
 
     def _load_token(self) -> str:
         if os.path.exists(self.token_file):
@@ -112,6 +117,21 @@ class XiyouZhaociAPI:
                 self.common_headers["authorization"] = self.auth_token
             return True
         return False
+
+    def get_login_qr(self) -> dict:
+        """Initiate WeChat QR code login."""
+        return self.auth.get_wechat_qr()
+
+    def check_qr_login_status(self) -> dict:
+        """Check the status of a pending QR code login."""
+        res = self.auth.check_wechat_login()
+        # If login is successful, refresh the client's own token
+        if res.get("status") == "SUCCESS":
+            self.auth_token = self._load_token()
+            if self.auth_token:
+                self.common_headers["authorization"] = self.auth_token
+        return res
+
 
     @staticmethod
     def _krs_ver() -> str:
