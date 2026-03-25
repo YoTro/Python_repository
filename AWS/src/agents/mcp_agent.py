@@ -107,13 +107,19 @@ class MCPAgent(BaseAgent):
         self, 
         query: str, 
         session_id: str = "default_session", 
+        tenant_id: str = "default",
+        user_id: str = "default",
         callback=None,
         context: Optional[dict] = None
     ) -> str:
         # 1. Load or Create Session
         session = self.session_mgr.load(session_id)
         if not session:
-            session = self.session_mgr.create(session_id=session_id)
+            session = self.session_mgr.create(
+                session_id=session_id,
+                tenant_id=tenant_id,
+                user_id=user_id
+            )
         
         # Merge external context (chat_id, etc.) if provided
         if context:
@@ -141,7 +147,7 @@ class MCPAgent(BaseAgent):
                 session.current_step += 1
                 logger.info(
                     f"MCPAgent [{session.session_id}] Step {session.current_step}/{session.max_steps} "
-                    f"(cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
+                    f"(tenant: {session.tenant_id}, cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
                     f"cost: {session.total_cost:.4f} {session.currency})"
                 )
 
@@ -280,7 +286,43 @@ class MCPAgent(BaseAgent):
 
                     logger.info(f"LLM called tool: {action} with args {action_input}")
                     try:
+                        # Inject identity metadata into the tool call
+                        action_input["_metadata"] = {
+                            "tenant_id": session.tenant_id,
+                            "user_id": session.user_id,
+                            "job_id": session.session_id,
+                            "chat_id": session.context.get("feishu_chat_id")
+                        }
                         result = await self.mcp.call_tool_json(action, action_input)
+                        
+                        # --- INTERACTION SIGNAL INTERCEPTION ---
+                        # If the tool returned a structural interaction signal, intercept it.
+                        if isinstance(result, dict) and result.get("_type") == "INTERACTION_REQUIRED":
+                            logger.info(f"Tool {action} returned an interaction signal. Pausing agent loop.")
+                            
+                            # Log the interaction request to the session history so the agent knows what happened
+                            session.add_message(
+                                role="tool", 
+                                content=f"Sent interaction request to user: {result.get('fallback_text')}", 
+                                name=action
+                            )
+                            
+                            # Mark session as suspended waiting for human input
+                            session.status = "suspended_for_human"
+                            self.session_mgr.save(session)
+                            
+                            # If we have a callback (like Feishu), forward the RAW signal directly to it
+                            if callback:
+                                try:
+                                    signal_json = json.dumps(result, ensure_ascii=False)
+                                    # We use on_progress to push the interactive card immediately
+                                    await callback._send_progress(signal_json)
+                                except Exception as e:
+                                    logger.error(f"Failed to forward interaction signal to callback: {e}")
+                            
+                            # Return the fallback text as the current answer to the caller
+                            return result.get("fallback_text", "Interaction required.")
+
                         observation = json.dumps(result, ensure_ascii=False)
                     except Exception as e:
                         observation = f"Error calling tool: {e}"

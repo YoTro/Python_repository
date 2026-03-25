@@ -86,6 +86,8 @@ This script automatically detects your OS and injects the `aws-market-intelligen
 > **Note on Feishu Targeting**: All `send_feishu_*` tools (except webhook) now support **Implicit Context Resolution**. If `receive_id` or `receive_id_type` are omitted in the tool call, the system automatically resolves the target `chat_id` from the active conversation context (`feishu_chat_id`). Explicitly provided IDs will always override the context.
 
 ### Market Intelligence (L1)
+*   **`xiyou_get_login_qr`**: Initiates WeChat QR code login for Xiyouzhaoci. Returns a cross-platform interaction signal that renders an interactive card with a scan verification button in Feishu, or falls back to a Markdown image URL.
+*   **`xiyou_check_login_status`**: Checks the status of a pending QR code login. This is typically invoked automatically via webhook callbacks from interactive UI elements (like the Feishu 'I have scanned' button).
 *   **`get_deal_history`**: Fetches off-Amazon deal history for a given ASIN or keyword from multiple top-tier deal sites (currently Slickdeals and DealNews), supporting multi-page scraping. Returns a structured list of historical promotions (price, discount, date, site, type).
 *   **`xiyou_keyword_analysis`**: Requests keyword traffic and competitor data from Xiyouzhaoci, returning a local file path.
 *   **`xiyou_asin_lookup`**: Reverse-lookups keywords for an ASIN via Xiyouzhaoci.

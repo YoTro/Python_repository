@@ -7,46 +7,17 @@ from src.registry.tools import tool_registry
 
 logger = logging.getLogger("mcp-market")
 
-
-def _get_xiyou_api():
-    """Lazy-load XiyouZhaociAPI singleton."""
+def _get_xiyou_api(tenant_id: str = "default"):
+    """Lazy-load a tenant-specific XiyouZhaociAPI instance."""
     from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
-    return XiyouZhaociAPI()
-
-
-def _xiyou_auth_required(api) -> list[TextContent] | None:
-    """
-    If token is missing, auto-send SMS and return an auth-needed response.
-    Returns None if auth is valid.
-    """
-    if not api.needs_auth:
-        return None
-
-    phone = os.getenv("XIYOUZHAOCI_PHONE", "")
-    if not phone:
-        return [TextContent(type="text", text=json.dumps({
-            "status": "auth_required",
-            "error": "Xiyouzhaoci token not found and XIYOUZHAOCI_PHONE env var is not set. "
-                     "Set the env var and retry, or call xiyou_verify_sms after sending code manually.",
-        }))]
-
-    sent = api.request_sms_code(phone)
-    masked = phone[:3] + "****" + phone[-4:]
-    if sent:
-        return [TextContent(type="text", text=json.dumps({
-            "status": "sms_sent",
-            "phone": masked,
-            "message": f"SMS verification code sent to {masked}. "
-                       f"Call xiyou_verify_sms with the code to complete authentication.",
-        }))]
-    return [TextContent(type="text", text=json.dumps({
-        "status": "sms_failed",
-        "phone": masked,
-        "error": "Failed to send SMS code. Check logs for details.",
-    }))]
+    return XiyouZhaociAPI(tenant_id=tenant_id)
 
 
 async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
+    # Extract identity from metadata for all tools
+    metadata = arguments.pop("_metadata", {})
+    tenant_id = metadata.get("tenant_id", "default")
+
     if name == "seller_analysis":
         return [TextContent(type="text", text=json.dumps({"us_seller_percentage": 0.62, "market_concentration": "high"}))]
 
@@ -73,158 +44,126 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
         result = analyzer.analyze(current_price, deals)
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
-    # ── Xiyouzhaoci auth ─────────────────────────────────────────────────
+    # ── Xiyouzhaoci NEW WeChat QR Auth Tools ─────────────────────────────
+
+    elif name == "xiyou_get_login_qr":
+        api = _get_xiyou_api(tenant_id)
+        qr_data = await asyncio.to_thread(api.get_login_qr)
+        
+        if "url" in qr_data:
+            # Return a standardized cross-platform interaction signal
+            signal = {
+                "_type": "INTERACTION_REQUIRED",
+                "interaction_type": "AUTH_QR_SCAN",
+                "required_capabilities": ["IMAGE_DISPLAY", "INTERACTIVE_BUTTONS"],
+                "ui_config": {
+                    "title": "🔐 需要认证 (西柚找词)",
+                    "description": "由于 Token 已过期，请扫描下方二维码完成登录。",
+                    "button_text": "我已确认扫码",
+                    "action": "VERIFY_XIYOU_LOGIN"
+                },
+                "data": {
+                    "url": qr_data["url"],
+                    "expires_in": qr_data.get("expires_in", 120)
+                },
+                "context": {
+                    "tenant_id": tenant_id,
+                    "job_id": metadata.get("job_id")
+                },
+                "fallback_text": f"Please scan this QR code to login to Xiyouzhaoci (valid for 120s): {qr_data['url']}. Reply 'I have scanned' when done."
+            }
+            return [TextContent(type="text", text=json.dumps(signal))]
+        return [TextContent(type="text", text=json.dumps(qr_data))]
+
+    elif name == "xiyou_check_login_status":
+        api = _get_xiyou_api(tenant_id)
+        result = await asyncio.to_thread(api.check_qr_login_status)
+        return [TextContent(type="text", text=json.dumps(result))]
+
+    # ── Xiyouzhaoci Legacy SMS Auth Tools ───────────────────────────────
 
     elif name == "xiyou_send_sms":
-        api = _get_xiyou_api()
+        api = _get_xiyou_api(tenant_id)
         phone = arguments.get("phone") or os.getenv("XIYOUZHAOCI_PHONE", "")
         if not phone:
-            return [TextContent(type="text", text=json.dumps({
-                "status": "error",
-                "error": "No phone number provided and XIYOUZHAOCI_PHONE env var is not set.",
-            }))]
+            return [TextContent(type="text", text=json.dumps({"status": "error", "error": "Phone number not provided."}))]
         sent = await asyncio.to_thread(api.request_sms_code, phone)
-        masked = phone[:3] + "****" + phone[-4:]
+        masked = f"{phone[:3]}****{phone[-4:]}"
         if sent:
-            return [TextContent(type="text", text=json.dumps({
-                "status": "sms_sent",
-                "phone": masked,
-                "message": f"SMS code sent to {masked}. Call xiyou_verify_sms with the code.Please reply with xiyou_verify_sms(sms_code=xxxxxx)",
-            }))]
-        return [TextContent(type="text", text=json.dumps({
-            "status": "sms_failed",
-            "error": "Failed to send SMS code.",
-        }))]
+            return [TextContent(type="text", text=json.dumps({"status": "sms_sent", "phone": masked, "message": f"SMS sent to {masked}. Call xiyou_verify_sms."}))]
+        return [TextContent(type="text", text=json.dumps({"status": "sms_failed", "error": "Failed to send SMS."}))]
 
     elif name == "xiyou_verify_sms":
-        api = _get_xiyou_api()
+        api = _get_xiyou_api(tenant_id)
         sms_code = arguments["sms_code"]
         phone = arguments.get("phone") or os.getenv("XIYOUZHAOCI_PHONE", "")
         success = await asyncio.to_thread(api.verify_sms_code, sms_code, phone)
         if success:
-            return [TextContent(type="text", text=json.dumps({
-                "status": "authenticated",
-                "message": "Xiyouzhaoci login successful. Token saved. You can now use keyword analysis tools.",
-            }))]
-        return [TextContent(type="text", text=json.dumps({
-            "status": "auth_failed",
-            "error": "SMS verification failed. The code may be incorrect or expired.",
-        }))]
+            return [TextContent(type="text", text=json.dumps({"status": "authenticated", "message": "Authentication successful."}))]
+        return [TextContent(type="text", text=json.dumps({"status": "auth_failed", "error": "SMS verification failed."}))]
 
-    # ── Xiyouzhaoci data tools ───────────────────────────────────────────
+    # ── Xiyouzhaoci Data Tools (Now Auth-Aware) ──────────────────────────
 
-    elif name == "xiyou_keyword_analysis":
-        api = _get_xiyou_api()
-        auth_response = _xiyou_auth_required(api)
-        if auth_response:
-            return auth_response
-
-        country = arguments.get("country", "US")
-        keyword = arguments["keyword"]
-        output_dir = arguments.get("output_dir", "data")
-
-        file_path = await asyncio.to_thread(api.export_keyword_data, country, keyword, output_dir)
-        if file_path:
-            return [TextContent(type="text", text=json.dumps({
-                "status": "success",
-                "keyword": keyword,
-                "country": country,
-                "file_path": file_path,
-            }))]
-        return [TextContent(type="text", text=json.dumps({
-            "status": "failed",
-            "keyword": keyword,
-            "country": country,
-            "error": "Export failed. Check logs for details.",
-        }))]
-
-    elif name == "xiyou_asin_lookup":
-        api = _get_xiyou_api()
-        auth_response = _xiyou_auth_required(api)
-        if auth_response:
-            return auth_response
-
-        country = arguments.get("country", "US")
-        asin = arguments["asin"]
-        output_dir = arguments.get("output_dir", "data")
-
-        file_path = await asyncio.to_thread(api.export_asin_data, country, asin, output_dir)
-        if file_path:
-            return [TextContent(type="text", text=json.dumps({
-                "status": "success",
-                "asin": asin,
-                "country": country,
-                "file_path": file_path,
-            }))]
-        return [TextContent(type="text", text=json.dumps({
-            "status": "failed",
-            "asin": asin,
-            "country": country,
-            "error": "Export failed. Check logs for details.",
-        }))]
-
-    elif name == "xiyou_asin_compare_keywords":
-        api = _get_xiyou_api()
-        auth_response = _xiyou_auth_required(api)
-        if auth_response:
-            return auth_response
+    else:
+        # Generic handler for all data tools to reduce repetition
+        from src.mcp.servers.market.xiyouzhaoci.client import XiyouAuthRequiredError
         
-        country = arguments.get("country", "US")
-        asins = arguments["asins"]
-        period = arguments.get("period", "last7days")
-        output_dir = arguments.get("output_dir", "data")
+        tool_map = {
+            "xiyou_keyword_analysis": "export_keyword_data",
+            "xiyou_asin_lookup": "export_asin_data",
+            "xiyou_asin_compare_keywords": "export_compare_data",
+            "xiyou_get_aba_top_asins": "get_aba_top_asins",
+            "xiyou_get_search_terms_ranking": "get_search_terms_ranking",
+        }
 
-        file_path = await asyncio.to_thread(api.export_compare_data, country, asins, period, output_dir)
-        if file_path:
-            return [TextContent(type="text", text=json.dumps({
-                "status": "success",
-                "asins": asins,
-                "country": country,
-                "period": period,
-                "file_path": file_path,
-            }))]
-        return [TextContent(type="text", text=json.dumps({
-            "status": "failed",
-            "asins": asins,
-            "country": country,
-            "error": "Export failed. Check logs for details.",
-        }))]
+        if name in tool_map:
+            try:
+                api = _get_xiyou_api(tenant_id)
+                method_to_call = getattr(api, tool_map[name])
+                
+                # The underlying methods in the client don't need _metadata
+                # arguments.pop("_metadata", None) 
+                
+                result = await asyncio.to_thread(method_to_call, **arguments)
+                
+                # Wrap file path results in a standard JSON structure
+                if isinstance(result, str) and os.path.exists(result):
+                    return [TextContent(type="text", text=json.dumps({"status": "success", "file_path": result}))]
+                
+                return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
-    elif name == "xiyou_get_aba_top_asins":
-        api = _get_xiyou_api()
-        auth_response = _xiyou_auth_required(api)
-        if auth_response:
-            return auth_response
-        
-        country = arguments.get("country", "US")
-        search_terms = arguments["search_terms"]
+            except XiyouAuthRequiredError as e:
+                logger.warning(f"Xiyou Auth required for tenant {tenant_id} on tool {name}.")
+                return [TextContent(type="text", text=json.dumps({"status": "AUTH_REQUIRED", "message": str(e)}))]
+            except Exception as e:
+                logger.error(f"Error during {name} for tenant {tenant_id}: {e}")
+                return [TextContent(type="text", text=json.dumps({"status": "ERROR", "message": str(e)}))]
 
-        result = await asyncio.to_thread(api.get_aba_top_asins, country, search_terms)
-        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+    return [TextContent(type="text", text=f"Unknown market tool: {name}")]
 
-    elif name == "xiyou_get_search_terms_ranking":
-        api = _get_xiyou_api()
-        auth_response = _xiyou_auth_required(api)
-        if auth_response:
-            return auth_response
-        
-        country = arguments.get("country", "US")
-        query = arguments["query"]
-        page = arguments.get("page", 1)
-        page_size = arguments.get("page_size", 100)
-        field = arguments.get("field", "week")
-        rank_pattern = arguments.get("rank_pattern", "aba")
-
-        result = await asyncio.to_thread(
-            api.get_search_terms_ranking, 
-            country, query, page, page_size, field, rank_pattern
-        )
-        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
-
-    return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
 market_tools = [
+    Tool(
+        name="xiyou_get_login_qr",
+        description="Initiates WeChat QR code login for Xiyouzhaoci. Returns an image URL. You MUST display this URL to the user exactly as a Markdown image: ![WeChat QR](<url>) and tell them they have 120 seconds to scan and reply 'I have scanned'.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "_metadata": {"type": "object", "description": "Internal identity context", "additionalProperties": True}
+            },
+        },
+    ),
+    Tool(
+        name="xiyou_check_login_status",
+        description="Checks the status of a pending WeChat QR code login for Xiyouzhaoci. Call this ONLY after the user confirms they have scanned the QR code.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "_metadata": {"type": "object", "description": "Internal identity context", "additionalProperties": True}
+            },
+        },
+    ),
     Tool(
         name="seller_analysis",
         description="Analyze seller demographics for a category or keyword.",
@@ -374,6 +313,8 @@ market_tools = [
 ]
 
 _MARKET_META = {
+    "xiyou_get_login_qr": ("DATA", "URL for WeChat login QR code"),
+    "xiyou_check_login_status": ("DATA", "authentication status of pending QR scan"),
     "seller_analysis": ("DATA", "seller demographics: US seller %, market concentration"),
     "keyword_data": ("DATA", "search volume and CPC bid"),
     "get_ad_traffic": ("DATA", "ad spend and ROAS estimates"),

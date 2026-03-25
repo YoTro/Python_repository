@@ -38,6 +38,8 @@ class StepResult:
 class WorkflowContext:
     """Shared context passed to every Step in a Workflow."""
     job_id: str
+    tenant_id: str = "default"
+    user_id: str = "default"
     config: Dict[str, Any] = field(default_factory=dict)
     cache: Dict[str, Any] = field(default_factory=dict)
     router: Any = None  # IntelligenceRouter instance (injected)

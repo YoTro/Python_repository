@@ -76,6 +76,15 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 3.  **Factory**: Register your type in `CallbackFactory.create()`.
 4.  **Targeting**: Use `ContextPropagator` to automatically resolve `feishu_chat_id` or similar platform IDs without passing them through every function.
 
+### Layer 7: Interactive Signals (`src/jobs/interactions/`)
+*Handling asynchronous human-in-the-loop actions (e.g., QR login, manual approval).*
+
+**How to add a new Interactive Action (e.g., Keepa Login):**
+1.  **Signal Output**: In your MCP Tool, return an `INTERACTION_REQUIRED` JSON signal specifying the `interaction_type` and `ui_config` (title, button_text, action_name).
+2.  **Capability Negotiation**: Define required capabilities (e.g., `IMAGE_DISPLAY`) in the signal so Callbacks can degrade gracefully (e.g., showing a URL link in CLI instead of rendering a card).
+3.  **Register Handler**: Create a handler function in `src/jobs/interactions/handlers.py` and decorate it with `@InteractionRegistry.register("YOUR_ACTION_NAME")`.
+4.  **Resume**: Ensure your handler logic calls `get_job_manager().resume(job_id)` upon successful validation.
+
 ---
 
 ## 3. Engineering Standards

@@ -216,3 +216,38 @@ class FeishuClient:
         option = lark.RequestOption.builder().user_access_token(user_access_token).build() if user_access_token else None
         response = self.client.bitable.v1.app_table_record.batch_create(request, option)
         return {"success": response.success()}
+
+    def upload_image(self, file_path: str):
+        """
+        Upload an image to Feishu to get an image_key (required for cards).
+        """
+        from lark_oapi.api.im.v1 import CreateImageRequest, CreateImageRequestBody
+        
+        file_path = os.path.normpath(file_path)
+        if not os.path.exists(file_path):
+            return {"success": False, "error": "Image file not found"}
+
+        try:
+            with open(file_path, "rb") as f:
+                request = CreateImageRequest.builder() \
+                    .request_body(CreateImageRequestBody.builder()
+                                  .image_type("message")
+                                  .image(f)
+                                  .build()) \
+                    .build()
+
+                response = self.client.im.v1.image.create(request)
+
+            if not response.success():
+                logger.error(f"Feishu upload image failed: {response.code}, {response.msg}")
+                return {"success": False, "error": response.msg, "code": response.code}
+            
+            return {"success": True, "image_key": response.data.image_key}
+        except Exception as e:
+            logger.error(f"Feishu image upload process failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def send_raw_card(self, receive_id_type: str, receive_id: str, card_dict: dict):
+        """Send a raw interactive card JSON."""
+        content = json.dumps(card_dict)
+        return self._send_im_message("interactive", content, receive_id_type, receive_id)
