@@ -25,6 +25,7 @@ class JobStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    SUSPENDED = "suspended"
 
 @dataclass
 class JobRecord:
@@ -35,12 +36,15 @@ class JobRecord:
     callback: Any = None
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     completed_at: Optional[str] = None
+    suspended_at: Optional[float] = None  # Timestamp for timeout tracking
+    suspend_timeout_sec: int = 300       # Dynamic timeout per job
     error: Optional[str] = None
     result: Any = None
 
 class JobManager:
     """
     Manages job submission, tracking, and execution using an asyncio queue.
+    Includes a reaper task to clean up expired SUSPENDED jobs dynamically.
     """
 
     def __init__(self, max_workers: int = 2):
@@ -50,13 +54,53 @@ class JobManager:
         self._queue = asyncio.Queue()
         self._workers: List[asyncio.Task] = []
         self._max_workers = max_workers
+        self._reaper_task: Optional[asyncio.Task] = None
         self._start_workers()
 
     def _start_workers(self):
-        """Initialize the background worker pool."""
+        """Initialize the background worker pool and reaper task."""
         for i in range(self._max_workers):
             task = asyncio.create_task(self._worker_loop(f"worker-{i}"))
             self._workers.append(task)
+            
+        # Start the reaper task for suspended jobs
+        self._reaper_task = asyncio.create_task(self._reaper_loop())
+
+    async def _reaper_loop(self):
+        """Periodically checks for and cancels expired SUSPENDED jobs."""
+        logger.info("JobManager Reaper Task started.")
+        while True:
+            try:
+                await asyncio.sleep(60)  # Check every 60 seconds
+                now = datetime.utcnow().timestamp()
+                
+                expired_jobs = []
+                # Use list() to take a snapshot of items to avoid RuntimeError 
+                # if another coroutine adds a job during iteration.
+                for job_id, record in list(self._jobs.items()):
+                    if record.status == JobStatus.SUSPENDED and record.suspended_at:
+                        # Use the job's specific timeout setting
+                        if now - record.suspended_at > record.suspend_timeout_sec:
+                            expired_jobs.append(record)
+                
+                for record in expired_jobs:
+                    logger.warning(f"Job {record.job_id} suspended for {record.suspend_timeout_sec}s. Auto-cancelling.")
+                    record.status = JobStatus.CANCELLED
+                    record.error = "Job timed out waiting for user interaction."
+                    record.completed_at = datetime.utcnow().isoformat()
+                    
+                    # Notify the user if possible
+                    if record.callback:
+                        try:
+                            error_msg = Exception(f"任务由于长时间未响应 (超过 {record.suspend_timeout_sec} 秒)，已自动取消。")
+                            await record.callback.on_error(error_msg)
+                        except Exception as e:
+                            logger.debug(f"Failed to notify user of job cancellation: {e}")
+                            
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Reaper task encountered an error: {e}")
 
     async def _worker_loop(self, name: str):
         """Background loop to process jobs from the queue."""
@@ -259,6 +303,14 @@ class JobManager:
                 except Exception as e:
                     logger.warning(f"Agent callback failed: {e}")
                     
+        except JobSuspendedError as e:
+            logger.info(f"Job {job_id} suspended for interaction: {e}")
+            record.status = JobStatus.SUSPENDED
+            record.suspended_at = datetime.utcnow().timestamp()
+            record.suspend_timeout_sec = e.timeout_sec
+            record.error = str(e)
+            # Do NOT call on_complete, as the job is still ongoing
+            
         except Exception as e:
             logger.error(f"Agent execution failed: {e}")
             raise
@@ -267,9 +319,9 @@ class JobManager:
         return self._jobs.get(job_id)
 
     def resume(self, job_id: str) -> bool:
-        """Resume a failed job from checkpoint."""
+        """Resume a failed or suspended job."""
         record = self._jobs.get(job_id)
-        if not record or record.status != JobStatus.FAILED:
+        if not record or record.status not in [JobStatus.FAILED, JobStatus.SUSPENDED]:
             return False
             
         record.status = JobStatus.PENDING

@@ -10,6 +10,7 @@ from src.agents.session import AgentSessionManager, AgentSession
 from src.agents.prompts.prompt_builder import PromptBuilder
 from src.registry.tools import tool_registry
 from src.core.utils.context import ContextPropagator
+from src.core.errors.exceptions import JobSuspendedError
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +126,8 @@ class MCPAgent(BaseAgent):
         if context:
             session.context.update(context)
 
-        # Add the new query if it's not a resumed session without a query
-        if query:
+        # Add the new query only if this is a fresh session
+        if query and not session.history:
             session.add_message(role="user", content=query)
 
         system_message = self._prompt_builder.build(
@@ -320,8 +321,11 @@ class MCPAgent(BaseAgent):
                                 except Exception as e:
                                     logger.error(f"Failed to forward interaction signal to callback: {e}")
                             
-                            # Return the fallback text as the current answer to the caller
-                            return result.get("fallback_text", "Interaction required.")
+                            # Raise exception to signal suspension to the JobManager
+                            raise JobSuspendedError(
+                                message=result.get("fallback_text", "Interaction required."),
+                                signal=result
+                            )
 
                         observation = json.dumps(result, ensure_ascii=False)
                     except Exception as e:

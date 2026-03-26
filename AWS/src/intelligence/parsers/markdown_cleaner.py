@@ -15,64 +15,65 @@ class OutputParser:
 
     @staticmethod
     def parse_dirty_json(json_str: str) -> Dict[str, Any]:
-        """
-        Attempts to parse JSON that might contain common LLM errors like 
-        unescaped newlines or extra text around the block.
-        """
-        if not json_str or not isinstance(json_str, str):
+        if not isinstance(json_str, str) or not json_str.strip():
             return {}
 
-        # 1. Extract JSON block if wrapped in markdown
+        json_str = json_str.strip()
+
+        # 1. Extract from markdown fence
         if "```json" in json_str:
             json_str = json_str.split("```json")[1].split("```")[0].strip()
-        elif "{" in json_str and "}" in json_str:
-            json_str = json_str[json_str.find("{"):json_str.rfind("}") + 1]
+        elif "{" in json_str:
+            start = json_str.find("{")
+            end = json_str.rfind("}")
+            if end > start:
+                json_str = json_str[start:end + 1]
+            else:
+                return {}
 
-        # 2. Try standard parse
+        if not json_str:
+            return {}
+
+        # 2. Standard parse
         try:
             return json.loads(json_str)
         except json.JSONDecodeError:
-            # 3. Heuristic Repair: Handle unescaped newlines and nested quotes
-            # We look for values using a lookahead that ensures the closing quote 
-            # is followed by typical JSON structural characters.
-            def repair_value(match):
-                key_part = match.group(1) # e.g., "content": 
-                val_content = match.group(2)
-                
-                # Escape existing backslashes first to avoid double-escaping
-                val_content = val_content.replace('\\', '\\\\')
-                # Escape actual newlines
-                val_content = val_content.replace('\n', '\\n')
-                # Escape unescaped double quotes (not preceded by backslash)
-                val_content = re.sub(r'(?<!\\)"', r'\"', val_content)
-                
-                return f'{key_part}"{val_content}"'
+            pass
 
-            try:
-                # Target patterns like "key": "value"
-                # Group 1: "key":\s*
-                # Group 2: The content between quotes
-                # Lookahead: Ensure the quote is followed by , } or \n
-                cleaned = re.sub(r'("[\w ]+":\s*)"(.*?)"(?=\s*[,}\n])', repair_value, json_str, flags=re.DOTALL)
-                return json.loads(cleaned)
-            except Exception as e:
-                # 4. Final Fallback: Regex extraction for Tool Calls
-                # If it still fails, try to manually extract action and input for robustness
-                action_match = re.search(r'"action":\s*"([^"]+)"', json_str)
-                if action_match:
-                    action = action_match.group(1)
-                    # Try to extract the action_input object as a raw string
-                    input_match = re.search(r'"action_input":\s*(\{.*\})', json_str, flags=re.DOTALL)
-                    action_input = {}
-                    if input_match:
-                        try:
-                            # Recursively try to parse the input part
-                            action_input = OutputParser.parse_dirty_json(input_match.group(1))
-                        except: pass
-                    return {"action": action, "action_input": action_input}
-                
-                logger.warning(f"Failed to parse dirty JSON even after aggressive cleanup: {e}")
-                return {}
+        # 3. Heuristic repair
+        def repair_value(match):
+            key_part = match.group(1)
+            val_content = match.group(2)
+            val_content = val_content.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+            val_content = re.sub(r'(?<!\\)"', r'\\"', val_content)
+            return f'{key_part}"{val_content}"'
+
+        try:
+            cleaned = re.sub(
+                r'("[\w ]+":\s*)"(.*?)"(?=\s*[,}\n])',
+                repair_value,
+                json_str,
+                flags=re.DOTALL
+            )
+            return json.loads(cleaned)
+        except Exception:
+            pass
+
+        # 4. Fallback: extract action/action_input
+        action_match = re.search(r'"action":\s*"([^"]+)"', json_str)
+        if action_match:
+            action = action_match.group(1)
+            action_input = {}
+            input_match = re.search(r'"action_input":\s*(\{.*\})', json_str, flags=re.DOTALL)
+            if input_match:
+                try:
+                    action_input = OutputParser.parse_dirty_json(input_match.group(1))
+                except Exception:
+                    pass
+            return {"action": action, "action_input": action_input}
+
+        logger.warning("Failed to parse dirty JSON even after aggressive cleanup")
+        return {}
 
     @staticmethod
     def clean_markdown(text: str) -> str:

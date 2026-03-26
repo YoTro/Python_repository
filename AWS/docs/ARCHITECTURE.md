@@ -496,7 +496,8 @@ AWS/
 │   ├── jobs/               # JOB CONTROL: Lifecycle & Async Scheduling
 │   │   ├── manager/        # JobManager with internal Worker Pool
 │   │   ├── checkpoint/     # Step-level persistence for Workflow resume
-│   │   └── callbacks/      # Output strategies (Feishu, CSV, MCP, Factory)
+│   │   ├── callbacks/      # Output strategies (Feishu, CSV, MCP, Factory)
+│   │   └── interactions/   # INTERACTIVE SIGNALS: Async callback routing (e.g., QR login)
 │   │
 │   ├── registry/           # CAPABILITY HUB: Unified Discovery
 │   │   ├── tools.py        # ToolRegistry + ToolMeta(category, returns) metadata
@@ -620,6 +621,13 @@ When multiple users interact with the Feishu bot, the system ensures that long-r
 4.  **Asynchronous Execution & Delivery**: The workflow executes in a background thread. Once completed (or failed), the `JobManager` looks up the `JobRecord`, extracts the `CallbackConfig`, instantiates the correct `FeishuCallback`, and sends the final report or error message strictly to the `chat_id` originally bound to that specific `job_id`.
 
 This guarantees that User A never receives User B's market analysis report, even if their background jobs are running concurrently in the same worker pool.
+
+### 5.4 Job Suspension & Reaper Mechanism
+For tasks requiring human intervention (e.g., QR code login), the system supports a non-blocking suspension state.
+*   **Status: `SUSPENDED`**: When a tool detects that user action is needed, the `MCPAgent` throws a `JobSuspendedError`. The `JobManager` catches this, records the `suspended_at` timestamp, and sets the job status to `SUSPENDED`. The worker thread is released to handle other jobs.
+*   **Dynamic Timeout**: Every suspension signal can carry an `expires_in` field (e.g., 120s for Xiyou QR). This is stored in the `JobRecord.suspend_timeout_sec`.
+*   **Reaper Loop**: A background coroutine in `JobManager` wakes up every 60 seconds to scan the job registry. It takes a thread-safe snapshot using `list(self._jobs.items())` and cancels any `SUSPENDED` job that has exceeded its specific timeout.
+*   **Resumption**: Upon receiving a successful interaction callback (via `InteractionRegistry`), the `JobManager.resume(job_id)` method re-queues the job. The `MCPAgent` then reloads the session history and continues from the exact point of suspension without repeating the initial user query.
 
 ---
 

@@ -69,6 +69,7 @@ models/llm/*.bin
 config/cookies.json
 config/*token.json
 proxies.txt
+config/auth/*
 
 # Project Specific - Artifacts
 output/*.csv
