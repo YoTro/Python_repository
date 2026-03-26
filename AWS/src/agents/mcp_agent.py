@@ -63,17 +63,29 @@ class MCPAgent(BaseAgent):
     @staticmethod
     def _parse_tool_call(response: str) -> tuple[Optional[str], Optional[dict]]:
         """Extract (action, action_input) from an LLM response. Returns (None, None) on failure."""
+        if not response or not isinstance(response, str):
+            return None, None
+
         try:
             # Use unified logic from OutputParser
             from src.intelligence.parsers.markdown_cleaner import OutputParser
             call = OutputParser.parse_dirty_json(response)
             
             if not call:
+                # Only warn if it looks like a tool call but failed to parse
+                if "{" in response and "action" in response:
+                    logger.warning(f"Failed to extract tool call from response: {response[:200]}...")
                 return None, None
                 
-            return call.get("action"), call.get("action_input", {})
+            action = call.get("action")
+            action_input = call.get("action_input", {})
+            
+            if action:
+                logger.debug(f"Successfully parsed tool call: {action}")
+            return action, action_input
+
         except Exception as e:
-            logger.error(f"Error parsing tool call: {e}")
+            logger.error(f"Critical error in _parse_tool_call: {e}. Raw snippet: {response[:500]}")
             return None, None
 
     async def _force_final_answer(self, session: AgentSession, system_message: str, reason: str) -> str:
