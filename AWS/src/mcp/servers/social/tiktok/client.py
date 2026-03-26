@@ -347,7 +347,7 @@ class TikTokClient:
             'referer': referer
         }
 
-        logger.info(f"Fetching comments for video: {video_id} (Unauthenticated Bypass Mode)")
+        logger.info(f"Fetching comments for video: {author_id}/{video_id} (Unauthenticated Bypass Mode)")
 
         while count == 0 or len(all_comments) < count:
             request_count = 20 if count == 0 else min(count - len(all_comments), 20)            

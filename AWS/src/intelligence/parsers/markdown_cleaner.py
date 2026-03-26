@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+MAX_RECURSION_DEPTH = 2 # Allows depth 0 and depth 1, so 2 parsing levels
+
 class OutputParser:
     """
     Unified parser for LLM outputs. Handles markdown cleaning, 
@@ -14,65 +16,194 @@ class OutputParser:
     """
 
     @staticmethod
-    def parse_dirty_json(json_str: str) -> Dict[str, Any]:
-        if not isinstance(json_str, str) or not json_str.strip():
+    def parse_dirty_json(json_str: str, depth: int = 0) -> Dict[str, Any]:
+        """
+        Attempts to parse JSON that might contain common LLM errors like 
+        unescaped newlines or extra text around the block.
+        """
+        # Bug 2: Check depth immediately and strictly enforce MAX_RECURSION_DEPTH
+        if depth >= MAX_RECURSION_DEPTH:
+            return {}
+            
+        if not json_str or not isinstance(json_str, str):
             return {}
 
-        json_str = json_str.strip()
+        original_input = json_str.strip()
+        current_str = original_input
 
-        # 1. Extract from markdown fence
-        if "```json" in json_str:
-            json_str = json_str.split("```json")[1].split("```")[0].strip()
-        elif "{" in json_str:
-            start = json_str.find("{")
-            end = json_str.rfind("}")
-            if end > start:
-                json_str = json_str[start:end + 1]
+        # 1. Extract JSON block if wrapped in markdown
+        json_match = re.search(r"```(?:json|JSON)?\s*(\{.*?\})\s*```", current_str, re.DOTALL | re.IGNORECASE)
+        if json_match:
+            current_str = json_match.group(1).strip()
+        else:
+            # Smarter isolation: only isolate if the block seems to be the root object.
+            first_brace = current_str.find("{")
+            action_pos = current_str.find('"action":')
+            
+            if first_brace != -1:
+                # If no "action" found or it's inside/after the first brace, it's safe to isolate.
+                if action_pos == -1 or first_brace < action_pos:
+                    end_brace = current_str.rfind("}")
+                    if end_brace > first_brace:
+                        current_str = current_str[first_brace:end_brace+1].strip()
+                    else:
+                        # TRUNCATED CASE: Take everything from the first brace to the absolute end
+                        current_str = current_str[first_brace:].strip()
+
+        if not current_str:
+            return {}
+
+        # 1.1 Integrated State Machine (Handles Structure, Strings, Comments, and Newlines)
+        repaired_str = []
+        in_string = False
+        in_line_comment = False
+        in_block_comment = False
+        escaped = False
+        brace_stack = []
+        
+        i = 0
+        while i < len(current_str):
+            c = current_str[i]
+            next_c = current_str[i+1] if i+1 < len(current_str) else ""
+            
+            if escaped:
+                repaired_str.append(c)
+                escaped = False
+                i += 1
+                continue
+            
+            if in_string:
+                if c == '\\':
+                    escaped = True
+                    repaired_str.append(c)
+                elif c == '"':
+                    in_string = False
+                    repaired_str.append(c)
+                elif c == '\n': repaired_str.append('\\n')
+                elif c == '\r': repaired_str.append('\\r')
+                elif c == '\t': repaired_str.append('\\t')
+                else: repaired_str.append(c)
+            elif in_line_comment:
+                if c == '\n':
+                    in_line_comment = False
+                    repaired_str.append(c)
+            elif in_block_comment:
+                if c == '*' and next_c == '/':
+                    in_block_comment = False
+                    i += 1
             else:
-                return {}
+                if c == '"':
+                    in_string = True
+                    repaired_str.append(c)
+                elif c == '/' and next_c == '/':
+                    in_line_comment = True
+                    i += 1
+                elif c == '/' and next_c == '*':
+                    in_block_comment = True
+                    i += 1
+                elif c == '{':
+                    brace_stack.append('}')
+                    repaired_str.append(c)
+                elif c == '[':
+                    brace_stack.append(']')
+                    repaired_str.append(c)
+                elif c == '}':
+                    if brace_stack and brace_stack[-1] == '}':
+                        brace_stack.pop()
+                    repaired_str.append(c)
+                elif c == ']':
+                    if brace_stack and brace_stack[-1] == ']':
+                        brace_stack.pop()
+                    repaired_str.append(c)
+                else:
+                    repaired_str.append(c)
+            i += 1
 
-        if not json_str:
-            return {}
+        current_str = "".join(repaired_str)
 
-        # 2. Standard parse
+        # 1.2 Structural Repair for Truncation
+        if in_string:
+            current_str += '"'
+        while brace_stack:
+            current_str += brace_stack.pop()
+
+        # 1.3 Final structural cleanup (Trailing Commas)
+        current_str = re.sub(r",\s*([\]}])", r"\1", current_str)
+
+        # 2. Try standard parse
         try:
-            return json.loads(json_str)
+            parsed = json.loads(current_str)
+            # Enforce recursion limit on clean JSON to match fallback behavior
+            if isinstance(parsed, dict) and depth + 1 >= MAX_RECURSION_DEPTH:
+                if "action_input" in parsed:
+                    parsed["action_input"] = {}
+            return parsed
         except json.JSONDecodeError:
             pass
 
-        # 3. Heuristic repair
+        # 3. Targeted Heuristic repair (for unescaped quotes inside strings)
         def repair_value(match):
             key_part = match.group(1)
             val_content = match.group(2)
-            val_content = val_content.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-            val_content = re.sub(r'(?<!\\)"', r'\\"', val_content)
-            return f'{key_part}"{val_content}"'
+            
+            # Bug 1: Robust character loop to escape internal quotes
+            repaired_val = []
+            esc = False
+            for char in val_content:
+                if esc:
+                    repaired_val.append(char)
+                    esc = False
+                elif char == '\\':
+                    repaired_val.append(char)
+                    esc = True
+                elif char == '"':
+                    repaired_val.append('\\"')
+                else:
+                    repaired_val.append(char)
+            
+            return f'{key_part}"{"".join(repaired_val)}"'
 
         try:
+            # Fix: Regex should be greedy for the value part (.*?) to allow internal quotes
             cleaned = re.sub(
-                r'("[\w ]+":\s*)"(.*?)"(?=\s*[,}\n])',
+                r'("[\w ]+":\s*)"(.*?)"(?=\s*[,}\n]|$)',
                 repair_value,
-                json_str,
+                current_str,
                 flags=re.DOTALL
             )
-            return json.loads(cleaned)
+            parsed = json.loads(cleaned)
+            # Enforce recursion limit on repaired JSON
+            if isinstance(parsed, dict) and depth + 1 >= MAX_RECURSION_DEPTH:
+                if "action_input" in parsed:
+                    parsed["action_input"] = {}
+            return parsed
         except Exception:
             pass
 
-        # 4. Fallback: extract action/action_input
-        action_match = re.search(r'"action":\s*"([^"]+)"', json_str)
-        if action_match:
-            action = action_match.group(1)
-            action_input = {}
-            input_match = re.search(r'"action_input":\s*(\{.*\})', json_str, flags=re.DOTALL)
-            if input_match:
-                try:
-                    action_input = OutputParser.parse_dirty_json(input_match.group(1))
-                except Exception:
-                    pass
-            return {"action": action, "action_input": action_input}
-
-        logger.warning("Failed to parse dirty JSON even after aggressive cleanup")
+        # 4. Fallback: extract action/action_input with limited recursion
+        # Use original_input to ensure we catch fields even if JSON structure is messy
+        # Removed 'if depth < 1:' to allow fallback logic at any depth.
+        if depth < 1:
+            action_match = re.search(r'"action":\s*"([^"]+)"', original_input)
+            if action_match:
+                action = action_match.group(1)
+                action_input = {}
+                # Lenient match for action_input: capture from the first '{' to the end of string if necessary
+                input_match = re.search(r'"action_input":\s*(\{.*)', original_input, flags=re.DOTALL)
+                if input_match:
+                    try:
+                        # The recursive call will handle balancing the captured segment
+                        action_input = OutputParser.parse_dirty_json(input_match.group(1), depth=depth + 1)
+                    except Exception:
+                        pass
+                return {"action": action, "action_input": action_input}
+        
+        # Only log a warning if the input looks like it was attempting to be JSON or a tool call
+        if "{" in original_input and "action" in original_input:
+            logger.warning(f"Failed to parse dirty JSON even after aggressive cleanup. String snippet: {original_input[:100]}...")
+        else:
+            logger.debug(f"Input does not appear to be JSON. String snippet: {original_input[:100]}...")
+            
         return {}
 
     @staticmethod
