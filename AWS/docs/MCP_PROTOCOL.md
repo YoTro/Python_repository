@@ -76,6 +76,18 @@ This script automatically detects your OS and injects the `aws-market-intelligen
 
 ## 7. Featured Tool Capabilities
 
+### Amazon Data Extraction (L1)
+*   **`search_profitability_products`**: Fast, ad-free product search using the internal Profitability Calculator API. Returns rich organic metadata (ASIN, title, brand, dimensions, weight, price, category rank, reviews). Ideal for bulk, precise data extraction without HTML parsing overhead.
+*   **`search_products`**: Standard Amazon keyword search returning basic product lists, reflecting the actual customer search page (including sponsored positions).
+*   **`get_product_details`**: Deep-dive extraction for a specific ASIN, fetching high-fidelity data like feature bullets, full descriptions, and fulfillment status (FBA/FBM).
+*   **`get_amazon_bestsellers`**: Scrapes Best Sellers lists (up to 100 items) with pagination support, returning ranked products.
+*   **`get_stock_estimate`**: Estimates remaining inventory for an ASIN using the sophisticated 999 Add-to-Cart method to bypass limits.
+*   **`get_keyword_rank`**: Scans multiple search pages to determine the exact organic ranking position of target ASINs for a given keyword.
+*   **`get_reviews`**: Fetches paginated customer reviews for a product using Amazon's internal AJAX endpoints for speed and stability.
+*   **BSR Navigation**: `get_top_bsr_categories` and `get_bsr_subcategories` allow dynamic exploration of the Best Sellers Rank category tree.
+*   **Seller Intelligence**: `get_seller_product_count` and `get_seller_feedback` provide insights into a merchant's storefront size and recent performance.
+*   **`refresh_amazon_cookies`**: Launches a headless (or manual) browser to capture fresh `session-id` cookies to bypass CAPTCHAs and WAF restrictions for strictly protected endpoints.
+
 ### Output & Delivery (L2)
 *   **`populate_feishu_bitable_records`**: Reuses initial empty rows in a new Bitable to ensure data starts from Row 1. Preferred for new exports.
 *   **`send_feishu_local_file`**: Uploads a local file and sends it as an IM attachment.

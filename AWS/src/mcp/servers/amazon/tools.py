@@ -21,6 +21,7 @@ from src.mcp.servers.amazon.extractors.images import ImageExtractor
 from src.mcp.servers.amazon.extractors.videos import VideoExtractor
 from src.mcp.servers.amazon.extractors.products_num import ProductsNumExtractor
 from src.mcp.servers.amazon.extractors.sales import SalesExtractor
+from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
 from src.core.utils.cookie_helper import AmazonCookieHelper
 from src.mcp.servers.amazon.extractors.bsr_category_extractor import BSRCategoryExtractor
 from src.core.data_cache import data_cache
@@ -83,6 +84,14 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
             page=arguments.get("page", 1),
         )
         return _json_response(products)
+        
+    if name == "search_profitability_products":
+        extractor = ProfitabilitySearchExtractor()
+        results = await extractor.search_products(
+            arguments["keyword"],
+            page_offset=arguments.get("page_offset", 1),
+        )
+        return _json_response(results)
 
     if name == "get_bsr_rank":
         extractor = RanksExtractor()
@@ -252,6 +261,18 @@ amazon_tools = [
             "properties": {
                 "keyword": {"type": "string", "description": "Search keyword"},
                 "page": {"type": "integer", "default": 1, "description": "Search result page number"},
+            },
+            "required": ["keyword"],
+        },
+    ),
+    Tool(
+        name="search_profitability_products",
+        description="Search Amazon using the Profitability Calculator API. Returns a clean list of organic products with rich metadata: ASIN, title, brand, dimensions, weight, price, category rank, and reviews. Excellent for precise data extraction without ads.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string", "description": "Search keyword"},
+                "page_offset": {"type": "integer", "default": 1, "description": "Pagination offset (1-indexed, 16 results per page)"},
             },
             "required": ["keyword"],
         },
@@ -436,6 +457,7 @@ _AMAZON_META = {
     "get_amazon_bestsellers": ("DATA", "list of bestseller products with ASIN, title, rank, price"),
     "get_product_details": ("DATA", "full product details: title, price, brand, ratings, features"),
     "search_products": ("DATA", "list of products matching keyword with ASIN, title, price"),
+    "search_profitability_products": ("DATA", "list of products with rich metadata: ASIN, title, brand, dimensions, weight, price"),
     "get_bsr_rank": ("DATA", "BSR rank and category rankings"),
     "get_past_month_sales": ("DATA", "estimated past-month purchase count"),
     "get_review_count": ("DATA", "total review count"),
