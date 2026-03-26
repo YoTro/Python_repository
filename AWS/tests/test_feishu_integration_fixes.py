@@ -1,3 +1,4 @@
+import pytest
 import asyncio
 import os
 import json
@@ -10,6 +11,7 @@ from src.intelligence.dto import LLMResponse
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@pytest.mark.asyncio
 async def test_fixes():
     """
     Comprehensive test for recent Feishu and Workflow fixes.

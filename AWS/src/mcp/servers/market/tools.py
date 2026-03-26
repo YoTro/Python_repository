@@ -14,9 +14,9 @@ def _get_xiyou_api(tenant_id: str = "default"):
 
 
 async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
-    # Extract identity from metadata for all tools
-    metadata = arguments.pop("_metadata", {})
-    tenant_id = metadata.get("tenant_id", "default")
+    # Use context propagation to resolve identity
+    from src.core.utils.context import ContextPropagator
+    tenant_id = ContextPropagator.get("tenant_id", "default")
 
     if name == "seller_analysis":
         return [TextContent(type="text", text=json.dumps({"us_seller_percentage": 0.62, "market_concentration": "high"}))]
@@ -68,7 +68,7 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
                 },
                 "context": {
                     "tenant_id": tenant_id,
-                    "job_id": metadata.get("job_id")
+                    "job_id": ContextPropagator.get("job_id")
                 },
                 "fallback_text": f"Please scan this QR code to login to Xiyouzhaoci (valid for 120s): {qr_data['url']}. Reply 'I have scanned' when done."
             }
@@ -147,22 +147,12 @@ market_tools = [
     Tool(
         name="xiyou_get_login_qr",
         description="Initiates WeChat QR code login for Xiyouzhaoci. Returns an image URL. You MUST display this URL to the user exactly as a Markdown image: ![WeChat QR](<url>) and tell them they have 120 seconds to scan and reply 'I have scanned'.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "_metadata": {"type": "object", "description": "Internal identity context", "additionalProperties": True}
-            },
-        },
+        inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
         name="xiyou_check_login_status",
         description="Checks the status of a pending WeChat QR code login for Xiyouzhaoci. Call this ONLY after the user confirms they have scanned the QR code.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "_metadata": {"type": "object", "description": "Internal identity context", "additionalProperties": True}
-            },
-        },
+        inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
         name="seller_analysis",

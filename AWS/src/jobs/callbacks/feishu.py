@@ -125,24 +125,21 @@ class FeishuCallback(JobCallback):
             # Check if this is a structural interaction signal
             try:
                 if text.strip().startswith("{") and text.strip().endswith("}"):
-                    print(f"DEBUG: JSON signal suspected in _send_progress")
                     signal = json.loads(text)
                     if signal.get("_type") == "INTERACTION_REQUIRED":
-                        print(f"DEBUG: Confirmed signal _type: INTERACTION_REQUIRED")
+                        logger.info(f"Detected interaction signal: {signal.get('interaction_type')}")
+                        logger.info(f"Current capabilities: {self.capabilities}")
                         # If we have the necessary capabilities, send a card
-                        print(f"DEBUG: Checking capabilities. Have: {self.capabilities}")
                         if CallbackCapability.IMAGE_DISPLAY in self.capabilities and \
                            CallbackCapability.INTERACTIVE_BUTTONS in self.capabilities:
-                            print(f"DEBUG: Capabilities matched! Calling _send_interaction_card")
                             await self._send_interaction_card(signal)
                             self._record_success()
                             return
                         else:
                             # Fallback to text
-                            print(f"DEBUG: Capabilities DID NOT match.")
+                            logger.info("Capabilities not sufficient for card, falling back to text.")
                             text = signal.get("fallback_text", text)
             except Exception as e:
-                print(f"DEBUG: Error in signal processing: {str(e)}")
                 logger.error(f"Error parsing interaction signal: {e}")
                 pass # Treat as normal text if JSON fails
 
