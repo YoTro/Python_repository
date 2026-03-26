@@ -3,6 +3,7 @@ curl_cffi
 beautifulsoup4
 lxml
 DrissionPage
+aiohttp
 
 # AI & Intelligence
 google-genai

@@ -90,7 +90,7 @@ class TestInteractionsAndCallbacks(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sent_card["header"]["title"]["content"], "Identity Check")
             # Find the image element and check its key
             img_element = next(el for el in sent_card["elements"] if el["tag"] == "img")
-            self.assertEqual(img_element["image_key"], "img_mock_123")
+            self.assertEqual(img_element["img_key"], "img_mock_123")
 
 
 if __name__ == "__main__":

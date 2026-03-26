@@ -27,6 +27,14 @@ async def test_feishu_callback_progress(mock_feishu_client):
     callback = FeishuCallback(chat_id="chat_123", total_steps=2)
     
     await callback.on_progress(step_index=1, total_steps=2, step_name="Extraction")
+    
+    # Wait for the fire-and-forget background task to actually execute
+    # This is needed because on_progress creates a task and returns immediately
+    for _ in range(20):
+        if mock_feishu_client.send_card_message.called:
+            break
+        await asyncio.sleep(0.1)
+
     mock_feishu_client.send_card_message.assert_called()
     
     call_args = mock_feishu_client.send_card_message.call_args[0]

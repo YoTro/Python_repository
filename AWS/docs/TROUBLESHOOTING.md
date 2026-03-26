@@ -73,9 +73,20 @@ This guide provides solutions to common issues you might encounter while develop
     *   **Cause**: Distinguishing between `file_path` (source on disk) and `filename` (display name in Feishu).
     *   **Solution**: Ensure `export_md` is called first to generate the local file. The agent should use the absolute path returned by the tool for `file_path`.
 
-*   **`Xiyouzhaoci auth token not found` — agent doesn't auto-authenticate**:
-    *   **Cause**: The Xiyouzhaoci token file is missing and the agent didn't trigger the auto-SMS flow.
-    *   **Solution**: `_xiyou_auth_required()` in `market/tools.py` auto-sends SMS when `XIYOUZHAOCI_PHONE` env var is set. Ensure the env var is configured.
+*   **`Xiyouzhaoci auth token not found` or `Xiyou Auth required` — agent gets stuck**:
+    *   **Cause**: The Xiyouzhaoci token is expired or missing. In the new architecture, this triggers a `JobSuspendedError` and expects human interaction via a QR code.
+    *   **Solution**: Ensure you are using an interactive client (like Feishu) that can render the `INTERACTION_REQUIRED` signal as a card. If using CLI, follow the Markdown link printed in the terminal, scan the QR code within 120 seconds, and manually trigger the resume command (or reply 'I have scanned' if the CLI agent supports it). Check `data/sessions/` to ensure the session status is `suspended_for_human`.
+
+*   **Feishu Bot throws `processor not found, type: card.action.trigger`**:
+    *   **Cause**: You clicked the "I have scanned" button on the Feishu card, but the bot listener isn't configured to handle interactive card actions.
+    *   **Solution**: Ensure `src/entry/feishu/bot_listener.py` has `register_p2_card_action_trigger` enabled and the `InteractionRegistry` is properly imported. Restart the bot listener process.
+
+*   **Agent task hangs indefinitely after scanning QR code**:
+    *   **Cause**: The webhook from the Feishu card click didn't reach your server, or the `JobManager` failed to resume the job.
+    *   **Solution**: 
+        1. Check the bot listener logs for `Received card action trigger: VERIFY_XIYOU_LOGIN`.
+        2. Ensure the `JobManager` Reaper task hasn't already cancelled the job (timeout is 120-300 seconds).
+        3. Verify that `job_mgr.resume(job_id)` is returning `True`.
 
 ## 4. Environment & Import Issues
 

@@ -49,13 +49,15 @@ class ToolRegistry:
             return arguments
 
         schema_props = tool.inputSchema.get("properties", {})
-        unknown = set(arguments.keys()) - set(schema_props.keys())
+        allowed_keys = set(schema_props.keys())
+        
+        unknown = set(arguments.keys()) - allowed_keys
         if unknown:
             logger.warning(
                 f"Tool '{name}' received unknown arguments {unknown}, "
-                f"expected one of {set(schema_props.keys())}. Stripping unknown args."
+                f"expected one of {allowed_keys}. Stripping unknown args."
             )
-            return {k: v for k, v in arguments.items() if k in schema_props}
+            return {k: v for k, v in arguments.items() if k in allowed_keys}
         return arguments
 
     async def call_tool(self, name: str, arguments: dict) -> List[TextContent]:
@@ -64,7 +66,20 @@ class ToolRegistry:
                 message=f"Tool '{name}' is not registered.",
                 hint="Use list_tools to see available tools."
             )
+            
+        # 1. Uniformly handle metadata: Extract and set context
+        metadata = arguments.pop("_metadata", {})
+        if metadata:
+            from src.core.utils.context import ContextPropagator
+            # Propagate metadata keys (tenant_id, user_id, job_id, chat_id) to contextvars
+            for key, value in metadata.items():
+                if value is not None:
+                    ContextPropagator.set(key, value)
+                    
+        # 2. Validate and clean business arguments (now free of _metadata)
         cleaned = self._validate_arguments(name, arguments)
+        
+        # 3. Call handler with pure business arguments
         return await self._handlers[name](name, cleaned)
 
 # Singleton instance

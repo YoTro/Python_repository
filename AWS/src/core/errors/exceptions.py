@@ -10,7 +10,8 @@ Unified exception hierarchy for the AWS project.
   │   └── StepError         Individual step failures
   ├── RetryableError        Transient failures (rate limit, timeout)
   ├── FatalError            Non-recoverable failures
-  └── CheckpointError       Checkpoint save / load failures
+  ├── CheckpointError       Checkpoint save / load failures
+  └── JobSuspendedError     Human-in-the-loop suspension
 """
 
 
@@ -74,3 +75,16 @@ class FatalError(AWSBaseError):
 class CheckpointError(AWSBaseError):
     """Checkpoint save or load failure."""
     pass
+
+class JobSuspendedError(AWSBaseError):
+    """
+    Raised when a job needs to be suspended for human intervention 
+    (e.g., waiting for QR code scan).
+    """
+    def __init__(self, message: str, signal: dict):
+        super().__init__(message)
+        self.signal = signal
+        
+        # Dynamically extract timeout from the signal's data payload (default 300s)
+        data = signal.get("data", {})
+        self.timeout_sec = data.get("expires_in", 300)
