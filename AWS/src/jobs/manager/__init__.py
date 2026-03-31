@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, List, Any, Union
 from datetime import datetime
 
-from src.core.errors.exceptions import AWSBaseError, RetryableError
+from src.core.errors.exceptions import AWSBaseError, RetryableError, JobSuspendedError
 from src.core.models.request import UnifiedRequest
 
 logger = logging.getLogger(__name__)

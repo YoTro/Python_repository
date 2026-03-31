@@ -65,9 +65,9 @@ class PriceManager:
         canonical_model = self.normalize_model_name(model_name)
         
         if self.provider == "gemini":
-            # 1. Extract detailed token counts from kwargs (default to 0)
-            cached_tokens = kwargs.get("cached_content_token_count", 0)
-            thoughts_tokens = kwargs.get("thoughts_token_count", 0)
+            # 1. Extract detailed token counts from kwargs (flexible naming)
+            cached_tokens = kwargs.get("cached_content_token_count") or kwargs.get("cached_tokens") or 0
+            thoughts_tokens = kwargs.get("thought_token_count") or kwargs.get("thoughts_token_count") or kwargs.get("thoughts_tokens") or 0
             
             # 2. Prepare billing parameters
             gemini_tier = tier if "_" in tier else f"{tier}_paid"

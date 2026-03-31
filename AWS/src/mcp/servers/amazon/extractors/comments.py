@@ -104,7 +104,7 @@ class CommentsExtractor(AmazonBaseScraper):
         if not csrf_token:
             csrf_token = self.session.cookies.get("anti-csrftoken-a2z")
             if csrf_token:
-                #logger.info("Acquired CSRF token from session cookies.")
+                logger.info("Acquired CSRF token from session cookies.")
 
         # Fallback: check the login page as suggested by user
         if not csrf_token:
