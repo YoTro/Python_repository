@@ -95,12 +95,19 @@ class GeminiProvider(BaseLLMProvider):
             usage = getattr(response, "usage_metadata", None)
             input_tokens = usage.prompt_token_count if usage else await self.count_tokens(prompt, system_message)
             output_tokens = usage.candidates_token_count if usage else 0
-            total_tokens = input_tokens + output_tokens
+            
+            # Extract advanced usage stats for precise billing
+            thoughts_tokens = getattr(usage, "thought_token_count", 0) or 0
+            cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
+            
+            total_tokens = input_tokens + output_tokens + thoughts_tokens
 
             cost = self.price_manager.calculate_cost(
                 model_name=self.model_name,
                 input_tokens=input_tokens,
-                output_tokens=output_tokens
+                output_tokens=output_tokens,
+                thoughts_token_count=thoughts_tokens,
+                cached_content_token_count=cached_tokens
             )
 
             return LLMResponse(
@@ -112,7 +119,9 @@ class GeminiProvider(BaseLLMProvider):
                 currency=self.price_manager.currency,
                 metadata={
                     "input_tokens": input_tokens,
-                    "output_tokens": output_tokens
+                    "output_tokens": output_tokens,
+                    "thoughts_tokens": thoughts_tokens,
+                    "cached_tokens": cached_tokens
                 }
             )
         except Exception as e:
@@ -181,12 +190,19 @@ class GeminiProvider(BaseLLMProvider):
             usage = getattr(response, "usage_metadata", None)
             input_tokens = usage.prompt_token_count if usage else 0
             output_tokens = usage.candidates_token_count if usage else 0
-            total_tokens = input_tokens + output_tokens
+            
+            # Extract advanced usage stats for precise billing
+            thoughts_tokens = getattr(usage, "thought_token_count", 0) or 0
+            cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
+            
+            total_tokens = input_tokens + output_tokens + thoughts_tokens
 
             cost = self.price_manager.calculate_cost(
                 model_name=self.model_name,
                 input_tokens=input_tokens,
-                output_tokens=output_tokens
+                output_tokens=output_tokens,
+                thoughts_token_count=thoughts_tokens,
+                cached_content_token_count=cached_tokens
             )
             
             return LLMResponse(
@@ -198,7 +214,9 @@ class GeminiProvider(BaseLLMProvider):
                 currency=self.price_manager.currency,
                 metadata={
                     "input_tokens": input_tokens,
-                    "output_tokens": output_tokens
+                    "output_tokens": output_tokens,
+                    "thoughts_tokens": thoughts_tokens,
+                    "cached_tokens": cached_tokens
                 }
             )
         except Exception as e:
