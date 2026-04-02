@@ -87,6 +87,7 @@ This script automatically detects your OS and injects the `aws-market-intelligen
 *   **BSR Navigation**: `get_top_bsr_categories` and `get_bsr_subcategories` allow dynamic exploration of the Best Sellers Rank category tree.
 *   **Seller Intelligence**: `get_seller_product_count` and `get_seller_feedback` provide insights into a merchant's storefront size and recent performance.
 *   **`refresh_amazon_cookies`**: Launches a headless (or manual) browser to capture fresh `session-id` cookies to bypass CAPTCHAs and WAF restrictions for strictly protected endpoints.
+*   **`get_amazon_keyword_bid_recommendations`**: Fetches suggested bids and bidding ranges for Sponsored Products using the high-fidelity **v5.0 Theme-based API**. Requires a valid Advertising API Refresh Token and Profile ID. Supports various bidding strategies (`AUTO_FOR_SALES`, `LEGACY_FOR_SALES`) and optional advanced impact analysis.
 
 ### Output & Delivery (L2)
 *   **`populate_feishu_bitable_records`**: Reuses initial empty rows in a new Bitable to ensure data starts from Row 1. Preferred for new exports.

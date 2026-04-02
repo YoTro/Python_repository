@@ -101,3 +101,25 @@ This guide provides solutions to common issues you might encounter while develop
 *   **`src/core/fallback.py` causes circular import or wrong dependency**:
     *   **Cause**: The `FallbackHandler` was incorrectly placed in the `src/core/` layer, violating dependency rules.
     *   **Solution**: `fallback.py` has been moved to `src/intelligence/fallback.py`, which is its correct domain. Ensure all import paths are updated accordingly.
+
+## 5. Amazon Advertising API (Ads API) Issues
+
+*   **`404 Method Not Found` for `bidRecommendations`**:
+    *   **Cause**: Attempting to use deprecated v2 endpoints.
+    *   **Solution**: Ensure the client is using the modern Theme-based endpoint: `/sp/targets/bid/recommendations`.
+
+*   **`429 Too Many Requests`**:
+    *   **Cause**: Exceeding the Amazon Advertising API rate limits (TPS).
+    *   **Solution**: The `AmazonAdsClient` includes built-in exponential backoff. Increase `max_retries` or ensure you are not making concurrent calls for the same profile in a tight loop.
+
+*   **`415 Unsupported Media Type` or `Cannot consume content type`**:
+    *   **Cause**: Amazon Advertising API v5.0 strictly requires specific vendor media types in `Content-Type` and `Accept` headers.
+    *   **Solution**: Ensure headers are set to `application/vnd.spthemebasedbidrecommendation.v5+json`. If failure persists, try `application/json` for `Content-Type` while keeping the vendor string for `Accept`.
+
+*   **`400 Bad Request: An unknown scope was requested` during OAuth**:
+    *   **Cause**: Your LWA Application has not been granted "Advertising API" access in the Amazon Ads console.
+    *   **Solution**: Visit [Amazon Ads API Solutions](https://advertising.amazon.com/api-solutions) and request API access for your Client ID. Simply having an LWA app is not enough.
+
+*   **`401 Unauthorized` or `Invalid Profile ID`**:
+    *   **Cause**: The `AMAZON_ADS_PROFILE_ID_{STORE}` in your `.env` does not belong to the account authorized by the Refresh Token.
+    *   **Solution**: Run `scripts/setup_amazon_ads.py` to list all valid Profile IDs for your authorized account and verify them against your `.env` settings.
