@@ -84,7 +84,15 @@ It employs a **Hybrid Intelligence** model:
    # ── Third-party Services ───────────────────────────────────
    SELLERSPRITE_EMAIL=
    SELLERSPRITE_PASSWORD=
-   XIYOUZHAOCI_PHONE=
+   XIYOU_PHONE=
+
+   # ── Amazon Advertising API (LWA) ───────────────────────────
+   AMAZON_ADS_CLIENT_ID=
+   AMAZON_ADS_CLIENT_SECRET=
+   AMAZON_ADS_DEFAULT_STORE=US
+   # Multiple stores supported: AMAZON_ADS_REFRESH_TOKEN_{STORE}, AMAZON_ADS_PROFILE_ID_{STORE}
+   AMAZON_ADS_REFRESH_TOKEN_US=
+   AMAZON_ADS_PROFILE_ID_US=
    ```
 
    | Variable | Required | Description |
@@ -97,6 +105,10 @@ It employs a **Hybrid Intelligence** model:
    | `FEISHU_*_APP_SECRET` | For Feishu bot | Lark Open Platform App Secret |
    | `FEISHU_*_USER_ACCESS_TOKEN` | No | User-level token for Bitable write access |
    | `FEISHU_*_WEBHOOK_URL` | No | Incoming webhook URL for the bot |
+   | `AMAZON_ADS_CLIENT_ID` | For Ads API | Login with Amazon Client ID |
+   | `AMAZON_ADS_CLIENT_SECRET` | For Ads API | Login with Amazon Client Secret |
+   | `AMAZON_ADS_REFRESH_TOKEN_*` | For Ads API | OAuth2 Refresh Token per store |
+   | `AMAZON_ADS_PROFILE_ID_*` | For Ads API | Advertising Profile ID per store |
 
 ---
 

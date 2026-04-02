@@ -58,6 +58,7 @@ venv.bak/
 .idea/
 .claude/
 .cursor/
+.gemini/*
 
 # Project Specific - Data & Models
 data/*

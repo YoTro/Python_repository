@@ -22,6 +22,7 @@ from src.mcp.servers.amazon.extractors.videos import VideoExtractor
 from src.mcp.servers.amazon.extractors.products_num import ProductsNumExtractor
 from src.mcp.servers.amazon.extractors.sales import SalesExtractor
 from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
+from src.mcp.servers.amazon.ads.client import AmazonAdsClient
 from src.core.utils.cookie_helper import AmazonCookieHelper
 from src.mcp.servers.amazon.extractors.bsr_category_extractor import BSRCategoryExtractor
 from src.core.data_cache import data_cache
@@ -208,6 +209,30 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         extractor = BSRCategoryExtractor()
         results = await extractor.get_categories_from_page(arguments["url"])
         return _json_response(results)
+
+    # ── Tier 5: Advertising API ──────────────────────────────────────────
+    if name == "get_amazon_keyword_bid_recommendations":
+        store_id = arguments.get("store_id")
+        region = arguments.get("region", "NA")
+        client = AmazonAdsClient(store_id=store_id, region=region)
+        
+        # Prepare keywords for API
+        keyword_text = arguments["keyword"]
+        match_types = arguments.get("match_types", ["EXACT"])
+        
+        keywords_payload = [
+            {"keyword": keyword_text, "matchType": m.upper()} 
+            for m in match_types
+        ]
+        
+        result = await asyncio.to_thread(
+            client.get_keyword_bid_recommendations,
+            keywords=keywords_payload,
+            ad_group_id=arguments.get("ad_group_id"),
+            campaign_id=arguments.get("campaign_id"),
+            asins=arguments.get("asins")
+        )
+        return _json_response(result)
 
     return [TextContent(type="text", text=f"Unknown Amazon tool: {name}")]
 
@@ -450,6 +475,28 @@ amazon_tools = [
             "required": ["url"]
         }
     ),
+    Tool(
+        name="get_amazon_keyword_bid_recommendations",
+        description="Get suggested bid and bidding ranges for a keyword from Amazon Advertising API (SP v3).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string", "description": "The keyword to check (e.g. 'wireless charger')"},
+                "match_types": {
+                    "type": "array", 
+                    "items": {"type": "string", "enum": ["EXACT", "PHRASE", "BROAD"]},
+                    "default": ["EXACT"],
+                    "description": "List of match types to get recommendations for"
+                },
+                "store_id": {"type": "string", "description": "The store ID suffix from .env (e.g. 'US', 'UK'). If omitted, uses default."},
+                "region": {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA", "description": "Amazon Ads API region."},
+                "ad_group_id": {"type": "string", "description": "Optional existing ad group ID to refine recommendations based on campaign strategy."},
+                "campaign_id": {"type": "string", "description": "Optional existing campaign ID."},
+                "asins": {"type": "array", "items": {"type": "string"}, "description": "Optional list of ASINs to provide context for new ad groups."}
+            },
+            "required": ["keyword"]
+        }
+    ),
 ]
 
 _AMAZON_META = {
@@ -473,6 +520,7 @@ _AMAZON_META = {
     "check_has_videos": ("DATA", "video presence and count"),
     "get_top_bsr_categories": ("DATA", "list of top-level BSR categories with URLs"),
     "get_bsr_subcategories": ("DATA", "list of subcategories within a BSR category"),
+    "get_amazon_keyword_bid_recommendations": ("DATA", "keyword bid recommendations from Advertising API"),
 }
 
 for tool in amazon_tools:
