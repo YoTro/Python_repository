@@ -217,19 +217,22 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         client = AmazonAdsClient(store_id=store_id, region=region)
         
         # Prepare keywords for API
-        keyword_text = arguments["keyword"]
+        keywords = arguments["keyword"]
+        if isinstance(keywords, str):
+            keywords = [keywords]
+            
         match_types = arguments.get("match_types", ["EXACT"])
         
-        keywords_payload = [
-            {"keyword": keyword_text, "matchType": m.upper()} 
-            for m in match_types
-        ]
+        keywords_payload = []
+        for kw in keywords:
+            for m in match_types:
+                keywords_payload.append({"keyword": kw, "matchType": m.upper()})
         
         result = await asyncio.to_thread(
             client.get_keyword_bid_recommendations,
             keywords=keywords_payload,
-            ad_group_id=arguments.get("ad_group_id"),
-            campaign_id=arguments.get("campaign_id"),
+            strategy=arguments.get("strategy", "AUTO_FOR_SALES"),
+            include_analysis=arguments.get("include_analysis", False),
             asins=arguments.get("asins")
         )
         return _json_response(result)
@@ -477,7 +480,7 @@ amazon_tools = [
     ),
     Tool(
         name="get_amazon_keyword_bid_recommendations",
-        description="Get suggested bid and bidding ranges for a keyword from Amazon Advertising API (SP v3).",
+        description="Get suggested bid and bidding ranges for a keyword from Amazon Advertising API (SP v5.0).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -488,11 +491,24 @@ amazon_tools = [
                     "default": ["EXACT"],
                     "description": "List of match types to get recommendations for"
                 },
+                "strategy": {
+                    "oneOf": [
+                        {"type": "string", "enum": ["AUTO_FOR_SALES", "LEGACY_FOR_SALES", "MANUAL"]},
+                        {"type": "array", "items": {"type": "string", "enum": ["AUTO_FOR_SALES", "LEGACY_FOR_SALES", "MANUAL"]}}
+                    ],
+                    "default": "AUTO_FOR_SALES",
+                    "description": "Bidding strategy. AUTO_FOR_SALES (Up & Down), LEGACY_FOR_SALES (Down only), MANUAL (Fixed). Can be a single string or a list."
+                },
+                "include_analysis": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Whether to include advanced impact analysis in the response (v5.0 feature)."
+                },
                 "store_id": {"type": "string", "description": "The store ID suffix from .env (e.g. 'US', 'UK'). If omitted, uses default."},
                 "region": {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA", "description": "Amazon Ads API region."},
                 "ad_group_id": {"type": "string", "description": "Optional existing ad group ID to refine recommendations based on campaign strategy."},
                 "campaign_id": {"type": "string", "description": "Optional existing campaign ID."},
-                "asins": {"type": "array", "items": {"type": "string"}, "description": "Optional list of ASINs to provide context for new ad groups."}
+                "asins": {"type": "array", "items": {"type": "string"}, "description": "Optional list of owned ASINs to provide context for new ad groups."}
             },
             "required": ["keyword"]
         }

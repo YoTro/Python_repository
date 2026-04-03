@@ -76,7 +76,7 @@ def test_v5_bids_comprehensive(keyword: str, asin: str, strategy: str = "LEGACY_
         sys.exit(1)
 
 if __name__ == "__main__":
-    target_kw = sys.argv[1] if len(sys.argv) > 1 else "rodent repellent"
+    target_kw = sys.argv[1] if len(sys.argv) > 1 else "Thermacell"
     target_asin = sys.argv[2] if len(sys.argv) > 2 else "B0FXFGMD7Z"
     # Testing "Down only" strategy
     test_v5_bids_comprehensive(target_kw, target_asin, strategy="LEGACY_FOR_SALES")

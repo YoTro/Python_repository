@@ -2,7 +2,7 @@ import requests
 import logging
 import time
 import json
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from .auth import AmazonAdsAuth
 
 logger = logging.getLogger(__name__)
@@ -28,14 +28,15 @@ class AmazonAdsClient:
         keywords: List[Dict[str, str]], 
         asins: List[str],
         include_analysis: bool = False,
-        strategy: str = "AUTO_FOR_SALES",
+        strategy: Union[str, List[str]] = "AUTO_FOR_SALES",
         adjustments: Optional[List[Dict[str, Any]]] = None,
         max_retries: int = 3
     ) -> Dict[str, Any]:
         """
         Fetch bid recommendations using SP v5.0.
         
-        :param strategy: "AUTO_FOR_SALES" (Up & Down), "LEGACY_FOR_SALES" (Down only), "MANUAL" (Fixed)
+        :param strategy: Single strategy string or a list of strategy strings.
+                        Options: "AUTO_FOR_SALES" (Up & Down), "LEGACY_FOR_SALES" (Down only), "MANUAL" (Fixed)
         :param adjustments: Optional list of placement adjustments.
         """
         endpoint = f"{self.base_url}/sp/targets/bid/recommendations"
@@ -65,43 +66,52 @@ class AmazonAdsClient:
                 "value": kw.get("keyword", kw.get("keywordText"))
             })
 
-        # BUILD THE FULLY COMPLIANT v5 PAYLOAD
-        payload = {
-            "recommendationType": "BIDS_FOR_NEW_AD_GROUP",
-            "asins": asins,
-            "targetingExpressions": targeting_expressions,
-            "bidding": {
-                "strategy": strategy,
-                "adjustments": adjustments # Expects [{"percentage": 100, "predicate": "PLACEMENT_TOP"}]
-            },
-            "includeAnalysis": include_analysis # Schema says boolean
-        }
+        is_single = isinstance(strategy, str)
+        strategies = [strategy] if is_single else strategy
+        results = {}
 
-        for attempt in range(max_retries):
-            try:
-                # Use json=payload to ensure correct encoding
-                response = requests.post(endpoint, json=payload, headers=headers)
-                
-                if response.status_code == 429:
-                    wait_time = (attempt + 1) * 10 
-                    logger.warning(f"Rate limited (429). Waiting {wait_time}s...")
-                    time.sleep(wait_time)
-                    continue
-                
-                if response.status_code == 415:
-                    # Amazon can be finicky about Content-Type vs schema validation
-                    logger.warning("415 Error: Retrying with standard application/json Content-Type...")
-                    headers["Content-Type"] = "application/json"
-                    continue
+        for s in strategies:
+            # BUILD THE FULLY COMPLIANT v5 PAYLOAD
+            payload = {
+                "recommendationType": "BIDS_FOR_NEW_AD_GROUP",
+                "asins": asins,
+                "targetingExpressions": targeting_expressions,
+                "bidding": {
+                    "strategy": s,
+                    "adjustments": adjustments # Expects [{"percentage": 100, "predicate": "PLACEMENT_TOP"}]
+                },
+                "includeAnalysis": include_analysis # Schema says boolean
+            }
 
-                response.raise_for_status()
-                return response.json()
-                
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    if hasattr(e, 'response') and e.response is not None:
-                        logger.error(f"Final Attempt Failed: {e.response.status_code} - {e.response.text}")
-                    raise
-                time.sleep(2)
+            strategy_result = {}
+            for attempt in range(max_retries):
+                try:
+                    # Use json=payload to ensure correct encoding
+                    response = requests.post(endpoint, json=payload, headers=headers)
+                    
+                    if response.status_code == 429:
+                        wait_time = (attempt + 1) * 10 
+                        logger.warning(f"Rate limited (429) for strategy {s}. Waiting {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue
+                    
+                    if response.status_code == 415:
+                        # Amazon can be finicky about Content-Type vs schema validation
+                        logger.warning(f"415 Error for strategy {s}: Retrying with standard application/json Content-Type...")
+                        headers["Content-Type"] = "application/json"
+                        continue
+
+                    response.raise_for_status()
+                    strategy_result = response.json()
+                    break
+                    
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        if hasattr(e, 'response') and e.response is not None:
+                            logger.error(f"Final Attempt Failed for strategy {s}: {e.response.status_code} - {e.response.text}")
+                        raise
+                    time.sleep(2)
+            
+            results[s] = strategy_result
         
-        return {}
+        return results[strategy] if is_single else results
