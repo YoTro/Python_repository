@@ -82,6 +82,7 @@ When you have gathered enough information, reply with your final answer prefixed
 3.  **Content Structure**:
     -   **Executive Summary**: High-level verdict (2-3 sentences).
     -   **Data Sources & Methodology**: Cite tools and sample sizes.
+    -   **Reporting Period**: The reporting period for the data.
     -   **Data Breakdown & Metrics Definition**: Present key metrics in tables.
     -   **Strategic Insights**: Apply a framework from the **# Analysis Frameworks** section.
     -   **Risk/Opportunity Assessment**: Provide direct, actionable advice.

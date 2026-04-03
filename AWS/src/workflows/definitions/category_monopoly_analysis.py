@@ -68,34 +68,67 @@ async def _enrich_seller_info(item: dict) -> dict:
     return {"seller_type": f_res.get("FulfilledBy", "Unknown"), "seller_id": seller_id, "feedback_count": feedback_count}
 
 async def _fetch_market_context(items: List[dict], ctx: Any) -> List[dict]:
-    """Fetches ABA keyword data and search page ad ratio."""
+    """Fetches ABA keyword data and search page ad ratio for multiple core terms."""
     if not items: return []
     top_titles = [item.get("Title", "") for item in items[:20] if item.get("Title")]
     prompt = (
-        """Analyze these 20 Amazon Best Seller product titles and identify the single most accurate CORE search term.
+        """Analyze these 20 Amazon Best Seller product titles and identify the TOP 3 most accurate CORE search terms (keywords).
+        Return them as a comma-separated list, most important first.
         Ignore brands and attributes. Titles:
         """
         f"{top_titles}"
     )
-    main_keyword = "unknown niche"
+    
+    core_keywords = ["unknown niche"]
     try:
         from src.intelligence.router import TaskCategory
         if ctx.router:
             res = await ctx.router.route_and_execute(prompt, category=TaskCategory.SIMPLE_CLEANING)
-            main_keyword = res.text.strip().replace('"', '').replace("'", "").lower()
+            raw_text = res.text.strip().replace('"', '').replace("'", "").lower()
+            core_keywords = [k.strip() for k in raw_text.split(",") if k.strip()][:3]
     except Exception as e: logger.warning(f"Keyword extraction failed: {e}")
         
+    # ABA Data for the primary keyword
     from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
     try:
-        aba_res = await asyncio.to_thread(XiyouZhaociAPI().get_aba_top_asins, "US", [main_keyword])
+        aba_res = await asyncio.to_thread(XiyouZhaociAPI().get_aba_top_asins, "US", [core_keywords[0]])
         ctx.cache["keyword_data"] = aba_res["searchTerms"][0] if aba_res and "searchTerms" in aba_res and aba_res["searchTerms"] else {}
     except Exception as e: logger.error(f"Failed to fetch ABA data: {e}")
         
     from src.mcp.servers.amazon.extractors.search import SearchExtractor
-    search_results = await SearchExtractor().search(main_keyword, page=1)
+    search_results = await SearchExtractor().search(core_keywords[0], page=1)
     sponsored_count = sum(1 for r in search_results if getattr(r, 'is_sponsored', False))
     ctx.cache["ad_ratio"] = sponsored_count / (len(search_results) or 1)
-    ctx.cache["main_keyword"] = main_keyword
+    
+    # NEW: Multi-Keyword & Multi-Strategy Bid Analysis
+    detailed_bids = {}
+    try:
+        from src.mcp.servers.amazon.ads.client import AmazonAdsClient
+        store_id = ctx.config.get("store_id")
+        ads_client = AmazonAdsClient(store_id=store_id)
+        
+        # We fetch EXACT and PHRASE for the Top 3 keywords
+        # Strategies: AUTO (Up/Down) and LEGACY (Down only)
+        match_types = ["EXACT", "PHRASE"]
+        strategies = ["AUTO_FOR_SALES", "LEGACY_FOR_SALES"]
+        
+        bid_res = await asyncio.to_thread(
+            ads_client.get_keyword_bid_recommendations,
+            keywords=[{"keyword": kw, "matchType": m} for kw in core_keywords for m in match_types],
+            asins=[(item.get("ASIN") or item.get("asin")) for item in items[:5] if (item.get("ASIN") or item.get("asin"))],
+            strategy=strategies
+        )
+        
+        # Group results by keyword for the analyzer
+        for s in strategies:
+            detailed_bids[s] = bid_res.get(s, {}).get("bidRecommendations", [])
+            
+        ctx.cache["detailed_bid_analysis"] = detailed_bids
+    except Exception as e:
+        logger.error(f"Failed to fetch detailed bid recommendations: {e}")
+        
+    ctx.cache["core_keywords"] = core_keywords
+    ctx.cache["main_keyword"] = core_keywords[0]
     return items
 
 async def _enrich_external_intensity(items: List[dict], ctx: Any) -> List[dict]:
@@ -137,14 +170,47 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
     analyzer = CategoryMonopolyAnalyzer()
     external_data = {"social_psi": ctx.cache.get("category_social_psi"), "deal_intensity": ctx.cache.get("category_deal_intensity")}
     analysis_input = [{"rank": item.get("Rank", 999), "price": float(str(item.get("Price") or "0").replace("$", "").replace(",", "")), "sales": item.get("sales", 0), "brand": item.get("brand", "Unknown"), "seller_type": item.get("seller_type", "Unknown"), "feedback_count": item.get("feedback_count", 0), "review_count": int(str(item.get("Reviews") or "0").replace(",", "")), "rating": float(str(item.get("Rating") or "0").split(" ")[0])} for item in items]
-    result = analyzer.analyze(analysis_input, keyword_data=ctx.cache.get("keyword_data"), ad_data={"ad_ratio": ctx.cache.get("ad_ratio", 0.3)}, external_data=external_data)
     
+    # Combined Ad Data with Multi-Keyword CPC
+    detailed_bids = ctx.cache.get("detailed_bid_analysis", {})
+    ad_data = {
+        "ad_ratio": ctx.cache.get("ad_ratio", 0.3),
+        "detailed_bids": detailed_bids
+    }
+    
+    result = analyzer.analyze(analysis_input, keyword_data=ctx.cache.get("keyword_data"), ad_data=ad_data, external_data=external_data)
+    
+    # Format Bid Insight for LLM
+    bid_insight = []
+    legacy_recs = detailed_bids.get("LEGACY_FOR_SALES", [])
+    for rec in legacy_recs:
+        for expr in rec.get("bidRecommendationsForTargetingExpressions", []):
+            kw = expr.get("targetingExpression", {}).get("value")
+            m_type = expr.get("targetingExpression", {}).get("type")
+            bid = expr.get("suggestedBid", {}).get("amount", 0)
+            if bid > 0:
+                bid_insight.append(f"{kw}({m_type}): ${bid:.2f}")
+
     prices = [p['price'] for p in analysis_input if p['price'] > 0]
     median_price = statistics.median(prices) if prices else 25.0
     estimator = SalesEstimator()
     node_id = ctx.config.get("category_node_id")
     baseline = estimator.category_params.get(str(node_id), {}).get("market_logic", {})
-    return [{"analysis_result": json.dumps(result, ensure_ascii=False), "main_keyword": ctx.cache.get("main_keyword"), "niche_median_price": f"${median_price:.2f}", "review_disparity": f"{round((statistics.mean([p['review_count'] for p in analysis_input[:10]]) if len(analysis_input) >= 10 else 0) / max(1, (statistics.mean([p['review_count'] for p in analysis_input[50:]]) if len(analysis_input) > 50 else 1)), 1)}x", "recommended_capital": f"${int(median_price * 2500):,}", "industry_typical_cr3": f"{baseline.get('typical_cr3', 0.4) * 100}%", "data_confidence_r2": estimator.category_params.get(str(node_id), {}).get("r_squared", 0.95), "social_psi": ctx.cache.get("category_social_psi", "N/A"), "social_verdict": ctx.cache.get("category_social_verdict", "N/A"), "deal_intensity": ctx.cache.get("category_deal_intensity", "N/A")}]
+    
+    return [{
+        "analysis_result": json.dumps(result, ensure_ascii=False), 
+        "main_keyword": ctx.cache.get("main_keyword"), 
+        "core_keywords": ", ".join(ctx.cache.get("core_keywords", [])),
+        "niche_median_price": f"${median_price:.2f}", 
+        "bid_insight": " | ".join(bid_insight[:10]),
+        "review_disparity": f"{round((statistics.mean([p['review_count'] for p in analysis_input[:10]]) if len(analysis_input) >= 10 else 0) / max(1, (statistics.mean([p['review_count'] for p in analysis_input[50:]]) if len(analysis_input) > 50 else 1)), 1)}x", 
+        "recommended_capital": f"${int(median_price * 2500):,}", 
+        "industry_typical_cr3": f"{baseline.get('typical_cr3', 0.4) * 100}%", 
+        "data_confidence_r2": estimator.category_params.get(str(node_id), {}).get("r_squared", 0.95), 
+        "social_psi": ctx.cache.get("category_social_psi", "N/A"), 
+        "social_verdict": ctx.cache.get("category_social_verdict", "N/A"), 
+        "deal_intensity": ctx.cache.get("category_deal_intensity", "N/A")
+    }]
 
 async def _prepare_report_artifact(items: List[dict], ctx: Any) -> List[dict]:
     """Saves the report to a local Markdown file."""
@@ -178,18 +244,21 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
             prompt_template=(
                 "### ROLE & DYNAMIC CONTEXT\n"
                 "Senior Amazon Analyst advising on a **{recommended_capital}** investment.\n"
-                "Niche: **{main_keyword}** | Data Confidence (R²): **{data_confidence_r2}**\n\n"
+                "Primary Niche: **{main_keyword}** | Related Terms: {core_keywords}\n"
+                "Data Confidence (R²): **{data_confidence_r2}**\n\n"
                 "### BENCHMARKS\n"
                 "- Median Price: {niche_median_price}\n"
+                "- Detailed CPC Insight: {bid_insight}\n"
                 "- Review Disparity: {review_disparity}\n"
                 "- Typical Industry CR3: {industry_typical_cr3}\n"
                 "- Social PSI: {social_psi} ({social_verdict})\n"
                 "- Deal Intensity: {deal_intensity}/10\n\n"
                 "### DATA: {analysis_result}\n\n"
                 "### RULES\n"
-                "- 400-550 words. No filler. Trace every claim to a score.\n"
-                "- Analyze Social PSI & Deal Intensity in your final verdict.\n"
-                "- STRUCTURE: 1. Executive Verdict, 2. Competitive Dynamics (incl. Social/Deals), 3. Capital & Barrier Analysis, 4. Pre-Mortem, 5. Tactical Path."
+                "- 400-550 words. No filler.\n"
+                "- ANALYZE BID BARRIERS: Compare the suggested CPC to the median price. If CPC > 10% of median price, highlight extreme capital risk.\n"
+                "- Identify which specific keywords are 'High Barrier' and if PHRASE/EXACT gaps offer opportunities.\n"
+                "- STRUCTURE: 1. Executive Verdict, 2. Competitive Dynamics (Social/Deals/Ads), 3. Capital & Barrier Analysis, 4. Pre-Mortem, 5. Tactical Path."
             ),
             compute_target=ComputeTarget.CLOUD_LLM
         ),

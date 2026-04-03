@@ -132,10 +132,61 @@ class CategoryMonopolyAnalyzer:
         return min(100, (top3_shares / 0.50) * 100)
 
     def _analyze_ad_competition(self, ad_data: Optional[Dict[str, Any]]) -> float:
-        if not ad_data or "ad_ratio" not in ad_data: return 50
-        ratio = ad_data["ad_ratio"]
+        if not ad_data: return 50
+        
+        # 1. Ad Ratio Score (Visibility competition)
+        ratio = ad_data.get("ad_ratio", 0.3)
         danger_zone = self.thresholds.get("ad_ratio_danger_zone", 0.40)
-        return min(100, (ratio / danger_zone) * 100)
+        ratio_score = min(100, (ratio / danger_zone) * 100)
+        
+        # 2. Detailed Bid Analysis (Capital barrier)
+        detailed_bids = ad_data.get("detailed_bids", {})
+        if detailed_bids:
+            bid_barrier_score = self._calculate_bid_barrier_score(detailed_bids)
+        else:
+            # Fallback to single avg_bid if detailed data is missing
+            bid = ad_data.get("avg_bid", 0)
+            high_bid_threshold = self.thresholds.get("high_bid_barrier", 2.50)
+            bid_barrier_score = min(100, (bid / high_bid_threshold) * 100) if bid > 0 else 50
+        
+        # Combined score: 40% ratio (current heat), 60% bid (capital barrier/monopoly)
+        return (ratio_score * 0.4) + (bid_barrier_score * 0.6)
+
+    def _calculate_bid_barrier_score(self, detailed_bids: Dict[str, Any]) -> float:
+        """
+        Calculates a barrier score based on multiple keywords and match types.
+        Identifies high-barrier keywords.
+        """
+        all_suggested_bids = []
+        high_barrier_keywords = []
+        
+        # Process Legacy for Sales as the most conservative/baseline strategy
+        legacy_recs = detailed_bids.get("LEGACY_FOR_SALES", [])
+        for rec in legacy_recs:
+            for expr in rec.get("bidRecommendationsForTargetingExpressions", []):
+                bid = expr.get("suggestedBid", {}).get("amount", 0)
+                kw = expr.get("targetingExpression", {}).get("value", "unknown")
+                m_type = expr.get("targetingExpression", {}).get("type", "unknown")
+                
+                if bid > 0:
+                    all_suggested_bids.append(bid)
+                    # Threshold for a single high-barrier keyword
+                    if bid > 2.80:
+                        high_barrier_keywords.append(f"{kw} ({m_type}): ${bid:.2f}")
+
+        if not all_suggested_bids:
+            return 50.0
+
+        avg_bid = statistics.mean(all_suggested_bids)
+        # 3.0 USD as a benchmark for high-competition barrier in US marketplace
+        barrier_threshold = self.thresholds.get("high_bid_barrier", 3.0)
+        
+        score = min(100, (avg_bid / barrier_threshold) * 100)
+        # Bonus penalty if multiple keywords are high-barrier
+        if len(set(high_barrier_keywords)) >= 2:
+            score = min(100, score + 15)
+            
+        return score
 
     def _analyze_external_intensity(self, external_data: Optional[Dict[str, Any]]) -> tuple[float, float]:
         if not external_data: return 50.0, 50.0

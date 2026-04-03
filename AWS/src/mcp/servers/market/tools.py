@@ -18,13 +18,7 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
     from src.core.utils.context import ContextPropagator
     tenant_id = ContextPropagator.get("tenant_id", "default")
 
-    if name == "seller_analysis":
-        return [TextContent(type="text", text=json.dumps({"us_seller_percentage": 0.62, "market_concentration": "high"}))]
-
-    elif name == "keyword_data":
-        return [TextContent(type="text", text=json.dumps({"search_volume": 150000, "cpc_bid": 1.25}))]
-
-    elif name == "get_ad_traffic":
+    if name == "get_ad_traffic":
         return [TextContent(type="text", text=json.dumps({"ad_spend": 5000, "roas": 2.1}))]
 
     elif name == "get_deal_history":
@@ -153,24 +147,6 @@ market_tools = [
         name="xiyou_check_login_status",
         description="Checks the status of a pending WeChat QR code login for Xiyouzhaoci. Call this ONLY after the user confirms they have scanned the QR code.",
         inputSchema={"type": "object", "properties": {}},
-    ),
-    Tool(
-        name="seller_analysis",
-        description="Analyze seller demographics for a category or keyword.",
-        inputSchema={
-            "type": "object",
-            "properties": {"category_url": {"type": "string"}},
-            "required": ["category_url"],
-        },
-    ),
-    Tool(
-        name="keyword_data",
-        description="Get search volume and CPC data for a keyword.",
-        inputSchema={
-            "type": "object",
-            "properties": {"keyword": {"type": "string"}},
-            "required": ["keyword"],
-        },
     ),
     Tool(
         name="get_ad_traffic",
@@ -305,8 +281,6 @@ market_tools = [
 _MARKET_META = {
     "xiyou_get_login_qr": ("DATA", "URL for WeChat login QR code"),
     "xiyou_check_login_status": ("DATA", "authentication status of pending QR scan"),
-    "seller_analysis": ("DATA", "seller demographics: US seller %, market concentration"),
-    "keyword_data": ("DATA", "search volume and CPC bid"),
     "get_ad_traffic": ("DATA", "ad spend and ROAS estimates"),
     "get_deal_history": ("DATA", "list of historical deals with dates, prices, and discounts"),
     "analyze_promotions": ("COMPUTE", "JSON containing promo frequency, all-time low, and dependency score"),
