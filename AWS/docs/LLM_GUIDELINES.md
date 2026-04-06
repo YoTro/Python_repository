@@ -4,12 +4,14 @@ This document outlines best practices for interacting with the LLMs integrated i
 
 ## 1. Prompt Engineering Principles
 
-*   **3-Layer System Prompt**: The `MCPAgent` system prompt is built from three components:
-    1.  **`mcp_agent_system.md`** — Human-editable Markdown template with `$tool_catalog` and `$token_budget` variables. Edit this to change agent behavior without touching code.
-    2.  **`PromptBuilder`** — Loads the `.md` template and injects runtime values via `string.Template` (no Jinja2 dependency).
-    3.  **`ToolCatalogFormatter`** — Reads `ToolMeta(category, returns)` from the registry and groups 48 tools into DATA / COMPUTE / FILTER / OUTPUT sections.
+*   **3-Layer System Prompt Architecture**: The `MCPAgent` system prompt is dynamically assembled from three layers:
+    1.  **`mcp_agent_system.md` (Protocol Layer)** — Human-editable Markdown template. Defines the ReAct loop logic, JSON call formats, and autonomous output rules.
+    2.  **`src/intelligence/prompts/config/` (Knowledge Layer - SSOT)** — YAML-based repository for Expert Roles, Analysis Frameworks (PSI, SWOT), and Report Templates. This ensures consistent business logic across both Agent and Workflow tracks.
+    3.  **`PromptManager` (Assembly Layer)** — Orchestrates the injection of values from `config/workflow_defaults.yaml` into YAML templates using `$variable` syntax, ensuring AI standards are always synchronized with system thresholds.
 *   **Execution Phases**: The template guides the LLM through 5 phases: COLLECT → FILTER → ENRICH → ANALYZE → OUTPUT. Not all phases are required for every task.
 *   **Autonomous Output Rules**: Organized into **General Principles** (e.g., discover IDs via tools) and **Feishu-Specific Rules** (e.g., Attachment-First Policy for long reports, Bitable automation). This ensures the agent adapts its output strategy based on the platform.
+*   **Config-Driven Prompts**: Business "red lines" (e.g., `high_monopoly_score`, `ad_traffic_ratio_max`) are defined once in `config/workflow_defaults.yaml`. Changing a value there automatically updates the reasoning standards in all AI-generated reports.
+*   **Ad Dependency Red-lines**: The platform now enforces an **Advertising Dependency Policy**. If an ASIN's `advertisingTrafficScoreRatio` (from XiyouZhaoci) exceeds the threshold (default 35%), the LLM should flag it as high-risk, as it lacks organic "moat".
 *   **Tool Disambiguation**: Similar tools are explicitly distinguished in descriptions (e.g., `search_products` = Amazon direct search; `xiyou_keyword_analysis` = third-party Xiyouzhaoci database).
 *   **Negative Constraints**: Only use parameters in the tool's schema. One tool call per turn. No hallucinated data.
 
@@ -22,7 +24,7 @@ This document outlines best practices for interacting with the LLMs integrated i
     *   **Tiered Pricing**: Automatic switching between `lte_200k` and `gt_200k` pricing tiers based on the prompt size.
 *   **Budget Enforcement**: When cloud tokens exceed the budget, the agent forces a final summary from collected data and notifies the user that remaining work will use batch API. The agent does NOT hard-fail.
 *   **Leverage Local Models for Pre-processing**: For large text inputs (e.g., raw HTML, long customer reviews), use the `IntelligenceRouter` to automatically dispatch simple cleaning or summarization tasks to the local Llama.cpp model first.
-*   **Batch Fallback**: When the agent's cloud token budget is exhausted during a complex research task, `batch_route_and_execute()` can process remaining items asynchronously at lower priority.
+*   **Independent Routing**: Every item in a batch is independently classified and routed, preventing complex tasks from being misrouted to simpler models.
 *   **Token Tracking Fields**:
     *   `session.token_usage` — total tokens across all providers (informational).
     *   `session.cloud_token_usage` — cloud-only tokens (budget-relevant).

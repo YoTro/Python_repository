@@ -151,7 +151,7 @@ The following analysis functionalities have been migrated from CLI tasks to the 
 *   **Product Similarity** (`ProductSimilarityProcessor`): TF-IDF vectorization + KMeans/DBSCAN clustering. Accepts `List[Product]` Pydantic models.
 *   **Sales Estimation** (`SalesEstimator`): UCLA Sales-Rank Regression. Accepts `Product` Pydantic models with `sales_rank` data.
 *   **Review Summarization** (`ReviewSummarizer`): LLM-powered sentiment analysis. Accepts `List[Review]` Pydantic models.
-*   **Category Monopoly Analysis** (`CategoryMonopolyAnalyzer`): Multi-dimensional market scoring (CR3, CV pricing, etc.). Accepts lists of dicts containing BSR product data and keyword metrics.
+*   **Category Monopoly Analysis** (`CategoryMonopolyAnalyzer`): Multi-dimensional market scoring (CR3, CV pricing, etc.). Accepts lists of dicts containing BSR product data and keyword metrics. Now incorporates **Actual BSR Ad Dependency** by batch-querying Top 20 winners' traffic sources.
 
 These processors can be called directly via the Intelligence Router or through Agent workflows.
 

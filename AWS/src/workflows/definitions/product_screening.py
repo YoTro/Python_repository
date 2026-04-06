@@ -27,11 +27,9 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Extractor wrapper functions
-# Each wraps an existing Extractor class into the async fn(item) -> dict
-# signature expected by EnrichStep.
 # ---------------------------------------------------------------------------
 
-async def _search_products(item: dict) -> dict:
+async def _search_products(item: dict, ctx: WorkflowContext) -> dict:
     """Search Amazon for candidate ASINs by keyword."""
     from src.mcp.servers.amazon.extractors.search import SearchExtractor
     extractor = SearchExtractor()
@@ -41,7 +39,7 @@ async def _search_products(item: dict) -> dict:
     return {"search_results": results}
 
 
-async def _enrich_product_details(item: dict) -> dict:
+async def _enrich_product_details(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch price, rating, title, features from product page."""
     from src.mcp.servers.amazon.extractors.product_details import ProductDetailsExtractor
     extractor = ProductDetailsExtractor()
@@ -58,26 +56,43 @@ async def _enrich_product_details(item: dict) -> dict:
     }
 
 
-async def _enrich_dimensions(item: dict) -> dict:
-    """Fetch product dimensions and weight."""
-    from src.mcp.servers.amazon.extractors.dimensions import DimensionsExtractor
-    extractor = DimensionsExtractor()
-    result = await extractor.get_dimensions_and_price(item["asin"])
-    return {"dimensions": result.get("Dimensions")}
-
-
-async def _enrich_ranks(item: dict) -> dict:
-    """Fetch BSR ranks."""
-    from src.mcp.servers.amazon.extractors.ranks import RanksExtractor
-    extractor = RanksExtractor()
-    result = await extractor.get_product_ranks(item["asin"])
+async def _enrich_via_profitability_api(item: dict, ctx: WorkflowContext) -> dict:
+    """
+    High-efficiency enrichment using Amazon's Profitability Calculator API.
+    Fetches weight, dimensions, BSR, and price in a single request.
+    """
+    from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
+    extractor = ProfitabilitySearchExtractor()
+    asin = item.get("asin")
+    if not asin:
+        return {}
+    
+    # Searching for an ASIN usually returns the exact product match
+    results = await extractor.search_products(asin, page_offset=1)
+    if not results:
+        return {}
+    
+    p = results[0]
     return {
-        "primary_rank": result.get("PrimaryRank"),
-        "category": result.get("Category"),
+        "title": p.get("title", item.get("title")),
+        "price": p.get("price", item.get("price")),
+        "weight_lb": p.get("weight"),
+        "dimensions": {
+            "length": p.get("length"),
+            "width": p.get("width"),
+            "height": p.get("height"),
+            "unit": p.get("dimensionUnit")
+        },
+        "primary_rank": p.get("salesRank"),
+        "category": p.get("salesRankContextName"),
+        "review_count": p.get("customerReviewsCount"),
+        "rating": p.get("customerReviewsRating"),
+        "brand": p.get("brandName"),
+        "fee_category": p.get("feeCategoryString")
     }
 
 
-async def _enrich_past_month_sales(item: dict) -> dict:
+async def _enrich_past_month_sales(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch past month sales estimate."""
     from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
     extractor = PastMonthSalesExtractor()
@@ -85,7 +100,7 @@ async def _enrich_past_month_sales(item: dict) -> dict:
     return {"past_month_sales": result.get("PastMonthSales")}
 
 
-async def _enrich_fulfillment(item: dict) -> dict:
+async def _enrich_fulfillment(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch fulfillment info (FBA/FBM)."""
     from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
     extractor = FulfillmentExtractor()
@@ -93,80 +108,96 @@ async def _enrich_fulfillment(item: dict) -> dict:
     return {"fulfilled_by": result.get("FulfilledBy")}
 
 
-async def _enrich_deal_history(item: dict) -> dict:
+async def _enrich_deal_history(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch off-Amazon deal history, using product title for keyword search."""
     from src.mcp.servers.market.deals.client import DealHistoryClient
     
-    # Prioritize using keywords from the title for better off-site search results
+    asin = item.get("asin")
     title = item.get("title", "")
     brand = item.get("brand", "")
     
-    # Construct a search query from brand and the first 3-4 words of the title
-    # This is more effective than searching for an ASIN on non-Amazon sites.
     keyword = brand
     if title:
         title_parts = title.replace(brand, "").strip().split()
         keyword = f"{brand} {' '.join(title_parts[:3])}".strip()
 
     client = DealHistoryClient()
-    deals = await client.get_deal_history(asin=item["asin"], keyword=keyword)
+    deals = await client.get_deal_history(asin=asin, keyword=keyword)
     return {"deal_history": deals}
 
 
+async def _enrich_ad_metrics_xiyou(item: dict, ctx: WorkflowContext) -> dict:
+    """Fetch ad traffic ratio from XiyouZhaoci."""
+    asin = item.get("asin")
+    if not asin or not ctx.mcp:
+        return {}
+        
+    try:
+        resp = await ctx.mcp.call_tool_json("xiyou_get_traffic_scores", {
+            "asins": [asin],
+            "country": "US"
+        })
+        if isinstance(resp, list) and len(resp) > 0:
+            import json
+            data = json.loads(resp[0].get("text", "{}"))
+            if data.get("success") and data.get("data"):
+                # Ratio is like 0.45 (45%)
+                ratio = data["data"][0].get("advertisingTrafficScoreRatio", 0.0)
+                growth = data["data"][0].get("totalTrafficScoreGrowthRate", 0.0)
+                return {
+                    "ad_traffic_ratio": ratio,
+                    "traffic_growth_7d": growth
+                }
+    except Exception as e:
+        logger.error(f"Failed to fetch Xiyou traffic scores for {asin}: {e}")
+    return {}
+
+
 # ---------------------------------------------------------------------------
-# Processing functions (Pure Python)
+# Processing functions (Pure Python or MCP)
 # ---------------------------------------------------------------------------
 
-def _calculate_profit(items: list) -> list:
+async def _calculate_profit_mcp(items: list, ctx: WorkflowContext) -> list:
     """
-    Calculate profit margin for each item.
-    Uses FBA fee + referral fee from static resources.
+    Calculate profit margin for each item using the finance MCP tool.
+    This ensures we use the most up-to-date fee logic and standard data structures.
     """
-    import json
-    import os
-
-    resources_dir = os.path.join(
-        os.path.dirname(__file__), "..", "..", "mcp", "servers", "finance"
-    )
-
-    # Load fee tables
-    fba_fee_path = os.path.join(resources_dir, "fba_fee.json")
-    referral_path = os.path.join(resources_dir, "referral_fee_rates.json")
-
-    fba_fees = {}
-    referral_rates = {}
-    if os.path.exists(fba_fee_path):
-        with open(fba_fee_path, "r") as f:
-            fba_fees = json.load(f)
-    if os.path.exists(referral_path):
-        with open(referral_path, "r") as f:
-            referral_rates = json.load(f)
+    if not ctx.mcp:
+        logger.error("MCP client not available in context. Skipping profit calculation.")
+        return items
 
     for item in items:
+        asin = item.get("asin")
         price = item.get("price")
+        
+        # Determine estimated cost (COGS)
         cost = item.get("estimated_cost")
+        if cost is None and price:
+            cost = price * 0.25 # Default 25% COGS estimate
+            item["estimated_cost"] = cost
+            item["cost_source"] = "estimated_default"
 
-        if price and price > 0:
-            # Estimate FBA fee (simplified: use default tier)
-            fba_fee = fba_fees.get("default", 3.50) if isinstance(fba_fees, dict) else 3.50
-            # Referral fee: default 15%
-            referral_fee = price * referral_rates.get("default", 0.15) if isinstance(referral_rates, dict) else price * 0.15
-
-            if cost is None:
-                # Rough cost estimate: 25% of price as fallback
-                cost = price * 0.25
-                item["estimated_cost"] = cost
-                item["cost_source"] = "estimated"
-
-            profit = price - cost - fba_fee - referral_fee
-            item["fba_fee"] = round(fba_fee, 2)
-            item["referral_fee"] = round(referral_fee, 2)
-            item["profit"] = round(profit, 2)
-            item["profit_margin"] = round(profit / price, 4) if price > 0 else 0
-            item["cost_ratio"] = round(cost / price, 4) if price > 0 else 1.0
-        else:
-            item["profit_margin"] = 0
-            item["cost_ratio"] = 1.0
+        if asin and cost:
+            try:
+                # Call finance MCP tool
+                # The tool will enrich missing price/category from cache if needed
+                resp = await ctx.mcp.call_tool_json("calc_profit", {
+                    "asin": asin,
+                    "estimated_cost": cost
+                })
+                
+                if isinstance(resp, list) and len(resp) > 0:
+                    import json
+                    # TextContent holds the JSON response
+                    profit_data = json.loads(resp[0].get("text", "{}"))
+                    if profit_data.get("profitability"):
+                        p = profit_data["profitability"]
+                        item["profit"] = p.get("net_profit")
+                        item["profit_margin"] = p.get("margin")
+                        item["roi"] = p.get("roi")
+                        item["fees"] = profit_data.get("fees")
+            except Exception as e:
+                logger.error(f"Failed to calculate profit via MCP for {asin}: {e}")
 
     return items
 
@@ -197,21 +228,13 @@ def build_product_screening(config: dict) -> Workflow:
     Config values come from merge(workflow_defaults, job_override).
     """
     steps = [
-        # ── Stage 1: Market Discovery & Basic Filtering ──
+        # ── Stage 1: Market Discovery & Data Enrichment ──
+        # Optimization: Use Profitability API to fetch most data in one shot
         EnrichStep(
-            name="enrich_product_details",
-            extractor_fn=_enrich_product_details,
+            name="enrich_via_profitability_api",
+            extractor_fn=_enrich_via_profitability_api,
             parallel=True,
-        ),
-        EnrichStep(
-            name="enrich_dimensions",
-            extractor_fn=_enrich_dimensions,
-            parallel=True,
-        ),
-        EnrichStep(
-            name="enrich_ranks",
-            extractor_fn=_enrich_ranks,
-            parallel=True,
+            concurrency=10
         ),
         EnrichStep(
             name="enrich_past_month_sales",
@@ -232,8 +255,6 @@ def build_product_screening(config: dict) -> Workflow:
             extractor_fn=_enrich_fulfillment,
             parallel=True,
         ),
-        # US seller ratio analysis would go here (requires seller_info extractor)
-        # FilterStep("competition_filter", [ThresholdRule("us_seller_ratio", min_val=config.get("us_seller_ratio_min", 0.80))]),
 
         # ── Stage 3: Price Stability & Promotion Analysis ──
         EnrichStep(
@@ -256,14 +277,13 @@ def build_product_screening(config: dict) -> Workflow:
         # ── Stage 4: Cost & Profitability ──
         ProcessStep(
             name="calculate_profit",
-            fn=_calculate_profit,
-            compute_target=ComputeTarget.PURE_PYTHON,
+            fn=_calculate_profit_mcp,
+            compute_target=ComputeTarget.PURE_PYTHON, # Logic is async but compute is trivial
         ),
         FilterStep(
             name="profit_filter",
             rules=[
                 ThresholdRule("profit_margin", min_val=config.get("profit_margin_min", 0.30)),
-                ThresholdRule("cost_ratio", max_val=config.get("cost_ratio_max", 0.30)),
             ],
         ),
 
@@ -284,9 +304,20 @@ def build_product_screening(config: dict) -> Workflow:
             ],
         ),
 
-        # ── Stage 6: Advertising Analysis ──
-        # Ad traffic data would come from SellerSprite integration
-        # FilterStep("ad_filter", [ThresholdRule("ad_traffic_ratio", max_val=config.get("ad_traffic_ratio_max", 0.20))]),
+        # ── Stage 6: Advertising Analysis (Third-party) ──
+        EnrichStep(
+            name="enrich_ad_metrics",
+            extractor_fn=_enrich_ad_metrics_xiyou,
+            parallel=True,
+            enabled=config.get("enable_ad_analysis_xiyou", True)
+        ),
+        FilterStep(
+            name="ad_filter",
+            rules=[
+                ThresholdRule("ad_traffic_ratio", max_val=config.get("ad_traffic_ratio_max", 0.35)),
+            ],
+            enabled=config.get("enable_ad_analysis_xiyou", True)
+        ),
 
         # ── Stage 7: Final Synthesis (Cloud LLM) ──
         ProcessStep(

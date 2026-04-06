@@ -61,14 +61,18 @@ async def test_data_flattening_logic():
         )
         
         # Mock IntelligenceRouter to avoid LLM call
+        from src.intelligence.dto import LLMResponse
+        from unittest.mock import AsyncMock
+        
         ctx.router = MagicMock()
-        ctx.router.batch_route_and_execute = MagicMock()
+        mock_response = LLMResponse(text="Success", provider_name="mock", model_name="mock")
+        ctx.router.route_and_execute = AsyncMock(return_value=mock_response)
         
         # This will trigger _run_llm -> prompt.format(...)
         await step.run(results, ctx)
         
-        # Check if formatting succeeded (no warning in logs, but we check if mock was called with correct string)
-        formatted_prompt = ctx.router.batch_route_and_execute.call_args[0][0][0]
+        # Check if formatting succeeded
+        formatted_prompt = ctx.router.route_and_execute.call_args[0][0]
         print(f"Formatted Prompt: {formatted_prompt}")
         
         assert "$125,000" in formatted_prompt # 50 * 2500 = 125000

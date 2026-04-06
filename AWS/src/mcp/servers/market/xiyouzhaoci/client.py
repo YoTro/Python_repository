@@ -533,6 +533,33 @@ class XiyouZhaociAPI:
             logger.error(f"Error querying search terms ranking for '{query}': {e}")
             return {}
 
+    def get_traffic_scores(self, country: str, asins: List[str]) -> dict:
+        """
+        Fetch 7-day traffic scores for a list of ASINs.
+        Useful fields: advertisingTrafficScoreRatio (Ad dependency), totalTrafficScoreGrowthRate (Growth).
+        """
+        url = f"{self.base_url}/v4/asins/trafficScore"
+        
+        payload = {
+            "asins": asins,
+            "country": country
+        }
+        
+        headers = self.common_headers.copy()
+        # Use the first ASIN for the request-url header to match Xiyou's behavior
+        first_asin = asins[0] if asins else "unknown"
+        headers["request-url"] = f"/detail/asin/look_up/{country}/{first_asin}"
+        headers["krs-ver"] = self._krs_ver()
+
+        logger.info(f"Querying traffic scores for {len(asins)} ASINs in {country}")
+        try:
+            response = self._request("POST", url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error querying traffic scores: {e}")
+            return {}
+
 
 if __name__ == "__main__":
     api = XiyouZhaociAPI()
@@ -548,6 +575,11 @@ if __name__ == "__main__":
     elif mode == "compare":
         asins = sys.argv[2].split(",") if len(sys.argv) > 2 else ["B08X4615SC", "B07BJN11KV"]
         path = api.export_compare_data("US", asins)
+    elif mode == "traffic":
+        asins = sys.argv[2].split(",") if len(sys.argv) > 2 else ["B07T869RNY", "B0CKY689WQ"]
+        res = api.get_traffic_scores("US", asins)
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        sys.exit(0)
     else:
         path = api.export_keyword_data("US", sys.argv[2] if len(sys.argv) > 2 else "iphone case")
 

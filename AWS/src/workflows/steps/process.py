@@ -9,6 +9,7 @@ Routes to the appropriate compute target:
 """
 
 import logging
+import asyncio
 from typing import List, Dict, Any, Callable, Optional, Type
 
 from pydantic import BaseModel
@@ -132,19 +133,26 @@ class ProcessStep(Step):
         estimated_tokens = sum(len(p) // 4 for p in prompts_to_process)
         logger.info(f"[{self.name}] Initiating batch execution for {len(prompts_to_process)} prompts (est. {estimated_tokens} tokens)...")
         
+        # Parallel execution using standard route_and_execute
+        # This ensures each item is independently classified, logged, and costed
+        logger.info(f"[{self.name}] Initiating parallel execution for {len(prompts_to_process)} items...")
+        
         try:
-            if self.output_schema:
-                results = await router.batch_route_and_execute(
-                    prompts_to_process, category=category, schema=self.output_schema
+            tasks = []
+            for prompt in prompts_to_process:
+                tasks.append(
+                    router.route_and_execute(
+                        prompt, 
+                        category=category, 
+                        schema=self.output_schema,
+                        session_id=ctx.job_id
+                    )
                 )
-            else:
-                results = await router.batch_route_and_execute(
-                    prompts_to_process, category=category
-                )
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
                 
             for (item, cache_key), result in zip(items_to_process, results):
-                # If result is an Exception string or actual Exception
-                if isinstance(result, Exception) or (isinstance(result, str) and result.startswith("Exception:")):
+                if isinstance(result, Exception):
                     logger.warning(f"[{self.name}] LLM processing failed for item: {result}")
                     item[self.output_field] = None
                 else:
@@ -152,7 +160,7 @@ class ProcessStep(Step):
                     ctx.cache[cache_key] = item[self.output_field]
 
         except Exception as e:
-            logger.error(f"[{self.name}] Batch processing failed: {e}")
+            logger.error(f"[{self.name}] Parallel processing failed: {e}")
             for item, _ in items_to_process:
                 item[self.output_field] = None
 

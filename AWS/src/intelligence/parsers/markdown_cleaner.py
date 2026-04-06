@@ -67,7 +67,10 @@ class OutputParser:
             next_c = current_str[i+1] if i+1 < len(current_str) else ""
             
             if escaped:
-                repaired_str.append(c)
+                if c == '\n':
+                    repaired_str.append('\\\\n')
+                else:
+                    repaired_str.append(c)
                 escaped = False
                 i += 1
                 continue

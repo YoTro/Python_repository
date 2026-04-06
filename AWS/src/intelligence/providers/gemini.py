@@ -2,14 +2,11 @@ from __future__ import annotations
 import os
 import logging
 import asyncio
-import json
-import re
-from typing import Optional, TypeVar, Type, Any
+from typing import Optional, TypeVar, Any
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
 from .base import BaseLLMProvider
-from .price_manager import PriceManager
 from src.intelligence.dto import LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -23,18 +20,17 @@ class GeminiProvider(BaseLLMProvider):
 
     def __init__(self,
                  api_key: Optional[str] = None,
-                 model_name: Optional[str] = None,
-                 batch_threshold: int = 50000):
+                 model_name: Optional[str] = None):
 
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY missing.")
 
         self.client = genai.Client(api_key=self.api_key)
-        self.batch_threshold = batch_threshold
-        self.price_manager = PriceManager()
-
-        self.model_name = self._discover_best_model(model_name)
+        
+        discovered_model = self._discover_best_model(model_name)
+        super().__init__("gemini", discovered_model)
+        
         logger.info(f"GeminiProvider initialized with discovered model: {self.model_name}")
 
     def _discover_best_model(self, preferred: Optional[str]) -> str:
@@ -79,17 +75,21 @@ class GeminiProvider(BaseLLMProvider):
         except Exception:
             return len(prompt) // 4
 
-    async def generate_text(self, prompt: str, system_message: Optional[str] = None) -> LLMResponse:
+    async def generate_text(self, prompt: str, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
         try:
             config = types.GenerateContentConfig(
                 system_instruction=system_message
             ) if system_message else None
+
+            # Filter out internal metadata from kwargs
+            filtered_kwargs = self._filter_kwargs(kwargs)
 
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
                 model=self.model_name,
                 contents=prompt,
                 config=config,
+                **filtered_kwargs
             )
             
             usage = getattr(response, "usage_metadata", None)
@@ -97,55 +97,20 @@ class GeminiProvider(BaseLLMProvider):
             output_tokens = usage.candidates_token_count if usage else 0
             
             # Extract advanced usage stats for precise billing
-            thoughts_tokens = getattr(usage, "thought_token_count", 0) or 0
+            thought_tokens = getattr(usage, "thought_token_count", 0) or 0
             cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
             
-            total_tokens = input_tokens + output_tokens + thoughts_tokens
-
-            cost = self.price_manager.calculate_cost(
-                model_name=self.model_name,
+            return self.create_response(
+                text=response.text,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                thoughts_token_count=thoughts_tokens,
-                cached_content_token_count=cached_tokens
-            )
-
-            return LLMResponse(
-                text=response.text,
-                provider_name="gemini",
-                model_name=self.model_name,
-                token_usage=total_tokens,
-                cost=cost,
-                currency=self.price_manager.currency,
-                metadata={
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "thoughts_tokens": thoughts_tokens,
-                    "cached_tokens": cached_tokens
-                }
+                thought_tokens=thought_tokens,
+                cached_tokens=cached_tokens
             )
         except Exception as e:
             logger.error(f"Gemini text generation failed: {e}")
             raise
 
-    async def batch_generate_text(self, prompts: list[str], system_message: Optional[str] = None, concurrency: int = 5) -> list[LLMResponse]:
-        sem = asyncio.Semaphore(concurrency)
-        async def _generate(p):
-            async with sem:
-                return await self.generate_text(p, system_message)
-        
-        results = await asyncio.gather(*[_generate(p) for p in prompts], return_exceptions=True)
-        return [r for r in results if isinstance(r, LLMResponse)]
-
-    async def batch_generate_structured(self, prompts: list[str], schema: Type[T], system_message: Optional[str] = None, concurrency: int = 5) -> list[LLMResponse]:
-        sem = asyncio.Semaphore(concurrency)
-        async def _generate(p):
-            async with sem:
-                return await self.generate_structured(p, schema, system_message)
-        
-        results = await asyncio.gather(*[_generate(p) for p in prompts], return_exceptions=True)
-        return [r for r in results if isinstance(r, LLMResponse)]
-    
     @staticmethod
     def _clean_schema(schema: dict) -> dict:
         """Remove properties unsupported by the Gemini API (e.g. additionalProperties)."""
@@ -165,7 +130,7 @@ class GeminiProvider(BaseLLMProvider):
                 result[k] = v
         return result
 
-    async def generate_structured(self, prompt: str, schema: Type[T], system_message: Optional[str] = None) -> LLMResponse:
+    async def generate_structured(self, prompt: str, schema: Any, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
         try:
             raw_schema = schema.model_json_schema()
             clean = self._clean_schema(raw_schema)
@@ -174,14 +139,20 @@ class GeminiProvider(BaseLLMProvider):
                 response_mime_type="application/json",
             )
             
-            if system_message:
-                self.client.system_instruction = system_message
+            # Filter out internal metadata from kwargs
+            filtered_kwargs = self._filter_kwargs(kwargs)
 
+            # Use client.models.generate_content for consistency with generate_text
             response = await asyncio.to_thread(
-                self.client.generate_content,
+                self.client.models.generate_content,
+                model=self.model_name,
                 contents=prompt,
-                generation_config=generation_config,
-                tools=[types.FunctionDeclaration.from_dict(clean)]
+                config=types.GenerateContentConfig(
+                    system_instruction=system_message,
+                    generation_config=generation_config,
+                    tools=[types.Tool(function_declarations=[types.FunctionDeclaration.from_dict(clean)])]
+                ),
+                **filtered_kwargs
             )
             
             # Since we're asking for a schema, the text should be valid JSON
@@ -192,32 +163,15 @@ class GeminiProvider(BaseLLMProvider):
             output_tokens = usage.candidates_token_count if usage else 0
             
             # Extract advanced usage stats for precise billing
-            thoughts_tokens = getattr(usage, "thought_token_count", 0) or 0
+            thought_tokens = getattr(usage, "thought_token_count", 0) or 0
             cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
             
-            total_tokens = input_tokens + output_tokens + thoughts_tokens
-
-            cost = self.price_manager.calculate_cost(
-                model_name=self.model_name,
+            return self.create_response(
+                text=text_response,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                thoughts_token_count=thoughts_tokens,
-                cached_content_token_count=cached_tokens
-            )
-            
-            return LLMResponse(
-                text=text_response,
-                provider_name="gemini",
-                model_name=self.model_name,
-                token_usage=total_tokens,
-                cost=cost,
-                currency=self.price_manager.currency,
-                metadata={
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "thoughts_tokens": thoughts_tokens,
-                    "cached_tokens": cached_tokens
-                }
+                thought_tokens=thought_tokens,
+                cached_tokens=cached_tokens
             )
         except Exception as e:
             logger.error(f"Structured generation failed on {self.model_name}: {e}")

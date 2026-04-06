@@ -134,12 +134,19 @@ class CategoryMonopolyAnalyzer:
     def _analyze_ad_competition(self, ad_data: Optional[Dict[str, Any]]) -> float:
         if not ad_data: return 50
         
-        # 1. Ad Ratio Score (Visibility competition)
+        # 1. Search Result Ad Ratio (Visibility Competition)
+        # Reflects how crowded the first page is with ads
         ratio = ad_data.get("ad_ratio", 0.3)
         danger_zone = self.thresholds.get("ad_ratio_danger_zone", 0.40)
-        ratio_score = min(100, (ratio / danger_zone) * 100)
+        visibility_score = min(100, (ratio / danger_zone) * 100)
         
-        # 2. Detailed Bid Analysis (Capital barrier)
+        # 2. BSR Winners Ad Dependency (Actual Sales Driver)
+        # If winners rely heavily on ads, the moat for natural search is weak
+        # or the CAC is high for everyone.
+        bsr_ad_ratio = ad_data.get("actual_bsr_ad_ratio", ratio) # Fallback to search ratio
+        dependency_score = min(100, (bsr_ad_ratio / 0.50) * 100) # 50% dependency is critical
+
+        # 3. Detailed Bid Analysis (Capital barrier)
         detailed_bids = ad_data.get("detailed_bids", {})
         if detailed_bids:
             bid_barrier_score = self._calculate_bid_barrier_score(detailed_bids)
@@ -149,8 +156,11 @@ class CategoryMonopolyAnalyzer:
             high_bid_threshold = self.thresholds.get("high_bid_barrier", 2.50)
             bid_barrier_score = min(100, (bid / high_bid_threshold) * 100) if bid > 0 else 50
         
-        # Combined score: 40% ratio (current heat), 60% bid (capital barrier/monopoly)
-        return (ratio_score * 0.4) + (bid_barrier_score * 0.6)
+        # Combined score: 
+        # 20% Visibility (Current heat)
+        # 20% Dependency (How hard winners have to pay)
+        # 60% Bid Barrier (Capital requirement to displace winners)
+        return (visibility_score * 0.2) + (dependency_score * 0.2) + (bid_barrier_score * 0.6)
 
     def _calculate_bid_barrier_score(self, detailed_bids: Dict[str, Any]) -> float:
         """

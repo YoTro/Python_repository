@@ -43,6 +43,7 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 1.  **Define**: Create `src/workflows/definitions/my_flow.py`.
 2.  **Register**: Use `@WorkflowRegistry.register("name")` and ensure it's imported in `definitions/__init__.py`.
 3.  **Steps**: Compose using `EnrichStep` (fetching), `FilterStep` (logic), or `ProcessStep` (AI reasoning).
+4.  **Context Access**: The `EnrichStep` passes `ctx: WorkflowContext` to your `extractor_fn`, enabling it to call other MCP tools (e.g., `calc_profit`) securely.
 
 **Track B: Exploratory Agents**
 1.  **System Prompt**: Edit the human-readable Markdown template in `src/agents/prompts/mcp_agent_system.md`.
@@ -54,6 +55,7 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 **A. Adding a New Scraper (Amazon Domain)**
 1.  Place script in `src/mcp/servers/amazon/extractors/`.
 2.  Inherit from `AmazonBaseScraper` for built-in proxy and cookie support.
+3.  **High-Efficiency Alternative**: Use `ProfitabilitySearchExtractor` to fetch `price`, `weight`, `dimensions`, and `bsr_rank` in a single request, bypassing heavy HTML parsing.
 
 **B. Adding a New MCP Tool**
 1.  **Logic**: Implement an `async` handler in the relevant domain server.
@@ -61,12 +63,17 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 3.  **Registry**: Call `tool_registry.register_tool(tool, handler, category="DATA", returns="...")` in the domain's `tools.py`.
 4.  **Discovery**: Ensure the domain's `tools.py` is imported in `src/registry/tools.py`.
 
-### Layer 5: Intelligence Routing (`src/intelligence/`)
-*Cost-aware LLM Dispatching.*
+### Layer 5: Intelligence Routing & Prompt Management (`src/intelligence/`)
+*Cost-aware LLM Dispatching & Centralized Knowledge.*
 
 1.  **Heuristics**: Add high-speed rules to `_run_heuristics` in `src/intelligence/router/` to bypass LLM classification for simple tasks.
 2.  **Pricing**: Update `PriceManager` JSON configs if model costs change.
-3.  **Processors**: Implement complex AI logic (e.g., `MonopolyAnalyzer`) as specialized processors that the orchestrators can call.
+3.  **Prompt Management (SSOT)**:
+    *   **Roles**: Add new expert personas in `src/intelligence/prompts/config/roles.yaml`.
+    *   **Frameworks**: Define analysis models (e.g., PSI, SWOT) in `src/intelligence/prompts/config/frameworks.yaml`. Use `$variable` syntax to inject values from `config/workflow_defaults.yaml`.
+    *   **Templates**: Define output structures in `src/intelligence/prompts/config/templates.yaml`.
+    *   **Usage**: Access via `PromptManager` singleton to ensure Agent and Workflow consistency.
+4.  **Processors**: Implement complex AI logic (e.g., `MonopolyAnalyzer`) as specialized processors that the orchestrators can call.
 
 ### Layer 6: Output & Callbacks (`src/jobs/callbacks/`)
 *Delivery of the final value.*
