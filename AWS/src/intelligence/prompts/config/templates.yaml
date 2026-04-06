@@ -1,0 +1,14 @@
+standard_report:
+  content: |
+    Structure your report as follows:
+    1. Executive Verdict: High-level verdict (2-3 sentences).
+    2. Data Sources & Methodology: Cite tools and sample sizes.
+    3. Reporting Period: The reporting period for the data.
+    4. Data Breakdown & Metrics Definition: Present key metrics in tables.
+    5. Strategic Insights: Apply a framework from the Analysis Frameworks section.
+    6. Risk/Opportunity Assessment: Provide direct, actionable advice.
+    7. Actionable Prioritization: Recommendations MUST be tiered (e.g., [P0] Immediate Action, [P1] Medium-term Strategy).
+
+concise_summary:
+  content: |
+    Provide a high-impact summary focusing ONLY on the most critical findings and the [P0] action items. Use bullet points for readability.

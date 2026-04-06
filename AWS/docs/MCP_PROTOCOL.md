@@ -107,6 +107,16 @@ This script automatically detects your OS and injects the `aws-market-intelligen
 *   **`xiyou_asin_compare_keywords`**: Compares multiple ASINs (up to 20) for common keywords and performance trends.
 *   **`xiyou_get_aba_top_asins`**: Queries top ASINs and their click/conversion shares for specific search terms based on Amazon Brand Analytics (ABA) ranking data.
 *   **`xiyou_get_search_terms_ranking`**: Retrieves search frequency ranks, growth ratios, and trends for variations of a root query string using ABA data.
+*   **`xiyou_get_traffic_scores`**: Fetches 7-day traffic metrics for ASINs, including `advertisingTrafficScoreRatio` (real ad dependency) and growth trends.
+
+### Standard: Implicit Context Resolution
+To keep tool calls concise for LLMs, domain servers (especially `finance` and `output`) should implement **Implicit Context Resolution**. If a primary parameter like `asin` or `receive_id` is missing from the `arguments` dict, the handler should attempt to resolve it via `ContextPropagator.get("field_name")`. 
+
+Example (Finance):
+```python
+asin = arguments.get("asin") or ContextPropagator.get("asin")
+```
+This allows the Agent to simply say "calculate profit" without re-stating the ASIN every time.
 
 ### Social Media Intelligence (L1/L2 Decoupled)
 *   **`tiktok_fetch_data` (L1)**: Scrapes raw TikTok data (tag metadata, trending videos, and comments) for a product. Data is stored in the internal `DataCache`.

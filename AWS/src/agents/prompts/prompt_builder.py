@@ -21,10 +21,20 @@ class PromptBuilder:
 
     def build(self, registry: "ToolRegistry", *, max_steps: int = 15, token_budget: int = 50000) -> str:
         from src.agents.prompts.tool_catalog_formatter import format_tool_catalog
+        from src.intelligence.prompts.manager import prompt_manager
 
         catalog = format_tool_catalog(registry)
+        
+        # Pull standard components from SSOT
+        role_def = prompt_manager.get_role("senior_strategist")
+        fws = prompt_manager.get_frameworks(["psi_benchmarking", "sentiment_analysis", "strategic_analysis"])
+        std_output = prompt_manager.get_template("standard_report")
+
         return self._template.safe_substitute(
+            role_definition=role_def,
             tool_catalog=catalog,
             max_steps=str(max_steps),
             token_budget=str(token_budget),
+            analysis_frameworks=fws,
+            output_standard=std_output
         )

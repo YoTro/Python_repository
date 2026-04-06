@@ -108,6 +108,7 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
             "xiyou_asin_compare_keywords": "export_compare_data",
             "xiyou_get_aba_top_asins": "get_aba_top_asins",
             "xiyou_get_search_terms_ranking": "get_search_terms_ranking",
+            "xiyou_get_traffic_scores": "get_traffic_scores",
         }
 
         if name in tool_map:
@@ -276,6 +277,18 @@ market_tools = [
             "required": ["query"],
         },
     ),
+    Tool(
+        name="xiyou_get_traffic_scores",
+        description="[Third-party Xiyouzhaoci tool] Fetch 7-day traffic score data for a list of ASINs. Includes advertising traffic ratio (ad dependency) and total traffic growth rate.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asins": {"type": "array", "items": {"type": "string"}, "description": "List of Amazon ASINs to query"},
+                "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
+            },
+            "required": ["asins"],
+        },
+    ),
 ]
 
 _MARKET_META = {
@@ -291,6 +304,7 @@ _MARKET_META = {
     "xiyou_asin_compare_keywords": ("DATA", "xlsx file with multi-ASIN keyword comparison data (third-party)"),
     "xiyou_get_aba_top_asins": ("DATA", "JSON containing top ASINs and metrics for specified search terms"),
     "xiyou_get_search_terms_ranking": ("DATA", "JSON containing search frequency ranks and trends for variations of a query"),
+    "xiyou_get_traffic_scores": ("DATA", "JSON containing traffic scores, ad ratio, and growth for ASINs"),
 }
 
 for tool in market_tools:

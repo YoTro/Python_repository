@@ -26,7 +26,8 @@ product_screening:
     - not_required
 
   # Stage 5: Advertising
-  ad_traffic_ratio_max: 0.20  # BSR >50 ASIN ad traffic < 20%
+  ad_traffic_ratio_max: 0.35  # Individual ASIN: Filter out if >35% traffic from ads
+  enable_ad_analysis_xiyou: true
 
   # Stage 6: Social media (optional)
   enable_social_analysis: true

@@ -32,7 +32,7 @@ class EnrichStep(Step):
     def __init__(
         self,
         name: str,
-        extractor_fn: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]],
+        extractor_fn: Callable[[Dict[str, Any], WorkflowContext], Awaitable[Dict[str, Any]]],
         fields: Optional[List[str]] = None,
         parallel: bool = True,
         concurrency: int = 5,
@@ -106,7 +106,7 @@ class EnrichStep(Step):
             return ctx.cache[cache_key]
 
         async def _do_fetch():
-            new_fields = await self.extractor_fn(item)
+            new_fields = await self.extractor_fn(item, ctx)
             # Merge new fields into a copy of the item
             merged = {**item, **new_fields}
             ctx.cache[cache_key] = merged

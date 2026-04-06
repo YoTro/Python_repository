@@ -1,7 +1,9 @@
 from __future__ import annotations
 import os
 import logging
-from typing import Optional, Any, TypeVar, Type
+import asyncio
+import functools
+from typing import Optional, Any, TypeVar
 from pydantic import BaseModel
 from .base import BaseLLMProvider
 from src.intelligence.dto import LLMResponse
@@ -33,7 +35,10 @@ class LlamaCppProvider(BaseLLMProvider):
             raise FileNotFoundError(f"Local model file not found at: {model_path}")
             
         self.model_path = model_path
-        self.model_name = os.path.basename(model_path)
+        model_name = os.path.basename(model_path)
+        
+        super().__init__("local", model_name)
+        
         logger.info(f"Loading local model from {model_path}...")
         
         # Initialize the model
@@ -50,16 +55,19 @@ class LlamaCppProvider(BaseLLMProvider):
         tokens = self.llm.tokenize(full_text.encode('utf-8'))
         return len(tokens)
 
-    async def generate_text(self, prompt: str, system_message: Optional[str] = None) -> LLMResponse:
-        import asyncio
+    async def generate_text(self, prompt: str, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
         from src.intelligence.fallback import FallbackHandler, FailureType
 
         loop = asyncio.get_running_loop()
         logger.info("Local LLM generate_text called, dispatching to executor...")
+        
+        # Filter out internal metadata from kwargs
+        filtered_kwargs = self._filter_kwargs(kwargs)
+
         try:
             response = await asyncio.wait_for(
                 loop.run_in_executor(
-                    None, self._sync_generate_text, prompt, system_message
+                    None, functools.partial(self._sync_generate_text, prompt, system_message, **filtered_kwargs)
                 ),
                 timeout=120  # 2 minute timeout
             )
@@ -69,7 +77,7 @@ class LlamaCppProvider(BaseLLMProvider):
             logger.error("Local LLM generation timed out after 120s")
             return await FallbackHandler.handle(FailureType.LOCAL_MODEL_TIMEOUT)
 
-    def _sync_generate_text(self, prompt: str, system_message: Optional[str] = None) -> LLMResponse:
+    def _sync_generate_text(self, prompt: str, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
         # Use ChatML format (required by Qwen and most modern GGUF models)
         if system_message:
             formatted_prompt = (
@@ -92,58 +100,40 @@ class LlamaCppProvider(BaseLLMProvider):
             formatted_prompt = self.llm.detokenize(tokens).decode('utf-8', errors='ignore')
 
         logger.info(f"Local LLM starting inference ({len(tokens)} prompt tokens)...")
+        
+        # Prepare default parameters for self.llm
+        llm_kwargs = {
+            "max_tokens": 1024,
+            "stop": ["<|im_end|>", "<|im_start|>"],
+            "echo": False
+        }
+        # Override with any provided kwargs
+        llm_kwargs.update(kwargs)
+        
         response = self.llm(
             formatted_prompt,
-            max_tokens=1024,
-            stop=["<|im_end|>", "<|im_start|>"],
-            echo=False
+            **llm_kwargs
         )
         
         text = response['choices'][0]['text'].strip()
-        usage = response['usage']
-        token_count = usage['total_tokens'] if usage else 0
+        usage = response.get('usage', {})
+        input_tokens = usage.get('prompt_tokens', 0)
+        output_tokens = usage.get('completion_tokens', 0)
 
-        return LLMResponse(
+        return self.create_response(
             text=text,
-            provider_name="local",
-            model_name=self.model_name,
-            token_usage=token_count
+            input_tokens=input_tokens,
+            output_tokens=output_tokens
         )
 
-    async def generate_structured(self, prompt: str, schema: Type[T], system_message: Optional[str] = None) -> LLMResponse:
+    async def generate_structured(self, prompt: str, schema: Any, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
         import json
-        import re
         
         schema_json = json.dumps(schema.model_json_schema(), indent=2)
         enriched_prompt = f"{prompt}\n\nReturn ONLY a JSON object matching this schema:\n{schema_json}"
         
-        response_obj = await self.generate_text(enriched_prompt, system_message)
-        raw_text = response_obj.text
-        
-        # We need to re-package the LLMResponse because the text has changed (from Pydantic object to string)
-        return LLMResponse(
-            text=raw_text, # The raw text IS the structured JSON string
-            provider_name=response_obj.provider_name,
-            model_name=response_obj.model_name,
-            token_usage=response_obj.token_usage
-        )
+        # Filter out internal metadata from kwargs
+        filtered_kwargs = self._filter_kwargs(kwargs)
 
-    async def batch_generate_text(self, prompts: list[str], system_message: Optional[str] = None, concurrency: int = 2) -> list[LLMResponse]:
-        import asyncio
-        sem = asyncio.Semaphore(concurrency)
-        async def _generate(p):
-            async with sem:
-                return await self.generate_text(p, system_message)
-        
-        results = await asyncio.gather(*[_generate(p) for p in prompts], return_exceptions=True)
-        return [r for r in results if isinstance(r, LLMResponse)]
-
-    async def batch_generate_structured(self, prompts: list[str], schema: Type[T], system_message: Optional[str] = None, concurrency: int = 2) -> list[LLMResponse]:
-        import asyncio
-        sem = asyncio.Semaphore(concurrency)
-        async def _generate(p):
-            async with sem:
-                return await self.generate_structured(p, schema, system_message)
-        
-        results = await asyncio.gather(*[_generate(p) for p in prompts], return_exceptions=True)
-        return [r for r in results if isinstance(r, LLMResponse)]
+        # generate_text already handles the response creation and filtering
+        return await self.generate_text(enriched_prompt, system_message, **filtered_kwargs)

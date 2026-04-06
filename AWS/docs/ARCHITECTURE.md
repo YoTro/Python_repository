@@ -164,7 +164,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                       INTELLIGENCE ROUTER                                    |
 |                                                                              |
 |   Unified LLM call entry for ProcessStep and MCP Agent                       |
-|   route_and_execute(prompt, category?) --> LLMResponse                       |
+|   route_and_execute(prompt, category?, **kwargs) --> LLMResponse             |
 |                                                                              |
 |   ── Cost & Billing ──────────────────────────────────────────────────────   |
 |   +──────────────────────────────────────────────────────────────────────+   |
@@ -207,7 +207,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                                                                              |
 |   ── Routing Decision Flow ────────────────────────────────────────────────  |
 |                                                                              |
-|   route_and_execute(prompt, category?)                                       |
+|   route_and_execute(prompt, category?, **kwargs)                             |
 |          |                                                                   |
 |          v                                                                   |
 |   +──────────────────────────────────────────────────────────────────────+  |
@@ -258,7 +258,6 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   BaseLLMProvider (ABC):                                                     |
 |     generate_text(prompt, system_message)     --> LLMResponse                |
 |     generate_structured(prompt, schema)       --> LLMResponse                |
-|     batch_generate_text(prompts, concurrency) --> list[LLMResponse]          |
 |     count_tokens(prompt)                      --> int                        |
 |                                                                              |
 |   ProviderFactory.get_provider(type) --> BaseLLMProvider                     |
@@ -269,26 +268,6 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   +──────────────────────+──────────────────────────────────────────────+   |
 |   | "claude"/"anthropic" | ClaudeProvider    (anthropic SDK)            |   |
 |   +──────────────────────+──────────────────────────────────────────────+   |
-|                                                                              |
-+==============================================================================+
-|                                                                              |
-|   ── Batch Processing ─────────────────────────────────────────────────────  |
-|                                                                              |
-|   batch_route_and_execute(prompts[], category?)                              |
-|                                                                              |
-|   +──────────────────────────────────────────────────────────────────────+  |
-|   |  Step 1  Classify once (based on first prompt)                       |  |
-|   +──────────────────────────────────────────────────────────────────────+  |
-|   |  Step 2  Route entire batch to same provider                         |  |
-|   +──────────────────────────────────────────────────────────────────────+  |
-|   |  Step 3  Concurrent execution via asyncio.Semaphore                  |  |
-|   |          LOCAL → concurrency = 2  (CPU-bound)                        |  |
-|   |          CLOUD → concurrency = 5  (I/O-bound)                        |  |
-|   +──────────────────────────────────────────────────────────────────────+  |
-|   |  Step 4  asyncio.gather() with exception filtering                   |  |
-|   +──────────────────────────────────────────────────────────────────────+  |
-|   |  Step 5  Return list[LLMResponse]                                    |  |
-|   +──────────────────────────────────────────────────────────────────────+  |
 |                                                                              |
 +==============================================================================+
 |                                                                              |
@@ -322,7 +301,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                                                                              |
 |   +──────────────────+──────────────────────────────────────────────────+   |
 |   | WorkflowEngine   | ProcessStep.run()                                |   |
-|   |                  | --> ctx.router.batch_route_and_execute()          |   |
+|   |                  | --> asyncio.gather(router.route_and_execute)      |   |
 |   |                  | compute_target maps to TaskCategory automatically |   |
 |   +──────────────────+──────────────────────────────────────────────────+   |
 |   | MCP Agent        | BaseAgent.__init__(router)                       |   |
@@ -410,7 +389,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 
   New Entry Point    EntryPoint adapter  +  Gateway register     Zero change elsewhere
   New Workflow       WorkflowRegistry.register(name, build_fn)   Zero change elsewhere
-  New Data Source    New MCP Server  +  Tool Registry register   Zero change elsewhere
+  New Data Source    New MCP Server  +  Tool Registry register   Zero business change
   New Output Format  Callback subclass  +  CallbackFactory reg   Zero change elsewhere
   Switch Model       Intelligence Router providers register       Zero business change
 
@@ -442,322 +421,19 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 
   Step  Type          Tool / Target        Input --> Output
   ────  ────────────  ───────────────────  ────────────────────────────────────
-   1    EnrichStep    amazon_search        keyword  -->  200 ASIN
-   2    EnrichStep    amazon_details       200 ASIN -->  details (parallel)
-   3    FilterStep    price/weight/rating  200      -->  58 remain
-   4    EnrichStep    bsr_competitors      58 ASIN  -->  competition data
-   5    ProcessStep   seller_origin        LOCAL_LLM
-   6    FilterStep    us_seller_ratio      58       -->  22 remain
-   7    EnrichStep    deal_history         22 ASIN  -->  deal data appended
-   8    ProcessStep   promo_analysis       PURE_PYTHON
-   9    FilterStep    promo_risk_filter    22       -->  18 remain
-  10    EnrichStep    fba_fees             18 ASIN  -->  fee data appended
-  11    ProcessStep   profit_calc          PURE_PYTHON
-  12    FilterStep    margin/cost_ratio    18       -->  10 remain
-  13    ProcessStep   epa_check            LOCAL_LLM
-  14    ProcessStep   patent_check         CLOUD_LLM
-  15    FilterStep    compliance           10       -->   7 remain
-  16    EnrichStep    ad_traffic           market-server
-  17    FilterStep    ad_ratio             7        -->   5 remain
-  18    EnrichStep    tiktok + meta        social-server
-  19    ProcessStep   final_synthesis      CLOUD_LLM  --> selection report
+   1    EnrichStep    profitability_api    keyword  -->  ASIN + Dims + BSR + Price
+   2    EnrichStep    past_sales_api       ASIN     -->  Monthly Sales Volume
+   3    FilterStep    price/rating         Filter   -->  Basic candidates remain
+   4    EnrichStep    fulfillment_api      ASIN     -->  FBA/FBM Status
+   5    EnrichStep    deal_history         ASIN     -->  Promo history appended
+   6    ProcessStep   promo_analysis       PURE_PYTHON -> Risk score
+   7    FilterStep    promo_risk           Filter   -->  Stable prices remain
+   8    ProcessStep   calc_profit (MCP)    FINANCE  -->  Exact Margin & ROI
+   9    FilterStep    profitability        Filter   -->  Profitable ASINs remain
+  10    ProcessStep   epa_check            LOCAL_LLM
+  11    FilterStep    compliance           Filter   -->  Low-risk ASINs remain
+  12    EnrichStep    xiyou_traffic (MCP)  MARKET   -->  Actual Ad Dependency %
+  13    FilterStep    ad_dependency        Filter   -->  Natural-traffic winners
+  14    ProcessStep   final_synthesis      CLOUD_LLM --> Selection Report
   ────  ────────────  ───────────────────  ────────────────────────────────────
-  Each step writes checkpoint on completion; failures resume from last checkpoint
-```
----
-
-## 2. Directory Structure (Domain-Driven Design)
-
-The project follows a strict **Layered Architecture** within the `src/` directory, adhering to Domain-Driven Design (DDD) principles:
-
-```text
-AWS/
-├── src/
-│   ├── agents/             # AGENT TRACK: Exploratory reasoning loops
-│   │   ├── mcp_agent.py    # ReAct loop with cloud token budget tracking
-│   │   ├── session.py      # AgentSession (cloud_token_usage + token_usage)
-│   │   ├── base_agent.py   # Abstract base for all intelligent agents
-│   │   └── prompts/        # 3-layer system prompt architecture
-│   │       ├── mcp_agent_system.md      # Human-editable template
-│   │       ├── prompt_builder.py        # Runtime assembly (string.Template)
-│   │       └── tool_catalog_formatter.py # Groups tools by category
-│   │
-│   ├── workflows/          # WORKFLOW TRACK: Deterministic batch pipelines
-│   │   ├── engine/         # Sequential execution engine with checkpoint support
-│   │   ├── steps/          # Tri-primitives: EnrichStep, FilterStep, ProcessStep
-│   │   ├── definitions/    # Registered business pipelines (e.g., product_screening)
-│   │   └── config/         # Workflow-specific parameter merging
-│   │
-│   ├── gateway/            # API GATEWAY: Entry normalization & Protection
-│   │   ├── router.py       # APIGateway: Identity resolution & Track selection
-│   │   ├── auth.py         # Authentication Middleware (Ext Point #1)
-│   │   └── rate_limit.py   # Rate Limiting Middleware (Ext Point #2)
-│   │
-│   ├── jobs/               # JOB CONTROL: Lifecycle & Async Scheduling
-│   │   ├── manager/        # JobManager with internal Worker Pool
-│   │   ├── checkpoint/     # Step-level persistence for Workflow resume
-│   │   ├── callbacks/      # Output strategies (Feishu, CSV, MCP, Factory)
-│   │   └── interactions/   # INTERACTIVE SIGNALS: Async callback routing (e.g., QR login)
-│   │
-│   ├── registry/           # CAPABILITY HUB: Unified Discovery
-│   │   ├── tools.py        # ToolRegistry + ToolMeta(category, returns) metadata
-│   │   ├── resources.py    # Registry for static JSON/Markdown context
-│   │   └── prompts.py      # Registry for Standard Operating Procedures (SOPs)
-│   │
-│   ├── mcp/                # PROTOCOL LAYER: Low-level MCP implementation
-│   │   ├── client/         # LocalMCPClient (Unified bridge for both tracks)
-│   │   ├── server.py       # External Stdio Server for desktop LLM clients
-│   │   └── servers/        # DOMAIN MICROSERVICES (L1/L2 Tools)
-│   │       ├── amazon/     # L1: 17 Amazon scrapers (curl_cffi)
-│   │       ├── market/     # L1: Xiyouzhaoci + SellerSprite (keyword/ASIN)
-│   │       ├── lingxing/   # L1: Lingxing ERP inventory (AES-ECB auth)
-│   │       ├── social/     # L1: TikTok/Meta trend analysis
-│   │       ├── finance/    # L2: Profit & Fee calculation (Consumes Cache)
-│   │       ├── compliance/ # L2: EPA/Patent/Trademark checking
-│   │       └── output/     # L2: 14 tools (Bitable CRUD, Card, Doc, CSV, JSON)
-│   │
-│   ├── intelligence/       # AI ORCHESTRATION: Provider routing
-│   │   ├── dto.py          # LLMResponse DTOs (Zero dependencies)
-│   │   ├── fallback.py     # FallbackHandler (for LLM failures)
-│   │   ├── parsers/        # Output cleaning/formatting (e.g., MarkdownCleaner)
-│   │   ├── providers/      # Multi-provider support (Gemini, Claude, Llama.cpp)
-│   │   └── router/         # IntelligenceRouter (Task classification & Batching)
-│   │
-│   ├── core/               # KERNEL: Shared infrastructure
-│   │   ├── models/         # Unified Pydantic DTOs (Product, Review, Request)
-│   │   ├── telemetry/      # TimeEstimator & TelemetryTracker (Dynamic ETA)
-│   │   ├── utils/          # ConfigHelper, CookieHelper, ProxyManager
-│   │   └── data_cache.py   # Mediated Persistence Singleton (L1 -> L2 sync)
-│   │
-│   └── entry/              # ENTRY POINTS: Protocol-specific adapters
-│       ├── cli/            # CommandLineInterface main entry
-│       └── feishu/         # WebSocket Bot Listener & Command Dispatchers
-│
-├── data/                   # PERSISTENCE STORE
-│   ├── cache/              # L1/L2 Mediated Data Cache files
-│   ├── checkpoints/        # Workflow step-level state
-│   ├── sessions/           # Agent conversation history files
-│   └── cookies/            # Cached browser session cookies
-│
-├── scripts/                # DEPLOYMENT: Automation & Runners
-├── tests/                  # VALIDATION: Unit, Integrity, and Full-Flow tests
-└── main.py                 # Root CLI Wrapper
-```
-
-### Layer Responsibilities
-
-#### A. Core Layer (`src/core/`)
-Provides the foundational DTOs and shared utilities. The `DataCache` here is critical for the L1/L2 decoupling principle.
-
-#### B. Gateway Layer (`src/gateway/`)
-Acts as the security and normalization barrier. Every request is converted into a `UnifiedRequest` before reaching the Job Manager.
-
-#### C. Registry Layer (`src/registry/`)
-The system's single source of truth for "What can this system do?". It decouples the orchestrators from the underlying tool implementations.
-
-#### D. Protocol & Services Layer (`src/mcp/`)
-Implements the Model Context Protocol. Business logic is isolated into Domain Servers (Microservices).
-
-#### E. Intelligence Layer (`src/intelligence/`)
-A stateless routing layer that decides which LLM (Local or Cloud) is best suited for a specific ProcessStep or Agent thought.
-
-#### F. Orchestration Layer (`src/workflows/` & `src/agents/`)
-The "Brains". It contains the logic for chaining tools into complex business value, either through deterministic code (Workflow) or LLM reasoning (Agent).
-
----
-
-## 3. Data Flow Examples
-
-### Workflow Execution (e.g., Feishu BSR Command)
-1. **Trigger**: User types `获取 Electronics BSR`.
-2. **Gateway**: `APIGateway` normalizes request to `UnifiedRequest`, resolves identity, and submits to `JobManager`.
-3. **Queue**: `JobManager` pushes task to `asyncio.Queue`. A worker picks it up.
-4. **Execution**: `WorkflowEngine` runs `amazon_bsr` pipeline.
-5. **Caching**: `EnrichStep` fetches BSR data via MCP, then writes raw data to **`DataCache`**.
-6. **L2 Interaction**: Subsequent steps (e.g., profit calculation) read from **`DataCache`** instead of re-scraping.
-7. **Output**: Result written to Feishu Bitable via `CallbackFactory` instantiated instance.
-
----
-
-## 4. Key Architectural Principles
-
-| Principle | Implementation |
-|---|---|
-| **Domain-Driven Design** | Capabilities are isolated into `mcp/servers/` microservices. |
-| **Dual-Track Orchestration**| Workflows for batching; MCPAgent for exploration. |
-| **Decoupled Discovery** | `Tool Registry` is a top-level hub for all orchestrators. |
-| **Identity Normalization** | `API Gateway` transforms all inputs into a `UnifiedRequest`. |
-| **Stateful Resilience** | `CheckpointManager` (Workflows) and `SessionManager` (Agents) ensure robustness. |
-| **Mediated Persistence** | `DataCache` decouples raw data acquisition (L1) from reasoning/calculation (L2). |
-
----
-
-## 5. Stateful Resilience & Identity Resolution
-
-A critical challenge in long-running agentic workflows (especially those triggered by bots in multi-user environments like Feishu) is maintaining state, handling failures, and delivering results to the correct user.
-
-### 5.1 Checkpoint Architecture (Workflow Track)
-The `CheckpointManager` (`src/jobs/checkpoint/__init__.py`) provides implicit "resume-on-failure" capabilities for deterministic workflows.
-*   **Storage**: Checkpoints are stored in `data/checkpoints/{job_id}.json`.
-*   **Mechanism**: At the completion of every `ProcessStep`, `EnrichStep`, or `FilterStep`, the engine writes the entire `items` array to the JSON file.
-*   **Resume Logic**: If a workflow crashes (e.g., API timeout, anti-bot blocking) and the user triggers a retry for that `job_id`, the `WorkflowEngine` loads the checkpoint, skips all previously completed steps, and injects the cached `items` directly into the next pending step.
-
-### 5.2 Agent Session Memory (Agent Track)
-The `AgentSession` (`src/agents/session.py`) maintains conversational state for exploratory tasks.
-*   **Storage**: Sessions are stored in `data/sessions/{session_id}.json`.
-*   **Tracking**: It tracks the entire React loop history (`messages`), tool calls, and critically, dual-layer token budgets (`token_usage` for local/free models vs `cloud_token_usage` for billed models).
-
-### 5.3 Multi-User Identity Resolution (Feishu/Web)
-When multiple users interact with the Feishu bot, the system ensures that long-running jobs return data to the correct individual chat or group:
-1.  **Entry Point Parsing**: `FeishuClient` or `CommandDispatcher` captures the `chat_id` (representing a user DM or a group chat).
-2.  **UnifiedRequest Construction**: The entry point constructs a `UnifiedRequest` DTO (`src/core/models/request.py`), injecting the `chat_id` into the `callback` field:
-    ```python
-    req = UnifiedRequest(
-        workflow_name="...",
-        callback=CallbackConfig(type="feishu_card", target=chat_id)
-    )
-    ```
-3.  **JobManager Binding**: When `get_job_manager().submit(req)` is called, a unique `job_id` is generated. The `JobRecord` internally binds this `job_id` to the user's `UnifiedRequest` (which holds the `callback.target` = `chat_id`).
-4.  **Asynchronous Execution & Delivery**: The workflow executes in a background thread. Once completed (or failed), the `JobManager` looks up the `JobRecord`, extracts the `CallbackConfig`, instantiates the correct `FeishuCallback`, and sends the final report or error message strictly to the `chat_id` originally bound to that specific `job_id`.
-
-This guarantees that User A never receives User B's market analysis report, even if their background jobs are running concurrently in the same worker pool.
-
-### 5.4 Job Suspension & Reaper Mechanism
-For tasks requiring human intervention (e.g., QR code login), the system supports a non-blocking suspension state.
-*   **Status: `SUSPENDED`**: When a tool detects that user action is needed, the `MCPAgent` throws a `JobSuspendedError`. The `JobManager` catches this, records the `suspended_at` timestamp, and sets the job status to `SUSPENDED`. The worker thread is released to handle other jobs.
-*   **Dynamic Timeout**: Every suspension signal can carry an `expires_in` field (e.g., 120s for Xiyou QR). This is stored in the `JobRecord.suspend_timeout_sec`.
-*   **Reaper Loop**: A background coroutine in `JobManager` wakes up every 60 seconds to scan the job registry. It takes a thread-safe snapshot using `list(self._jobs.items())` and cancels any `SUSPENDED` job that has exceeded its specific timeout.
-*   **Resumption**: Upon receiving a successful interaction callback (via `InteractionRegistry`), the `JobManager.resume(job_id)` method re-queues the job. The `MCPAgent` then reloads the session history and continues from the exact point of suspension without repeating the initial user query.
-
----
-
-## 6. Intelligence Router Deep Dive
-
-The Intelligence Router (`src/intelligence/`) is the system's **cost-aware AI dispatch layer**. It solves a core problem: not every AI task needs a cloud API call. Simple data cleaning can run locally for free, while patent analysis demands cloud-grade reasoning. The router makes this decision automatically, keeping costs low and latency tight.
-
-### 6.1 Design Patterns
-
-- **Strategy Pattern**: `BaseLLMProvider` (ABC) defines a uniform interface (`generate_text`, `generate_structured`, `batch_generate_text`, `count_tokens`). Each provider (LlamaCpp, Gemini, Claude) is a concrete strategy, swappable at runtime.
-- **Factory Pattern**: `ProviderFactory.get_provider(type)` instantiates the correct provider based on configuration, with graceful degradation if a provider fails to load.
-- **Chain of Responsibility**: The routing flow cascades through classification → local check → cloud fallback, with each stage deciding whether to handle or pass.
-
-### 6.2 Task Auto-Classification
-
-When a caller does not specify a `compute_target`, the router classifies the task using a hybrid approach:
-
-1.  **Heuristic Pre-screening (<1ms)**: Executes high-speed keyword and length-based rules in `_run_heuristics`.
-    *   **Priority 1: Context Length**: Prompts > 4,000 chars are forced to `DEEP_REASONING` to prevent local model context collapse.
-    *   **Priority 2: High-Reasoning Intent**: Keywords like `analyze`, `compare`, `strategy`, `evaluate`, `summarize` (including Chinese equivalents like `分析`, `对比`, `总结`) trigger `DEEP_REASONING`.
-    *   **Priority 3: Constrained Extraction**: Keywords like `extract`, `find`, `parse` (if < 2,000 chars) trigger `DATA_EXTRACTION`.
-    *   **Priority 4: Low-Complexity Cleaning**: Keywords like `clean`, `format`, `json-ify` (if < 1,000 chars) trigger `SIMPLE_CLEANING`.
-2.  **Model Classification**: If heuristics don't match, the first 400 characters are sent to the LOCAL model (Llama.cpp) for classification.
-3.  **Data Logging**: All classification decisions (including prompt previews, rules triggered, and confidence) are logged to `data/intelligence/raw_prompts.jsonl` for future model distillation and fine-tuning.
-
-### 6.3 End-to-End Dispatch Flow
-
-```
-┌─ Caller: ProcessStep.run() / MCPAgent.think() ──────────────────────────┐
-│                                                                          │
-│  router.route_and_execute(prompt, category=None)                        │
-│    │                                                                     │
-│    ├─ 1. CLASSIFY & LOG ────────────────────────────────────────────┐   │
-│    │   category provided?                                            │   │
-│    │   ├─ YES → use as-is                                           │   │
-│    │   └─ NO  → 1. Run _run_heuristics() (Zero cost)                │   │
-│    │            2. Fallback: _classify_task() via LOCAL model       │   │
-│    │            3. Log result to raw_prompts.jsonl                  │   │
-│    │                                                                 │   │
-│    ├─ 2. ROUTE ─────────────────────────────────────────────────────┤   │
-...
-│    │   Auth error        → Return critical error LLMResponse        │   │
-│    │                                                                 │   │
-│    ├─ 4. COST CALCULATION (PriceManager) ───────────────────────────┤   │
-│    │   - Support for Gemini "Thinking Tokens" (billed as output)     │   │
-│    │   - Support for "Prompt Caching" (cheaper cache_read price)     │   │
-│    │   - Precise tiered pricing (>200k context)                      │   │
-│    │                                                                 │   │
-│    └─ 5. RETURN ────────────────────────────────────────────────────┘   │
-│       LLMResponse { text, provider_name, model_name,                     │
-│                     token_usage, cost, metadata }                        │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
-### 6.4 Batch Processing
-
-`batch_route_and_execute(prompts[], category?)` processes multiple items efficiently:
-
-1. **Single classification** — classify once using the first prompt, apply to entire batch.
-2. **Unified routing** — the whole batch goes to the same provider (no per-item switching).
-3. **Concurrency control** — `asyncio.Semaphore` limits parallel calls:
-   - LOCAL: `concurrency = 2` (CPU-bound, avoids starving the model)
-   - CLOUD: `concurrency = 5` (I/O-bound, maximizes throughput)
-4. **Exception isolation** — `asyncio.gather()` with exception filtering; failed items are dropped, successful results returned.
-
-This is used by `ProcessStep` in workflows. For example, classifying 58 products' seller origin runs as a single batch routed to LOCAL with concurrency 2.
-
-### 6.5 Fallback & Resilience
-
-The `FallbackHandler` uses the **Strategy Pattern** with a dictionary mapping `FailureType` → async handler:
-
-| FailureType | Handler Behavior |
-|---|---|
-| `LOCAL_MODEL_TIMEOUT` | Return user-friendly message. No retry (task is simple; local model is stuck). |
-| `CLOUD_API_UNAVAILABLE` | Enqueue to in-memory `asyncio.Queue`. Background consumer retries with 10s backoff. |
-| `CLOUD_API_RATE_LIMIT` | Queue wait + alert. Same retry mechanism as unavailable. |
-
-**Extension point**: Replace `asyncio.Queue` with Redis + Celery/RQ for multi-user deployments.
-
-### 6.6 Provider Details
-
-| Provider | Model Priority | Timeout | Concurrency | Key Features |
-|---|---|---|---|---|
-| `LlamaCppProvider` | Configured GGUF model | 120s | 2 | ChatML format, GPU acceleration (`n_gpu_layers=-1`), auto context truncation (reserves 512 tokens) |
-| `GeminiProvider` | `1.5-pro` > `1.5-flash` > `1.0-pro` | API default | 5 | Auto-discovers best available model, structured JSON via `response_mime_type` |
-| `ClaudeProvider` | `opus` > `sonnet` > `haiku` | API default | 5 | Max 4096 output tokens, rough token estimation (`len // 4`) |
-
-### 6.7 Integration with Orchestration Tracks
-
-The router serves both orchestration tracks through a single `IntelligenceRouter` instance created by the `JobManager`:
-
-- **Workflow Track**: `ProcessStep` declares a `compute_target` (PURE_PYTHON / LOCAL_LLM / CLOUD_LLM). The step maps this to a `TaskCategory` and calls `ctx.router.batch_route_and_execute()`. Results are cached per `(job_id, step_name, item_id)` to avoid redundant LLM calls on workflow resume.
-- **Agent Track**: `BaseAgent` receives the router in its constructor. The `MCPAgent` calls `router.route_and_execute()` in each iteration of its ReAct loop, forced to `DEEP_REASONING` since agent tasks are exploratory by nature.
-
-### 6.8 Agent Budget Strategy (Tokens & Cost)
-
-The `MCPAgent` tracks cumulative token usage and monetary cost across all LLM calls, but only **cloud** usage counts toward the budget:
-
-| Metric | Tracked In | Budget-Relevant |
-|---|---|---|
-| `session.token_usage` | All providers (total) | No (informational) |
-| `session.cloud_token_usage` | Cloud providers only | Yes (triggers batch switch) |
-| `session.total_cost` | Cloud providers only | Yes (for budget alerts) |
-
-**Local model tokens are free** — they consume local compute, not API credits. When the local model is strong enough to handle agent reasoning, the agent loop runs without any budget constraint.
-
-When `cloud_token_usage >= token_budget` (default 1,000,000):
-1. Progress callback notifies user: "Switching to batch mode"
-2. Agent injects a forced summarization prompt
-3. LLM produces Final Answer from all data collected so far
-4. Session status → `completed` (not `failed`)
-
-`max_steps` remains as a **progress display counter** — it does NOT terminate the agent. The `total_cost` is displayed in real-time in logs and callbacks.
-
-### 6.9 Agent System Prompt Architecture
-
-The agent system prompt is built from three layers:
-
-```
-mcp_agent_system.md          Human-editable template with $variables
-        │
-        v
-PromptBuilder.build()        Loads .md, injects runtime values via string.Template
-        │
-        v
-ToolCatalogFormatter          Groups 48 tools into 4 categories from ToolMeta
-                              DATA → COMPUTE → FILTER → OUTPUT
-```
-
-The template includes:
-- **Execution Phases**: COLLECT → FILTER → ENRICH → ANALYZE → OUTPUT
-- **Autonomous Output Rules**: Organized into **General Principles** (e.g., discover IDs via tools) and **Feishu-Specific Rules** (e.g., Attachment-First Policy, Bitable automation).
-- **Tool Disambiguation**: Explicit warnings about similar tools (e.g., `search_products` vs `xiyou_keyword_analysis`)
+  Key: Efficiency optimized via Profitability API; Logic unified via Finance MCP.

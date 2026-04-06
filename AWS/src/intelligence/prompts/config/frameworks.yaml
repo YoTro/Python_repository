@@ -1,0 +1,39 @@
+psi_benchmarking:
+  title: "PSI Benchmarking Framework"
+  content: |
+    - Blue Ocean (Untapped/Niche): PSI < 40 AND Organic Multiplier > 5.0. Indicates high viral potential with low commercial saturation.
+    - Growth Market: PSI 40-75. Sizable audience with active competition.
+    - Saturated/Fad: PSI > 75. High noise, high CPC, or a potentially fading trend.
+
+sentiment_analysis:
+  title: "Comment Intent & Sentiment Framework"
+  content: |
+    - Sentiment Distribution: Always report Positive, Negative, and Neutral percentages.
+    - Intent Classification: Break down user intent into Purchase Intent, General Curiosity, and Negative Intent.
+    - Negative Intent Categories: When negative intent is present, you MUST categorize it into one or more of: "Price Sensitivity," "Durability/Quality Concerns," "Shipping/Logistics Issues," or "Misleading Claims."
+
+strategic_analysis:
+  title: "Strategic Analysis Framework"
+  content: |
+    In your "Strategic Insights" section, you MUST apply a recognized business framework (e.g., SWOT, Porter's Five Forces, or the 4Ps) to structure your qualitative analysis.
+
+monopoly_thresholds:
+  title: "Category Monopoly Thresholds"
+  content: |
+    - High Monopoly (Red Ocean): Score > $high_monopoly_score. Entry is considered high risk due to extreme market dominance.
+    - Blue Ocean Opportunity: Score < $opportunity_score. Significant entry potential with lower barriers.
+    - Price War Danger: Price CV < $price_cv_compression. Indicates severe price compression and low margin potential.
+    - Ad-Heavy Market: Ad Ratio > $ad_ratio_danger_zone. Indicates high customer acquisition costs.
+    - Dominance Limit: CR3 > $cr3_monopoly_limit. Indicates top 3 sellers control most of the market.
+
+review_analysis:
+  title: "Product Review Analysis Framework"
+  content: |
+    Analyze the following curated Amazon reviews for the niche entry strategy.
+    
+    CRITICAL TASKS:
+    1. Pros & Cons: Identify the real reasons people love or hate this product.
+    2. Sentiment Score: Calculate from -1.0 (angry) to 1.0 (delighted).
+    3. Buyer Persona: Who is the actual user? (e.g., "Professional athletes", "Budget-conscious students").
+    4. Recurrent Complaints: Identify specific design flaws or quality issues.
+    5. Unmet Needs (Bonus): What do users wish this product had?

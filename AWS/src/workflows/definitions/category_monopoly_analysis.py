@@ -34,7 +34,7 @@ async def _fetch_bsr_list(items: List[dict], ctx: Any) -> List[dict]:
     products = await extractor.get_bestsellers(url, max_pages=2)
     return products
 
-async def _enrich_sales(item: dict) -> dict:
+async def _enrich_sales(item: dict, ctx: Any) -> dict:
     """Fetch past month sales."""
     from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
     extractor = PastMonthSalesExtractor()
@@ -50,7 +50,7 @@ async def _enrich_sales(item: dict) -> dict:
     except: sales_num = 0
     return {"sales": sales_num}
 
-async def _enrich_seller_info(item: dict) -> dict:
+async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
     """Fetch fulfillment and seller feedback."""
     from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
     from src.mcp.servers.amazon.extractors.feedback import SellerFeedbackExtractor
@@ -161,6 +161,29 @@ async def _enrich_external_intensity(items: List[dict], ctx: Any) -> List[dict]:
     logger.info(f"External intensity: Social PSI={ctx.cache.get('category_social_psi', 'N/A')}, Deal Intensity={ctx.cache.get('category_deal_intensity', 'N/A')}")
     return items
 
+async def _enrich_batch_traffic_scores(items: List[dict], ctx: Any) -> List[dict]:
+    """Fetches batch traffic scores for Top 20 ASINs to calculate average ad dependency."""
+    if not items or not ctx.mcp: return items
+    
+    top_asins = [(item.get("ASIN") or item.get("asin")) for item in items[:20] if (item.get("ASIN") or item.get("asin"))]
+    if not top_asins: return items
+    
+    try:
+        resp = await ctx.mcp.call_tool_json("xiyou_get_traffic_scores", {"asins": top_asins, "country": "US"})
+        if isinstance(resp, list) and len(resp) > 0:
+            import json
+            data = json.loads(resp[0].get("text", "{}"))
+            if data.get("success") and data.get("data"):
+                ratios = [d.get("advertisingTrafficScoreRatio", 0.0) for d in data["data"]]
+                if ratios:
+                    import statistics
+                    avg_ratio = statistics.mean(ratios)
+                    ctx.cache["actual_bsr_ad_ratio"] = avg_ratio
+                    logger.info(f"Calculated average BSR ad dependency: {avg_ratio:.2%}")
+    except Exception as e:
+        logger.error(f"Failed to fetch batch traffic scores: {e}")
+    return items
+
 async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
     """Calculates scores and generates flattened niche benchmarks."""
     from src.intelligence.processors.monopoly_analyzer import CategoryMonopolyAnalyzer
@@ -175,6 +198,7 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
     detailed_bids = ctx.cache.get("detailed_bid_analysis", {})
     ad_data = {
         "ad_ratio": ctx.cache.get("ad_ratio", 0.3),
+        "actual_bsr_ad_ratio": ctx.cache.get("actual_bsr_ad_ratio"),
         "detailed_bids": detailed_bids
     }
     
@@ -232,21 +256,31 @@ async def _prepare_report_artifact(items: List[dict], ctx: Any) -> List[dict]:
 
 @WorkflowRegistry.register("category_monopoly_analysis")
 def build_category_monopoly_analysis(config: dict) -> Workflow:
+    from src.intelligence.prompts.manager import prompt_manager
+    
+    # Dynamically assemble the SSOT instructions
+    base_instructions = prompt_manager.assemble_report_instructions(
+        role_id="senior_strategist",
+        framework_ids=["psi_benchmarking", "strategic_analysis"]
+    )
+
     return Workflow(name="category_monopoly_analysis", steps=[
         ProcessStep(name="fetch_bsr_top_100", fn=_fetch_bsr_list),
         EnrichStep(name="enrich_sales_data", extractor_fn=_enrich_sales, parallel=True, concurrency=10),
         EnrichStep(name="enrich_seller_background", extractor_fn=_enrich_seller_info, parallel=True, concurrency=5),
         ProcessStep(name="fetch_market_context", fn=_fetch_market_context),
         ProcessStep(name="enrich_external_intensity", fn=_enrich_external_intensity),
+        ProcessStep(name="enrich_batch_traffic_scores", fn=_enrich_batch_traffic_scores),
         ProcessStep(name="calculate_monopoly_score", fn=_run_monopoly_analysis),
         ProcessStep(
             name="deliver_report",
             prompt_template=(
-                "### ROLE & DYNAMIC CONTEXT\n"
-                "Senior Amazon Analyst advising on a **{recommended_capital}** investment.\n"
+                f"{base_instructions}\n\n"
+                "### TASK-SPECIFIC CONTEXT\n"
+                "Advising on a **{recommended_capital}** investment.\n"
                 "Primary Niche: **{main_keyword}** | Related Terms: {core_keywords}\n"
                 "Data Confidence (R²): **{data_confidence_r2}**\n\n"
-                "### BENCHMARKS\n"
+                "### DYNAMIC BENCHMARKS\n"
                 "- Median Price: {niche_median_price}\n"
                 "- Detailed CPC Insight: {bid_insight}\n"
                 "- Review Disparity: {review_disparity}\n"
@@ -254,11 +288,10 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 "- Social PSI: {social_psi} ({social_verdict})\n"
                 "- Deal Intensity: {deal_intensity}/10\n\n"
                 "### DATA: {analysis_result}\n\n"
-                "### RULES\n"
+                "### ADDITIONAL TACTICAL RULES\n"
                 "- 400-550 words. No filler.\n"
                 "- ANALYZE BID BARRIERS: Compare the suggested CPC to the median price. If CPC > 10% of median price, highlight extreme capital risk.\n"
-                "- Identify which specific keywords are 'High Barrier' and if PHRASE/EXACT gaps offer opportunities.\n"
-                "- STRUCTURE: 1. Executive Verdict, 2. Competitive Dynamics (Social/Deals/Ads), 3. Capital & Barrier Analysis, 4. Pre-Mortem, 5. Tactical Path."
+                "- Identify which specific keywords are 'High Barrier' and if PHRASE/EXACT gaps offer opportunities."
             ),
             compute_target=ComputeTarget.CLOUD_LLM
         ),
