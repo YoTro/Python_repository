@@ -97,5 +97,30 @@ class PromptManager:
             f"# OUTPUT FORMAT\n{template}"
         )
 
+    def render(self, name: str, variables: Dict[str, Any], role_id: str = "product_manager") -> tuple[str, str]:
+        """
+        Renders a specific framework/prompt by name with provided variables.
+        Returns (system_message, user_prompt).
+        """
+        system_msg = self.get_role(role_id)
+        
+        fw = self.frameworks.get(name)
+        if not fw:
+            logger.warning(f"Prompt component '{name}' not found in frameworks. Returning raw variables.")
+            return system_msg, str(variables)
+            
+        content = fw.get('content', '')
+        # 1. Inject system config variables first ($high_monopoly_score etc.)
+        content = self._inject_vars(content)
+        
+        # 2. Inject user-provided variables ({review_data} etc.)
+        try:
+            user_prompt = content.format(**variables)
+        except Exception as e:
+            logger.error(f"Failed to format prompt '{name}' with variables: {e}")
+            user_prompt = content # Fallback to unformatted
+            
+        return system_msg, user_prompt
+
 # Singleton instance
 prompt_manager = PromptManager()

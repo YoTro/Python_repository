@@ -25,3 +25,8 @@ class ReviewSummary(BaseModel):
     sentiment_score: float = Field(..., description="Overall sentiment score from -1.0 (negative) to 1.0 (positive)")
     top_complaints: List[str] = Field(..., description="Common pain points or recurring defects")
     buyer_persona: str = Field(..., description="Description of the typical customer based on review tone and content")
+    
+    # NEW: Quantitative Metrics
+    review_velocity: float = Field(0.0, description="Estimated reviews added per month based on the provided sample")
+    rating_distribution: dict[int, int] = Field(default_factory=dict, description="Distribution of star ratings (1-5)")
+    competitive_barrier_months: Optional[float] = Field(None, description="Estimated months required to reach the competitive benchmark (e.g. 500 reviews) at current velocity")

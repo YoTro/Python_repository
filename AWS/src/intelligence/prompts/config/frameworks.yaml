@@ -29,11 +29,18 @@ monopoly_thresholds:
 review_analysis:
   title: "Product Review Analysis Framework"
   content: |
-    Analyze the following curated Amazon reviews for the niche entry strategy.
+    Analyze the following Amazon reviews and quantitative metrics for the niche entry strategy.
     
-    CRITICAL TASKS:
+    ### DATA INPUT
+    {review_data}
+    
+    ### CRITICAL TASKS:
     1. Pros & Cons: Identify the real reasons people love or hate this product.
     2. Sentiment Score: Calculate from -1.0 (angry) to 1.0 (delighted).
     3. Buyer Persona: Who is the actual user? (e.g., "Professional athletes", "Budget-conscious students").
-    4. Recurrent Complaints: Identify specific design flaws or quality issues.
-    5. Unmet Needs (Bonus): What do users wish this product had?
+    4. Recurrent Complaints: Identify specific design flaws or recurring defects.
+    5. Quantitative Analysis: 
+       - Comment on the 'Review Velocity' (How fast are competitors growing?).
+       - Analyze the 'Rating Distribution' (Is it top-heavy with 5 stars, or suspicious?).
+       - Evaluate the 'Time to Competitive Barrier' (Is this niche realistic for a new entry?).
+    6. Unmet Needs (Bonus): What do users wish this product had?
