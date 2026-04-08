@@ -67,13 +67,37 @@ class DataCache:
         except Exception as e:
             logger.error(f"Failed to persist cache domain {domain}: {e}")
 
-    def get(self, domain: str, key: str) -> Optional[Any]:
-        """Retrieve data from a specific domain."""
+    def get(self, domain: str, key: str, ttl_seconds: Optional[int] = None) -> Optional[Any]:
+        """Retrieve data from a specific domain with optional soft TTL check."""
         self._load_domain(domain)
         entry = self._memory_cache[domain].get(key)
-        if entry:
-            return entry["data"]
-        return None
+        
+        if not entry:
+            return None
+            
+        if ttl_seconds:
+            # updated_at is stored in ISO format
+            updated_at = datetime.fromisoformat(entry["updated_at"])
+            age = (datetime.utcnow() - updated_at).total_seconds()
+            if age > ttl_seconds:
+                logger.info(f"Cache key {domain}:{key} expired (age: {int(age)}s > ttl: {ttl_seconds}s)")
+                return None
+                
+        return entry["data"]
+
+    def get_model(self, domain: str, key: str, model_class: Any, ttl_seconds: Optional[int] = None) -> Optional[Any]:
+        """Retrieve data and reconstruct as Pydantic model(s)."""
+        data = self.get(domain, key, ttl_seconds=ttl_seconds)
+        if data is None:
+            return None
+            
+        try:
+            if isinstance(data, list):
+                return [model_class.model_validate(item) for item in data]
+            return model_class.model_validate(data)
+        except Exception as e:
+            logger.error(f"Failed to reconstruct model {model_class.__name__}: {e}")
+            return None
 
     def exists(self, domain: str, key: str) -> bool:
         self._load_domain(domain)
