@@ -44,9 +44,9 @@ competitor_monitor:
 
 review_analysis:
   max_reviews_per_product: 100
-  sample_positive: 15
-  sample_negative: 15
-  sample_neutral: 5
+  sample_positive: 50
+  sample_negative: 50
+  sample_neutral: 50
 
 bsr_collection:
   max_pages: 2
