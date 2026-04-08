@@ -135,22 +135,17 @@ class GeminiProvider(BaseLLMProvider):
             raw_schema = schema.model_json_schema()
             clean = self._clean_schema(raw_schema)
 
-            generation_config = types.GenerationConfig(
-                response_mime_type="application/json",
-            )
-            
             # Filter out internal metadata from kwargs
             filtered_kwargs = self._filter_kwargs(kwargs)
 
-            # Use client.models.generate_content for consistency with generate_text
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
                 model=self.model_name,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=system_message,
-                    generation_config=generation_config,
-                    tools=[types.Tool(function_declarations=[types.FunctionDeclaration.from_dict(clean)])]
+                    response_mime_type="application/json",
+                    response_schema=clean,
                 ),
                 **filtered_kwargs
             )

@@ -26,6 +26,10 @@ from src.mcp.servers.amazon.ads.client import AmazonAdsClient
 from src.core.utils.cookie_helper import AmazonCookieHelper
 from src.mcp.servers.amazon.extractors.bsr_category_extractor import BSRCategoryExtractor
 from src.core.data_cache import data_cache
+from src.intelligence.processors import ReviewSummarizer, SalesEstimator
+from src.intelligence.providers.factory import ProviderFactory
+from src.core.models.review import Review
+from src.core.models.product import Product
 
 logger = logging.getLogger("mcp-amazon")
 
@@ -143,12 +147,42 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
 
     # ── Tier 3: Detail enrichment ────────────────────────────────────────
     if name == "get_reviews":
+        asin = arguments["asin"]
         extractor = CommentsExtractor()
         reviews = await extractor.get_all_comments(
-            arguments["asin"],
+            asin,
             max_pages=arguments.get("max_pages", 2),
         )
+        if reviews:
+            data_cache.set("amazon", f"reviews:{asin}", reviews)
         return _json_response(reviews)
+
+    if name == "analyze_reviews":
+        asin = arguments["asin"]
+        reviews = data_cache.get_model("amazon", f"reviews:{asin}", Review, ttl_seconds=86400)
+        if not reviews:
+            extractor = CommentsExtractor()
+            raw = await extractor.get_all_comments(
+                asin,
+                max_pages=arguments.get("max_pages", 3),
+            )
+            if raw:
+                data_cache.set("amazon", f"reviews:{asin}", raw)
+            reviews = raw or []
+        if not reviews:
+            return [TextContent(type="text", text="No reviews found for this ASIN.")]
+        try:
+            summarizer = ReviewSummarizer(provider=ProviderFactory.get_provider())
+            summary = await summarizer.summarize(
+                reviews,
+                competitive_benchmark=arguments.get("competitive_benchmark", 500),
+                est_monthly_sales=arguments.get("est_monthly_sales", 0),
+            )
+            return _json_response(summary)
+        except Exception as e:
+            logger.error(f"analyze_reviews failed for {asin}: {e}", exc_info=True)
+            return [TextContent(type="text", text=f"Review analysis failed: {type(e).__name__}: {e}")]
+
 
     if name == "get_fulfillment":
         extractor = FulfillmentExtractor()
@@ -392,6 +426,25 @@ amazon_tools = [
         },
     ),
     Tool(
+        name="analyze_reviews",
+        description=(
+            "Fetch and deeply analyze customer reviews for a product. "
+            "Returns structured pros/cons, sentiment score, buyer persona, "
+            "review velocity, rating distribution, competitive barrier estimate, "
+            "and a manipulation risk score (RCI, template overlap, review-to-sales ratio)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin": {"type": "string", "description": "Product ASIN"},
+                "max_pages": {"type": "integer", "default": 3, "description": "Max review pages to fetch"},
+                "competitive_benchmark": {"type": "integer", "default": 500, "description": "Review count threshold to estimate competitive barrier"},
+                "est_monthly_sales": {"type": "integer", "default": 0, "description": "Estimated monthly sales volume for review-to-sales ratio calculation (0 = unknown)"},
+            },
+            "required": ["asin"],
+        },
+    ),
+    Tool(
         name="get_fulfillment",
         description="Determine whether a product is fulfilled by Amazon (FBA) or merchant (FBM).",
         inputSchema={
@@ -528,6 +581,7 @@ _AMAZON_META = {
     "get_keyword_rank": ("DATA", "search position of ASINs for a keyword"),
     "search_sales_asins": ("DATA", "ASINs from search results for sales analysis"),
     "get_reviews": ("DATA", "customer reviews with text, rating, date"),
+    "analyze_reviews": ("COMPUTE", "structured review summary: pros/cons, sentiment, buyer persona, velocity, rating distribution, competitive barrier, manipulation risk score"),
     "get_fulfillment": ("DATA", "FBA or FBM fulfillment status"),
     "get_seller_feedback": ("DATA", "seller feedback count"),
     "get_seller_product_count": ("DATA", "total products listed by seller"),

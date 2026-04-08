@@ -118,44 +118,78 @@ class ReviewSummarizer:
             }
         }
 
+    def _deduplicate_reviews(self, reviews: List[Review]) -> List[Review]:
+        """Step 1: Remove near-duplicate reviews using prefix fingerprinting."""
+        seen_fingerprints = set()
+        unique_reviews = []
+        for r in reviews:
+            if not r.content or len(r.content) < 10:
+                unique_reviews.append(r)
+                continue
+            # Use first 50 chars as fingerprint to catch templates
+            fp = r.content.lower().strip()[:50]
+            if fp not in seen_fingerprints:
+                seen_fingerprints.add(fp)
+                unique_reviews.append(r)
+        return unique_reviews
+
     async def summarize(self, reviews: List[Review], competitive_benchmark: int = 500, est_monthly_sales: int = 0) -> ReviewSummary:
         if not reviews:
             raise ValueError("No reviews provided for summarization.")
 
-        # 1. Calculate Quantitative Metrics & Manipulation Risk
+        # 1. Calculate base metrics and risk before deduplication (reflects reality)
         stats = self._calculate_metrics(reviews, benchmark=competitive_benchmark)
         risk = self._analyze_manipulation_risk(reviews, est_monthly_sales=est_monthly_sales)
 
-        # 2. Sort & Prioritize for LLM (Verified Purchase + Helpful Votes)
+        # 2. Step 1: Deduplicate for LLM analysis (reflects unique info)
+        unique_reviews = self._deduplicate_reviews(reviews)
+
+        # 3. Step 2: Adaptive Quota Sampling (Total Budget: 30)
+        # Sort by quality: Verified + Helpful
         sorted_reviews = sorted(
-            reviews, 
+            unique_reviews, 
             key=lambda x: (x.is_verified, x.helpful_votes or 0), 
             reverse=True
         )
 
-        # 3. Balanced Sampling for text analysis
-        positive = [r for r in sorted_reviews if r.rating and r.rating >= 4][:15]
-        negative = [r for r in sorted_reviews if r.rating and r.rating <= 2][:15]
-        neutral = [r for r in sorted_reviews if r.rating == 3][:5]
-        
-        selected_reviews = positive + negative + neutral
+        pos_pool = [r for r in sorted_reviews if r.rating and r.rating >= 4]
+        neg_pool = [r for r in sorted_reviews if r.rating and r.rating <= 2]
+        neu_pool = [r for r in sorted_reviews if r.rating == 3]
 
-        # 4. Build optimized review data string
+        # --- Budget Management (Fixed 30) ---
+        total_budget = 30
+        
+        # A. Allocate Neutral first (Limited slice of the budget)
+        neu_count = min(3, len(neu_pool))
+        remaining_budget = total_budget - neu_count
+        
+        # B. Allocate Negative with Floor (Signal guarantee)
+        neg_floor = 8 
+        actual_neg_ratio = len(neg_pool) / len(unique_reviews) if unique_reviews else 0
+        neg_count = max(neg_floor, int(remaining_budget * actual_neg_ratio))
+        neg_count = min(neg_count, len(neg_pool)) # Cap by actual availability
+        
+        # C. Allocate Positive (The "Fallback" bucket)
+        # If neg_pool is small, positive reviews will fill the remaining space to maximize info density.
+        pos_count = remaining_budget - neg_count
+        pos_count = min(pos_count, len(pos_pool))
+        
+        selected_reviews = neg_pool[:neg_count] + pos_pool[:pos_count] + neu_pool[:neu_count]
+
+        # 4. Step 3: Build review data with TRUNCATION (200 chars)
         review_data = f"--- QUANTITATIVE METRICS ---\n"
         review_data += f"Monthly Review Velocity: {stats['velocity']} reviews/month\n"
         review_data += f"Rating Distribution: {stats['distribution']}\n"
-        review_data += f"Estimated Time to Reach {competitive_benchmark} Reviews: {stats['barrier_months']} months\n"
-        review_data += f"MANIPULATION RISK SCORE: {risk['score']}/100 ({risk['verdict']})\n"
-        review_data += f"Integrity Details: {risk['metrics']}\n\n"
+        review_data += f"MANIPULATION RISK: {risk['score']}/100 ({risk['verdict']})\n\n"
         
-        review_data += "--- RAW REVIEW SAMPLES ---\n"
+        review_data += "--- CURATED REVIEW SAMPLES (TRUNCATED) ---\n"
         for i, r in enumerate(selected_reviews):
             status = "Verified" if r.is_verified else "Non-Verified"
-            votes = f"{r.helpful_votes} helpful" if r.helpful_votes else "0 votes"
+            helpful = f"{r.helpful_votes} helpful" if r.helpful_votes else "0 votes"
+            # Truncate to 200 chars to save 60%+ tokens
+            content_preview = (r.content[:200] + "...") if len(r.content or "") > 200 else (r.content or "")
             review_data += (
-                f"Review {i+1} [{r.rating} stars | {status} | {votes}]\n"
-                f"Title: {r.title}\n"
-                f"Content: {r.content}\n\n"
+                f"R{i+1} [{r.rating}*|{status}|{helpful}]: {r.title} - {content_preview}\n"
             )
 
         # 5. LOAD PROMPT FROM MANAGER
@@ -164,7 +198,7 @@ class ReviewSummarizer:
             variables={"review_data": review_data}
         )
 
-        logger.info(f"Summarizing {len(selected_reviews)} reviews with quantitative & integrity context...")
+        logger.info(f"Summarizing {len(selected_reviews)} unique/truncated reviews...")
         
         # 6. Synthesis
         summary: ReviewSummary = await self.provider.generate_structured(
@@ -173,7 +207,7 @@ class ReviewSummarizer:
             system_message=system_msg
         )
         
-        # 7. Inject calculated stats into the final Pydantic model
+        # 7. Final response enrichment
         summary.review_velocity = stats['velocity']
         summary.rating_distribution = stats['distribution']
         summary.competitive_barrier_months = stats['barrier_months']

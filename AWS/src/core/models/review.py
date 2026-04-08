@@ -28,7 +28,7 @@ class ReviewSummary(BaseModel):
     
     # NEW: Quantitative Metrics
     review_velocity: float = Field(0.0, description="Estimated reviews added per month based on the provided sample")
-    rating_distribution: dict[int, int] = Field(default_factory=dict, description="Distribution of star ratings (1-5)")
+    rating_distribution: dict = Field(default_factory=dict, description="Distribution of star ratings (1-5)")
     competitive_barrier_months: Optional[float] = Field(None, description="Estimated months required to reach the competitive benchmark (e.g. 500 reviews) at current velocity")
     
     # Stage 2: Manipulation Risk
