@@ -30,13 +30,20 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                                                                              |
 |   1. Auth          token/key --> tenant_id + user_id + plan_tier             |
 |                    [Single-User: Hardcoded "default"] [Ext Point #1]         |
-|   2. Rate Limit    Single-User: No limit (Stub)  [Ext Point #2]              |
+|   2. Rate Limit    Three-layer enforcement (config/rate_limits.yaml)         |
+|      Layer 1  entry_limits   cooldown debounce (check_limit at dispatch)     |
+|                              concurrent slot   (concurrent_slot in _run_job) |
+|      Layer 2  tenant_quotas  daily request budget per plan tier              |
+|      Layer 3  source_limits  token-bucket per external API (acquire_source)  |
+|                    [Ext Point #2] Swap in-memory counters for Redis          |
 |   3. Normalize     Heterogeneous msg --> UnifiedRequest DTO                  |
 |      UnifiedRequest = {                                                      |
 |        tenant_id, user_id, plan_tier,                                        |
 |        workflow_name?, intent?,                                              |
 |        params: { filters_override, ... },                                    |
-|        callback: { type, target }                                            |
+|        callback: { type, target },                                           |
+|        entry_type,   ← set by Gateway; consumed by RateLimiter.concurrent_slot|
+|        chat_id       ← Feishu chat identifier for per-chat concurrency       |
 |      }                                                                       |
 |   4. Mode Selection  (Centralized routing logic)                             |
 |      +-------------------------------------------------------------+        |
@@ -403,7 +410,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
   # Extension Point       Single-User                Multi-User Replacement
   ─── ─────────────────── ─────────────────────────── ──────────────────────────────
   1   Auth middleware       Hardcoded "default"         JWT / API Key + user table
-  2   Rate Limit            No limit (Stub)             Per-user token bucket (Redis)
+  2   Rate Limit            3-layer (in-memory)         Swap counters/buckets → Redis
   3   Task queue            asyncio.Queue               Redis Priority Queue (Celery)
   4   Tool ACL              No filtering                Per-tenant visibility control
   5   API credentials       .env single key set         Vault per tenant_id lookup

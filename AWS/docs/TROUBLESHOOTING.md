@@ -102,7 +102,35 @@ This guide provides solutions to common issues you might encounter while develop
     *   **Cause**: The `FallbackHandler` was incorrectly placed in the `src/core/` layer, violating dependency rules.
     *   **Solution**: `fallback.py` has been moved to `src/intelligence/fallback.py`, which is its correct domain. Ensure all import paths are updated accordingly.
 
-## 5. Amazon Advertising API (Ads API) Issues
+## 5. Rate Limiting Issues
+
+*   **Feishu command rejected with `"Rate limit exceeded for Feishu workflow"`**:
+    *   **Cause**: Either the per-chat cooldown window (default 5 s) has not expired, or the daily tenant quota (`free`: 50 req/day) is exhausted.
+    *   **Solution (cooldown)**: Wait for the cooldown window to pass. Adjust `entry_limits.feishu_workflow.cooldown_seconds` in `config/rate_limits.yaml` if the default is too aggressive.
+    *   **Solution (quota)**: Check `RateLimiter()._tenant_counters` for today's count. Upgrade `plan_tier` in `AuthMiddleware` or increase `tenant_quotas.free.daily_requests`.
+
+*   **Job fails immediately with `"Per-chat concurrent limit reached"`**:
+    *   **Cause**: The same Feishu chat already has `per_chat_concurrent` jobs in `PENDING` or `RUNNING` state (default: 2 for `feishu_workflow`, 1 for `feishu_explore`).
+    *   **Solution**: Wait for the previous job to complete. To raise the limit, increase `entry_limits.feishu_workflow.per_chat_concurrent` in `config/rate_limits.yaml`.
+    *   **Debugging**: Check `RateLimiter()._concurrent` for the current slot counts (key format: `"feishu_workflow:chat_<id>"`).
+
+*   **Job fails with `"Global concurrent limit reached"`**:
+    *   **Cause**: The total number of active jobs of this entry type across all chats has reached `concurrent_jobs` (default: 10 for `feishu_workflow`, 3 for `feishu_explore`).
+    *   **Solution**: Increase `entry_limits.<type>.concurrent_jobs` or add more `max_workers` to `JobManager`.
+
+*   **Concurrent slot counter appears stuck (counter never decrements)**:
+    *   **Cause**: Should not happen — `concurrent_slot()` uses `try/finally` to guarantee release even on crash or `asyncio.CancelledError`. If observed, a job is likely still running (status `RUNNING`) rather than truly leaked.
+    *   **Debugging**: Inspect `get_job_manager()._jobs` for any records stuck in `RUNNING` status. Check worker logs for exceptions that were silently swallowed upstream.
+
+*   **External API client gets `RetryableError: xiyouzhaoci source rate limit timeout`**:
+    *   **Cause**: The token bucket for `xiyouzhaoci` has been exhausted and no token refilled within the 30-second timeout (default). This happens when many parallel tasks hit the same source.
+    *   **Solution**: Reduce `parallel_concurrency` in `config/workflow_defaults.yaml`, or increase `source_limits.xiyouzhaoci.requests_per_minute` / `burst` in `config/rate_limits.yaml`.
+
+*   **External API returns `429 Too Many Requests` repeatedly**:
+    *   **Cause**: The token-bucket rate in `source_limits` is higher than the actual API limit, or a burst of requests depleted the API provider's quota.
+    *   **Solution**: The client automatically retries up to 3 times with exponential backoff (reads `Retry-After` header when present). If retries are exhausted, `RetryableError` is raised and the job is marked `FAILED`. Reduce `requests_per_minute` in `config/rate_limits.yaml` for the offending source.
+
+## 6. Amazon Advertising API (Ads API) Issues
 
 *   **`404 Method Not Found` for `bidRecommendations`**:
     *   **Cause**: Attempting to use deprecated v2 endpoints.

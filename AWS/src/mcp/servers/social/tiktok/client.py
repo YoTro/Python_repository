@@ -8,6 +8,8 @@ import urllib.parse
 from curl_cffi import requests
 from typing import Dict, Any, List, Tuple
 from .auth import TikTokSigner
+from src.gateway.rate_limit import RateLimiter
+from src.core.errors.exceptions import RetryableError
 
 logger = logging.getLogger(__name__)
 
@@ -161,20 +163,30 @@ class TikTokClient:
         if ttwid:
             self.session.cookies.set("ttwid", ttwid, domain=".tiktok.com")
         
-        try:
-            response = self.session.get(url, params=params, headers=headers)
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except Exception as e:
-                    logger.error(f"Failed to parse TikTok JSON response: {e}. Snippet: {response.text[:100]}")
+        limiter = RateLimiter()
+        for attempt in range(3):
+            if not limiter.acquire_source("tiktok"):
+                raise RetryableError("tiktok source rate limit timeout", retry_after_seconds=60)
+            try:
+                response = self.session.get(url, params=params, headers=headers)
+                if response.status_code == 200:
+                    try:
+                        return response.json()
+                    except Exception as e:
+                        logger.error(f"Failed to parse TikTok JSON response: {e}. Snippet: {response.text[:100]}")
+                        return {}
+                elif response.status_code == 429:
+                    wait = int(response.headers.get("Retry-After", 2 ** (attempt + 1))) + random.uniform(0, 1)
+                    logger.warning(f"TikTok 429 rate limited, waiting {wait:.1f}s (attempt {attempt + 1}/3)")
+                    time.sleep(wait)
+                    continue
+                else:
+                    logger.error(f"TikTok request failed with status: {response.status_code}")
                     return {}
-            else:
-                logger.error(f"TikTok request failed with status: {response.status_code}")
+            except Exception as e:
+                logger.error(f"TikTok connection error: {e}")
                 return {}
-        except Exception as e:
-            logger.error(f"TikTok connection error: {e}")
-            return {}
+        raise RetryableError("TikTok still rate limited after 3 retries", retry_after_seconds=60)
 
     def get_tag_info(self, tag_name: str) -> Dict[str, Any]:
         """
@@ -409,9 +421,18 @@ class TikTokClient:
             final_params["X-Bogus"] = xb
             final_params["X-Gnarly"] = xg
             
+            if not RateLimiter().acquire_source("tiktok"):
+                raise RetryableError("tiktok source rate limit timeout", retry_after_seconds=60)
+
             try:
                 response = requests.get(url, params=final_params, headers=headers, timeout=15, impersonate="chrome")
-                
+
+                if response.status_code == 429:
+                    wait = int(response.headers.get("Retry-After", 4)) + random.uniform(0, 1)
+                    logger.warning(f"TikTok comments 429 rate limited, waiting {wait:.1f}s")
+                    time.sleep(wait)
+                    continue
+
                 if response.status_code == 200:
                     if not response.text.strip():
                         logger.warning(f"TikTok returned an empty response for comments (Video: {video_id}). Check signatures or msToken.")

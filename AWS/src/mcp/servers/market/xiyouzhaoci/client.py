@@ -6,8 +6,11 @@ from datetime import datetime
 from urllib.parse import quote
 import json
 import os
+import random
 import time
 from .auth import XiyouZhaociAuth
+from src.gateway.rate_limit import RateLimiter
+from src.core.errors.exceptions import RetryableError
 
 logger = logging.getLogger(__name__)
 
@@ -77,29 +80,57 @@ class XiyouZhaociAPI:
 
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         """
-        Make an HTTP request and handle 401 Unauthorized by reloading the token.
+        Make an HTTP request with:
+          - Layer 3 token-bucket acquisition before each attempt
+          - Exponential backoff on 429 Too Many Requests (up to 3 retries)
+          - Token reload and retry on 401 Unauthorized
         """
-        response = self.session.request(method, url, **kwargs)
-        
-        if response.status_code == 401:
-            logger.warning("Received 401 Unauthorized. Attempting to reload token...")
-            new_token = self._load_token()
-            if new_token and new_token != self.auth_token:
-                self.auth_token = new_token
-                self.common_headers["authorization"] = self.auth_token
-                
-                # Update the headers for the retry
-                if "headers" in kwargs:
-                    kwargs["headers"] = kwargs["headers"].copy()
-                    kwargs["headers"]["authorization"] = self.auth_token
-                
-                logger.info("Retrying request with reloaded token.")
-                response = self.session.request(method, url, **kwargs)
-            else:
-                logger.error("401 Unauthorized: Token is missing or invalid. Please re-authenticate.")
-                raise XiyouAuthRequiredError("Xiyouzhaoci token expired or invalid. Re-authentication required.")
-        
-        return response
+        limiter = RateLimiter()
+
+        for attempt in range(3):
+            # Layer 3: acquire source token before calling external API
+            if not limiter.acquire_source("xiyouzhaoci"):
+                raise RetryableError(
+                    "xiyouzhaoci source rate limit timeout",
+                    retry_after_seconds=60,
+                )
+
+            response = self.session.request(method, url, **kwargs)
+
+            if response.status_code == 429:
+                wait = int(response.headers.get("Retry-After", 2 ** (attempt + 1)))
+                jitter = random.uniform(0, 1)
+                total_wait = wait + jitter
+                logger.warning(
+                    f"[xiyouzhaoci] 429 rate limited — waiting {total_wait:.1f}s "
+                    f"(attempt {attempt + 1}/3)"
+                )
+                time.sleep(total_wait)
+                continue
+
+            if response.status_code == 401:
+                logger.warning("Received 401 Unauthorized. Attempting to reload token...")
+                new_token = self._load_token()
+                if new_token and new_token != self.auth_token:
+                    self.auth_token = new_token
+                    self.common_headers["authorization"] = self.auth_token
+                    if "headers" in kwargs:
+                        kwargs["headers"] = kwargs["headers"].copy()
+                        kwargs["headers"]["authorization"] = self.auth_token
+                    logger.info("Retrying request with reloaded token.")
+                    response = self.session.request(method, url, **kwargs)
+                else:
+                    logger.error("401 Unauthorized: Token is missing or invalid. Please re-authenticate.")
+                    raise XiyouAuthRequiredError(
+                        "Xiyouzhaoci token expired or invalid. Re-authentication required."
+                    )
+
+            return response
+
+        raise RetryableError(
+            "xiyouzhaoci still rate limited after 3 retries",
+            retry_after_seconds=120,
+        )
 
     @property
     def needs_auth(self) -> bool:
@@ -558,6 +589,46 @@ class XiyouZhaociAPI:
             return response.json()
         except Exception as e:
             logger.error(f"Error querying traffic scores: {e}")
+            return {}
+
+    def get_asin_daily_trends(self, country: str, asin: str, start_date: str, end_date: str) -> dict:
+        """
+        Fetch daily trends (price, ratings, stars) for an ASIN.
+        
+        :param start_date: YYYY-MM-DD or full ISO string. Earliest: 2023-02-01.
+        :param end_date: YYYY-MM-DD or full ISO string. Range limit: ~25 months.
+        """
+        url = f"{self.base_url}/v2/asins/info/trends/daily"
+        
+        # Format dates to ISO if only YYYY-MM-DD is provided
+        if len(start_date) == 10: start_date += "T00:00:00.000-07:00"
+        if len(end_date) == 10: end_date += "T00:00:00.000-07:00"
+
+        payload = {
+            "resource": {"country": country, "asin": asin},
+            "biz": {
+                "entities": [
+                    {
+                        "asin": asin,
+                        "country": country,
+                        "startDate": start_date,
+                        "endDate": end_date
+                    }
+                ]
+            }
+        }
+        
+        headers = self.common_headers.copy()
+        headers["request-url"] = f"/detail/asin/look_up/{country}/{asin}"
+        headers["krs-ver"] = self._krs_ver()
+
+        logger.info(f"Querying daily trends for {asin} ({start_date} to {end_date})")
+        try:
+            response = self._request("POST", url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error querying ASIN daily trends: {e}")
             return {}
 
 

@@ -109,6 +109,7 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
             "xiyou_get_aba_top_asins": "get_aba_top_asins",
             "xiyou_get_search_terms_ranking": "get_search_terms_ranking",
             "xiyou_get_traffic_scores": "get_traffic_scores",
+            "xiyou_get_asin_daily_trends": "get_asin_daily_trends",
         }
 
         if name in tool_map:
@@ -289,6 +290,20 @@ market_tools = [
             "required": ["asins"],
         },
     ),
+    Tool(
+        name="xiyou_get_asin_daily_trends",
+        description="[Third-party Xiyouzhaoci tool] Fetch historical daily trends (price, ratings, stars, deals) for a single ASIN within a date range.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin": {"type": "string", "description": "Amazon ASIN to query"},
+                "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
+                "start_date": {"type": "string", "description": "Start date (YYYY-MM-DD). Earliest: 2023-02-01"},
+                "end_date": {"type": "string", "description": "End date (YYYY-MM-DD). Continuous months limit: 25"},
+            },
+            "required": ["asin", "start_date", "end_date"],
+        },
+    ),
 ]
 
 _MARKET_META = {
@@ -305,6 +320,7 @@ _MARKET_META = {
     "xiyou_get_aba_top_asins": ("DATA", "JSON containing top ASINs and metrics for specified search terms"),
     "xiyou_get_search_terms_ranking": ("DATA", "JSON containing search frequency ranks and trends for variations of a query"),
     "xiyou_get_traffic_scores": ("DATA", "JSON containing traffic scores, ad ratio, and growth for ASINs"),
+    "xiyou_get_asin_daily_trends": ("DATA", "JSON containing daily historical trends for price and ratings"),
 }
 
 for tool in market_tools:

@@ -33,8 +33,23 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 
 **How to register a new entry point:**
 1.  **Dispatch Method**: Add `dispatch_<channel>_command` to `APIGateway` in `src/gateway/router.py`.
-2.  **Normalization**: Map heterogeneous inputs into a `UnifiedRequest` DTO.
+2.  **Normalization**: Map heterogeneous inputs into a `UnifiedRequest` DTO. Always set `entry_type` (e.g., `"feishu_workflow"`) and `chat_id` so the rate limiter can track per-chat concurrency.
 3.  **Callback Binding**: Inject a `CallbackConfig` (e.g., `type="slack_message"`) so the system knows where to return results.
+4.  **Rate Limit Config**: Add a matching entry under `entry_limits` in `config/rate_limits.yaml` with `concurrent_jobs`, `per_chat_concurrent`, and `cooldown_seconds`.
+
+**Rate Limiting — Three Layers (`src/gateway/rate_limit.py`):**
+
+| Layer | Config Key | Enforced At | Purpose |
+|-------|-----------|-------------|---------|
+| 1a — Cooldown | `entry_limits.<type>.cooldown_seconds` | `check_limit()` before dispatch | Debounce Feishu double-clicks |
+| 1b — Concurrency | `entry_limits.<type>.concurrent_jobs` / `per_chat_concurrent` | `concurrent_slot()` inside `_run_job` | Prevent slot deadlock via `try/finally` |
+| 2 — Quota | `tenant_quotas.<tier>.daily_requests` | `check_limit()` before dispatch | Per-tenant daily budget |
+| 3 — Token Bucket | `source_limits.<name>.requests_per_minute` / `burst` | `acquire_source()` in each API client | Protect external API accounts |
+
+**How to add a new external API source:**
+1.  Add an entry to `source_limits` in `config/rate_limits.yaml`.
+2.  Call `RateLimiter().acquire_source("<name>")` at the top of the client's `_request()` method.
+3.  Add 429 exponential backoff using `time.sleep(2 ** attempt + jitter)` in the retry loop.
 
 ### Layer 3: Orchestration (`src/workflows/` & `src/agents/`)
 *The "Brains". Deciding HOW to solve the problem.*
@@ -109,6 +124,10 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 2.  **Logic Validation**: `pytest tests/test_core_utils.py` etc.
 3.  **Full-Flow Simulation**: `pytest tests/test_feishu_full_flow.py -s` (Mocks external APIs but runs full Gateway -> Job -> MCP loop).
 4.  **LLM Routing**: `pytest tests/test_gemini_advanced_pricing.py`.
+5.  **Rate Limiting** (37 tests, all three layers):
+    ```bash
+    export PYTHONPATH=$PYTHONPATH:. && .venv311/bin/python3 -m unittest tests/test_rate_limiting_system.py -v
+    ```
 
 ---
 
