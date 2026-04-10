@@ -76,7 +76,27 @@ Ensures that the Domain-Driven Design (DDD) structure remains free of circular i
     PYTHONPATH=. venv311/bin/pytest tests/test_imports.py
     ```
 
-### G. Full-Flow Integration Tests
+### G. Rate Limiting System Tests
+Validates all three layers of the rate limiting architecture in isolation and combination.
+*   **Location**: `tests/test_rate_limiting_system.py`
+*   **Coverage** (37 tests):
+
+    | Test Class | Cases | What Is Verified |
+    |---|---|---|
+    | `TestLayer3TokenBucket` | 5 | Token acquisition, burst depletion, refill over time, source isolation |
+    | `TestLayer2TenantQuota` | 7 | Counter increment, free/pro limits, unknown tier unlimited, tenant isolation |
+    | `TestLayer1aCooldown` | 7 | First trigger allowed, repeat blocked, different chats independent, blocked call does not reset timer |
+    | `TestLayer1bConcurrentSlot` | 9 | Normal release, **release on exception**, **release on `CancelledError`**, per-chat limit, global limit, multi-chat coexistence |
+    | `TestCheckLimit` | 5 | Combined gate: cooldown blocked → quota counter must NOT advance |
+    | `TestUnifiedRequestMetadata` | 4 | `entry_type` / `chat_id` field propagation and model serialisation |
+
+*   **Command**:
+    ```bash
+    export PYTHONPATH=$PYTHONPATH:. && .venv311/bin/python3 -m unittest tests/test_rate_limiting_system.py -v
+    ```
+*   **Note**: Tests reset the `RateLimiter` singleton state in `setUp` (`_concurrent`, `_tenant_counters`, `_chat_last`, bucket tokens) to ensure isolation between runs.
+
+### H. Full-Flow Integration Tests
 Simulates a complete request starting from the entry points through the API Gateway.
 *   **Scenario**: Simulate a Feishu command, track its progress via the Telemetry Tracker, and verify the final Bitable/CSV output.
 *   **Command**:

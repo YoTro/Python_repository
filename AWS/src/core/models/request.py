@@ -22,3 +22,7 @@ class UnifiedRequest(BaseModel):
     
     params: Dict[str, Any] = Field(default_factory=dict, description="Parameters, including filters_override")
     callback: Optional[CallbackConfig] = Field(None, description="Callback strategy definition")
+
+    # Concurrency tracking metadata (set by APIGateway, consumed by RateLimiter.concurrent_slot)
+    entry_type: Optional[str] = Field(None, description="Entry point type, e.g. feishu_workflow / cli_workflow")
+    chat_id: Optional[str] = Field(None, description="Feishu chat_id for per-chat concurrency slot tracking")

@@ -23,8 +23,8 @@ class APIGateway:
     async def dispatch_cli_workflow(workflow_name: str, params: Dict[str, Any]) -> Any:
         """Handles CLI deterministic workflow requests."""
         identity = AuthMiddleware.authenticate()
-        
-        if not RateLimiter.check_limit(identity, request_type="workflow"):
+
+        if not RateLimiter().check_limit(identity, request_type="cli_workflow"):
             raise AWSBaseError("Rate limit exceeded for workflow execution.")
         
         request = UnifiedRequest(
@@ -32,7 +32,8 @@ class APIGateway:
             user_id=identity["user_id"],
             plan_tier=identity["plan_tier"],
             workflow_name=workflow_name,
-            params=params
+            params=params,
+            entry_type="cli_workflow",
         )
         job_mgr = get_job_manager()
         return await job_mgr.submit_and_wait(request)
@@ -41,15 +42,16 @@ class APIGateway:
     async def dispatch_cli_explore(intent: str) -> Any:
         """Handles CLI exploratory agent requests."""
         identity = AuthMiddleware.authenticate()
-        
-        if not RateLimiter.check_limit(identity, request_type="explore"):
+
+        if not RateLimiter().check_limit(identity, request_type="cli_explore"):
             raise AWSBaseError("Rate limit exceeded for agent exploration.")
-        
+
         request = UnifiedRequest(
             tenant_id=identity["tenant_id"],
             user_id=identity["user_id"],
             plan_tier=identity["plan_tier"],
-            intent=intent
+            intent=intent,
+            entry_type="cli_explore",
         )
         job_mgr = get_job_manager()
         return await job_mgr.submit_and_wait(request)
@@ -66,10 +68,10 @@ class APIGateway:
         Immediately returns job_id so bot can reply 'Accepted'.
         """
         identity = AuthMiddleware.authenticate()
-        
-        if not RateLimiter.check_limit(identity, request_type="workflow"):
-            logger.warning("Rate limit exceeded for Feishu command, but proceeding (Stub).")
-        
+
+        if not RateLimiter().check_limit(identity, request_type="feishu_workflow", chat_id=chat_id):
+            raise AWSBaseError(f"Rate limit exceeded for Feishu workflow (chat: {chat_id}).")
+
         # Injects the appropriate Callback preset with the dynamic bot_name
         callback = CallbackConfig(
             type="feishu_bitable",
@@ -83,7 +85,9 @@ class APIGateway:
             plan_tier=identity["plan_tier"],
             workflow_name=workflow_name,
             params=params,
-            callback=callback
+            callback=callback,
+            entry_type="feishu_workflow",
+            chat_id=chat_id,
         )
         
         job_mgr = get_job_manager()
@@ -96,9 +100,9 @@ class APIGateway:
         Immediately returns job_id so bot can reply 'Accepted'.
         """
         identity = AuthMiddleware.authenticate()
-        
-        if not RateLimiter.check_limit(identity, request_type="explore"):
-            logger.warning("Rate limit exceeded for Feishu explore command (Stub).")
+
+        if not RateLimiter().check_limit(identity, request_type="feishu_explore", chat_id=chat_id):
+            raise AWSBaseError(f"Rate limit exceeded for Feishu explore (chat: {chat_id}).")
             
         callback = CallbackConfig(
             type="feishu_card", 
@@ -111,7 +115,9 @@ class APIGateway:
             user_id=identity["user_id"],
             plan_tier=identity["plan_tier"],
             intent=intent,
-            callback=callback
+            callback=callback,
+            entry_type="feishu_explore",
+            chat_id=chat_id,
         )
         
         job_mgr = get_job_manager()

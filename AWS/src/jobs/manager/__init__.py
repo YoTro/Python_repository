@@ -182,12 +182,20 @@ class JobManager:
         record.status = JobStatus.RUNNING
 
         try:
-            if record.request.workflow_name:
-                await self._run_workflow_mode(record)
-            elif record.request.intent:
-                await self._run_agent_mode(record)
-            else:
-                raise ValueError("Neither workflow_name nor intent provided in UnifiedRequest.")
+            # Lazy import breaks the circular dependency:
+            # jobs/manager → gateway/rate_limit → gateway/__init__ → gateway/router → jobs/manager
+            from src.gateway.rate_limit import RateLimiter  # noqa: PLC0415
+            # concurrent_slot acquires on entry and releases in finally —
+            # guaranteeing the counter is decremented even if execution crashes.
+            async with RateLimiter().concurrent_slot(
+                record.request.entry_type, record.request.chat_id
+            ):
+                if record.request.workflow_name:
+                    await self._run_workflow_mode(record)
+                elif record.request.intent:
+                    await self._run_agent_mode(record)
+                else:
+                    raise ValueError("Neither workflow_name nor intent provided in UnifiedRequest.")
 
         except RetryableError as e:
             logger.warning(f"Job {job_id} hit retryable error: {e}")

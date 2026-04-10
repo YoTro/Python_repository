@@ -9,6 +9,21 @@ All data within the system conforms to the Pydantic models defined in `src/core/
 *   **`Product`**: Represents a single Amazon product with attributes like ASIN, title, price, rank, review count, etc.
 *   **`Review`**: Details of a customer review, including content, rating, author, and verification status.
 *   **`MarketAnalysisReport`**: Structured output for comprehensive market research, including SWOT analysis, competitor entries, and strategic recommendations.
+*   **`UnifiedRequest`**: Gateway DTO that normalises all entry-point inputs before dispatch.
+
+    | Field | Type | Set By | Purpose |
+    |---|---|---|---|
+    | `tenant_id` | `str` | `AuthMiddleware` | Multi-tenant isolation |
+    | `user_id` | `str` | `AuthMiddleware` | Per-user tracking |
+    | `plan_tier` | `str` | `AuthMiddleware` | Quota tier (`free`/`pro`/`enterprise`) |
+    | `workflow_name` | `str?` | Gateway | Deterministic workflow routing |
+    | `intent` | `str?` | Gateway | Agent-mode natural language query |
+    | `params` | `dict` | Gateway | Workflow overrides / filters |
+    | `callback` | `CallbackConfig?` | Gateway | Output target (Feishu, CSV, etc.) |
+    | `entry_type` | `str?` | Gateway | Rate-limit key (`feishu_workflow`, `cli_workflow`, …) |
+    | `chat_id` | `str?` | Gateway | Feishu chat ID for per-chat concurrency tracking |
+
+    `entry_type` and `chat_id` are consumed by `RateLimiter().concurrent_slot()` inside `JobManager._run_job()` to enforce per-chat concurrency limits with deadlock-safe `try/finally` release.
 
 **Benefit**: These models provide strict validation, type safety, and auto-generated JSON schemas, which are crucial for LLMs to understand and manipulate data correctly via the MCP Protocol.
 

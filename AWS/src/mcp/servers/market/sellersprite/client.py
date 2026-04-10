@@ -1,7 +1,11 @@
 from __future__ import annotations
 import logging
+import random
+import time
 import requests
 from .auth import SellerspriteAuth
+from src.gateway.rate_limit import RateLimiter
+from src.core.errors.exceptions import RetryableError
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +18,25 @@ class SellerspriteAPI:
     def __init__(self):
         self.session = requests.Session()
         self.auth = SellerspriteAuth()
+
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """HTTP request with Layer 3 token-bucket and 429 exponential backoff."""
+        limiter = RateLimiter()
+        for attempt in range(3):
+            if not limiter.acquire_source("sellersprite"):
+                raise RetryableError("sellersprite source rate limit timeout", retry_after_seconds=60)
+
+            response = self.session.request(method, url, **kwargs)
+
+            if response.status_code == 429:
+                wait = int(response.headers.get("Retry-After", 2 ** (attempt + 1))) + random.uniform(0, 1)
+                logger.warning(f"[sellersprite] 429 rate limited — waiting {wait:.1f}s (attempt {attempt + 1}/3)")
+                time.sleep(wait)
+                continue
+
+            return response
+
+        raise RetryableError("sellersprite still rate limited after 3 retries", retry_after_seconds=120)
 
     def get_keepa_data(self, auth_token: str, asin: str) -> dict:
         """
@@ -31,7 +54,7 @@ class SellerspriteAPI:
         }
         
         logger.info(f"Fetching Keepa data for {asin}")
-        res = self.session.get(url, headers=headers)
+        res = self._request("GET", url, headers=headers)
         response_data = {'times': [], 'bsr': [], 'subRanks': []}
         
         if res.status_code == 200:

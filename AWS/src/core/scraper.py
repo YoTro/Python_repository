@@ -69,8 +69,15 @@ class AmazonBaseScraper:
     ) -> Optional[str]:
         """
         Async fetch with content validation and retries.
+        Layer 3 rate limiting: acquires one token from the 'crawler' bucket before
+        each request. All Amazon extractor subclasses inherit this automatically.
         :param validator: Optional function returning True if content is valid.
         """
+        from src.gateway.rate_limit import RateLimiter  # lazy import — avoids circular deps
+        if not RateLimiter().acquire_source("crawler"):
+            logger.warning(f"[scraper] crawler token-bucket timeout, skipping fetch: {url}")
+            return None
+
         for attempt in range(max_retries):
             try:
                 if method.upper() == "POST":
