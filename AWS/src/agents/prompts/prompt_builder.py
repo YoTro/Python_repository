@@ -1,6 +1,7 @@
 """Build the MCP Agent system prompt from the .md template + live tool catalog."""
 from __future__ import annotations
 
+import datetime
 import os
 import string
 from typing import TYPE_CHECKING
@@ -36,5 +37,6 @@ class PromptBuilder:
             max_steps=str(max_steps),
             token_budget=str(token_budget),
             analysis_frameworks=fws,
-            output_standard=std_output
+            output_standard=std_output,
+            current_date=datetime.date.today().isoformat(),
         )

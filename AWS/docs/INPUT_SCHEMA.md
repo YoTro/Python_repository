@@ -104,7 +104,9 @@ This section details the input requirements for tasks originally designed for co
 
 Most tasks requiring product-specific data will expect a CSV file containing a list of ASINs.
 
-**Affected CLI Commands**: `details`, `stock`, `review_count`, `past_month_sales`, `fulfillment`, `dimensions`, `ranks`, `images`, `videos`, `feedback`.
+**Affected CLI Commands**: `details`, `stock`, `fulfillment`, `dimensions`, `ranks`, `images`, `videos`, `feedback`.
+
+> **Note**: `review_count` and `past_month_sales` are now MCP tools (`get_review_count` and `get_batch_past_month_sales`) and no longer accept CSV input. `get_batch_past_month_sales` accepts `asins: array` and returns `{ASIN: int|null}`; `get_review_count` returns `{ASIN, GlobalRatings, WrittenReviews, Ratio}`.
 
 | Column Header      | Required / Optional | Description                                  |
 | :----------------- | :------------------ | :------------------------------------------- |

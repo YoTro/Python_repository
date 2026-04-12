@@ -10,7 +10,7 @@ from src.mcp.servers.amazon.extractors.product_details import ProductDetailsExtr
 from src.mcp.servers.amazon.extractors.search import SearchExtractor
 from src.mcp.servers.amazon.extractors.ranks import RanksExtractor
 from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
-from src.mcp.servers.amazon.extractors.review_count import ReviewCountExtractor
+from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
 from src.mcp.servers.amazon.extractors.cart_stock import CartStockExtractor
 from src.mcp.servers.amazon.extractors.keywords_rank import KeywordsRankExtractor
 from src.mcp.servers.amazon.extractors.comments import CommentsExtractor
@@ -106,14 +106,17 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         )
         return _json_response(result)
 
-    if name == "get_past_month_sales":
+    if name == "get_batch_past_month_sales":
         extractor = PastMonthSalesExtractor()
-        result = await extractor.get_past_month_sales(arguments["asin"])
+        asins = arguments["asins"]
+        if isinstance(asins, str):
+            asins = [asins]
+        result = await extractor.get_batch_past_month_sales(asins)
         return _json_response(result)
 
     # ── Tier 2: Competitive analysis ─────────────────────────────────────
     if name == "get_review_count":
-        extractor = ReviewCountExtractor()
+        extractor = ReviewRatioExtractor()
         result = await extractor.get_review_count(
             arguments["asin"],
             host=arguments.get("host", "https://www.amazon.com"),
@@ -262,12 +265,11 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
             for m in match_types:
                 keywords_payload.append({"keyword": kw, "matchType": m.upper()})
         
-        result = await asyncio.to_thread(
-            client.get_keyword_bid_recommendations,
+        result = await client.get_keyword_bid_recommendations(
             keywords=keywords_payload,
             strategy=arguments.get("strategy", "AUTO_FOR_SALES"),
             include_analysis=arguments.get("include_analysis", False),
-            asins=arguments.get("asins")
+            asins=arguments.get("asins"),
         )
         return _json_response(result)
 
@@ -276,7 +278,7 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
 
 # ── Tool Definitions ─────────────────────────────────────────────────────
 
-_HOST_PROP = {"type": "string", "default": "https://www.amazon.com", "description": "Amazon domain URL"}
+_HOST_PROP = {"type": "string", "default": "https://www.amazon.com", "description": "Amazon domain, must include scheme, e.g. https://www.amazon.com or https://www.amazon.co.uk"}
 
 amazon_tools = [
     # Session
@@ -352,12 +354,16 @@ amazon_tools = [
         },
     ),
     Tool(
-        name="get_past_month_sales",
-        description="Extract the 'X bought in past month' figure from a product page.",
+        name="get_batch_past_month_sales",
+        description="Fetch 'X bought in past month' for one or more ASINs via Amazon search (one request per 20 ASINs). Returns {ASIN: int|null}.",
         inputSchema={
             "type": "object",
             "properties": {
-                "asin": {"type": "string", "description": "ASIN or product URL"},
+                "asins": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of ASINs to query (e.g. [\"B08N5WRWNW\", \"B0CKY689WQ\"])",
+                },
             },
             "required": ["asin"],
         },
@@ -365,7 +371,7 @@ amazon_tools = [
     # Tier 2: Competitive analysis
     Tool(
         name="get_review_count",
-        description="Fetch total customer review count for a product.",
+        description="Fetch GlobalRatings (all star ratings) and WrittenReviews (ratings with text) for a product, plus their Ratio. Natural ratio ≈ 0.10 (1:10); Ratio > 0.50 is a strong fake-review signal.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -575,8 +581,8 @@ _AMAZON_META = {
     "search_products": ("DATA", "list of products matching keyword with ASIN, title, price"),
     "search_profitability_products": ("DATA", "list of products with rich metadata: ASIN, title, brand, dimensions, weight, price"),
     "get_bsr_rank": ("DATA", "BSR rank and category rankings"),
-    "get_past_month_sales": ("DATA", "estimated past-month purchase count"),
-    "get_review_count": ("DATA", "total review count"),
+    "get_batch_past_month_sales": ("DATA", "dict of ASIN → past-month purchase count (batch search)"),
+    "get_review_count": ("DATA", "GlobalRatings, WrittenReviews, and their Ratio — Ratio > 0.50 indicates fake-review risk"),
     "get_stock_estimate": ("DATA", "estimated remaining stock quantity"),
     "get_keyword_rank": ("DATA", "search position of ASINs for a keyword"),
     "search_sales_asins": ("DATA", "ASINs from search results for sales analysis"),

@@ -19,5 +19,24 @@
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/110.0",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36"
-    ]
+    ],
+    "rate_limits": {
+        "entry_limits": {
+            "cli_workflow":    { "concurrent_jobs": 5,  "cooldown_seconds": 0  },
+            "feishu_workflow": { "concurrent_jobs": 10, "per_chat_concurrent": 2, "cooldown_seconds": 5  },
+            "feishu_explore":  { "concurrent_jobs": 3,  "per_chat_concurrent": 1, "cooldown_seconds": 15 }
+        },
+        "tenant_quotas": {
+            "free":       { "daily_requests": 50     },
+            "pro":        { "daily_requests": 500    },
+            "enterprise": { "daily_requests": 999999 }
+        },
+        "source_limits": {
+            "xiyouzhaoci":  { "requests_per_minute": 60,  "burst": 5  },
+            "sellersprite": { "requests_per_minute": 40,  "burst": 3,  "login_cooldown_seconds": 60 },
+            "crawler":      { "requests_per_minute": 6,   "burst": 2  },
+            "amazon_ads":   { "requests_per_minute": 100, "burst": 20 },
+            "tiktok":       { "requests_per_minute": 12,  "burst": 3  }
+        }
+    }
 }

@@ -35,7 +35,7 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 1.  **Dispatch Method**: Add `dispatch_<channel>_command` to `APIGateway` in `src/gateway/router.py`.
 2.  **Normalization**: Map heterogeneous inputs into a `UnifiedRequest` DTO. Always set `entry_type` (e.g., `"feishu_workflow"`) and `chat_id` so the rate limiter can track per-chat concurrency.
 3.  **Callback Binding**: Inject a `CallbackConfig` (e.g., `type="slack_message"`) so the system knows where to return results.
-4.  **Rate Limit Config**: Add a matching entry under `entry_limits` in `config/rate_limits.yaml` with `concurrent_jobs`, `per_chat_concurrent`, and `cooldown_seconds`.
+4.  **Rate Limit Config**: Add a matching entry under `entry_limits` in `config/settings.json` (section `rate_limits`) with `concurrent_jobs`, `per_chat_concurrent`, and `cooldown_seconds`.
 
 **Rate Limiting — Three Layers (`src/gateway/rate_limit.py`):**
 
@@ -47,7 +47,7 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 | 3 — Token Bucket | `source_limits.<name>.requests_per_minute` / `burst` | `acquire_source()` in each API client | Protect external API accounts |
 
 **How to add a new external API source:**
-1.  Add an entry to `source_limits` in `config/rate_limits.yaml`.
+1.  Add an entry to `source_limits` in `config/settings.json` (section `rate_limits`).
 2.  Call `RateLimiter().acquire_source("<name>")` at the top of the client's `_request()` method.
 3.  Add 429 exponential backoff using `time.sleep(2 ** attempt + jitter)` in the retry loop.
 
@@ -88,15 +88,33 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
     *   **Frameworks**: Define analysis models (e.g., PSI, SWOT) in `src/intelligence/prompts/config/frameworks.yaml`. Use `$variable` syntax to inject values from `config/workflow_defaults.yaml`.
     *   **Templates**: Define output structures in `src/intelligence/prompts/config/templates.yaml`.
     *   **Usage**: Access via `PromptManager` singleton to ensure Agent and Workflow consistency.
-4.  **Processors**: Implement complex AI logic (e.g., `MonopolyAnalyzer`) as specialized processors that the orchestrators can call.
+4.  **Processors**: Implement complex AI logic as specialized processors that the orchestrators can call.
+    *   `CategoryMonopolyAnalyzer.analyze()` accepts an optional `historical_data: Dict[str, List[Dict]]` (ASIN → daily records from `XiyouZhaociAPI.get_asin_daily_trends()`). When supplied it enables two additional dimensions:
+        *   `market_churn` — detects predatory competition, lemon-market, and rating-attack patterns from BSR/rating time series.
+        *   `seasonality` — detrended, log-BSR seasonality score with circular peak-month detection and platform-event (Prime Day / Black Friday) dampening.
 
 ### Layer 6: Output & Callbacks (`src/jobs/callbacks/`)
 *Delivery of the final value.*
 
 1.  **Implement**: Subclass `BaseCallback` in `src/jobs/callbacks/`.
 2.  **Progress**: Implement `on_progress` to send real-time "thinking" cards/messages.
-3.  **Factory**: Register your type in `CallbackFactory.create()`.
-4.  **Targeting**: Use `ContextPropagator` to automatically resolve `feishu_chat_id` or similar platform IDs without passing them through every function.
+3.  **Error with resume hint**: Implement `on_error(self, error, job_id=None)`. When `job_id` is provided a checkpoint exists — surface it to the user so they can resume (e.g., print a command, send a Feishu message).
+4.  **Factory**: Register your type in `CallbackFactory.create()`.
+5.  **Targeting**: Use `ContextPropagator` to automatically resolve `feishu_chat_id` or similar platform IDs without passing them through every function.
+
+**Feishu Bot Commands (`src/entry/feishu/commands.py`):**
+
+| Pattern | Command Class | Description |
+|---|---|---|
+| `更新亚马逊 Cookies` | `RefreshCookieCommand` | Re-launches browser to refresh Amazon session |
+| `恢复任务 <job_id>` | `ResumeJobCommand` | Resumes a failed workflow from its last checkpoint |
+| `获取 <Category> BSR` | `ExtractBSRCommand` | Kicks off BSR extraction workflow |
+| `分析垄断度 <URL>` | `AnalyzeCategoryMonopolyCommand` | Starts category monopoly analysis |
+| *(fallback)* | `AgentExploreCommand` | Routes to MCP Agent for open-ended exploration |
+
+**Adding a new bot command:**
+1. Subclass `BotCommand`, implement `match(text)` and `execute(text, chat_id)`.
+2. Register **before** `AgentExploreCommand` in `CommandDispatcher.__init__` (it is a catch-all fallback and must stay last).
 
 ### Layer 7: Interactive Signals (`src/jobs/interactions/`)
 *Handling asynchronous human-in-the-loop actions (e.g., QR login, manual approval).*

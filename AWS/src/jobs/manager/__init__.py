@@ -154,6 +154,50 @@ class JobManager:
         logger.info(f"Job submitted to queue: {job_id} ({target})")
         return job_id
 
+    def resume_from_checkpoint(
+        self,
+        job_id: str,
+        callback=None,
+        workflow_name: str = None,
+        params: dict = None,
+    ) -> str:
+        """
+        Re-submit a previously failed job using its existing checkpoint file.
+
+        workflow_name and params are loaded from the checkpoint automatically;
+        pass them explicitly only if you need to override the stored values.
+
+        :param job_id:        The original job ID (must match the checkpoint filename).
+        :param callback:      Output callback — pass a FeishuCallback / MCPCallback so
+                              progress and completion go back to the original channel.
+        :param workflow_name: Override the workflow name stored in the checkpoint.
+        :param params:        Override the params stored in the checkpoint.
+        :returns:             The same job_id, now queued again.
+        """
+        from src.jobs.checkpoint import CheckpointManager
+        checkpoint_mgr = CheckpointManager()
+        checkpoint = checkpoint_mgr.load(job_id)
+        if not checkpoint:
+            raise ValueError(f"No checkpoint found for job_id={job_id}. Cannot resume.")
+
+        resolved_name = workflow_name or checkpoint.workflow_name
+        resolved_params = params or checkpoint.workflow_params
+        if not resolved_name:
+            raise ValueError(
+                f"workflow_name not found in checkpoint for job_id={job_id}. "
+                "Pass it explicitly via workflow_name=."
+            )
+
+        request = UnifiedRequest(workflow_name=resolved_name, params=resolved_params)
+        record = JobRecord(job_id=job_id, request=request, callback=callback)
+        self._jobs[job_id] = record
+        self._queue.put_nowait(job_id)
+        logger.info(
+            f"Job {job_id} requeued for resume from step "
+            f"{checkpoint.step_index} ({checkpoint.step_name})"
+        )
+        return job_id
+
     async def submit_and_wait(
         self,
         request_or_workflow: Union[UnifiedRequest, str],
@@ -203,7 +247,7 @@ class JobManager:
             record.error = str(e)
             if record.callback:
                 try:
-                    await record.callback.on_error(e)
+                    await record.callback.on_error(e, job_id=job_id)
                 except Exception:
                     pass
 
@@ -214,7 +258,7 @@ class JobManager:
             record.completed_at = datetime.utcnow().isoformat()
             if record.callback:
                 try:
-                    await record.callback.on_error(e)
+                    await record.callback.on_error(e, job_id=job_id)
                 except Exception:
                     pass
 

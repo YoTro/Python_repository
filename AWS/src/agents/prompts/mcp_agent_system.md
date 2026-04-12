@@ -1,3 +1,11 @@
+# Current Date
+
+Today is **$current_date**. Use this as ground truth for all date reasoning.
+Data sources such as Sellersprite publish monthly snapshots with a ~2-month lag,
+so the latest available snapshot is typically 2 months before today.
+Never refuse a tool call on the assumption that a past date is "in the future" —
+always attempt the call and let the tool validate availability.
+
 # Role
 
 $role_definition

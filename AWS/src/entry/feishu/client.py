@@ -6,6 +6,7 @@ import os
 import json
 from src.core.utils.config_helper import ConfigHelper
 from src.core.utils.context import ContextPropagator
+from src.entry.feishu.const import feishu_error_msg
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ class FeishuClient:
     def upload_file(self, file_path: str, file_name: str = None, file_type: str = "stream"):
         """
         Upload a file to Feishu to get a file_key.
-        Supported types: opus, mp4, pdf, doc, xls, ppt, stream
+        Note: 'stream' is a universal type supported by all files.
         """
         from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
         
@@ -145,11 +146,19 @@ class FeishuClient:
 
                 response = self.client.im.v1.file.create(request)
 
-            if not response.success():
-                logger.error(f"Feishu upload file failed: {response.code}, {response.msg}")
-                return {"success": False, "error": response.msg, "code": response.code}
+            # CRITICAL FIX: If file_key is present, the upload was successful regardless of response.success().
+            # This suppresses false-positive 234001 errors where the file is received but headers cause a warning.
+            file_key = getattr(response.data, "file_key", None) if response.data else None
             
-            return {"success": True, "file_key": response.data.file_key}
+            if file_key:
+                return {"success": True, "file_key": file_key}
+
+            if not response.success():
+                msg = feishu_error_msg(response.code, response.msg)
+                logger.error(f"Feishu upload file failed: {response.code}, {msg}")
+                return {"success": False, "error": msg, "code": response.code}
+            
+            return {"success": True, "file_key": file_key}
         except Exception as e:
             logger.error(f"Feishu upload process failed: {e}")
             return {"success": False, "error": str(e)}

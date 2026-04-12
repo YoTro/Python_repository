@@ -130,7 +130,40 @@ This guide provides solutions to common issues you might encounter while develop
     *   **Cause**: The token-bucket rate in `source_limits` is higher than the actual API limit, or a burst of requests depleted the API provider's quota.
     *   **Solution**: The client automatically retries up to 3 times with exponential backoff (reads `Retry-After` header when present). If retries are exhausted, `RetryableError` is raised and the job is marked `FAILED`. Reduce `requests_per_minute` in `config/rate_limits.yaml` for the offending source.
 
-## 6. Amazon Advertising API (Ads API) Issues
+## 6. Workflow Resume & Checkpoint Issues
+
+*   **Job fails mid-workflow — how to resume from the last checkpoint**:
+    *   **Cause**: Any unhandled exception in a `ProcessStep` or `EnrichStep` saves the current checkpoint and marks the job `FAILED`. The checkpoint file is kept at `data/checkpoints/<job_id>.json`.
+    *   **Via Feishu**: Send `恢复任务 <job_id>` in the same chat. The `ResumeJobCommand` loads the checkpoint, rebuilds `FeishuCallback` for the same `chat_id`, and calls `resume_from_checkpoint()`. The engine skips all completed steps and resumes from the failed one.
+    *   **Via code**:
+        ```python
+        manager.resume_from_checkpoint(job_id="7d480543", callback=your_callback)
+        ```
+    *   **Note**: `workflow_name` and `workflow_params` are read from the checkpoint automatically (stored there since engine v2). For checkpoints created before this change, patch them manually:
+        ```python
+        import json
+        with open("data/checkpoints/<job_id>.json") as f: d = json.load(f)
+        d["workflow_name"] = "category_monopoly_analysis"
+        d["workflow_params"] = {"url": "...", "store_id": "US"}
+        d["ctx_cache"] = {}
+        with open("data/checkpoints/<job_id>.json", "w") as f: json.dump(d, f)
+        ```
+
+*   **`unsupported operand type(s) for /: 'NoneType' and 'float'` in `calculate_monopoly_score`**:
+    *   **Cause**: Two known patterns:
+        1. `dict.get(key, default)` does not apply `default` when the key exists but its value is `None`. This affects `actual_bsr_ad_ratio`, `sales`, and `review_count` fields when the workflow cache is empty (e.g., fresh resume without `ctx_cache`).
+        2. `ctx.cache` is empty on resume because old checkpoints did not save it. Later steps that depend on cache values populated by earlier steps receive `None` instead of the expected data.
+    *   **Solution**: Both are fixed — `_analyze_ad_competition` and `_analyze_sales_distribution` use `or`-fallback coercion; engine now saves/restores `ctx_cache` in every checkpoint.
+
+*   **`on_error` callback does not include `job_id` — user cannot resume**:
+    *   **Cause**: Old `JobCallback.on_error(error)` signature had no `job_id` parameter.
+    *   **Solution**: Signature is now `on_error(error, job_id=None)`. `FeishuCallback` prints the job_id and resume command; `MCPCallback.get_result()` returns `{"resumable": True, "job_id": "..."}` on failure.
+
+*   **Feishu file upload fails with `40009 internal server error`**:
+    *   **Cause**: Filename contained illegal characters — typically newlines (`\n`) from LLM-generated `main_keyword` strings that were not sanitised before being embedded in the filename.
+    *   **Solution**: `_prepare_report_artifact` now sanitises the keyword with `re.sub(r"[^\w]", "_", raw_kw, flags=re.ASCII)[:40]`, stripping all non-ASCII-word characters including `\n`, `\r`, and Windows-reserved characters (`\ / : * ? " < > |`).
+
+## 7. Amazon Advertising API (Ads API) Issues
 
 *   **`404 Method Not Found` for `bidRecommendations`**:
     *   **Cause**: Attempting to use deprecated v2 endpoints.
