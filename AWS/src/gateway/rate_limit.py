@@ -1,19 +1,14 @@
 from __future__ import annotations
 import contextlib
 import logging
-import os
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
-import yaml
+from src.core.utils.config_helper import ConfigHelper
 
 logger = logging.getLogger(__name__)
-
-_CONFIG_PATH = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "config", "rate_limits.yaml")
-)
 
 
 @dataclass
@@ -55,15 +50,8 @@ class RateLimiter:
     # ── Initialisation ────────────────────────────────────────────────────
 
     def _setup(self) -> None:
-        self._config: dict = {}
-        if os.path.exists(_CONFIG_PATH):
-            with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-                self._config = yaml.safe_load(f) or {}
-            logger.debug(f"[RateLimiter] Loaded config from {_CONFIG_PATH}")
-        else:
-            logger.warning(
-                f"[RateLimiter] Config not found at {_CONFIG_PATH}, using permissive defaults"
-            )
+        self._config: dict = ConfigHelper.get_section("rate_limits")
+        logger.debug("[RateLimiter] Loaded rate_limits config from ConfigHelper")
 
         # Layer 3: one token bucket per source (key: source_limits)
         self._source_buckets: Dict[str, _TokenBucket] = {}
@@ -91,6 +79,10 @@ class RateLimiter:
         self._concurrent_lock = threading.Lock()
 
     # ── Layer 3: Source token bucket ─────────────────────────────────────
+
+    def get_source_config(self, source: str) -> dict:
+        """Return the raw config dict for a source (empty dict if unconfigured)."""
+        return self._config.get("source_limits", {}).get(source, {})
 
     def acquire_source(self, source: str, timeout: float = 30.0) -> bool:
         """

@@ -30,7 +30,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                                                                              |
 |   1. Auth          token/key --> tenant_id + user_id + plan_tier             |
 |                    [Single-User: Hardcoded "default"] [Ext Point #1]         |
-|   2. Rate Limit    Three-layer enforcement (config/rate_limits.yaml)         |
+|   2. Rate Limit    Three-layer enforcement (config/settings.json → rate_limits)|
 |      Layer 1  entry_limits   cooldown debounce (check_limit at dispatch)     |
 |                              concurrent slot   (concurrent_slot in _run_job) |
 |      Layer 2  tenant_quotas  daily request budget per plan tier              |
@@ -58,10 +58,12 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 +==============================================================================+
 |                      JOB MANAGER  (Shared by both tracks)                    |
 |                                                                              |
-|   submit(request)   --> job_id                                               |
-|   resume(job_id)    --> Resume from checkpoint                               |
-|   cancel(job_id)    --> bool                                                 |
-|   get_status(job_id)--> JobStatus                                            |
+|   submit(request)                    --> job_id                              |
+|   resume_from_checkpoint(job_id,     --> job_id (requeued)                   |
+|     callback, workflow_name?, params?)    Loads checkpoint; engine skips     |
+|                                           completed steps automatically.      |
+|   cancel(job_id)                     --> bool                                |
+|   get_status(job_id)                 --> JobStatus                           |
 |                                                                              |
 |   Queue Implementation:                                                      |
 |   [Single-User] asyncio.Queue (Memory)  [Ext Point #3] Redis Priority Queue  |
@@ -328,8 +330,11 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                      CALLBACK  (inside job_manager/)                         |
 |                                                                              |
 |   Unified Interface:                                                         |
-|     on_progress(step, total, msg)   ── Real-time progress notifications      |
-|     on_complete(workflow_result)    ── Route to target output (Bitable/IM)   |
+|     on_progress(step, total, msg)        ── Real-time progress notifications |
+|     on_complete(workflow_result)         ── Route to target output           |
+|     on_error(error, job_id=None)         ── job_id present when checkpoint   |
+|                                             exists; surface to user for      |
+|                                             manual resume via Feishu command |
 |                                                                              |
 |   ── Artifact Delivery Mechanism ──────────────────────────────────────────  |
 |   Workflows can generate local artifacts (e.g., .md, .csv, .pdf). If a       |
@@ -377,6 +382,18 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |    Local files: checkpoint/history |  |    trace_id full link                |
 |    SQLite:      Config / Usage logs|  |    Gateway -> Step -> Model          |
 |                                    |  |    Duration / cost per step per job  |
+|  CheckpointData schema:            |  |                                      |
+|    job_id, step_index, step_name   |  |                                      |
+|    items          pipeline payload |  |                                      |
+|    ctx_cache      WorkflowContext  |  |                                      |
+|                   .cache snapshot  |  |                                      |
+|                   (restored on     |  |                                      |
+|                    resume so later |  |                                      |
+|                    steps get data  |  |                                      |
+|                    from earlier    |  |                                      |
+|                    steps)          |  |                                      |
+|    workflow_name, workflow_params  |  |                                      |
+|    metadata, created_at            |  |                                      |
 |  [Ext Point #6]                    |  |                                      |
 |    Redis:      Queue / Checkpoint  |  |  Metrics:                            |
 |                Rate limit / Session|  |    Funnel conversion / Token usage   |

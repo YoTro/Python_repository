@@ -132,6 +132,65 @@ class AnalyzeCategoryMonopolyCommand(BotCommand):
 
         asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
 
+class ResumeJobCommand(BotCommand):
+    """
+    Handles '恢复任务 <job_id>' messages.
+
+    Full resume flow:
+      1. Parse job_id from the message.
+      2. Load checkpoint — confirms the job exists and retrieves workflow_name + params.
+      3. Rebuild FeishuCallback pointing back to the same chat_id.
+      4. Call manager.resume_from_checkpoint() — engine skips completed steps automatically.
+    """
+
+    _PATTERN = re.compile(r"恢复任务\s+([0-9a-f]{8})", re.IGNORECASE)
+
+    def match(self, text: str) -> bool:
+        return bool(self._PATTERN.search(text))
+
+    def execute(self, text: str, chat_id: str):
+        match = self._PATTERN.search(text)
+        job_id = match.group(1)
+
+        feishu_client = FeishuClient(bot_name=self.bot_name)
+
+        async def _do_resume():
+            try:
+                from src.jobs.checkpoint import CheckpointManager
+                from src.jobs.manager import get_job_manager
+                from src.jobs.callbacks.feishu import FeishuCallback
+                from src.core.utils.config_helper import ConfigHelper
+
+                checkpoint = CheckpointManager().load(job_id)
+                if not checkpoint:
+                    feishu_client.send_text_message(
+                        "chat_id", chat_id,
+                        f"❌ 未找到任务 `{job_id}` 的断点，无法恢复。"
+                    )
+                    return
+
+                bot_cfg = ConfigHelper.get_feishu_bot(self.bot_name)
+                callback = FeishuCallback(
+                    chat_id=chat_id,
+                    bot_name=self.bot_name,
+                    user_token=bot_cfg.get("user_access_token") if bot_cfg else None,
+                    webhook_url=bot_cfg.get("webhook_url") if bot_cfg else None,
+                )
+
+                feishu_client.send_text_message(
+                    "chat_id", chat_id,
+                    f"▶️ 正在从断点恢复任务 `{job_id}`（已完成步骤: {checkpoint.step_name}）…"
+                )
+
+                get_job_manager().resume_from_checkpoint(job_id=job_id, callback=callback)
+
+            except Exception as e:
+                logger.error(f"Resume job failed: {e}")
+                feishu_client.send_text_message("chat_id", chat_id, f"❌ 恢复任务失败: {e}")
+
+        asyncio.run_coroutine_threadsafe(_do_resume(), self.loop)
+
+
 class AgentExploreCommand(BotCommand):
 
     def match(self, text: str) -> bool:
@@ -157,10 +216,11 @@ class AgentExploreCommand(BotCommand):
 class CommandDispatcher:
     def __init__(self, bot_name: str = "amazon_bot", loop: Optional[asyncio.AbstractEventLoop] = None):
         self.commands = [
-            RefreshCookieCommand(bot_name, loop), 
-            ExtractBSRCommand(bot_name, loop), 
+            RefreshCookieCommand(bot_name, loop),
+            ResumeJobCommand(bot_name, loop),
+            ExtractBSRCommand(bot_name, loop),
             AnalyzeCategoryMonopolyCommand(bot_name, loop),
-            AgentExploreCommand(bot_name, loop)
+            AgentExploreCommand(bot_name, loop),  # fallback — must stay last
         ]
         
     def dispatch(self, text: str, chat_id: str) -> bool:

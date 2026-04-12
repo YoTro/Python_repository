@@ -85,9 +85,11 @@ class Workflow:
             if checkpoint:
                 start_index = checkpoint.step_index + 1
                 items = checkpoint.items
+                if checkpoint.ctx_cache:
+                    ctx.cache.update(checkpoint.ctx_cache)
                 logger.info(
                     f"Resuming workflow '{self.name}' from step {start_index} "
-                    f"({len(items)} items)"
+                    f"({len(items)} items, {len(checkpoint.ctx_cache)} cache keys restored)"
                 )
 
         # Execute steps
@@ -136,6 +138,9 @@ class Workflow:
                             step_name=step.name,
                             items=items,
                             metadata=step_result.metadata,
+                            workflow_name=self.name,
+                            workflow_params=params,
+                            ctx_cache=dict(ctx.cache),
                         )
                     except Exception as e:
                         logger.warning(f"Checkpoint save failed: {e}")

@@ -27,6 +27,11 @@ class CheckpointData:
     items: List[Dict[str, Any]]
     metadata: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    # Resume context — stored so callers don't need to re-supply them
+    workflow_name: str = ""
+    workflow_params: Dict[str, Any] = field(default_factory=dict)
+    # Workflow context cache — populated by earlier steps, needed by later ones
+    ctx_cache: Dict[str, Any] = field(default_factory=dict)
 
 
 class CheckpointManager:
@@ -52,6 +57,9 @@ class CheckpointManager:
         step_name: str,
         items: List[Dict[str, Any]],
         metadata: Dict[str, Any] = None,
+        workflow_name: str = "",
+        workflow_params: Dict[str, Any] = None,
+        ctx_cache: Dict[str, Any] = None,
     ) -> None:
         """Save checkpoint after a step completes."""
         checkpoint = CheckpointData(
@@ -60,6 +68,9 @@ class CheckpointManager:
             step_name=step_name,
             items=items,
             metadata=metadata or {},
+            workflow_name=workflow_name,
+            workflow_params=workflow_params or {},
+            ctx_cache=ctx_cache or {},
         )
 
         path = self._path(job_id)

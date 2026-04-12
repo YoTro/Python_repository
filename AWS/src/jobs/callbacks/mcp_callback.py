@@ -20,6 +20,7 @@ class MCPCallback(JobCallback):
     def __init__(self):
         self._result = None
         self._error = None
+        self._failed_job_id: Optional[str] = None
 
     async def on_progress(
         self, step_index: int, total_steps: int, step_name: str, message: str = ""
@@ -31,14 +32,23 @@ class MCPCallback(JobCallback):
         items = result.final_items if hasattr(result, "final_items") else []
         logger.info(f"[MCP] Workflow completed with {len(items)} items")
 
-    async def on_error(self, error: Exception) -> None:
+    async def on_error(self, error: Exception, job_id: str = None) -> None:
         self._error = error
-        logger.error(f"[MCP] Workflow failed: {error}")
+        self._failed_job_id = job_id
+        logger.error(f"[MCP] Workflow failed: {error}" + (f" (job_id={job_id})" if job_id else ""))
 
     def get_result(self) -> Optional[dict]:
         """Retrieve stored result for MCP response."""
         if self._error:
-            return {"success": False, "error": str(self._error)}
+            payload: dict = {"success": False, "error": str(self._error)}
+            if self._failed_job_id:
+                payload["job_id"] = self._failed_job_id
+                payload["resumable"] = True
+                payload["resume_hint"] = (
+                    f"Job failed mid-workflow. "
+                    f"Call resume_from_checkpoint(job_id='{self._failed_job_id}', ...) to continue."
+                )
+            return payload
         if self._result:
             items = self._result.final_items if hasattr(self._result, "final_items") else []
             return {

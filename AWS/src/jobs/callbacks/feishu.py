@@ -409,31 +409,6 @@ class FeishuCallback(JobCallback):
                     user_access_token=self.user_token,
                 )
 
-            # --- Artifact Delivery (Attachment) ---
-            file_path = items[0].get("report_file_path") if items else None
-            if file_path and os.path.exists(file_path):
-                logger.info(f"Detected report artifact for delivery: {file_path}")
-                try:
-                    # 1. Upload to Feishu
-                    # Using the client directly for simplicity in the callback
-                    upload_res = self.feishu.upload_file(
-                        file_path, 
-                        file_type="all", 
-                        file_name=os.path.basename(file_path)
-                    )
-                    
-                    if upload_res.get("success"):
-                        file_key = upload_res.get("file_key")
-                        # 2. Send as attachment
-                        self.feishu.send_file_message(
-                            receive_id_type="chat_id",
-                            receive_id=self.chat_id,
-                            file_key=file_key
-                        )
-                        logger.info("Report attachment sent successfully.")
-                except Exception as e:
-                    logger.error(f"Failed to send artifact attachment: {e}")
-
             # Send completion notification
             total_ms = result.total_duration_ms if hasattr(result, "total_duration_ms") else 0
             text = (
@@ -454,8 +429,13 @@ class FeishuCallback(JobCallback):
             except _FEISHU_ERRORS:
                 pass
 
-    async def on_error(self, error: Exception) -> None:
-        text = f"Workflow failed: {error}"
+    async def on_error(self, error: Exception, job_id: str = None) -> None:
+        lines = [f"❌ Workflow failed: {error}"]
+        if job_id:
+            lines.append(f"Job ID: `{job_id}`")
+            lines.append("A checkpoint was saved. To resume, run:")
+            lines.append(f"  `manager.resume_from_checkpoint(job_id='{job_id}', workflow_name='...')`")
+        text = "\n".join(lines)
         try:
             self.feishu.send_text_message("chat_id", self.chat_id, text)
         except _FEISHU_ERRORS as e:

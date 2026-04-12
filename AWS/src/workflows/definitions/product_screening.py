@@ -96,8 +96,9 @@ async def _enrich_past_month_sales(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch past month sales estimate."""
     from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
     extractor = PastMonthSalesExtractor()
-    result = await extractor.get_past_month_sales(item["asin"])
-    return {"past_month_sales": result.get("PastMonthSales")}
+    asin = item["asin"].strip().upper()
+    batch = await extractor.get_batch_past_month_sales([asin])
+    return {"past_month_sales": batch.get(asin)}
 
 
 async def _enrich_fulfillment(item: dict, ctx: WorkflowContext) -> dict:

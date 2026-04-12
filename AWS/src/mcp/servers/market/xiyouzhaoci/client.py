@@ -632,6 +632,77 @@ class XiyouZhaociAPI:
             return {}
 
 
+    def get_search_term_trends(
+        self,
+        country: str,
+        search_term: str,
+        weeks: Optional[int] = None,
+        week_interval: Optional[List[str]] = None,
+    ) -> dict:
+        """
+        Fetch weekly historical ABA search-volume trends for a single keyword.
+
+        POST /v3/searchTerms/trends
+
+        Each record in the response represents one calendar week and contains
+        the keyword's search frequency rank (SFR) and related metrics.
+        Lower SFR = higher search volume that week.
+
+        Args:
+            country:       Marketplace country code (e.g. "US").
+            search_term:   The keyword to query (e.g. "nebulizer").
+            weeks:         Number of recent weeks to return (None = API default,
+                           typically 52).
+            week_interval: Optional explicit list of ISO week strings to filter
+                           (e.g. ["2024-W01", "2024-W52"]).  Pass ``[]`` for
+                           the default range.
+
+        Returns:
+            Raw API response dict with top-level key ``searchTerms`` (list,
+            one entry per requested keyword).  Each entry contains::
+
+                {
+                    "country":    "US",
+                    "searchTerm": "nebulizer",
+                    "values": {                          # current-week snapshot
+                        "searchFrequencyRank": 1,
+                        "weekSearch":          980077,
+                        "clickShare":          0.13,
+                        "conversionShare":     0.01,
+                    },
+                    "trends": {
+                        "searchFrequencyRank": [...],   # weekly SFR array, oldest→newest
+                        "weekSearch":          [...],   # weekly search-volume, oldest→newest
+                    }
+                }
+
+            The ``trends`` arrays have no date labels.  To recover calendar
+            dates assign position ``i`` the date
+            ``today - (len - 1 - i) * 7 days``.
+        """
+        url = f"{self.base_url}/v3/searchTerms/trends"
+        payload = {
+            "biz": {
+                "searchTerms": [{"country": country, "searchTerm": search_term}],
+                "weeks": weeks,
+                "weekInterval": week_interval if week_interval is not None else [],
+            }
+        }
+
+        headers = self.common_headers.copy()
+        headers["request-url"] = "/detail/ranking_list"
+        headers["krs-ver"] = self._krs_ver()
+
+        logger.info(f"[xiyouzhaoci] search-term trends: '{search_term}' country={country}")
+        try:
+            response = self._request("POST", url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"[xiyouzhaoci] search_term_trends error: {e}")
+            return {}
+
+
 if __name__ == "__main__":
     api = XiyouZhaociAPI()
     if not api.auth_token:

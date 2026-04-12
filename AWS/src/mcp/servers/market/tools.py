@@ -7,6 +7,11 @@ from src.registry.tools import tool_registry
 
 logger = logging.getLogger("mcp-market")
 
+def _get_sellersprite_api(tenant_id: str = "default"):
+    from src.mcp.servers.market.sellersprite.client import SellerspriteAPI
+    return SellerspriteAPI(tenant_id=tenant_id)
+
+
 def _get_xiyou_api(tenant_id: str = "default"):
     """Lazy-load a tenant-specific XiyouZhaociAPI instance."""
     from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
@@ -18,7 +23,151 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
     from src.core.utils.context import ContextPropagator
     tenant_id = ContextPropagator.get("tenant_id", "default")
 
-    if name == "get_ad_traffic":
+    if name == "sellersprite_competing_lookup":
+        import re as _re
+        from datetime import datetime as _dt
+
+        api = _get_sellersprite_api(tenant_id)
+        market = arguments.get("market", "US").upper()
+        market_id = {"US": 1, "DE": 6, "JP": 8, "UK": 3, "FR": 4, "IT": 5, "ES": 7, "CA": 2}.get(market, 1)
+
+        # Normalize month_name to "bsr_sales_monthly_YYYYMM" from any reasonable input.
+        # Handles: omitted, "June 2025", "2025-06", "202506", "bsr_sales_monthly_202506"
+        _MONTH_NAMES = {
+            "january": 1, "february": 2, "march": 3, "april": 4,
+            "may": 5, "june": 6, "july": 7, "august": 8,
+            "september": 9, "october": 10, "november": 11, "december": 12,
+        }
+
+        def _normalize_month(raw: str | None) -> str:
+            if not raw:
+                now = _dt.now()
+                y = now.year if now.month > 2 else now.year - 1
+                m = now.month - 2 if now.month > 2 else now.month + 10
+                return f"bsr_sales_monthly_{y:04d}{m:02d}"
+            raw = raw.strip()
+            if raw.startswith("bsr_sales_monthly_"):
+                return raw
+            # Pure YYYYMM: "202506"
+            if _re.fullmatch(r"\d{6}", raw):
+                return f"bsr_sales_monthly_{raw}"
+            # YYYY-MM or YYYY/MM
+            m2 = _re.fullmatch(r"(\d{4})[-/](\d{1,2})", raw)
+            if m2:
+                return f"bsr_sales_monthly_{int(m2.group(1)):04d}{int(m2.group(2)):02d}"
+            # "June 2025" or "2025 June"
+            parts = raw.replace(",", "").split()
+            year = month = None
+            for p in parts:
+                if p.isdigit() and len(p) == 4:
+                    year = int(p)
+                elif p.lower() in _MONTH_NAMES:
+                    month = _MONTH_NAMES[p.lower()]
+            if year and month:
+                return f"bsr_sales_monthly_{year:04d}{month:02d}"
+            # Fallback: return as-is and let the API reject it with a clear error
+            return raw
+
+        now = _dt.now()
+        # Latest published snapshot is 2 months prior to today
+        latest_y = now.year if now.month > 2 else now.year - 1
+        latest_m = now.month - 2 if now.month > 2 else now.month + 10
+        latest_ym = latest_y * 100 + latest_m  # numeric YYYYMM for comparison
+
+        month_name = _normalize_month(arguments.get("month_name"))
+
+        # Validate: reject snapshots that haven't been published yet
+        requested_ym = int(month_name.replace("bsr_sales_monthly_", "")) if month_name.startswith("bsr_sales_monthly_") else 0
+        if requested_ym and requested_ym > latest_ym:
+            return [TextContent(type="text", text=json.dumps({
+                "error": (
+                    f"Snapshot {month_name} is not yet published. "
+                    f"Today is {now.strftime('%Y-%m-%d')}. "
+                    f"Latest available snapshot: bsr_sales_monthly_{latest_y:04d}{latest_m:02d}."
+                ),
+                "today": now.strftime("%Y-%m-%d"),
+                "latest_available_snapshot": f"bsr_sales_monthly_{latest_y:04d}{latest_m:02d}",
+            }, ensure_ascii=False))]
+
+        # Accept Amazon BSR URL in place of node_id_paths
+        node_id_paths = arguments.get("node_id_paths")
+        amazon_url = arguments.get("amazon_url", "")
+        if not node_id_paths and amazon_url:
+            m = _re.search(r"/(?:gp/bestsellers|zgbs)/[^/]+/(\d+)", amazon_url)
+            if not m:
+                return [TextContent(type="text", text=json.dumps(
+                    {"error": f"Could not extract node ID from URL: {amazon_url}"}, ensure_ascii=False
+                ))]
+            node_id = m.group(1)
+            nodes = await asyncio.to_thread(
+                api.resolve_node_path, market_id=market_id, table=month_name, query=node_id
+            )
+            if not nodes:
+                return [TextContent(type="text", text=json.dumps(
+                    {"error": f"Could not resolve nodeIdPath for node_id={node_id} in table={month_name}"}
+                ))]
+            node_id_paths = [nodes[0]["id"]]
+
+        if not node_id_paths:
+            return [TextContent(type="text", text=json.dumps(
+                {"error": "Either amazon_url or node_id_paths is required"}, ensure_ascii=False
+            ))]
+
+        try:
+            raw = await asyncio.to_thread(
+                api.get_competing_lookup,
+                market=market,
+                month_name=month_name,
+                node_id_paths=node_id_paths,
+                page=arguments.get("page", 1),
+                size=arguments.get("size", 100),
+                order=arguments.get("order"),
+                symbol_flag=arguments.get("symbol_flag", True),
+                low_price=arguments.get("low_price", "N"),
+            )
+        except Exception:
+            logger.exception("[sellersprite] competing_lookup raised unexpectedly")
+            raise
+
+        # Slim response for LLM context — strip bulky fields (trends, images, etc.)
+        # Full data is fetched directly via SellerspriteAPI in workflow steps.
+        _KEEP = {"asin", "parentAsin", "rank", "rankingPosition", "price", "brand",
+                 "brandName", "reviewCount", "rating", "bsr"}
+        slim_items = [
+            {k: v for k, v in item.items() if k in _KEEP}
+            for item in (raw.get("items") or [])
+        ]
+        result = {
+            "snapshot": month_name,
+            "today": now.strftime("%Y-%m-%d"),
+            "latest_available_snapshot": f"bsr_sales_monthly_{latest_y:04d}{latest_m:02d}",
+            "total": raw.get("total", 0),
+            "returned": len(slim_items),
+            "items": slim_items,
+        }
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
+    elif name == "sellersprite_resolve_node_path":
+        api = _get_sellersprite_api(tenant_id)
+        result = await asyncio.to_thread(
+            api.resolve_node_path,
+            market_id=arguments.get("market_id", 1),
+            table=arguments["table"],
+            query=arguments["query"],
+        )
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
+    elif name == "sellersprite_category_nodes":
+        api = _get_sellersprite_api(tenant_id)
+        result = await asyncio.to_thread(
+            api.get_category_nodes,
+            market_id=arguments.get("market_id", 1),
+            table=arguments["table"],
+            node_id_path=arguments["node_id_path"],
+        )
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
+    elif name == "get_ad_traffic":
         return [TextContent(type="text", text=json.dumps({"ad_spend": 5000, "roas": 2.1}))]
 
     elif name == "get_deal_history":
@@ -110,6 +259,7 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
             "xiyou_get_search_terms_ranking": "get_search_terms_ranking",
             "xiyou_get_traffic_scores": "get_traffic_scores",
             "xiyou_get_asin_daily_trends": "get_asin_daily_trends",
+            "xiyou_get_search_term_trends": "get_search_term_trends",
         }
 
         if name in tool_map:
@@ -140,6 +290,73 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
 
 
 market_tools = [
+    Tool(
+        name="sellersprite_competing_lookup",
+        description=(
+            "[Sellersprite/卖家精灵] Fetch BSR-ranked competitor products for a category. "
+            "Accepts an Amazon BSR URL directly via ``amazon_url`` — node ID extraction "
+            "and path resolution are handled automatically. ``month_name`` defaults to "
+            "the latest published snapshot (2 months prior) if omitted. "
+            "Each item includes ASIN, price, rating, review count, BSR rank."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "amazon_url": {"type": "string", "description": "Amazon BSR category URL, e.g. 'https://www.amazon.com/gp/bestsellers/industrial/8297518011/'"},
+                "market": {"type": "string", "default": "US", "description": "Marketplace code (US, DE, JP, …)"},
+                "month_name": {"type": "string", "description": "BSR snapshot table name, e.g. 'bsr_sales_monthly_202602'. Defaults to latest published snapshot."},
+                "node_id_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Colon-joined nodeIdPaths. Ignored when amazon_url is provided.",
+                },
+                "page": {"type": "integer", "default": 1, "description": "Page number (1-based)"},
+                "size": {"type": "integer", "default": 100, "description": "Results per page (max 100)"},
+                "order": {"type": "object", "description": "Sort spec, e.g. {\"field\": \"bsr_rank\", \"desc\": false}"},
+                "symbol_flag": {"type": "boolean", "default": True, "description": "Include brand symbol filter"},
+                "low_price": {"type": "string", "default": "N", "description": "Low-price filter flag (Y/N)"},
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="sellersprite_resolve_node_path",
+        description=(
+            "[Sellersprite] Search BSR category nodes by label (nodeLabelPath). "
+            "``query`` accepts two forms:\n"
+            "  1. Numeric node ID (e.g. '8297518011' from an Amazon BSR URL) → single exact match.\n"
+            "  2. Category keyword (e.g. 'Traps') → multiple candidates ordered by product count.\n"
+            "Returns a list of nodes, each with ``id`` (full nodeIdPath for competing_lookup), "
+            "``label`` (English breadcrumb), ``nodeLabelLocale`` (Chinese name), and ``products`` count.\n"
+            "When multiple results are returned, present them to the user for selection."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "market_id": {"type": "integer", "default": 1, "description": "Numeric market ID (1=US, 6=DE, …)"},
+                "table": {"type": "string", "description": "BSR snapshot table name, e.g. 'bsr_sales_monthly_202602'"},
+                "query": {"type": "string", "description": "Numeric node ID or category keyword to search"},
+            },
+            "required": ["table", "query"],
+        },
+    ),
+    Tool(
+        name="sellersprite_category_nodes",
+        description=(
+            "[Sellersprite/卖家精灵] Fetch child category nodes for a given BSR node path. "
+            "Use this to walk the category tree. Pass the full colon-joined ``nodeIdPath`` "
+            "(obtained from ``sellersprite_resolve_node_path``) to get its children."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "market_id": {"type": "integer", "default": 1, "description": "Numeric market ID (1=US, 6=DE, …)"},
+                "table": {"type": "string", "description": "BSR snapshot table name, e.g. 'bsr_sales_monthly_202509'"},
+                "node_id_path": {"type": "string", "description": "Colon-joined node path, e.g. '16310091:8297370011'"},
+            },
+            "required": ["table", "node_id_path"],
+        },
+    ),
     Tool(
         name="xiyou_get_login_qr",
         description="Initiates WeChat QR code login for Xiyouzhaoci. Returns an image URL. You MUST display this URL to the user exactly as a Markdown image: ![WeChat QR](<url>) and tell them they have 120 seconds to scan and reply 'I have scanned'.",
@@ -304,9 +521,36 @@ market_tools = [
             "required": ["asin", "start_date", "end_date"],
         },
     ),
+    Tool(
+        name="xiyou_get_search_term_trends",
+        description=(
+            "[Third-party Xiyouzhaoci tool] Fetch weekly historical ABA search-volume trends "
+            "for a single keyword over the past ~52 weeks. Each record contains the keyword's "
+            "Search Frequency Rank (SFR) for that week — lower SFR means more searches. "
+            "Use this to detect category seasonality directly from demand intent rather than "
+            "from BSR proxy data."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "search_term": {"type": "string", "description": "The keyword to query (e.g. 'nebulizer')"},
+                "country": {"type": "string", "default": "US", "description": "Marketplace country code"},
+                "weeks": {"type": "integer", "description": "Number of recent weeks to return (default: API decides, typically 52)"},
+                "week_interval": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional explicit ISO week list to filter, e.g. ['2024-W01','2024-W52']. Pass [] for default range.",
+                },
+            },
+            "required": ["search_term"],
+        },
+    ),
 ]
 
 _MARKET_META = {
+    "sellersprite_competing_lookup": ("DATA", "paginated BSR competitor list with monthly sales trends"),
+    "sellersprite_resolve_node_path": ("DATA", "full nodeIdPath resolved from a bare Amazon BSR node ID via nodeLabelPath search"),
+    "sellersprite_category_nodes": ("DATA", "child category nodes for a given BSR nodeIdPath"),
     "xiyou_get_login_qr": ("DATA", "URL for WeChat login QR code"),
     "xiyou_check_login_status": ("DATA", "authentication status of pending QR scan"),
     "get_ad_traffic": ("DATA", "ad spend and ROAS estimates"),
@@ -321,6 +565,7 @@ _MARKET_META = {
     "xiyou_get_search_terms_ranking": ("DATA", "JSON containing search frequency ranks and trends for variations of a query"),
     "xiyou_get_traffic_scores": ("DATA", "JSON containing traffic scores, ad ratio, and growth for ASINs"),
     "xiyou_get_asin_daily_trends": ("DATA", "JSON containing daily historical trends for price and ratings"),
+    "xiyou_get_search_term_trends": ("DATA", "JSON containing weekly ABA SFR history for a keyword (52-week seasonality signal)"),
 }
 
 for tool in market_tools:

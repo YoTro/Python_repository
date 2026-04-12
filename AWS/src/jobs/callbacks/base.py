@@ -44,6 +44,12 @@ class JobCallback(ABC):
         ...
 
     @abstractmethod
-    async def on_error(self, error: Exception) -> None:
-        """Called when the workflow fails."""
+    async def on_error(self, error: Exception, job_id: str = None) -> None:
+        """
+        Called when the workflow fails.
+
+        :param error:  The exception that caused the failure.
+        :param job_id: The job identifier — present when a checkpoint exists and
+                       the job can be resumed via JobManager.resume_from_checkpoint().
+        """
         ...
