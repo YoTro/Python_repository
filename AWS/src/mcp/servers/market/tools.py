@@ -148,11 +148,27 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
     elif name == "sellersprite_resolve_node_path":
+        import re as _re
+        from datetime import datetime as _dt
         api = _get_sellersprite_api(tenant_id)
+        raw_table = arguments.get("month_name") or arguments.get("table")
+        if raw_table and _re.fullmatch(r"\d{6}", raw_table):
+            table = f"bsr_sales_monthly_{raw_table}"
+        elif raw_table and not raw_table.startswith("bsr_sales_monthly_"):
+            # Try YYYY-MM
+            m2 = _re.fullmatch(r"(\d{4})[-/](\d{1,2})", raw_table)
+            table = f"bsr_sales_monthly_{int(m2.group(1)):04d}{int(m2.group(2)):02d}" if m2 else raw_table
+        elif raw_table:
+            table = raw_table
+        else:
+            _now = _dt.now()
+            _y = _now.year if _now.month > 1 else _now.year - 1
+            _m = _now.month - 1 if _now.month > 1 else 12
+            table = f"bsr_sales_monthly_{_y:04d}{_m:02d}"
         result = await asyncio.to_thread(
             api.resolve_node_path,
             market_id=arguments.get("market_id", 1),
-            table=arguments["table"],
+            table=table,
             query=arguments["query"],
         )
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
@@ -340,16 +356,18 @@ market_tools = [
             "  2. Category keyword (e.g. 'Traps') → multiple candidates ordered by product count.\n"
             "Returns a list of nodes, each with ``id`` (full nodeIdPath for competing_lookup), "
             "``label`` (English breadcrumb), ``nodeLabelLocale`` (Chinese name), and ``products`` count.\n"
-            "When multiple results are returned, present them to the user for selection."
+            "When multiple results are returned, present them to the user for selection.\n"
+            "``month_name`` is optional — omit it to default to the previous month's snapshot. "
+            "Accepts: 'YYYY-MM', 'YYYYMM', or canonical 'bsr_sales_monthly_YYYYMM'."
         ),
         inputSchema={
             "type": "object",
             "properties": {
-                "market_id": {"type": "integer", "default": 1, "description": "Numeric market ID (1=US, 6=DE, …)"},
-                "table": {"type": "string", "description": "BSR snapshot table name, e.g. 'bsr_sales_monthly_202602'"},
-                "query": {"type": "string", "description": "Numeric node ID or category keyword to search"},
+                "market_id":  {"type": "integer", "default": 1, "description": "Numeric market ID (1=US, 6=DE, …)"},
+                "month_name": {"type": "string", "description": "BSR snapshot month, e.g. '2026-02' or '202602'. Defaults to previous month."},
+                "query":      {"type": "string", "description": "Numeric node ID or category keyword to search"},
             },
-            "required": ["table", "query"],
+            "required": ["query"],
         },
     ),
     Tool(

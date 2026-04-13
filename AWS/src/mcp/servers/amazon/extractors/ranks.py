@@ -54,9 +54,11 @@ class RanksExtractor(AmazonBaseScraper):
                 # If there are sub-category ranks
                 if len(bsr_matches) > 1:
                     for match in bsr_matches[1:]:
+                        # Clean secondary category name
+                        clean_category = re.sub(r'\s+Customer Reviews:.*', '', match[1])
                         secondary_ranks.append({
                             "Rank": match[0].replace(',', ''),
-                            "Category": match[1].strip()
+                            "Category": clean_category.strip()
                         })
 
         # Method B: Fallback to legacy regexes if the DOM structure wasn't parsed correctly
@@ -88,10 +90,25 @@ class RanksExtractor(AmazonBaseScraper):
                             "Category": "Unknown Subcategory"
                         })
                         
+        # Parse category node IDs from breadcrumbs
+        category_nodes = []
+        breadcrumb_list = soup.find('ul', class_='a-unordered-list a-horizontal a-size-small')
+        if breadcrumb_list:
+            for link in breadcrumb_list.find_all('a', href=True):
+                node_match = re.search(r'node=(\d+)', link['href'])
+                if node_match:
+                    category_nodes.append({
+                        "Category": link.get_text(strip=True),
+                        "NodeId": node_match.group(1)
+                    })
+                        
         return {
             "ASIN": asin,
             "URL": url,
             "PrimaryRank": primary_rank,
             "Category": category,
-            "SecondaryRanks": secondary_ranks
+            "SecondaryRanks": secondary_ranks,
+            "CategoryNodes": category_nodes,
+            "TopLevelNodeId": category_nodes[0]["NodeId"]  if category_nodes else None,
+            "LeafNodeId":     category_nodes[-1]["NodeId"] if category_nodes else None,
         }

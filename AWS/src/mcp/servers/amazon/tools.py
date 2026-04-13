@@ -20,7 +20,7 @@ from src.mcp.servers.amazon.extractors.dimensions import DimensionsExtractor
 from src.mcp.servers.amazon.extractors.images import ImageExtractor
 from src.mcp.servers.amazon.extractors.videos import VideoExtractor
 from src.mcp.servers.amazon.extractors.products_num import ProductsNumExtractor
-from src.mcp.servers.amazon.extractors.sales import SalesExtractor
+from src.mcp.servers.amazon.extractors.search_result_asins import AsinExtractor
 from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
 from src.mcp.servers.amazon.ads.client import AmazonAdsClient
 from src.core.utils.cookie_helper import AmazonCookieHelper
@@ -140,9 +140,9 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         )
         return _json_response(result)
 
-    if name == "search_sales_asins":
-        extractor = SalesExtractor()
-        result = await extractor.get_sales_data(
+    if name == "search_return_asins":
+        extractor = AsinExtractor()
+        result = await extractor.get_asins(
             arguments["keyword"],
             page=arguments.get("page", 1),
         )
@@ -319,7 +319,7 @@ amazon_tools = [
     ),
     Tool(
         name="search_products",
-        description="Search Amazon by keyword and return product list with basic data.",
+        description="Search Amazon by keyword and return product list with basic data (asin, title, price, rating, review_count, past_month_sales).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -343,7 +343,7 @@ amazon_tools = [
     ),
     Tool(
         name="get_bsr_rank",
-        description="Fetch Best Sellers Rank (BSR) and category rankings for a product.",
+        description="Fetch Best Sellers Rank (BSR), subcategory ranks, and breadcrumb category navigation nodes (NodeId).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -407,8 +407,8 @@ amazon_tools = [
         },
     ),
     Tool(
-        name="search_sales_asins",
-        description="Extract ASINs from Amazon search results for sales analysis.",
+        name="search_return_asins",
+        description="Extract ASINs from Amazon search results.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -580,12 +580,12 @@ _AMAZON_META = {
     "get_product_details": ("DATA", "full product details: title, price, brand, ratings, features"),
     "search_products": ("DATA", "list of products matching keyword with ASIN, title, price"),
     "search_profitability_products": ("DATA", "list of products with rich metadata: ASIN, title, brand, dimensions, weight, price"),
-    "get_bsr_rank": ("DATA", "BSR rank and category rankings"),
+    "get_bsr_rank": ("DATA", "BSR rank, category rankings and NodeIdPath"),
     "get_batch_past_month_sales": ("DATA", "dict of ASIN → past-month purchase count (batch search)"),
     "get_review_count": ("DATA", "GlobalRatings, WrittenReviews, and their Ratio — Ratio > 0.50 indicates fake-review risk"),
     "get_stock_estimate": ("DATA", "estimated remaining stock quantity"),
     "get_keyword_rank": ("DATA", "search position of ASINs for a keyword"),
-    "search_sales_asins": ("DATA", "ASINs from search results for sales analysis"),
+    "search_return_asins": ("DATA", "ASINs from search results"),
     "get_reviews": ("DATA", "customer reviews with text, rating, date"),
     "analyze_reviews": ("COMPUTE", "structured review summary: pros/cons, sentiment, buyer persona, velocity, rating distribution, competitive barrier, manipulation risk score"),
     "get_fulfillment": ("DATA", "FBA or FBM fulfillment status"),

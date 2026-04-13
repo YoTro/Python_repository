@@ -169,6 +169,34 @@ The following analysis functionalities have been migrated from CLI tasks to the 
 *   **Sales Estimation** (`SalesEstimator`): UCLA Sales-Rank Regression. Accepts `Product` Pydantic models with `sales_rank` data.
 *   **Review Summarization** (`ReviewSummarizer`): LLM-powered sentiment analysis. Accepts `List[Review]` Pydantic models.
 *   **Category Monopoly Analysis** (`CategoryMonopolyAnalyzer`): Multi-dimensional market scoring (CR3, CV pricing, etc.). Accepts lists of dicts containing BSR product data and keyword metrics. Now incorporates **Actual BSR Ad Dependency** by batch-querying Top 20 winners' traffic sources.
+*   **Ad Budget Optimizer** (`AdBudgetOptimizer`): Google OR-Tools (GLOP linear solver) that allocates a daily ad budget across keywords to maximise total conversions.
+
+    | Input field | Type | Description |
+    |---|---|---|
+    | `name` | `str` | Keyword label |
+    | `avg_cpc` | `float` | Average cost-per-click (USD) |
+    | `estimated_cvr` | `float` | Estimated conversion rate (e.g. `0.05` = 5 %) |
+    | `max_daily_clicks` | `int` | Traffic ceiling for this keyword |
+
+    **Call signature**: `AdBudgetOptimizer().optimize(keywords: List[dict], total_budget: float, min_clicks_per_kw: int = 0)`
+
+    **Output** (status `OPTIMAL`):
+    ```json
+    {
+      "status": "OPTIMAL",
+      "summary": {
+        "total_budget": 100.0,
+        "actual_spend": 98.4,
+        "total_expected_orders": 12.3,
+        "avg_effective_cpc": 0.84
+      },
+      "allocation": [
+        {"keyword": "kw1", "optimized_clicks": 42.0, "estimated_spend": 50.4, "contribution_to_orders": 2.1},
+        ...
+      ]
+    }
+    ```
+    Returns `{"status": "FAILED", ...}` when no feasible solution exists (e.g. budget too low for `min_clicks_per_kw`).
 
 These processors can be called directly via the Intelligence Router or through Agent workflows.
 
