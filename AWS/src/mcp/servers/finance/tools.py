@@ -157,12 +157,12 @@ async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
         cost = arguments.get("estimated_cost", 0)
 
         product_data = data_cache.get("amazon", asin) or {}
-        price = product_data.get("price", 0)
-        category = product_data.get("category", "")
-        weight = product_data.get("weight_lb") or product_data.get("weight", 1.0)
+        price    = float(arguments.get("current_price") or product_data.get("price") or 0)
+        category = arguments.get("category") or product_data.get("category", "")
+        weight   = product_data.get("weight_lb") or product_data.get("weight", 1.0)
 
         if price <= 0:
-            return [TextContent(type="text", text=json.dumps({"error": "Price not found for ASIN", "asin": asin}))]
+            return [TextContent(type="text", text=json.dumps({"error": "Price not found. Pass current_price or call get_product_details first.", "asin": asin}))]
 
         # Resolve category-level benchmarks from us_category_metrics.json
         cat_metrics = get_category_metrics(category=category)
@@ -236,10 +236,12 @@ finance_tools = [
         inputSchema={
             "type": "object", 
             "properties": {
-                "asin": {"type": "string"}, 
+                "asin":           {"type": "string"},
                 "estimated_cost": {"type": "number"},
-                "return_rate": {"type": "number", "description": "Estimated return rate (e.g. 0.05 for 5%)"}
-            }, 
+                "current_price":  {"type": "number", "description": "Selling price (USD). Falls back to DataCache if omitted."},
+                "category":       {"type": "string", "description": "Amazon category name (e.g. 'Tools & Home Improvement'). Falls back to DataCache if omitted."},
+                "return_rate":    {"type": "number", "description": "Estimated return rate (e.g. 0.05 for 5%). Defaults to category average from us_category_metrics.json."},
+            },
             "required": ["asin", "estimated_cost"]
         }
     ),
