@@ -54,8 +54,8 @@ class SellerspriteAuth:
 
     def _save_token(self, token: str) -> None:
         """Save token + current session cookies to the token file."""
-        cookies = {k: self.session.cookies.get(k) for k in _SESSION_COOKIE_KEYS
-                   if self.session.cookies.get(k)}
+        _jar = self.session.cookies.get_dict()
+        cookies = {k: _jar[k] for k in _SESSION_COOKIE_KEYS if _jar.get(k)}
         try:
             with open(self.token_file, "w", encoding="utf-8") as f:
                 json.dump({"token": token, "cookies": cookies}, f, indent=4)
@@ -234,7 +234,9 @@ class SellerspriteAuth:
             logger.warning(f"[sellersprite:{self.tenant_id}] Web login returned {res.status_code}")
             return None
 
-        token = self.session.cookies.get("rank-login-user")
+        # Use get_dict() to avoid CookieConflictError when multiple domains set
+        # the same cookie name (e.g. .sellersprite.com vs www.sellersprite.com).
+        token = self.session.cookies.get_dict().get("rank-login-user")
         if not token:
             logger.warning(f"[sellersprite:{self.tenant_id}] Web login did not set rank-login-user cookie")
             return None

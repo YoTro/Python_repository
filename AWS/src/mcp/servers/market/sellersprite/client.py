@@ -5,6 +5,7 @@ import threading
 import time
 import re
 import requests
+from bs4 import BeautifulSoup
 from .auth import SellerspriteAuth
 from src.gateway.rate_limit import RateLimiter
 from src.core.errors.exceptions import RetryableError
@@ -391,7 +392,7 @@ class SellerspriteAPI:
         sample_number: int = 1,
         topn: int = 10,
         new_release_num: int = 6,
-        size: int = 100,
+        size: int = 500,
         page: int = 1,
     ) -> dict:
         """
@@ -505,42 +506,120 @@ class SellerspriteAPI:
             logger.error(f"[sellersprite] market-research failed with status {res.status_code}")
             return {}
 
-        html = res.text
-        results = {
-            "total_products": 0,
-            "items": []
+        return _parse_market_research_html(res.text, node_id_path)
+
+
+# ---------------------------------------------------------------------------
+# HTML parser for /v2/market-research (module-level, independently testable)
+# ---------------------------------------------------------------------------
+
+def _parse_market_research_html(html: str, parent_node_id_path: str) -> dict:
+    """
+    Parse the server-rendered HTML from POST /v2/market-research.
+
+    Row layout (tbody):
+      Odd rows  (0, 2, 4…): main data row — category name, return rate, nodeIdPath
+      Even rows (1, 3, 5…): expansion row  — breadcrumb path, search-to-buy ratio
+
+    Returns:
+        {
+          "total_products": int,
+          "items": [
+            {
+              "node_id":              "1055398:...:3732891",
+              "category_name":        "Pillow Protectors",
+              "search_to_buy_ratio_pm":  20.4,   # float ‰, or None
+              "return_rate_pct":         4.43,   # float %, or None
+              "avg_return_rate_pct":     4.43,   # float %, or None
+            },
+            ...
+          ]
         }
+    """
+    
 
-        # 1. 提取总数用于翻页
-        total_match = re.search(r"Search results:.*?<strong>(\d+)</strong>", html, re.DOTALL)
-        if total_match:
-            results["total_products"] = int(total_match.group(1))
-        else:
-            # 备选提取总数逻辑
-            total_match = re.search(r'</span>/(\d+)\s*</span>', html)
-            if total_match:
-                results["total_products"] = int(total_match.group(1))
+    soup = BeautifulSoup(html, "html.parser")
+    results: dict = {"total_products": 0, "items": []}
 
-        # 2. 逐行提取子类目数据
-        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL)
-        for row in rows:
-            # 匹配 Node ID 和 类目名 (取面包屑的最后一个)
-            node_links = re.findall(r'<a class="a-nodeIdPath"[^>]*nodeIdPath=([^"&]+)[^>]*>([^<]+)</a>', row)
-            
-            # 匹配 购买意愿 (Search-to-buy ratio) - 带有 ‰ 或 %
-            stb_row_match = re.search(r"Search-to-buy ratio:\s*([\d.]+[‰%])", row)
-            
-            # 匹配 退货率 和 类目平均退货率
-            rate_match = re.search(r'<td class="align-middle text-right">.*?<div class="mr-2 text-center">\s*([\d.]+%)\s*</div>\s*<div class="mr-2 text-center text-muted">\s*([\d.]+%)\s*</div>', row, re.DOTALL)
-            
-            if node_links and rate_match:
-                leaf_node_id, leaf_category_name = node_links[-1]
-                results["items"].append({
-                    "node_id": leaf_node_id.strip(),
-                    "category_name": leaf_category_name.strip(),
-                    "search_to_buy_ratio": stb_row_match.group(1).strip() if stb_row_match else None,
-                    "return_rate": rate_match.group(1).strip(),
-                    "avg_return_rate": rate_match.group(2).strip()
-                })
+    # ── total_products ────────────────────────────────────────────────────────
+    # <strong>N</strong> subcategories / "Search results: N"
+    total_tag = soup.find("strong")
+    while total_tag:
+        txt = total_tag.get_text(strip=True)
+        if txt.isdigit():
+            results["total_products"] = int(txt)
+            break
+        total_tag = total_tag.find_next("strong")
 
+    # ── table rows ────────────────────────────────────────────────────────────
+    table = soup.find("table", class_="loose-table")
+    if not table:
+        logger.warning(f"[sellersprite] market-research: no loose-table found (html_len={len(html)})")
         return results
+
+    tbody = table.find("tbody")
+    if not tbody:
+        return results
+
+    all_rows = tbody.find_all("tr", recursive=False)
+    # Rows come in pairs: [main_row, expansion_row, main_row, expansion_row, ...]
+    for i in range(0, len(all_rows) - 1, 2):
+        main_row = all_rows[i]
+        exp_row  = all_rows[i + 1]
+
+        # ── node_id + category_name (from main row) ───────────────────────
+        span = main_row.find("span", class_=lambda c: c and "market-analysis" in c)
+        node_id = span["data-nodeidpath"].strip() if span and span.get("data-nodeidpath") else None
+
+        name_span = main_row.find("span", class_=lambda c: c and "eg-asin" in c and "market" in c)
+        category_name = name_span.get_text(strip=True) if name_span else None
+
+        # ── return_rate_pct + avg_return_rate_pct (last numeric td in main row) ─
+        return_rate_pct = avg_return_rate_pct = None
+        tds = main_row.find_all("td", class_="align-middle")
+        for td in reversed(tds):
+            divs = td.find_all("div", class_="mr-2")
+            vals = [d.get_text(strip=True) for d in divs if re.match(r"[\d.]+%", d.get_text(strip=True))]
+            if len(vals) >= 2:
+                return_rate_pct     = float(re.sub(r"[^\d.]", "", vals[0]))
+                avg_return_rate_pct = float(re.sub(r"[^\d.]", "", vals[1]))
+                break
+            elif len(vals) == 1:
+                return_rate_pct = float(re.sub(r"[^\d.]", "", vals[0]))
+                break
+
+        # ── search_to_buy_ratio_pm (from expansion row) ───────────────────
+        stb_pm = None
+        for span in exp_row.find_all("span"):
+            txt = span.get_text(" ", strip=True)
+            m = re.search(r"Search-to-buy ratio:\s*([\d.]+)[‰%]", txt)
+            if m:
+                stb_pm = float(m.group(1))
+                break
+
+        # ── fallback node_id from breadcrumb link ─────────────────────────
+        if not node_id:
+            links = exp_row.find_all("a", class_="a-nodeIdPath")
+            if links:
+                href = links[-1].get("href", "")
+                m = re.search(r"nodeIdPath=([\d:]+)", href)
+                if m:
+                    node_id = m.group(1)
+                category_name = category_name or links[-1].get_text(strip=True)
+
+        if not node_id:
+            continue
+
+        results["items"].append({
+            "node_id":               node_id,
+            "category_name":         category_name,
+            "search_to_buy_ratio_pm": stb_pm,
+            "return_rate_pct":         return_rate_pct,
+            "avg_return_rate_pct":     avg_return_rate_pct,
+        })
+
+    logger.info(
+        f"[sellersprite] market-research parsed: "
+        f"total={results['total_products']} items={len(results['items'])}"
+    )
+    return results
