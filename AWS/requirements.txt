@@ -27,3 +27,4 @@ mcp
 
 # Integrations
 lark-oapi
+ortools>=9.8.0

@@ -3,6 +3,7 @@ import logging
 import random
 import threading
 import time
+import re
 import requests
 from .auth import SellerspriteAuth
 from src.gateway.rate_limit import RateLimiter
@@ -381,3 +382,165 @@ class SellerspriteAPI:
             return body.get("items") or data_field or []
 
         return []
+
+    def get_market_research(
+        self,
+        market_id: int,
+        node_id_path: str,
+        month_name: str = "bsr_sales_nearly",
+        sample_number: int = 1,
+        topn: int = 10,
+        new_release_num: int = 6,
+        size: int = 100,
+        page: int = 1,
+    ) -> dict:
+        """
+        Fetch market research data for a category.
+        This endpoint returns HTML which needs to be parsed with regex.
+
+        Args:
+            market_id: Numeric market identifier (e.g. 1 for US).
+            node_id_path: Colon-joined ancestor path of the target node.
+            month_name: Snapshot table name.
+            sample_number: Sample number parameter (default 1).
+            topn: Number of top products to analyze.
+            new_release_num: Number of new releases to analyze.
+            size: Page size (front-end max 100, but can be tested for more).
+            page: Page number for pagination.
+
+        Returns:
+            Dict containing:
+              - summary: {search_to_buy_ratio, total_products}
+              - items: List of {asin, return_rate, avg_category_return_rate}
+        """
+        url = "https://www.sellersprite.com/v2/market-research"
+        # Referer and data based on the provided curl command
+        referer = (
+            f"https://www.sellersprite.com/v2/market-research"
+            f"?marketId={market_id}&nodeIdPath={node_id_path}"
+            f"&sampleNumber={sample_number}&departmentKeyword="
+            f"&order.field=total_sales&order.desc=true&sellerNations="
+            f"&topn={topn}&newReleaseNum={new_release_num}&size={size}&page={page}"
+        )
+        headers = {
+            "Host": "www.sellersprite.com",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://www.sellersprite.com",
+            "Referer": referer,
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/147.0.0.0 Safari/537.36"
+            ),
+        }
+
+        # Comprehensive data payload from curl
+        data = {
+            "marketId": market_id,
+            "nodeIdPath": node_id_path,
+            "sampleNumber": [sample_number, sample_number],  # In curl it was repeated
+            "topn": topn,
+            "newReleaseNum": new_release_num,
+            "order.field": "total_sales",
+            "order.desc": "true",
+            "tab": 1,
+            "monthName": month_name,
+            "newReleaseNumSelect": new_release_num,
+            "topNSelect": topn,
+            "size": size,
+            "page": page,
+        }
+
+        # Add empty fields to match the raw form data from curl exactly
+        empty_fields = [
+            "departmentKeyword", "minAvgSales", "maxAvgSales", "minAvgBsr", "maxAvgBsr",
+            "minAvgWeight", "maxAvgWeight", "minHeadListingAvgBsr", "maxHeadListingAvgBsr",
+            "minTotalProducts", "maxTotalProducts", "minAvgRevenue", "maxAvgRevenue",
+            "minAvgPrice", "maxAvgPrice", "minAvgVolume", "maxAvgVolume",
+            "minHeadListingAvgSales", "maxHeadListingAvgSales", "minAvgReviews", "maxAvgReviews",
+            "minAvgRating", "maxAvgRating", "minAvgProfit", "maxAvgProfit",
+            "minHeadListingAvgRevenue", "maxHeadListingAvgRevenue", "minBrands", "maxBrands",
+            "minHeadListingProductCrn", "maxHeadListingProductCrn", "minEbcRatio", "maxEbcRatio",
+            "minAmzRatio", "maxAmzRatio", "minSellers", "maxSellers",
+            "minHeadListingBrandCrn", "maxHeadListingBrandCrn", "minFbaRatio", "maxFbaRatio",
+            "sellerNations", "minAvgSellers", "maxAvgSellers", "minHeadListingSellerCrn",
+            "maxHeadListingSellerCrn", "minFbmRatio", "maxFbmRatio", "minNewRatio", "maxNewRatio",
+            "minNewAvgPrice", "maxNewAvgPrice", "minNewAvgRevenue", "maxNewAvgRevenue",
+            "minNewCount", "maxNewCount", "minNewAvgRating", "maxNewAvgRating",
+            "minNewAvgReviews", "maxNewAvgReviews", "minNewAvgSales", "maxNewAvgSales"
+        ]
+        for field in empty_fields:
+            data[field] = ""
+
+        logger.info(f"[sellersprite] market-research marketId={market_id} node={node_id_path} page={page} size={size}")
+
+        if page == 1:
+            # Page 1 uses POST with full form data
+            res = self._request("POST", url, data=data, headers=headers)
+        else:
+            # Page 2+ uses GET with query parameters
+            # Use the same headers but remove Content-Type for GET
+            get_headers = headers.copy()
+            get_headers.pop("Content-Type", None)
+            
+            # Prepare GET params from the data dict (filtering out empty ones if desired, 
+            # but keeping it simple to match the user's curl)
+            params = {
+                "marketId": market_id,
+                "nodeIdPath": node_id_path,
+                "sampleNumber": sample_number,
+                "departmentKeyword": "",
+                "order.field": "total_sales",
+                "order.desc": "true",
+                "sellerNations": "",
+                "topn": topn,
+                "newReleaseNum": new_release_num,
+                "page": page,
+                "size": size
+            }
+            res = self._request("GET", url, params=params, headers=get_headers)
+
+        if res.status_code != 200:
+            logger.error(f"[sellersprite] market-research failed with status {res.status_code}")
+            return {}
+
+        html = res.text
+        results = {
+            "total_products": 0,
+            "items": []
+        }
+
+        # 1. 提取总数用于翻页
+        total_match = re.search(r"Search results:.*?<strong>(\d+)</strong>", html, re.DOTALL)
+        if total_match:
+            results["total_products"] = int(total_match.group(1))
+        else:
+            # 备选提取总数逻辑
+            total_match = re.search(r'</span>/(\d+)\s*</span>', html)
+            if total_match:
+                results["total_products"] = int(total_match.group(1))
+
+        # 2. 逐行提取子类目数据
+        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL)
+        for row in rows:
+            # 匹配 Node ID 和 类目名 (取面包屑的最后一个)
+            node_links = re.findall(r'<a class="a-nodeIdPath"[^>]*nodeIdPath=([^"&]+)[^>]*>([^<]+)</a>', row)
+            
+            # 匹配 购买意愿 (Search-to-buy ratio) - 带有 ‰ 或 %
+            stb_row_match = re.search(r"Search-to-buy ratio:\s*([\d.]+[‰%])", row)
+            
+            # 匹配 退货率 和 类目平均退货率
+            rate_match = re.search(r'<td class="align-middle text-right">.*?<div class="mr-2 text-center">\s*([\d.]+%)\s*</div>\s*<div class="mr-2 text-center text-muted">\s*([\d.]+%)\s*</div>', row, re.DOTALL)
+            
+            if node_links and rate_match:
+                leaf_node_id, leaf_category_name = node_links[-1]
+                results["items"].append({
+                    "node_id": leaf_node_id.strip(),
+                    "category_name": leaf_category_name.strip(),
+                    "search_to_buy_ratio": stb_row_match.group(1).strip() if stb_row_match else None,
+                    "return_rate": rate_match.group(1).strip(),
+                    "avg_return_rate": rate_match.group(2).strip()
+                })
+
+        return results
