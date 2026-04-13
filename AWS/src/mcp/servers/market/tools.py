@@ -167,6 +167,18 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
         )
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
+    elif name == "sellersprite_market_research":
+        api = _get_sellersprite_api(tenant_id)
+        result = await asyncio.to_thread(
+            api.get_market_research,
+            market_id=arguments.get("market_id", 1),
+            node_id_path=arguments["node_id_path"],
+            month_name=arguments.get("month_name", "bsr_sales_nearly"),
+            size=arguments.get("size", 20),
+            page=arguments.get("page", 1),
+        )
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
     elif name == "get_ad_traffic":
         return [TextContent(type="text", text=json.dumps({"ad_spend": 5000, "roas": 2.1}))]
 
@@ -355,6 +367,27 @@ market_tools = [
                 "node_id_path": {"type": "string", "description": "Colon-joined node path, e.g. '16310091:8297370011'"},
             },
             "required": ["table", "node_id_path"],
+        },
+    ),
+    Tool(
+        name="sellersprite_market_research",
+        description=(
+            "[Sellersprite/卖家精灵] Fetch subcategory market research data for a given category node. "
+            "Returns each subcategory's return_rate_pct (%), avg_return_rate_pct (%), and "
+            "search_to_buy_ratio_pm (‰) — the core signals for category entry evaluation. "
+            "Paginated: use ``page`` to iterate through all subcategories (10 rows/page). "
+            "``month_name`` defaults to 'bsr_sales_nearly' (latest rolling snapshot)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "node_id_path": {"type": "string", "description": "Top-level category node ID, e.g. '1055398' for Home & Kitchen"},
+                "market_id": {"type": "integer", "default": 1, "description": "Numeric market ID (1=US, 6=DE, …)"},
+                "month_name": {"type": "string", "default": "bsr_sales_nearly", "description": "Snapshot name, e.g. 'bsr_sales_nearly' or 'bsr_sales_monthly_202602'"},
+                "page": {"type": "integer", "default": 1, "description": "Page number (1-based, 10 rows per page)"},
+                "size": {"type": "integer", "default": 20, "description": "Rows requested per page (server returns ~10 regardless)"},
+            },
+            "required": ["node_id_path"],
         },
     ),
     Tool(
@@ -551,6 +584,7 @@ _MARKET_META = {
     "sellersprite_competing_lookup": ("DATA", "paginated BSR competitor list with monthly sales trends"),
     "sellersprite_resolve_node_path": ("DATA", "full nodeIdPath resolved from a bare Amazon BSR node ID via nodeLabelPath search"),
     "sellersprite_category_nodes": ("DATA", "child category nodes for a given BSR nodeIdPath"),
+    "sellersprite_market_research": ("DATA", "subcategory list with return_rate_pct (%), avg_return_rate_pct (%), and search_to_buy_ratio_pm (‰)"),
     "xiyou_get_login_qr": ("DATA", "URL for WeChat login QR code"),
     "xiyou_check_login_status": ("DATA", "authentication status of pending QR scan"),
     "get_ad_traffic": ("DATA", "ad spend and ROAS estimates"),

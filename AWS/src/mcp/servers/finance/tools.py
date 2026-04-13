@@ -10,8 +10,9 @@ logger = logging.getLogger("mcp-finance")
 
 # Load fee data
 BASE_DIR = os.path.dirname(__file__)
-FBA_FEE_PATH = os.path.join(BASE_DIR, "fba_fee.json")
-REFERRAL_FEE_PATH = os.path.join(BASE_DIR, "referral_fee_rates.json")
+FBA_FEE_PATH          = os.path.join(BASE_DIR, "fba_fee.json")
+REFERRAL_FEE_PATH     = os.path.join(BASE_DIR, "referral_fee_rates.json")
+CATEGORY_METRICS_PATH = os.path.join(BASE_DIR, "us_category_metrics.json")
 
 def load_json_config(path: str) -> Dict[str, Any]:
     try:
@@ -22,8 +23,9 @@ def load_json_config(path: str) -> Dict[str, Any]:
         logger.error(f"Error loading config {path}: {e}")
     return {}
 
-FBA_CONFIG = load_json_config(FBA_FEE_PATH)
+FBA_CONFIG      = load_json_config(FBA_FEE_PATH)
 REFERRAL_CONFIG = load_json_config(REFERRAL_FEE_PATH)
+_CATEGORY_METRICS = load_json_config(CATEGORY_METRICS_PATH).get("categories", {})
 
 def get_referral_rate(category: str, price: float) -> float:
     """Find the referral fee rate for a category and price."""
@@ -43,6 +45,52 @@ def get_referral_rate(category: str, price: float) -> float:
                     if price > limit: return tier["rate_pct"] / 100.0
             return tiers[0]["rate_pct"] / 100.0
     return default_rate
+
+def _cat_metrics_from_items(c: dict) -> Dict[str, Any]:
+    """Compute avg return_rate and search_to_buy_ratio from subcategory items."""
+    items = c.get("items", [])
+    rr_vals  = [i["return_rate_pct"]        for i in items if isinstance(i.get("return_rate_pct"),        (int, float))]
+    stb_vals = [i["search_to_buy_ratio_pm"] for i in items if isinstance(i.get("search_to_buy_ratio_pm"), (int, float))]
+    return {
+        "label":                c["label"],
+        "avg_return_rate_pct":  round(sum(rr_vals)  / len(rr_vals),  2) if rr_vals  else None,
+        "avg_search_to_buy_pm": round(sum(stb_vals) / len(stb_vals), 2) if stb_vals else None,
+    }
+
+
+def get_category_metrics(node_id: str = None, category: str = None) -> Dict[str, Any]:
+    """
+    Return avg return_rate (%) and avg search_to_buy_ratio (‰) for a top-level category.
+
+    Resolution order:
+      1. Exact node_id match against us_category_metrics.json top-level keys
+      2. node_id from referral_fee_rates.json browse_node_hint (via category label)
+      3. Partial label match against us_category_metrics.json labels
+    Returns dict with keys avg_return_rate_pct, avg_search_to_buy_pm, label (or empty dict).
+    """
+    # 1. Direct node_id lookup
+    if node_id and node_id in _CATEGORY_METRICS:
+        return _cat_metrics_from_items(_CATEGORY_METRICS[node_id])
+
+    # 2. Resolve node_id via referral_fee browse_node_hint
+    if category:
+        cat_lower = category.lower()
+        for fee_item in REFERRAL_CONFIG.get("referral_fees", []):
+            if fee_item.get("node_id") and (
+                fee_item["category"].lower() in cat_lower or cat_lower in fee_item["category"].lower()
+            ):
+                resolved = fee_item["node_id"]
+                if resolved in _CATEGORY_METRICS:
+                    return _cat_metrics_from_items(_CATEGORY_METRICS[resolved])
+
+        # 3. Partial label match in metrics
+        for c in _CATEGORY_METRICS.values():
+            lbl = c["label"].lower()
+            if lbl in cat_lower or cat_lower in lbl:
+                return _cat_metrics_from_items(c)
+
+    return {}
+
 
 def estimate_fba_fee_from_dims(weight_lb: float, is_apparel: bool = False) -> float:
     section = "apparel" if is_apparel else "standard_non_apparel"
@@ -107,33 +155,41 @@ async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "calc_profit":
         asin = arguments.get("asin")
         cost = arguments.get("estimated_cost", 0)
-        est_return_rate = arguments.get("return_rate", 0.05) # 5% default
-        
+
         product_data = data_cache.get("amazon", asin) or {}
         price = product_data.get("price", 0)
         category = product_data.get("category", "")
         weight = product_data.get("weight_lb") or product_data.get("weight", 1.0)
-        
+
         if price <= 0:
             return [TextContent(type="text", text=json.dumps({"error": "Price not found for ASIN", "asin": asin}))]
+
+        # Resolve category-level benchmarks from us_category_metrics.json
+        cat_metrics = get_category_metrics(category=category)
+        category_avg_return_pct = cat_metrics.get("avg_return_rate_pct")  # e.g. 4.2
+        category_avg_stb_pm     = cat_metrics.get("avg_search_to_buy_pm") # e.g. 18.5 ‰
+
+        # Use caller-supplied return_rate; fall back to category avg, then 5%
+        if "return_rate" in arguments:
+            est_return_rate = float(arguments["return_rate"])
+        elif category_avg_return_pct is not None:
+            est_return_rate = category_avg_return_pct / 100.0
+        else:
+            est_return_rate = 0.05
 
         # Base Fees
         ref_rate = get_referral_rate(category, price)
         referral_fee = price * ref_rate
         fba_fee = estimate_fba_fee_from_dims(weight if isinstance(weight, (int, float)) else 1.0)
-        
+
         # Return-related Fees
         admin_fee_per_return = calculate_amazon_refund_admin_fee(referral_fee)
         high_return_fee_per_unit = calculate_high_return_rate_fee(category, weight, est_return_rate)
-        
-        # Net Profit Calculation
-        # We subtract: Cost + ReferralFee + FbaFee + (ReturnRate * AdminFee) + HighReturnFeePerUnit
-        # Note: Referral fee is partially returned by Amazon, but they keep the Admin Fee.
-        # Simple conservative model:
+
         total_fees = referral_fee + fba_fee + (est_return_rate * admin_fee_per_return) + high_return_fee_per_unit
         net_profit = price - cost - total_fees
-        
-        return _json_response({
+
+        result: Dict[str, Any] = {
             "asin": asin,
             "price": price,
             "cost": cost,
@@ -142,14 +198,22 @@ async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
                 "referral_fee": round(referral_fee, 2),
                 "fba_fulfillment_fee": round(fba_fee, 2),
                 "refund_admin_fee_impact": round(est_return_rate * admin_fee_per_return, 2),
-                "high_return_rate_fee_impact": round(high_return_fee_per_unit, 2)
+                "high_return_rate_fee_impact": round(high_return_fee_per_unit, 2),
             },
             "profitability": {
                 "net_profit": round(net_profit, 2),
                 "margin": round(net_profit / price, 4),
-                "roi": round(net_profit / cost, 4) if cost > 0 else 0
+                "roi": round(net_profit / cost, 4) if cost > 0 else 0,
+            },
+        }
+        if cat_metrics:
+            result["category_benchmarks"] = {
+                "matched_category": cat_metrics.get("label"),
+                "avg_return_rate_pct": category_avg_return_pct,
+                "avg_search_to_buy_pm": category_avg_stb_pm,
+                "return_rate_source": "category_avg" if "return_rate" not in arguments else "caller_supplied",
             }
-        })
+        return _json_response(result)
 
     elif name == "calc_fba_fee":
         asin = arguments.get("asin")
@@ -168,7 +232,7 @@ def _json_response(data) -> list[TextContent]:
 finance_tools = [
     Tool(
         name="calc_profit",
-        description="Comprehensive profit analysis including referral fees, FBA, refund admin fees, and high-return-rate penalties.",
+        description="Comprehensive profit analysis including referral fees, FBA, refund admin fees, and high-return-rate penalties. Automatically injects category avg return rate and search-to-buy ratio (‰) from us_category_metrics.json when available.",
         inputSchema={
             "type": "object", 
             "properties": {

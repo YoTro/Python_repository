@@ -127,7 +127,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   check_epa       FILTER     compliance-server EPA requirement status        |
 |   populate_bitable OUTPUT    output-server     created record ID (robust)    |
 |   send_local_file  OUTPUT    output-server     Feishu attachment confirmation|
-|   ...  (52 tools total across 7 domain servers)                              |
+|   ...  (54 tools total across 7 domain servers)                              |
 |                                                                              |
 |   [Single-User] Memory dict, no filtering                                    |
 |   [Ext Point #4] Per-tenant tool visibility control                          |
@@ -143,11 +143,11 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                                                                              |
 |   +--------------------+  +--------------------+  +--------------------+    |
 |   |   amazon-server    |  |   market-server    |  |   social-server    |    |
-|   |                    |  | (inc. Xiyouzhaoci) |  |                    |    |
-|   | search_products    |  | keyword_analysis   |  | tiktok_trend       |    |
-|   | get_details        |  | asin_reverse_look  |  | meta_ad_density    |    |
-|   | get_bsr            |  | seller_origin      |  | pinterest_interest |    |
-|   | get_past_sales     |  |                    |  |                    |    |
+|   |                    |  | (Sellersprite +    |  |                    |    |
+|   | search_products    |  |  Xiyouzhaoci)      |  | tiktok_trend       |    |
+|   | get_details        |  | competing_lookup   |  | meta_ad_density    |    |
+|   | get_bsr            |  | market_research    |  | pinterest_interest |    |
+|   | get_past_sales     |  | keyword_analysis   |  |                    |    |
 |   +--------------------+  +--------------------+  +--------------------+    |
 |           |                        |                        |                |
 |           +------------------------+------------------------+                |
@@ -163,9 +163,9 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   |   finance-server   |  | compliance-server  |  |   output-server    |    |
 |   |                    |  | (Local JSON lookup)|  | (Direct IM attach) |    |
 |   | calc_profit        |  | restriction_check  |  | populate_bitable   |    |
-|   | calc_margin        |  | epa_check          |  | send_local_file    |    |
-|   | calc_cost_ratio    |  | patent_risk_calc   |  | send_url_file      |    |
-|   | estimate_ads       |  |                    |  | send_data_file     |    |
+|   | calc_fba_fee       |  | epa_check          |  | send_local_file    |    |
+|   | (+ category bench) |  | patent_risk_calc   |  | send_url_file      |    |
+|   |                    |  |                    |  | send_data_file     |    |
 |   +--------------------+  +--------------------+  +--------------------+    |
                                |
                                v
