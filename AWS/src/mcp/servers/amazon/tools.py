@@ -80,6 +80,8 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "get_product_details":
         extractor = ProductDetailsExtractor()
         product = await extractor.get_product_details(arguments["asin"])
+        if product and product.get("asin"):
+            data_cache.set("amazon", product["asin"].upper(), product)
         return _json_response(product)
 
     if name == "search_products":
@@ -88,22 +90,40 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
             arguments["keyword"],
             page=arguments.get("page", 1),
         )
+        if isinstance(products, list):
+            for p in products:
+                if isinstance(p, dict) and p.get("asin"):
+                    data_cache.set("amazon", p["asin"].upper(), p)
         return _json_response(products)
-        
+
     if name == "search_profitability_products":
         extractor = ProfitabilitySearchExtractor()
         results = await extractor.search_products(
             arguments["keyword"],
             page_offset=arguments.get("page_offset", 1),
         )
+        if isinstance(results, list):
+            for p in results:
+                if isinstance(p, dict) and p.get("asin"):
+                    data_cache.set("amazon", p["asin"].upper(), p)
         return _json_response(results)
 
     if name == "get_bsr_rank":
         extractor = RanksExtractor()
+        asin = arguments["asin"].upper()
         result = await extractor.get_product_ranks(
-            arguments["asin"],
+            asin,
             host=arguments.get("host", "https://www.amazon.com"),
         )
+        if result and result.get("PrimaryRank"):
+            cached = data_cache.get("amazon", asin) or {}
+            cached.update({
+                "bsr":              result["PrimaryRank"],
+                "category":         result.get("Category"),
+                "top_level_node_id": result.get("TopLevelNodeId"),
+                "leaf_node_id":     result.get("LeafNodeId"),
+            })
+            data_cache.set("amazon", asin, cached)
         return _json_response(result)
 
     if name == "get_batch_past_month_sales":
@@ -112,23 +132,43 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         if isinstance(asins, str):
             asins = [asins]
         result = await extractor.get_batch_past_month_sales(asins)
+        if isinstance(result, dict):
+            for asin_key, sales_val in result.items():
+                if sales_val is not None:
+                    cached = data_cache.get("amazon", asin_key.upper()) or {}
+                    cached["past_month_sales"] = sales_val
+                    data_cache.set("amazon", asin_key.upper(), cached)
         return _json_response(result)
 
     # ── Tier 2: Competitive analysis ─────────────────────────────────────
     if name == "get_review_count":
         extractor = ReviewRatioExtractor()
+        asin = arguments["asin"].upper()
         result = await extractor.get_review_count(
-            arguments["asin"],
+            asin,
             host=arguments.get("host", "https://www.amazon.com"),
         )
+        if isinstance(result, dict) and result.get("GlobalRatings") is not None:
+            cached = data_cache.get("amazon", asin) or {}
+            cached.update({
+                "global_ratings":  result.get("GlobalRatings"),
+                "written_reviews": result.get("WrittenReviews"),
+                "review_ratio":    result.get("Ratio"),
+            })
+            data_cache.set("amazon", asin, cached)
         return _json_response(result)
 
     if name == "get_stock_estimate":
         extractor = CartStockExtractor()
+        asin = arguments["asin"].upper()
         result = await extractor.get_stock(
-            arguments["asin"],
+            asin,
             host=arguments.get("host", "https://www.amazon.com"),
         )
+        if isinstance(result, dict) and result.get("stock") is not None:
+            cached = data_cache.get("amazon", asin) or {}
+            cached["stock_estimate"] = result["stock"]
+            data_cache.set("amazon", asin, cached)
         return _json_response(result)
 
     if name == "get_keyword_rank":
@@ -189,10 +229,15 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
 
     if name == "get_fulfillment":
         extractor = FulfillmentExtractor()
+        asin = arguments["asin"].upper()
         result = await extractor.get_fulfillment_info(
-            arguments["asin"],
+            asin,
             host=arguments.get("host", "https://www.amazon.com"),
         )
+        if isinstance(result, dict) and result.get("fulfillment_type"):
+            cached = data_cache.get("amazon", asin) or {}
+            cached["fulfillment_type"] = result["fulfillment_type"]
+            data_cache.set("amazon", asin, cached)
         return _json_response(result)
 
     if name == "get_seller_feedback":
@@ -210,10 +255,18 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
 
     if name == "get_dimensions":
         extractor = DimensionsExtractor()
+        asin = arguments["asin"].upper()
         result = await extractor.get_dimensions_and_price(
-            arguments["asin"],
+            asin,
             host=arguments.get("host", "https://www.amazon.com"),
         )
+        if isinstance(result, dict):
+            cached = data_cache.get("amazon", asin) or {}
+            for field in ("weight_lb", "weight", "dimensions", "price", "length_in", "width_in", "height_in"):
+                if result.get(field) is not None:
+                    cached[field] = result[field]
+            if cached:
+                data_cache.set("amazon", asin, cached)
         return _json_response(result)
 
     if name == "get_product_images":
