@@ -6,6 +6,8 @@ from typing import List, Dict, Any, Optional
 from mcp.types import Tool, TextContent
 from src.registry.tools import tool_registry
 
+from src.mcp.servers.compliance.cpsc_recalls import CPSCRecallScraper
+
 logger = logging.getLogger("mcp-compliance")
 
 # --- Helper Functions ---
@@ -128,6 +130,35 @@ async def handle_compliance_tool(name: str, arguments: dict) -> list[TextContent
         status = "high" if findings else "low"
         return [TextContent(type="text", text=json.dumps({"risk_level": status, "findings": findings}, indent=2, ensure_ascii=False))]
 
+    elif name == "check_cpsc_recall":
+        keyword = arguments.get("keyword", "")
+        lang = arguments.get("lang", "en")  # Default to 'en'
+        scraper = CPSCRecallScraper(lang=lang)
+        # 1. Search for recalls
+        recalls = await scraper.search_recalls(keyword)
+        
+        results = []
+        # 2. Process results
+        for recall in recalls[:5]: # Limit to top 5
+            if recall.get("is_scrape"):
+                # If it's a scraped list, we need to fetch details
+                detail = await scraper.get_recall_detail(recall["link"])
+                recall.update(detail)
+            # If it's from API, all fields are already there
+            results.append(recall)
+            
+        if not results:
+            return [TextContent(type="text", text=json.dumps({
+                "status": "clean", 
+                "message": f"No CPSC product safety recalls found for '{keyword}'."
+            }, indent=2, ensure_ascii=False))]
+            
+        return [TextContent(type="text", text=json.dumps({
+            "status": "recalled", 
+            "count": len(recalls),
+            "findings": results
+        }, indent=2, ensure_ascii=False))]
+
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 # --- Tool Definitions ---
@@ -176,6 +207,18 @@ compliance_tools = [
             }, 
             "required": ["category"]
         }
+    ),
+    Tool(
+        name="check_cpsc_recall",
+        description="Search for product safety recalls and warnings from CPSC.gov.",
+        inputSchema={
+            "type": "object", 
+            "properties": {
+                "keyword": {"type": "string", "description": "Product keyword or brand to check for recalls (e.g., 'Greater Goods', 'kitchen scale')"},
+                "lang": {"type": "string", "enum": ["en", "zh"], "description": "Language for search (en for English, zh for Chinese). Defaults to 'en'."}
+            }, 
+            "required": ["keyword"]
+        }
     )
 ]
 
@@ -184,6 +227,7 @@ _COMPLIANCE_META = {
     "check_amazon_restriction": ("FILTER", "Amazon restriction findings"),
     "check_patent": ("FILTER", "IP risk assessment"),
     "get_regulations": ("FILTER", "detailed category regulations"),
+    "check_cpsc_recall": ("FILTER", "CPSC recall findings"),
 }
 
 for tool in compliance_tools:
