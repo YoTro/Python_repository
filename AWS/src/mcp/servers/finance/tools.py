@@ -165,7 +165,9 @@ async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps({"error": "Price not found. Pass current_price or call get_product_details first.", "asin": asin}))]
 
         # Resolve category-level benchmarks from us_category_metrics.json
-        cat_metrics = get_category_metrics(category=category)
+        # Prefer top_level_node_id from cache (set by get_bsr_rank) for precise lookup
+        node_id = product_data.get("top_level_node_id")
+        cat_metrics = get_category_metrics(node_id=node_id, category=category)
         category_avg_return_pct = cat_metrics.get("avg_return_rate_pct")  # e.g. 4.2
         category_avg_stb_pm     = cat_metrics.get("avg_search_to_buy_pm") # e.g. 18.5 ‰
 
