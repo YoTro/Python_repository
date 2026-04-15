@@ -107,37 +107,40 @@ class CPSCRecallProvider:
                 logger.error(f"Scraping search en failed: {e}")
                 return []
 
-    def _parse_list_zh(self, html: str) -> List[Dict[str, Any]]:
-        # Reuse existing parsing logic
+    def _parse_list_html(self, html: str) -> List[Dict[str, Any]]:
+        """Parse CPSC recall list page (both en and zh). Extracts date, title, link, img, image_url."""
         results = []
         items = re.split(r'<div class="recall-list">', html)[1:]
         for item in items:
             date_match = re.search(r'<div class="recall-list__date">\s*(.*?)\s*</div>', item, re.S)
-            title_link_match = re.search(r'<div class="recall-list__title">.*?<a\s+[^>]*href="([^"]+)">(.*?)</a>', item, re.S)
-            if title_link_match:
-                results.append({
-                    "date": date_match.group(1).strip() if date_match else "",
-                    "title": re.sub(r'<[^>]+>', '', title_link_match.group(2)).strip(),
-                    "link": self.BASE_URL + title_link_match.group(1) if not title_link_match.group(1).startswith("http") else title_link_match.group(1),
-                    "is_scrape": True
-                })
+            title_link_match = re.search(
+                r'<div class="recall-list__title">.*?<a\s+[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                item, re.S
+            )
+            if not title_link_match:
+                continue
+            raw_href = title_link_match.group(1)
+            link = self.BASE_URL + raw_href if not raw_href.startswith("http") else raw_href
+
+            # Image: <img ... src="..." ... alt="...">
+            img_match = re.search(r'<img\s[^>]*src="([^"]+)"', item, re.S)
+            img_url = img_match.group(1) if img_match else ""
+
+            results.append({
+                "date": date_match.group(1).strip() if date_match else "",
+                "title": re.sub(r'<[^>]+>', '', title_link_match.group(2)).strip(),
+                "link": link,
+                "img": img_url,
+                "image_url": img_url,
+                "is_scrape": True,
+            })
         return results
 
+    def _parse_list_zh(self, html: str) -> List[Dict[str, Any]]:
+        return self._parse_list_html(html)
+
     def _parse_list_en(self, html: str) -> List[Dict[str, Any]]:
-        # Reuse existing parsing logic
-        results = []
-        items = re.split(r'<div class="recall-list">', html)[1:]
-        for item in items:
-            date_match = re.search(r'<div class="recall-list__date">\s*(.*?)\s*</div>', item, re.S)
-            title_link_match = re.search(r'<div class="recall-list__title">.*?<a\s+[^>]*href="([^"]+)">(.*?)</a>', item, re.S)
-            if title_link_match:
-                results.append({
-                    "date": date_match.group(1).strip() if date_match else "",
-                    "title": re.sub(r'<[^>]+>', '', title_link_match.group(2)).strip(),
-                    "link": self.BASE_URL + title_link_match.group(1) if not title_link_match.group(1).startswith("http") else title_link_match.group(1),
-                    "is_scrape": True
-                })
-        return results
+        return self._parse_list_html(html)
 
     async def get_recall_detail(self, url: str) -> Dict[str, Any]:
         """
@@ -164,15 +167,17 @@ class CPSCRecallProvider:
                 return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', match2.group(1))).strip()
             return ""
 
-        detail["hazard"] = extract_field("危险:") or extract_field("Hazard:")
-        detail["remedy"] = extract_field("补救:") or extract_field("Remedy:")
-        detail["units"] = extract_field("单位:") or extract_field("Units:")
-        detail["description"] = extract_field("说明:") or extract_field("Description:")
-        detail["incidents"] = extract_field("事故/伤亡:") or extract_field("Incidents/Injuries:")
-        detail["sold_at"] = extract_field("零售商:") or extract_field("Sold At:")
-        detail["importer"] = extract_field("进口商:") or extract_field("Importer\(s\):")
-        detail["manufactured_in"] = extract_field("产地:") or extract_field("Manufactured In:")
-        detail["manufacturer"] = extract_field("制造商:") or extract_field("Manufacturer:")
+        detail["hazard"]                = extract_field("危险:") or extract_field("Hazard:")
+        detail["remedy"]                = extract_field("补救:") or extract_field("Remedy:")
+        detail["units"]                 = extract_field("单位:") or extract_field("Units:")
+        detail["description"]           = extract_field("说明:") or extract_field("Description:")
+        detail["incidents"]             = extract_field("事故/伤亡:") or extract_field("Incidents/Injuries:")
+        detail["sold_exclusively_online"] = extract_field("仅在网上销售:") or extract_field("Sold Exclusively Online:")
+        detail["sold_at"]               = extract_field("零售商:") or extract_field("Sold At:")
+        detail["manufacturer"]          = extract_field("制造商:") or extract_field("Manufacturer:")
+        detail["retailer"]              = extract_field("经销商:") or extract_field("Retailer:")
+        detail["importer"]              = extract_field("进口商:") or extract_field("Importer\\(s\\):")
+        detail["manufactured_in"]       = extract_field("产地:") or extract_field("Manufactured In:")
         return detail
 
 # For backward compatibility with tools.py
