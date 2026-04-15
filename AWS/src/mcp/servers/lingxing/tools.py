@@ -17,10 +17,14 @@ async def handle_lingxing_tool(name: str, arguments: dict) -> list[TextContent]:
 lingxing_tools = [
     Tool(
         name="lingxing_inventory",
-        description="Query inventory and order data from Lingxing ERP.",
+        description=(
+            "Query inventory and order data from Lingxing ERP for a specific SKU. "
+            "Returns: {status, sku, inventory_qty, pending_orders, available_qty, warehouse_location}. "
+            "Note: currently returns stub data — requires LingxingClient integration."
+        ),
         inputSchema={
             "type": "object",
-            "properties": {"sku": {"type": "string"}},
+            "properties": {"sku": {"type": "string", "description": "Seller SKU to query"}},
             "required": ["sku"],
         },
     ),

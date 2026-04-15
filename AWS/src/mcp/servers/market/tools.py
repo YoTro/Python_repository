@@ -420,37 +420,52 @@ market_tools = [
     ),
     Tool(
         name="get_ad_traffic",
-        description="Get advertising traffic estimates for an ASIN.",
+        description=(
+            "Get advertising traffic estimates for an ASIN. "
+            "Returns: {ad_spend (USD), roas (return on ad spend)}. "
+            "Note: currently returns stub data — wire to a live ad analytics source when available."
+        ),
         inputSchema={
             "type": "object",
-            "properties": {"asin": {"type": "string"}},
+            "properties": {"asin": {"type": "string", "description": "Product ASIN"}},
             "required": ["asin"],
         },
     ),
     Tool(
         name="get_deal_history",
-        description="Fetch off-Amazon deal history for an ASIN from target deal sites (e.g., Slickdeals, DealNews).",
+        description=(
+            "Scrape off-Amazon deal history for an ASIN from Slickdeals and DealNews. "
+            "Returns list of deal records, each with: date, price (USD), discount_pct, title, site, type. "
+            "Pass the result directly to analyze_promotions to compute promo dependency score."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "asin": {"type": "string", "description": "The Amazon ASIN to look up"},
-                "keyword": {"type": "string", "description": "Optional keyword override for the search"},
-                "max_pages": {"type": "integer", "description": "Maximum number of pages to scrape (default: 3)"}
+                "asin": {"type": "string", "description": "Product ASIN to look up"},
+                "keyword": {"type": "string", "description": "Optional search keyword override (defaults to product title)"},
+                "max_pages": {"type": "integer", "default": 3, "description": "Max pages to scrape per deal site"}
             },
             "required": ["asin"],
         },
     ),
     Tool(
         name="analyze_promotions",
-        description="Analyze promotion frequency, all-time low price, and promo dependency score based on deal history.",
+        description=(
+            "Compute promotion risk metrics from deal history data. "
+            "Returns: promo_frequency (deals/month), all_time_low (USD), "
+            "median_discount_pct (%), promo_dependency_score (0–1), "
+            "risk_level ('Low (Stable Price)'|'Medium (Regular Promotions)'|'High (Price War/Clearance)'), "
+            "total_deals_found. "
+            "Call get_deal_history first to obtain the deals input."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "current_price": {"type": "number", "description": "Current selling price of the product"},
+                "current_price": {"type": "number", "description": "Current selling price in USD"},
                 "deals": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "List of historical deals obtained from get_deal_history"
+                    "description": "Deal records from get_deal_history (each with date, price, discount_pct fields)"
                 }
             },
             "required": ["current_price", "deals"],
@@ -480,11 +495,16 @@ market_tools = [
     ),
     Tool(
         name="xiyou_keyword_analysis",
-        description="[Third-party Xiyouzhaoci tool, NOT Amazon search] Analyze a keyword via Xiyouzhaoci's database: returns a local xlsx file with ASINs, traffic data, and ranking trends. Do NOT use this for direct Amazon search — use search_products instead.",
+        description=(
+            "[Xiyouzhaoci — NOT Amazon search] Analyze a keyword via Xiyouzhaoci's ABA database. "
+            "Returns file_path to a local xlsx containing: keyword, search_volume, ASIN list, "
+            "traffic_share per ASIN, ranking trend, click_share, conversion_share. "
+            "Do NOT use for live Amazon search — use search_products for that."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "The search term to analyze (e.g. 'iphone case')"},
+                "keyword": {"type": "string", "description": "Search term to analyze (e.g. 'wireless charger')"},
                 "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
                 "output_dir": {"type": "string", "default": "data", "description": "Local directory for the downloaded xlsx"},
             },
@@ -493,11 +513,16 @@ market_tools = [
     ),
     Tool(
         name="xiyou_asin_lookup",
-        description="[Third-party Xiyouzhaoci tool] Reverse-lookup keywords for an ASIN via Xiyouzhaoci's database: returns a local xlsx file. Do NOT use this for Amazon product details — use get_product_details instead.",
+        description=(
+            "[Xiyouzhaoci — NOT Amazon product details] Reverse-lookup all ranking keywords for an ASIN. "
+            "Returns file_path to a local xlsx containing: keyword, search_frequency_rank (SFR), "
+            "ASIN rank for that keyword, click_share, conversion_share, estimated_traffic. "
+            "Do NOT use for product attributes — use get_product_details for that."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "asin": {"type": "string", "description": "The Amazon ASIN to look up"},
+                "asin": {"type": "string", "description": "Amazon ASIN to reverse-lookup"},
                 "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
                 "output_dir": {"type": "string", "default": "data", "description": "Local directory for the downloaded xlsx"},
             },
@@ -506,13 +531,18 @@ market_tools = [
     ),
     Tool(
         name="xiyou_asin_compare_keywords",
-        description="[Third-party Xiyouzhaoci tool] Compare multiple ASINs (up to 20) for common keywords and performance. Returns a local xlsx file.",
+        description=(
+            "[Xiyouzhaoci] Compare keyword overlap and performance across up to 20 ASINs. "
+            "Returns file_path to a local xlsx with: keyword, each ASIN's rank, "
+            "click_share, conversion_share, and competitive gap analysis. "
+            "Useful for identifying keywords competitors rank for that you do not."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "asins": {"type": "array", "items": {"type": "string"}, "description": "List of Amazon ASINs to compare (max 20)"},
+                "asins": {"type": "array", "items": {"type": "string"}, "description": "List of ASINs to compare (max 20)"},
                 "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
-                "period": {"type": "string", "default": "last7days", "description": "Time period for data (e.g., 'last7days', 'last30days')"},
+                "period": {"type": "string", "default": "last7days", "description": "Time period: 'last7days' or 'last30days'"},
                 "output_dir": {"type": "string", "default": "data", "description": "Local directory for the downloaded xlsx"},
             },
             "required": ["asins"],
@@ -520,11 +550,15 @@ market_tools = [
     ),
     Tool(
         name="xiyou_get_aba_top_asins",
-        description="[Third-party Xiyouzhaoci tool] Query top ASINs and their click/conversion share for specific search terms based on ABA ranking data.",
+        description=(
+            "[Xiyouzhaoci] Get top-3 ASINs by click/conversion share for given search terms, from Amazon Brand Analytics (ABA). "
+            "Returns list of {search_term, rank_1_asin, rank_1_click_share, rank_1_conversion_share, …} for each term. "
+            "Use to identify who dominates a keyword and estimate their traffic advantage."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "search_terms": {"type": "array", "items": {"type": "string"}, "description": "List of search terms to query (e.g., ['iphone case', 'charger'])"},
+                "search_terms": {"type": "array", "items": {"type": "string"}, "description": "Search terms to query (e.g. ['wireless charger', 'usb c hub'])"},
                 "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
             },
             "required": ["search_terms"],
@@ -532,27 +566,36 @@ market_tools = [
     ),
     Tool(
         name="xiyou_get_search_terms_ranking",
-        description="[Third-party Xiyouzhaoci tool] Query search terms ranking based on a root query string (e.g., finding top ranked variations of 'iphone').",
+        description=(
+            "[Xiyouzhaoci] Find ranked keyword variations for a root query using ABA data. "
+            "Returns paginated list of {search_term, search_frequency_rank (SFR), week/month volume trend}. "
+            "Lower SFR = more searched. Use to discover long-tail and adjacent keyword opportunities."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "The root query string to search for (e.g., 'iphone')"},
+                "query": {"type": "string", "description": "Root query string (e.g. 'iphone 15 case')"},
                 "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
-                "page": {"type": "integer", "default": 1, "description": "Page number"},
+                "page": {"type": "integer", "default": 1, "description": "Page number (1-based)"},
                 "page_size": {"type": "integer", "default": 100, "description": "Results per page (max 100)"},
-                "field": {"type": "string", "default": "week", "description": "Time period field (e.g., 'week', 'month')"},
-                "rank_pattern": {"type": "string", "default": "aba", "description": "Ranking pattern (e.g., 'aba')"},
+                "field": {"type": "string", "default": "week", "description": "Time granularity: 'week' or 'month'"},
+                "rank_pattern": {"type": "string", "default": "aba", "description": "Ranking source pattern (default: 'aba')"},
             },
             "required": ["query"],
         },
     ),
     Tool(
         name="xiyou_get_traffic_scores",
-        description="[Third-party Xiyouzhaoci tool] Fetch 7-day traffic score data for a list of ASINs. Includes advertising traffic ratio (ad dependency) and total traffic growth rate.",
+        description=(
+            "[Xiyouzhaoci] Fetch 7-day rolling traffic metrics for a list of ASINs. "
+            "Returns list of {asin, traffic_score, ad_traffic_ratio (ad dependency 0–1), "
+            "organic_traffic_ratio, traffic_growth_rate (7d change %). "
+            "ad_traffic_ratio > 0.7 signals high ad dependency — organic rank may drop if ads stop."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "asins": {"type": "array", "items": {"type": "string"}, "description": "List of Amazon ASINs to query"},
+                "asins": {"type": "array", "items": {"type": "string"}, "description": "List of ASINs to query"},
                 "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
             },
             "required": ["asins"],
@@ -560,14 +603,19 @@ market_tools = [
     ),
     Tool(
         name="xiyou_get_asin_daily_trends",
-        description="[Third-party Xiyouzhaoci tool] Fetch historical daily trends (price, ratings, stars, deals) for a single ASIN within a date range.",
+        description=(
+            "[Xiyouzhaoci] Fetch daily historical data for an ASIN over a date range. "
+            "Returns list of daily records, each with: date, price, rating (stars), "
+            "review_count, bsr_rank, deal_flag (bool). "
+            "Earliest available: 2023-02-01. Max continuous range: 25 months."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "asin": {"type": "string", "description": "Amazon ASIN to query"},
+                "asin": {"type": "string", "description": "Amazon ASIN"},
                 "country": {"type": "string", "default": "US", "description": "Amazon marketplace country code"},
                 "start_date": {"type": "string", "description": "Start date (YYYY-MM-DD). Earliest: 2023-02-01"},
-                "end_date": {"type": "string", "description": "End date (YYYY-MM-DD). Continuous months limit: 25"},
+                "end_date": {"type": "string", "description": "End date (YYYY-MM-DD). Max span: 25 months"},
             },
             "required": ["asin", "start_date", "end_date"],
         },

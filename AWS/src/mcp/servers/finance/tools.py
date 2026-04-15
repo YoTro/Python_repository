@@ -234,23 +234,42 @@ def _json_response(data) -> list[TextContent]:
 finance_tools = [
     Tool(
         name="calc_profit",
-        description="Comprehensive profit analysis including referral fees, FBA, refund admin fees, and high-return-rate penalties. Automatically injects category avg return rate and search-to-buy ratio (‰) from us_category_metrics.json when available.",
+        description=(
+            "Comprehensive Amazon profit analysis. Requires get_product_details or get_bsr_rank "
+            "to be called first so price, category, and top_level_node_id are in DataCache. "
+            "Returns: asin, price, cost, return_rate, "
+            "fee_breakdown {referral_fee, fba_fulfillment_fee, refund_admin_fee_impact, high_return_rate_fee_impact}, "
+            "profitability {net_profit, margin, roi}, "
+            "category_benchmarks {matched_category, avg_return_rate_pct (%), avg_search_to_buy_pm (‰), return_rate_source}. "
+            "Return rate resolves in order: caller-supplied → category average (us_category_metrics.json) → 5% fallback."
+        ),
         inputSchema={
-            "type": "object", 
+            "type": "object",
             "properties": {
-                "asin":           {"type": "string"},
-                "estimated_cost": {"type": "number"},
+                "asin":           {"type": "string", "description": "Product ASIN"},
+                "estimated_cost": {"type": "number", "description": "COGS in USD (landed cost per unit)"},
                 "current_price":  {"type": "number", "description": "Selling price (USD). Falls back to DataCache if omitted."},
                 "category":       {"type": "string", "description": "Amazon category name (e.g. 'Tools & Home Improvement'). Falls back to DataCache if omitted."},
-                "return_rate":    {"type": "number", "description": "Estimated return rate (e.g. 0.05 for 5%). Defaults to category average from us_category_metrics.json."},
+                "return_rate":    {"type": "number", "description": "Estimated return rate fraction (e.g. 0.05 for 5%). Defaults to category average from us_category_metrics.json."},
             },
             "required": ["asin", "estimated_cost"]
         }
     ),
     Tool(
         name="calc_fba_fee",
-        description="Calculate FBA fulfillment fee.",
-        inputSchema={"type": "object", "properties": {"asin": {"type": "string"}, "weight_lb": {"type": "number"}}}
+        description=(
+            "Estimate the FBA fulfillment fee from product weight. "
+            "Returns: {asin, fba_fee (USD)}. "
+            "Weight is read from DataCache if asin is provided and weight_lb is omitted. "
+            "Uses size-tier logic: Small Standard (≤16 oz) ~$3.11, Large Standard scales with weight."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin":      {"type": "string", "description": "Product ASIN (used to look up weight from DataCache)"},
+                "weight_lb": {"type": "number", "description": "Product weight in pounds. Falls back to DataCache if omitted."}
+            }
+        }
     )
 ]
 
