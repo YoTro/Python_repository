@@ -207,7 +207,13 @@ class SellerspriteAuth:
         return None
 
     def _login_web(self, email: str, password_hash: str, salt: str) -> str | None:
-        """POST /w/user/signin — sets all three session cookies via 302 redirect."""
+        """POST /w/user/signin — follow the full redirect chain to capture all session cookies.
+
+        Sprite-X-Token is set by the landing page after the 302, not by the 302
+        response itself.  Using allow_redirects=True ensures the session captures
+        all three required cookies (rank-login-user, Sprite-X-Token,
+        rank-login-user-info) from every response in the chain.
+        """
         url = "https://www.sellersprite.com/w/user/signin"
         headers = {
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -225,24 +231,32 @@ class SellerspriteAuth:
             "salt":         salt,
         }
         try:
-            res = self.session.post(url, headers=headers, data=data, allow_redirects=False)
+            # allow_redirects=True: follow the 302 so the landing page can set
+            # Sprite-X-Token.  Without this, re-login succeeds but the v3 API
+            # still rejects because Sprite-X-Token is stale/missing.
+            res = self.session.post(url, headers=headers, data=data, allow_redirects=True)
         except Exception as e:
             logger.warning(f"[sellersprite:{self.tenant_id}] Web login request failed: {e}")
             return None
 
-        if res.status_code not in (302, 200):
+        if res.status_code not in (200, 302):
             logger.warning(f"[sellersprite:{self.tenant_id}] Web login returned {res.status_code}")
             return None
 
         # Use get_dict() to avoid CookieConflictError when multiple domains set
         # the same cookie name (e.g. .sellersprite.com vs www.sellersprite.com).
-        token = self.session.cookies.get_dict().get("rank-login-user")
+        jar = self.session.cookies.get_dict()
+        token = jar.get("rank-login-user")
         if not token:
             logger.warning(f"[sellersprite:{self.tenant_id}] Web login did not set rank-login-user cookie")
             return None
 
+        found = [k for k in _SESSION_COOKIE_KEYS if jar.get(k)]
+        logger.info(
+            f"[sellersprite:{self.tenant_id}] Web login successful — "
+            f"captured cookies: {found}"
+        )
         self._save_token(token)
-        logger.info(f"[sellersprite:{self.tenant_id}] Web login successful, token + cookies saved.")
         return token
 
     def _login_extension_api(self, email: str, password_hash: str) -> str | None:

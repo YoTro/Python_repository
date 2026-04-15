@@ -9,7 +9,7 @@ Stages:
   1. Market Discovery & Basic Filtering (price, weight, rating)
   2. Competition Analysis (US seller ratio in BSR)
   3. Cost & Profitability (FBA fees, profit margin)
-  4. Compliance (EPA exemption, patent risk)
+  4. Compliance (Amazon restriction, EPA, certifications, CPSC recalls)
   5. Advertising Analysis (ad traffic ratio)
   6. Social Media Assessment (TikTok/Meta - optional)
 """
@@ -125,6 +125,148 @@ async def _enrich_deal_history(item: dict, ctx: WorkflowContext) -> dict:
     client = DealHistoryClient()
     deals = await client.get_deal_history(asin=asin, keyword=keyword)
     return {"deal_history": deals}
+
+
+async def _enrich_compliance(item: dict, ctx: WorkflowContext) -> dict:
+    """
+    Run all compliance checks for a product using local rule databases and CPSC.gov.
+
+    Checks performed (in order of severity):
+      1. CPSC recall    — network call to cpsc.gov; controlled by config["enable_cpsc_check"]
+      2. Amazon restriction — local JSON; hard-fail if approval_required
+      3. EPA regulation — local JSON; whether product is an EPA-regulated device
+      4. Certification  — local JSON; lists required certs (FCC, CPC, FDA, etc.)
+
+    Sets these fields on the item:
+      compliance_status       "pass" | "warning" | "fail"
+      compliance_flags        list[{type, detail, ...}] — all issues found
+      epa_status              "exempt" | "not_required" | "required" (backward compat)
+      amazon_restricted       bool
+      cpsc_recalled           bool
+      required_certifications list[str] — deduplicated list of required cert names
+    """
+    import json as _json
+    from src.mcp.servers.compliance.tools import handle_compliance_tool
+
+    title    = item.get("title", "") or ""
+    category = item.get("category", "") or ""
+    brand    = item.get("brand", "") or ""
+
+    # Representative keyword: prefer category, fall back to first 4 words of title
+    keyword = category if category else " ".join(title.split()[:4])
+    if not keyword:
+        return {
+            "compliance_status": "pass",
+            "compliance_flags": [],
+            "epa_status": "not_required",
+            "amazon_restricted": False,
+            "cpsc_recalled": False,
+            "required_certifications": [],
+        }
+
+    flags: list = []
+
+    # ── 1. CPSC recall check (network, optional) ─────────────────────────
+    cpsc_recalled = False
+    if ctx.config.get("enable_cpsc_check", True):
+        recall_keyword = brand if brand else keyword
+        try:
+            cpsc_texts = await handle_compliance_tool("check_cpsc_recall", {"keyword": recall_keyword})
+            cpsc_data  = _json.loads(cpsc_texts[0].text) if cpsc_texts else {}
+            if cpsc_data.get("status") == "recalled":
+                cpsc_recalled = True
+                flags.append({
+                    "type":    "cpsc_recall",
+                    "keyword": recall_keyword,
+                    "count":   cpsc_data.get("count", 0),
+                    "sample":  cpsc_data.get("findings", [{}])[0].get("title", ""),
+                })
+        except Exception as e:
+            logger.warning(f"[compliance] CPSC check failed for '{recall_keyword}': {e}")
+
+    # ── 2. Amazon restriction check (local JSON) ─────────────────────────
+    amazon_restricted  = False
+    approval_required  = False
+    try:
+        amz_texts = await handle_compliance_tool("check_amazon_restriction", {"keyword": keyword})
+        amz_data  = _json.loads(amz_texts[0].text) if amz_texts else {}
+        if amz_data.get("status") == "restricted_or_flagged":
+            amazon_restricted = True
+            for f in amz_data.get("findings", []):
+                if f.get("approval_required"):
+                    approval_required = True
+                flags.append({
+                    "type":              "amazon_restriction",
+                    "category":          f.get("category"),
+                    "approval_required": f.get("approval_required", False),
+                    "seller_central":    f.get("seller_central_link"),
+                })
+    except Exception as e:
+        logger.warning(f"[compliance] Amazon restriction check failed for '{keyword}': {e}")
+
+    # ── 3. EPA check (local JSON) ─────────────────────────────────────────
+    epa_required = False
+    try:
+        epa_texts = await handle_compliance_tool("check_epa", {"keyword": keyword})
+        epa_data  = _json.loads(epa_texts[0].text) if epa_texts else {}
+        if epa_data.get("status") == "warning":
+            for f in epa_data.get("findings", []):
+                if f.get("type") == "EPA Regulated Device":
+                    epa_required = True
+                flags.append({
+                    "type":     "epa",
+                    "detail":   f.get("type"),
+                    "category": f.get("category"),
+                })
+    except Exception as e:
+        logger.warning(f"[compliance] EPA check failed for '{keyword}': {e}")
+
+    # ── 4. Certification check (local JSON) ───────────────────────────────
+    required_certifications: list = []
+    try:
+        cert_texts = await handle_compliance_tool("check_certification", {"category": category or keyword})
+        cert_data  = _json.loads(cert_texts[0].text) if cert_texts else {}
+        if cert_data.get("status") == "matched":
+            for f in cert_data.get("findings", []):
+                if f.get("certification_required"):
+                    certs = f.get("required_certifications", [])
+                    required_certifications.extend(certs)
+                    flags.append({"type": "certification", "certifications": certs})
+        elif cert_data.get("certification_required"):
+            certs = cert_data.get("suggested_certifications", [])
+            required_certifications.extend(certs)
+            if certs:
+                flags.append({"type": "certification", "certifications": certs})
+    except Exception as e:
+        logger.warning(f"[compliance] Certification check failed for '{keyword}': {e}")
+
+    # ── Compute overall status ─────────────────────────────────────────────
+    # fail  : product is recalled, OR Amazon restriction requires pre-approval
+    # warning: EPA device registration, soft restriction, or certs needed
+    # pass  : no issues found
+    if cpsc_recalled or approval_required:
+        compliance_status = "fail"
+    elif epa_required or amazon_restricted or required_certifications:
+        compliance_status = "warning"
+    else:
+        compliance_status = "pass"
+
+    # epa_status backward-compat field (used by downstream steps/reports)
+    if epa_required:
+        epa_status = "required"
+    elif flags and any(f["type"] == "epa" for f in flags):
+        epa_status = "warning"
+    else:
+        epa_status = "not_required"
+
+    return {
+        "compliance_status":       compliance_status,
+        "compliance_flags":        flags,
+        "epa_status":              epa_status,
+        "amazon_restricted":       amazon_restricted,
+        "cpsc_recalled":           cpsc_recalled,
+        "required_certifications": list(dict.fromkeys(required_certifications)),  # dedup, preserve order
+    }
 
 
 async def _enrich_ad_metrics_xiyou(item: dict, ctx: WorkflowContext) -> dict:
@@ -288,20 +430,26 @@ def build_product_screening(config: dict) -> Workflow:
             ],
         ),
 
-        # ── Stage 5: Compliance (LLM-assisted) ──
-        ProcessStep(
-            name="epa_check",
-            prompt_template=(
-                "Based on the product title '{title}' and category '{category}', "
-                "determine if this product requires EPA registration or is exempt. "
-                "Respond with ONLY one of: 'exempt', 'not_required', 'required'."
-            ),
-            compute_target=ComputeTarget.LOCAL_LLM,
+        # ── Stage 5: Compliance ──────────────────────────────────────────────
+        # Checks: CPSC recall, Amazon restriction, EPA regulation, certifications.
+        # Sets: compliance_status ("pass"|"warning"|"fail"), compliance_flags,
+        #       epa_status, amazon_restricted, cpsc_recalled, required_certifications.
+        # Config knobs:
+        #   enable_cpsc_check       (bool, default True)  — toggle network CPSC call
+        #   compliance_status_allowed (list, default ["pass","warning"]) — allowed statuses
+        EnrichStep(
+            name="enrich_compliance",
+            extractor_fn=_enrich_compliance,
+            parallel=True,
+            concurrency=5,
         ),
         FilterStep(
             name="compliance_filter",
             rules=[
-                EnumRule("epa_status", config.get("epa_status_allowed", ["exempt", "not_required"])),
+                EnumRule(
+                    "compliance_status",
+                    config.get("compliance_status_allowed", ["pass", "warning"]),
+                ),
             ],
         ),
 
@@ -326,7 +474,9 @@ def build_product_screening(config: dict) -> Workflow:
             prompt_template=(
                 "Analyze these {count} candidate products for Amazon US market entry. "
                 "Rank them by overall potential considering profit margin, competition, "
-                "and market demand. Provide a brief recommendation for each."
+                "market demand, and compliance risk (compliance_status, required_certifications). "
+                "Flag any product with compliance_status='warning' and explain the cert/regulatory requirement. "
+                "Provide a brief recommendation for each."
             ),
             compute_target=ComputeTarget.CLOUD_LLM,
             enabled=True,

@@ -64,6 +64,9 @@ class SellerspriteAPI:
         Rate-limited, mutex-protected re-login.
         Returns True if new cookies were obtained. At most one attempt per
         login_cooldown_seconds per tenant to avoid account lockout.
+
+        Clears stale session cookies before re-login so that old (expired)
+        Sprite-X-Token values do not shadow the freshly-set ones.
         """
         with _LOGIN_LOCK:
             cooldown = RateLimiter().get_source_config("sellersprite").get("login_cooldown_seconds", 60)
@@ -77,6 +80,13 @@ class SellerspriteAPI:
                 )
                 return False
             _LOGIN_LAST_ATTEMPT[self.tenant_id] = now
+            # Remove stale session cookies so the new login sets fresh values
+            # without old entries shadowing them in the jar.
+            for _key in ("rank-login-user", "Sprite-X-Token", "rank-login-user-info"):
+                try:
+                    del self.session.cookies[_key]
+                except KeyError:
+                    pass
             token = self.auth.login_extension() or ""
             return bool(token)
 

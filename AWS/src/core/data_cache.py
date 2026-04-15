@@ -117,12 +117,21 @@ class DataCache:
             )
             self._backend = _JsonFileBackend(_dir)
 
-    def set(self, domain: str, key: str, value: Any) -> None:
+    @staticmethod
+    def _to_serializable(value: Any) -> Any:
+        """Recursively convert Pydantic models to plain dicts so json.dump never fails."""
         if hasattr(value, "model_dump"):
-            value = value.model_dump()
-        elif hasattr(value, "dict"):
-            value = value.dict()
-        envelope = {"data": value, "updated_at": datetime.utcnow().isoformat()}
+            return value.model_dump()
+        if hasattr(value, "dict"):
+            return value.dict()
+        if isinstance(value, list):
+            return [DataCache._to_serializable(v) for v in value]
+        if isinstance(value, dict):
+            return {k: DataCache._to_serializable(v) for k, v in value.items()}
+        return value
+
+    def set(self, domain: str, key: str, value: Any) -> None:
+        envelope = {"data": self._to_serializable(value), "updated_at": datetime.utcnow().isoformat()}
         self._backend.set_raw(domain, key, envelope)
 
     def get(self, domain: str, key: str, ttl_seconds: Optional[int] = None) -> Optional[Any]:
