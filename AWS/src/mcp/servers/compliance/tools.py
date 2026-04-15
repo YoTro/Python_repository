@@ -229,56 +229,84 @@ async def handle_compliance_tool(name: str, arguments: dict) -> list[TextContent
 compliance_tools = [
     Tool(
         name="check_certification",
-        description="Check if a product category requires specific certifications (e.g., CPC, FDA, FCC) for Amazon US.",
+        description=(
+            "Check required certifications for a product category on Amazon US. "
+            "Returns: status ('matched'|'general'), category, certification_required (bool), "
+            "required_certifications (list, e.g. CPC, FCC, FDA 510K), description. "
+            "Falls back to general guidance when no specific match found."
+        ),
         inputSchema={
-            "type": "object", 
+            "type": "object",
             "properties": {
-                "category": {"type": "string", "description": "The product category or name (e.g., 'Toy', 'Power Bank')"}
-            }, 
+                "category": {"type": "string", "description": "Product category or name (e.g. 'Toy', 'Power Bank', 'Laser pointer')"}
+            },
             "required": ["category"]
         }
     ),
     Tool(
         name="check_epa",
-        description="Verify if a product (e.g., UV lamp, air purifier, pesticide) is regulated by the EPA under FIFRA using the local compliance database.",
+        description=(
+            "Check if a product is regulated by the EPA under FIFRA (Federal Insecticide, Fungicide, and Rodenticide Act). "
+            "Returns: status ('warning'|'clean'), findings list where each entry has "
+            "type ('EPA Regulated Device'|'EPA Registered Pesticide (NOT Device)'), "
+            "category, description, conditions. "
+            "Common examples: UV-C lamps, ozone generators, air purifiers claiming to kill pathogens."
+        ),
         inputSchema={
-            "type": "object", 
+            "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "The product type or keyword to check (e.g., 'UV', 'pesticide', 'filter')"}
-            }, 
+                "keyword": {"type": "string", "description": "Product type or keyword (e.g. 'UV lamp', 'ozone generator', 'pesticide spray')"}
+            },
             "required": ["keyword"]
         }
     ),
     Tool(
         name="check_amazon_restriction",
-        description="Check if a product falls under any Amazon restricted product categories.",
+        description=(
+            "Check if a product keyword matches Amazon's restricted product categories. "
+            "Returns: status ('restricted_or_flagged'|'pass'), findings list where each entry has "
+            "category (restriction category name), approval_required (bool), "
+            "prohibited_examples (up to 3 matching examples), seller_central_link. "
+            "Covers: weapons, alcohol, supplements, medical devices, and more."
+        ),
         inputSchema={
-            "type": "object", 
+            "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "The product name or keyword (e.g., 'alcohol', 'knife', 'supplement')"}
-            }, 
+                "keyword": {"type": "string", "description": "Product name or keyword (e.g. 'alcohol', 'stun gun', 'weight loss supplement')"}
+            },
             "required": ["keyword"]
         }
     ),
     Tool(
         name="check_patent",
-        description="Perform a basic risk assessment for patent and intellectual property violations based on prohibited product examples.",
+        description=(
+            "Basic IP and patent risk assessment from Amazon's prohibited product examples. "
+            "Returns: risk_level ('high'|'low'), findings list where each entry has "
+            "risk_type ('IP/Copyright/Trademark'), context (the matched prohibited example), category. "
+            "Detects counterfeit, unlicensed, and copyright-infringing product patterns."
+        ),
         inputSchema={
-            "type": "object", 
+            "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "Product keyword to check for IP/counterfeit risk"}
-            }, 
+                "keyword": {"type": "string", "description": "Product keyword to check for IP/counterfeit risk (e.g. 'Nike', 'Disney')"}
+            },
             "required": ["keyword"]
         }
     ),
     Tool(
         name="get_regulations",
-        description="Retrieve detailed regulatory requirements and Seller Central references for a specific Amazon product category.",
+        description=(
+            "Retrieve full regulatory detail for an Amazon product category from the local database. "
+            "Returns: regulations list, each entry with "
+            "category, approval_required (bool), allowed_summary (top 5 allowed examples), "
+            "prohibited_summary (top 5 prohibited examples), ref (Seller Central URL). "
+            "Use check_amazon_restriction for keyword-level checks; use this for full category deep-dives."
+        ),
         inputSchema={
-            "type": "object", 
+            "type": "object",
             "properties": {
-                "category": {"type": "string", "description": "The category name (e.g., 'Electronics', 'Medical Devices')"}
-            }, 
+                "category": {"type": "string", "description": "Category name (e.g. 'Electronics', 'Medical Devices', 'Dietary Supplements')"}
+            },
             "required": ["category"]
         }
     ),
@@ -302,25 +330,35 @@ compliance_tools = [
     ),
     Tool(
         name="search_fda",
-        description="Search OpenFDA database for medical devices, drugs, or food recalls.",
+        description=(
+            "Search the OpenFDA database for medical device clearances, drug approvals, or food safety recalls. "
+            "Returns paginated OpenFDA results, each record includes product name, applicant/company, "
+            "decision date, recall class (for recalls), reason, and regulatory action. "
+            "Use domain='device' for 510K/PMA clearances, 'drug' for NDAs, 'food' for recall notices."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "Keyword to search for (e.g., 'Aspirin', 'Stent', 'Lettuce')"},
-                "domain": {"type": "string", "enum": ["device", "drug", "food"], "description": "The FDA domain to search in. Defaults to 'device'."}
+                "keyword": {"type": "string", "description": "Keyword to search for (e.g. 'Aspirin', 'cardiac stent', 'romaine lettuce')"},
+                "domain": {"type": "string", "enum": ["device", "drug", "food"], "description": "FDA domain: 'device' (510K/PMA), 'drug' (NDA), or 'food' (recall). Defaults to 'device'."}
             },
             "required": ["keyword"]
         }
     ),
     Tool(
         name="search_epa_ppls",
-        description="Search EPA Pesticide Product Label System (PPLS) for pesticide registrations and labels.",
+        description=(
+            "Search EPA Pesticide Product Label System (PPLS) for registered pesticide products. "
+            "Returns list of matching products, each with: product_name, epa_registration_number, "
+            "registrant (company), active_ingredients, label_url. "
+            "Use search_by='reg_num' to look up a specific EPA registration number (e.g. '66551-1')."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "Keyword to search for (e.g., 'RAID', '66551-1')"},
+                "keyword": {"type": "string", "description": "Product name or EPA registration number (e.g. 'RAID', '66551-1')"},
                 "search_by": {"type": "string", "enum": ["name", "reg_num"], "description": "Search by product name or EPA registration number. Defaults to 'name'."},
-                "partial": {"type": "boolean", "description": "Whether to use partial matching. Defaults to true."}
+                "partial": {"type": "boolean", "description": "Allow partial string matching. Defaults to true."}
             },
             "required": ["keyword"]
         }

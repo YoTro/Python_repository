@@ -95,39 +95,57 @@ social_tools = [
     Tool(
         name="tiktok_fetch_data",
         description=(
-            "L1 Extractor: Scrape raw TikTok data (tag metadata, trending videos, and comments) for a product keyword. "
-            "Use this tool FIRST to gather social data into the system cache. "
-            "After this tool succeeds, use 'tiktok_calculate_virality' to analyze the data."
+            "L1: Scrape TikTok hashtag data for a product keyword and cache it. "
+            "Fetches: tag metadata (view_count, video_count), up to 30 trending videos "
+            "(id, author, stats: viewCount, likeCount, commentCount, shareCount, play_url), "
+            "and comments from the top-3 most-commented videos. "
+            "Returns: {status, keyword, message} — data is stored in DataCache under domain='tiktok'. "
+            "MUST be called before tiktok_calculate_virality."
         ),
         inputSchema={
-            "type": "object", 
+            "type": "object",
             "properties": {
                 "brand": {"type": "string", "description": "Product brand (e.g. 'Anker')"},
-                "product_name": {"type": "string", "description": "Specific product name or model"},
-                "keyword": {"type": "string", "description": "Override search tag. Defaults to '{brand} {product_name}' if omitted."},
-                "max_comments": {"type": "integer", "description": "Depth of comment analysis (1-50). Defaults to 10."}
-            }, 
+                "product_name": {"type": "string", "description": "Product name or model (e.g. 'PowerCore 10000')"},
+                "keyword": {"type": "string", "description": "Override hashtag. Defaults to '{brand} {product_name}'."},
+                "max_comments": {"type": "integer", "default": 10, "description": "Comments to fetch per top video (1–50)"}
+            },
             "required": ["brand", "product_name"]
         }
     ),
     Tool(
         name="tiktok_calculate_virality",
         description=(
-            "L2 Processor: Calculate the Promotional Strength Index (PSI) and analyze consumer intent. "
-            "MUST be called AFTER 'tiktok_fetch_data'. Reads from internal cache and applies multi-dimensional business logic."
+            "L2: Calculate TikTok Promotional Strength Index (PSI) from cached data. "
+            "MUST call tiktok_fetch_data first. "
+            "Returns: strength_score (0–100), total_tag_videos, total_views_sample, avg_views_per_video, "
+            "engagement_rate, amazon_mentions (count), organic_multiplier (0–1, higher = more organic), "
+            "recent_videos_ratio (freshness signal), mega_influencer_ratio, creator_diversity, "
+            "verdict (text summary), "
+            "comment_analysis {sentiment: {positive, neutral, negative}, purchase_intent_signals (list), summary}, "
+            "metrics {historical_volume_contribution, recent_volume_contribution, engagement_contribution, "
+            "intent_contribution, organic_viral_contribution, recency_contribution}."
         ),
         inputSchema={
-            "type": "object", 
+            "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "The exact keyword that was used in 'tiktok_fetch_data' to retrieve the cached data."}
-            }, 
+                "keyword": {"type": "string", "description": "Exact keyword used in tiktok_fetch_data"}
+            },
             "required": ["keyword"]
         }
     ),
     Tool(
         name="meta_ad_search",
-        description="Check Meta Ad Library to identify active advertising campaigns and competitor spend for a keyword.",
-        inputSchema={"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]}
+        description=(
+            "Check Meta Ad Library for active advertising campaigns for a keyword. "
+            "Returns: active_ads (count of live ads found). "
+            "Note: currently returns stub data — wire to Meta Ad Library API when available."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"keyword": {"type": "string", "description": "Brand or product keyword to search"}},
+            "required": ["keyword"]
+        }
     )
 ]
 
