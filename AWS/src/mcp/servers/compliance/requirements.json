@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "title": "Amazon US Category Compliance & Certification Requirements",
+    "region": "US",
+    "updated_at": "2026-04-13"
+  },
+  "requirements": [
+    {
+      "category_match": ["Toy", "Baby", "Children"],
+      "required": true,
+      "certifications": ["CPC (Children's Product Certificate)", "ASTM F963", "CPSIA"],
+      "description": "All children's toys and baby products must provide a CPC certificate and corresponding laboratory test reports."
+    },
+    {
+      "category_match": ["Electronics", "Power", "Battery", "Cell Phone"],
+      "required": true,
+      "certifications": ["FCC", "UL/ETL (Standard)", "UN38.3 (for batteries)"],
+      "description": "Radio frequency devices require FCC certification; powered products should have UL/ETL reports, and battery-operated items require UN38.3."
+    },
+    {
+      "category_match": ["Beauty", "Grocery", "Health", "Medical", "Drug"],
+      "required": true,
+      "certifications": ["FDA Registration", "FDA Listing", "NDC (if applicable)"],
+      "description": "Food, cosmetics, and medical devices require FDA registration or listing."
+    },
+    {
+      "category_match": ["Automotive", "Tire", "Helmet"],
+      "required": true,
+      "certifications": ["DOT (Safety)", "EPA (Emission)"],
+      "description": "Automotive parts related to safety require DOT certification, and those related to emissions require EPA certification."
+    },
+    {
+      "category_match": ["Patio", "Lawn", "Garden", "Pesticide", "Repellent"],
+      "required": "Conditional",
+      "certifications": ["EPA Registration", "EPA Establishment Number"],
+      "description": "Pesticide devices or products containing pesticides require an EPA registration/establishment number."
+    },
+    {
+      "category_match": ["Clothing", "Apparel", "Textile"],
+      "required": "Conditional",
+      "certifications": ["RN Number", "Tracking Label"],
+      "description": "Textiles usually require an RN number; children's apparel also requires a CPC."
+    }
+  ],
+  "default": {
+    "required": false,
+    "certifications": ["General Compliance (Labeling)"],
+    "description": "General merchandise usually only needs to meet basic packaging and labeling requirements (Country of Origin, Warning labels, etc.)."
+  }
+}
