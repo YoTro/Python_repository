@@ -7,6 +7,8 @@ from mcp.types import Tool, TextContent
 from src.registry.tools import tool_registry
 
 from src.mcp.servers.compliance.cpsc_recalls import CPSCRecallScraper
+from src.mcp.servers.compliance.fda_client import FDAClient
+from src.mcp.servers.compliance.epa_client import EPAClient
 
 logger = logging.getLogger("mcp-compliance")
 
@@ -36,8 +38,38 @@ def keyword_match(keyword: str, text_list: List[str]) -> bool:
 async def handle_compliance_tool(name: str, arguments: dict) -> list[TextContent]:
     amazon_data = load_json("amazon_restricted_products.json")
     epa_data = load_json("epa_pesticide_devices.json")
+    req_data = load_json("requirements.json")
 
-    if name == "check_epa":
+    if name == "check_certification":
+        category = arguments.get("category", "").lower()
+        findings = []
+        
+        for req in req_data.get("requirements", []):
+            if any(match.lower() in category for match in req["category_match"]):
+                findings.append({
+                    "category_group": req["category_match"],
+                    "certification_required": req["required"],
+                    "required_certifications": req["certifications"],
+                    "description": req["description"]
+                })
+        
+        if not findings:
+            default = req_data.get("default", {})
+            return [TextContent(type="text", text=json.dumps({
+                "status": "general",
+                "category": category,
+                "certification_required": default.get("required"),
+                "suggested_certifications": default.get("certifications"),
+                "description": default.get("description")
+            }, indent=2, ensure_ascii=False))]
+            
+        return [TextContent(type="text", text=json.dumps({
+            "status": "matched",
+            "category": category,
+            "findings": findings
+        }, indent=2, ensure_ascii=False))]
+
+    elif name == "check_epa":
         keyword = arguments.get("keyword", "").lower()
         results = []
         
@@ -159,11 +191,53 @@ async def handle_compliance_tool(name: str, arguments: dict) -> list[TextContent
             "findings": results
         }, indent=2, ensure_ascii=False))]
 
+    elif name == "search_fda":
+        keyword = arguments.get("keyword", "")
+        domain = arguments.get("domain", "device")
+        client = FDAClient()
+        
+        if domain == "device":
+            res = client.search_device(keyword)
+        elif domain == "drug":
+            res = client.search_drug(keyword)
+        elif domain == "food":
+            res = client.search_food_recall(keyword)
+        else:
+            return [TextContent(type="text", text=f"Invalid FDA domain: {domain}")]
+            
+        return [TextContent(type="text", text=json.dumps(res, indent=2, ensure_ascii=False))]
+
+    elif name == "search_epa_ppls":
+        keyword = arguments.get("keyword", "")
+        search_by = arguments.get("search_by", "name")
+        is_partial = arguments.get("partial", True)
+        client = EPAClient()
+        
+        if search_by == "name":
+            res = client.search_by_name(keyword, partial=is_partial)
+        elif search_by == "reg_num":
+            res = client.search_by_registration_number(keyword, partial=is_partial)
+        else:
+            return [TextContent(type="text", text=f"Invalid search_by method: {search_by}")]
+            
+        return [TextContent(type="text", text=json.dumps(res, indent=2, ensure_ascii=False))]
+
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 # --- Tool Definitions ---
 
 compliance_tools = [
+    Tool(
+        name="check_certification",
+        description="Check if a product category requires specific certifications (e.g., CPC, FDA, FCC) for Amazon US.",
+        inputSchema={
+            "type": "object", 
+            "properties": {
+                "category": {"type": "string", "description": "The product category or name (e.g., 'Toy', 'Power Bank')"}
+            }, 
+            "required": ["category"]
+        }
+    ),
     Tool(
         name="check_epa",
         description="Verify if a product (e.g., UV lamp, air purifier, pesticide) is regulated by the EPA under FIFRA using the local compliance database.",
@@ -219,15 +293,43 @@ compliance_tools = [
             }, 
             "required": ["keyword"]
         }
+    ),
+    Tool(
+        name="search_fda",
+        description="Search OpenFDA database for medical devices, drugs, or food recalls.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string", "description": "Keyword to search for (e.g., 'Aspirin', 'Stent', 'Lettuce')"},
+                "domain": {"type": "string", "enum": ["device", "drug", "food"], "description": "The FDA domain to search in. Defaults to 'device'."}
+            },
+            "required": ["keyword"]
+        }
+    ),
+    Tool(
+        name="search_epa_ppls",
+        description="Search EPA Pesticide Product Label System (PPLS) for pesticide registrations and labels.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string", "description": "Keyword to search for (e.g., 'RAID', '66551-1')"},
+                "search_by": {"type": "string", "enum": ["name", "reg_num"], "description": "Search by product name or EPA registration number. Defaults to 'name'."},
+                "partial": {"type": "boolean", "description": "Whether to use partial matching. Defaults to true."}
+            },
+            "required": ["keyword"]
+        }
     )
 ]
 
 _COMPLIANCE_META = {
+    "check_certification": ("FILTER", "required certification findings"),
     "check_epa": ("FILTER", "EPA regulation findings"),
     "check_amazon_restriction": ("FILTER", "Amazon restriction findings"),
     "check_patent": ("FILTER", "IP risk assessment"),
     "get_regulations": ("FILTER", "detailed category regulations"),
     "check_cpsc_recall": ("FILTER", "CPSC recall findings"),
+    "search_fda": ("FILTER", "OpenFDA search results"),
+    "search_epa_ppls": ("FILTER", "EPA PPLS registration and label data"),
 }
 
 for tool in compliance_tools:
