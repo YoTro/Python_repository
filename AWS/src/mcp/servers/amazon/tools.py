@@ -349,7 +349,11 @@ amazon_tools = [
     # Tier 1: Core screening
     Tool(
         name="get_amazon_bestsellers",
-        description="Scrape Amazon's Best Sellers list from a given URL.",
+        description=(
+            "Scrape Amazon Best Sellers list from a category URL. "
+            "Returns list of products, each with: ASIN, Rank, Title, Price, Stars, Reviews (count), Image (URL). "
+            "Results are written to DataCache for downstream tools."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -361,7 +365,13 @@ amazon_tools = [
     ),
     Tool(
         name="get_product_details",
-        description="Fetch detailed product data from a product listing page.",
+        description=(
+            "Fetch full product details from an Amazon listing page. "
+            "Returns Product model with: asin, title, features (bullet points), description, "
+            "price, sales_rank (BSR), review_count, rating (out of 5), main_image_url, "
+            "category_name, category_node_id, past_month_sales, stock_level, is_fba. "
+            "Result is written to DataCache under domain='amazon', key=ASIN."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -372,7 +382,11 @@ amazon_tools = [
     ),
     Tool(
         name="search_products",
-        description="Search Amazon by keyword and return product list with basic data (asin, title, price, rating, review_count, past_month_sales).",
+        description=(
+            "Search Amazon by keyword and return product list from search result pages. "
+            "Each product has: asin, title, price, rating, review_count, past_month_sales. "
+            "Results are written to DataCache. Use search_profitability_products for richer data."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -384,7 +398,13 @@ amazon_tools = [
     ),
     Tool(
         name="search_profitability_products",
-        description="Search Amazon using the Profitability Calculator API. Returns a clean list of organic products with rich metadata: ASIN, title, brand, dimensions, weight, price, category rank, and reviews. Excellent for precise data extraction without ads.",
+        description=(
+            "Search Amazon via the Profitability Calculator API (ad-free organic results). "
+            "Returns up to 16 products per page, each with: asin, title, brandName, "
+            "price, currency, weight, weightUnit, length, width, height, dimensionUnit, "
+            "customerReviewsCount, customerReviewsRating, category rank info. "
+            "Results are written to DataCache. Preferred over search_products for precise data."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -396,7 +416,14 @@ amazon_tools = [
     ),
     Tool(
         name="get_bsr_rank",
-        description="Fetch Best Sellers Rank (BSR), subcategory ranks, and breadcrumb category navigation nodes (NodeId).",
+        description=(
+            "Fetch Best Sellers Rank (BSR) and category hierarchy for a product. "
+            "Returns: ASIN, URL, PrimaryRank (int), Category (primary category name), "
+            "SecondaryRanks (list of {Rank, Category} for subcategories), "
+            "CategoryNodes (list of {Category, NodeId} from breadcrumb path), "
+            "TopLevelNodeId (root category node ID), LeafNodeId (most specific category node ID). "
+            "TopLevelNodeId is stored in DataCache and used by calc_profit for accurate fee lookup."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -408,7 +435,12 @@ amazon_tools = [
     ),
     Tool(
         name="get_batch_past_month_sales",
-        description="Fetch 'X bought in past month' for one or more ASINs via Amazon search (one request per 20 ASINs). Returns {ASIN: int|null}.",
+        description=(
+            "Fetch 'X bought in past month' badge for one or more ASINs via Amazon search. "
+            "Batches up to 20 ASINs per request. "
+            "Returns dict of {ASIN: int|null} — null means badge not shown (low volume). "
+            "Results are merged into DataCache under each ASIN's entry."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -418,13 +450,18 @@ amazon_tools = [
                     "description": "List of ASINs to query (e.g. [\"B08N5WRWNW\", \"B0CKY689WQ\"])",
                 },
             },
-            "required": ["asin"],
+            "required": ["asins"],
         },
     ),
     # Tier 2: Competitive analysis
     Tool(
         name="get_review_count",
-        description="Fetch GlobalRatings (all star ratings) and WrittenReviews (ratings with text) for a product, plus their Ratio. Natural ratio ≈ 0.10 (1:10); Ratio > 0.50 is a strong fake-review signal.",
+        description=(
+            "Fetch review volume and authenticity signal for a product. "
+            "Returns: ASIN, GlobalRatings (total star ratings including no-text), "
+            "WrittenReviews (ratings that include written text), Ratio (WrittenReviews / GlobalRatings). "
+            "Natural ratio ≈ 0.10 (1 written per 10 ratings); Ratio > 0.50 is a strong fake-review signal."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -436,7 +473,12 @@ amazon_tools = [
     ),
     Tool(
         name="get_stock_estimate",
-        description="Estimate remaining stock using the add-to-cart 999 method.",
+        description=(
+            "Estimate remaining inventory using the add-to-cart 999 method. "
+            "Returns: {value: int, status: 'Actual'|'Limit'|'Failed'}. "
+            "value=999 means stock exceeds 999 units; value=-1 means estimation failed. "
+            "Result is merged into DataCache under stock_estimate key."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -448,7 +490,11 @@ amazon_tools = [
     ),
     Tool(
         name="get_keyword_rank",
-        description="Find the search result position of specific ASINs for a keyword.",
+        description=(
+            "Find the organic search position of specific ASINs for a keyword. "
+            "Returns list of {asin, keyword, page, position} for each found ASIN. "
+            "Useful for tracking keyword ranking and share-of-voice analysis."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -461,7 +507,11 @@ amazon_tools = [
     ),
     Tool(
         name="search_return_asins",
-        description="Extract ASINs from Amazon search results.",
+        description=(
+            "Extract raw ASINs from Amazon search results for a keyword. "
+            "Returns list of {Keyword, Page, ASIN}. "
+            "Use this when you only need ASINs for bulk downstream processing."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -474,7 +524,12 @@ amazon_tools = [
     # Tier 3: Detail enrichment
     Tool(
         name="get_reviews",
-        description="Fetch customer reviews for a product with text, rating, and metadata.",
+        description=(
+            "Fetch customer reviews from the Amazon reviews page. "
+            "Returns list of review objects, each with: asin, author, rating, title, "
+            "body (review text), date, verified_purchase, helpful_votes. "
+            "Reviews are cached under domain='amazon', key='reviews:{ASIN}' for 24h."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -487,10 +542,12 @@ amazon_tools = [
     Tool(
         name="analyze_reviews",
         description=(
-            "Fetch and deeply analyze customer reviews for a product. "
-            "Returns structured pros/cons, sentiment score, buyer persona, "
-            "review velocity, rating distribution, competitive barrier estimate, "
-            "and a manipulation risk score (RCI, template overlap, review-to-sales ratio)."
+            "Deeply analyze customer reviews using an LLM. Uses cached reviews if available (24h TTL). "
+            "Returns structured report with: pros (list), cons (list), sentiment_score (-1 to 1), "
+            "buyer_persona (description), review_velocity (recent vs. historical rate), "
+            "rating_distribution ({1..5: count}), competitive_barrier (estimated reviews to compete), "
+            "manipulation_risk (RCI score, template_overlap_pct, review_to_sales_ratio, risk_level). "
+            "Requires LLM provider to be configured."
         ),
         inputSchema={
             "type": "object",
@@ -505,7 +562,11 @@ amazon_tools = [
     ),
     Tool(
         name="get_fulfillment",
-        description="Determine whether a product is fulfilled by Amazon (FBA) or merchant (FBM).",
+        description=(
+            "Determine fulfillment method for a product listing. "
+            "Returns: ASIN, URL, FulfilledBy ('Amazon' for FBA, seller name for FBM). "
+            "Result is merged into DataCache under fulfillment_type key."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -517,7 +578,10 @@ amazon_tools = [
     ),
     Tool(
         name="get_seller_feedback",
-        description="Fetch seller feedback count from the storefront profile.",
+        description=(
+            "Fetch seller feedback statistics from the seller's storefront profile. "
+            "Returns feedback count and ratings breakdown for the seller."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -529,7 +593,10 @@ amazon_tools = [
     ),
     Tool(
         name="get_seller_product_count",
-        description="Get the total number of products listed by a seller.",
+        description=(
+            "Get the total number of active product listings for a seller. "
+            "Returns seller_id and product_count extracted from the storefront page."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -540,7 +607,12 @@ amazon_tools = [
     ),
     Tool(
         name="get_dimensions",
-        description="Fetch product dimensions and current price from a listing.",
+        description=(
+            "Fetch physical dimensions and current price from a product listing. "
+            "Returns: ASIN, URL, Dimensions (e.g. '10 x 5 x 3 inches'), Price (string with currency). "
+            "Also attempts to extract weight_lb, length_in, width_in, height_in as floats. "
+            "All non-null values are merged into DataCache for use by calc_profit and calc_fba_fee."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -552,7 +624,11 @@ amazon_tools = [
     ),
     Tool(
         name="get_product_images",
-        description="Fetch primary and secondary image URLs from a product listing.",
+        description=(
+            "Fetch product image gallery from a listing page. "
+            "Returns list of image objects with url and variant (MAIN, PT01, PT02, …). "
+            "Useful for listing quality assessment and competitive image analysis."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -564,7 +640,11 @@ amazon_tools = [
     ),
     Tool(
         name="check_has_videos",
-        description="Check if a product listing contains videos and get the count.",
+        description=(
+            "Check whether a product listing contains embedded videos. "
+            "Returns: {asin, has_video: bool, video_count: int}. "
+            "Listings with videos tend to have higher conversion rates."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -576,12 +656,20 @@ amazon_tools = [
     ),
     Tool(
         name="get_top_bsr_categories",
-        description="Lists all top-level Amazon Best Sellers categories (Electronics, Home, etc.) with their entry URLs. Use this as a starting point for market research.",
+        description=(
+            "List all top-level Amazon Best Sellers categories with their entry BSR URLs. "
+            "Returns list of {name, url} objects (e.g. Electronics, Home & Kitchen, Toys & Games). "
+            "Use this to discover category URLs before calling get_bsr_subcategories."
+        ),
         inputSchema={"type": "object", "properties": {}}
     ),
     Tool(
         name="get_bsr_subcategories",
-        description="Dynamically explores subcategories within a specific Amazon BSR category. Pass a parent BSR URL to find more specific niches.",
+        description=(
+            "Explore subcategories within a BSR category page. "
+            "Returns list of {name, url} for each child category found on the page. "
+            "Drill down recursively to find niche subcategory BSR pages."
+        ),
         inputSchema={
             "type": "object",
             "properties": {

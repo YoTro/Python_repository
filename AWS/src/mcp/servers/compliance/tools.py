@@ -284,13 +284,19 @@ compliance_tools = [
     ),
     Tool(
         name="check_cpsc_recall",
-        description="Search for product safety recalls and warnings from CPSC.gov.",
+        description=(
+            "Search CPSC.gov for product safety recalls and warnings. "
+            "Returns up to 5 recall records per search. "
+            "Each record contains: date, title, link, img, image_url, description, "
+            "hazard, remedy, units (number of units recalled), incidents (accident/injury summary), "
+            "sold_exclusively_online, sold_at (retailer), manufacturer, retailer, importer, manufactured_in."
+        ),
         inputSchema={
-            "type": "object", 
+            "type": "object",
             "properties": {
                 "keyword": {"type": "string", "description": "Product keyword or brand to check for recalls (e.g., 'Greater Goods', 'kitchen scale')"},
                 "lang": {"type": "string", "enum": ["en", "zh"], "description": "Language for search (en for English, zh for Chinese). Defaults to 'en'."}
-            }, 
+            },
             "required": ["keyword"]
         }
     ),
