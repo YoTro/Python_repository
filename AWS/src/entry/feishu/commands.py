@@ -191,6 +191,50 @@ class ResumeJobCommand(BotCommand):
         asyncio.run_coroutine_threadsafe(_do_resume(), self.loop)
 
 
+class ProductScreeningCommand(BotCommand):
+    """
+    Handles '产品筛选 <关键词>' messages.
+
+    Dispatches the product_screening workflow which runs a multi-stage funnel:
+      price/rating → competition → promo risk → profitability → compliance → ad ratio → LLM synthesis
+    """
+
+    _PATTERN = re.compile(r"产品筛选\s+(.+)", re.IGNORECASE)
+
+    def match(self, text: str) -> bool:
+        return bool(self._PATTERN.search(text))
+
+    def execute(self, text: str, chat_id: str):
+        match = self._PATTERN.search(text)
+        keyword = match.group(1).strip()
+
+        feishu_client = FeishuClient(bot_name=self.bot_name)
+        eta = TimeEstimator.estimate_workflow("product_screening", params={"keyword": keyword})
+        feishu_client.send_text_message(
+            "chat_id", chat_id,
+            f"🔍 开始筛选「{keyword}」类目产品...\n⏱️ 预计耗时: {eta}\n"
+            "将依次执行价格/评分 → 利润 → 合规 → 广告流量多维过滤，请耐心等待。"
+        )
+
+        async def _dispatch_job():
+            try:
+                from src.gateway import APIGateway
+                import src.workflows.definitions.product_screening
+
+                job_id = APIGateway.dispatch_feishu_command(
+                    workflow_name="product_screening",
+                    params={"keyword": keyword},
+                    chat_id=chat_id,
+                    bot_name=self.bot_name
+                )
+                logger.info(f"Product screening routed to Gateway, job_id={job_id}, bot_name={self.bot_name}")
+            except Exception as e:
+                logger.error(f"Product screening dispatch failed: {e}")
+                feishu_client.send_text_message("chat_id", chat_id, f"❌ 产品筛选任务启动失败: {e}")
+
+        asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+
+
 class AgentExploreCommand(BotCommand):
 
     def match(self, text: str) -> bool:
@@ -220,6 +264,7 @@ class CommandDispatcher:
             ResumeJobCommand(bot_name, loop),
             ExtractBSRCommand(bot_name, loop),
             AnalyzeCategoryMonopolyCommand(bot_name, loop),
+            ProductScreeningCommand(bot_name, loop),
             AgentExploreCommand(bot_name, loop),  # fallback — must stay last
         ]
         

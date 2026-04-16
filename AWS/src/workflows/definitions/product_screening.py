@@ -15,8 +15,9 @@ Stages:
 """
 
 import logging
+from typing import Dict, Any, List, Optional
 from src.workflows.registry import WorkflowRegistry
-from src.workflows.engine import Workflow
+from src.workflows.engine import Workflow, WorkflowContext
 from src.workflows.steps.enrich import EnrichStep
 from src.workflows.steps.process import ProcessStep
 from src.workflows.steps.filter import FilterStep, RangeRule, ThresholdRule, EnumRule
@@ -60,6 +61,7 @@ async def _enrich_via_profitability_api(item: dict, ctx: WorkflowContext) -> dic
     """
     High-efficiency enrichment using Amazon's Profitability Calculator API.
     Fetches weight, dimensions, BSR, and price in a single request.
+    Includes unit conversion (lb to grams) for filtering.
     """
     from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
     extractor = ProfitabilitySearchExtractor()
@@ -73,10 +75,15 @@ async def _enrich_via_profitability_api(item: dict, ctx: WorkflowContext) -> dic
         return {}
     
     p = results[0]
+    weight_lb = p.get("weight") or 0.0
+    # Convert lb to grams for workflow_defaults.yaml alignment (1 lb ≈ 453.59g)
+    weight_grams = round(weight_lb * 453.59, 2)
+
     return {
         "title": p.get("title", item.get("title")),
         "price": p.get("price", item.get("price")),
-        "weight_lb": p.get("weight"),
+        "weight_lb": weight_lb,
+        "weight": weight_grams, # Used for filtering
         "dimensions": {
             "length": p.get("length"),
             "width": p.get("width"),
@@ -93,12 +100,16 @@ async def _enrich_via_profitability_api(item: dict, ctx: WorkflowContext) -> dic
 
 
 async def _enrich_past_month_sales(item: dict, ctx: WorkflowContext) -> dict:
-    """Fetch past month sales estimate."""
+    """Fetch past month sales and calculate daily average."""
     from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
     extractor = PastMonthSalesExtractor()
     asin = item["asin"].strip().upper()
     batch = await extractor.get_batch_past_month_sales([asin])
-    return {"past_month_sales": batch.get(asin)}
+    past_sales = batch.get(asin) or 0
+    return {
+        "past_month_sales": past_sales,
+        "daily_sales": round(past_sales / 30.0, 2) # Used for filtering
+    }
 
 
 async def _enrich_fulfillment(item: dict, ctx: WorkflowContext) -> dict:
@@ -269,6 +280,68 @@ async def _enrich_compliance(item: dict, ctx: WorkflowContext) -> dict:
     }
 
 
+async def _enrich_reviews(item: dict, ctx: WorkflowContext) -> dict:
+    """
+    Fetch top reviews for manipulation detection and quality analysis.
+    Uses CommentsExtractor (AJAX + HTML fallback). Capped at 2 pages (~20 reviews)
+    to stay cost-efficient while providing enough signal for ReviewSummarizer.
+    """
+    from src.mcp.servers.amazon.extractors.comments import CommentsExtractor
+    asin = item.get("asin")
+    if not asin:
+        return {}
+    extractor = CommentsExtractor()
+    reviews = await extractor.get_all_comments(asin, max_pages=2)
+    return {"reviews": reviews}
+
+
+async def _summarize_reviews(items: list, ctx: WorkflowContext) -> list:
+    """
+    Run ReviewSummarizer on each product's fetched reviews.
+
+    Populates per-item fields:
+      manipulation_risk_score    int 0-100
+      manipulation_risk_verdict  "SAFE" | "SUSPICIOUS" | "CRITICAL" | "INSUFFICIENT_DATA"
+      review_velocity            float  (reviews/month)
+      review_barrier_months      float | None  (months to reach benchmark)
+      review_summary             ReviewSummary object (LLM-generated insights)
+
+    Skips products with no reviews or fewer than 5 (ReviewSummarizer minimum).
+    Falls back gracefully so a single failure never drops the whole batch.
+    """
+    from src.intelligence.processors.review_summarizer import ReviewSummarizer
+    from src.intelligence.providers.factory import ProviderFactory
+
+    provider = ProviderFactory.get_provider()
+    summarizer = ReviewSummarizer(provider=provider)
+    benchmark = ctx.config.get("review_benchmark", 500)
+
+    for item in items:
+        reviews = item.get("reviews") or []
+        if len(reviews) < 5:
+            item.setdefault("manipulation_risk_score", 0)
+            item.setdefault("manipulation_risk_verdict", "INSUFFICIENT_DATA")
+            continue
+
+        try:
+            summary = await summarizer.summarize(
+                reviews=reviews,
+                competitive_benchmark=benchmark,
+                est_monthly_sales=item.get("past_month_sales") or 0,
+            )
+            item["review_summary"] = summary
+            item["manipulation_risk_score"]   = summary.manipulation_risk.get("score", 0)
+            item["manipulation_risk_verdict"] = summary.manipulation_risk.get("verdict", "SAFE")
+            item["review_velocity"]           = summary.review_velocity
+            item["review_barrier_months"]     = summary.competitive_barrier_months
+        except Exception as e:
+            logger.error(f"Review summarization failed for {item.get('asin')}: {e}")
+            item.setdefault("manipulation_risk_score", 0)
+            item.setdefault("manipulation_risk_verdict", "ERROR")
+
+    return items
+
+
 async def _enrich_ad_metrics_xiyou(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch ad traffic ratio from XiyouZhaoci."""
     asin = item.get("asin")
@@ -294,6 +367,24 @@ async def _enrich_ad_metrics_xiyou(item: dict, ctx: WorkflowContext) -> dict:
     except Exception as e:
         logger.error(f"Failed to fetch Xiyou traffic scores for {asin}: {e}")
     return {}
+
+
+async def _enrich_social_data(item: dict, ctx: WorkflowContext) -> dict:
+    """Fetch social media virality data (TikTok/Meta)."""
+    # In a real scenario, this would call a TikTok/Meta scraper or MCP tool.
+    # For now, we simulate social trend data based on category and brand.
+    from src.intelligence.processors.social_virality import SocialViralityProcessor
+    processor = SocialViralityProcessor()
+    
+    keyword = item.get("category") or item.get("title", "")[:20]
+    # Simulate fetching raw social counts
+    virality = processor.analyze(keyword)
+    
+    return {
+        "social_score": virality.get("score", 0),
+        "social_trend": virality.get("trend", "stable"),
+        "is_trending": virality.get("score", 0) > 70
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +430,9 @@ async def _calculate_profit_mcp(items: list, ctx: WorkflowContext) -> list:
                         item["profit_margin"] = p.get("margin")
                         item["roi"] = p.get("roi")
                         item["fees"] = profit_data.get("fees")
+                        # Add cost_ratio for filtering
+                        if price and cost:
+                            item["cost_ratio"] = round(cost / price, 4)
             except Exception as e:
                 logger.error(f"Failed to calculate profit via MCP for {asin}: {e}")
 
@@ -389,6 +483,8 @@ def build_product_screening(config: dict) -> Workflow:
             rules=[
                 RangeRule("price", config.get("price_min", 20), config.get("price_max", 40)),
                 RangeRule("rating", config.get("rating_min", 4.2), config.get("rating_max", 4.5)),
+                RangeRule("weight", config.get("weight_min", 20), config.get("weight_max", 1000)),
+                RangeRule("daily_sales", config.get("daily_sales_min", 30), config.get("daily_sales_max", 40)),
             ],
         ),
 
@@ -398,6 +494,7 @@ def build_product_screening(config: dict) -> Workflow:
             extractor_fn=_enrich_fulfillment,
             parallel=True,
         ),
+        # Note: US seller ratio analysis could be added here if needed
 
         # ── Stage 3: Price Stability & Promotion Analysis ──
         EnrichStep(
@@ -421,22 +518,47 @@ def build_product_screening(config: dict) -> Workflow:
         ProcessStep(
             name="calculate_profit",
             fn=_calculate_profit_mcp,
-            compute_target=ComputeTarget.PURE_PYTHON, # Logic is async but compute is trivial
+            compute_target=ComputeTarget.PURE_PYTHON,
         ),
         FilterStep(
             name="profit_filter",
             rules=[
                 ThresholdRule("profit_margin", min_val=config.get("profit_margin_min", 0.30)),
+                # cost_ratio_max filtering: cost should be < 30% of price
+                ThresholdRule("cost_ratio", max_val=config.get("cost_ratio_max", 0.30)),
             ],
         ),
 
-        # ── Stage 5: Compliance ──────────────────────────────────────────────
-        # Checks: CPSC recall, Amazon restriction, EPA regulation, certifications.
-        # Sets: compliance_status ("pass"|"warning"|"fail"), compliance_flags,
-        #       epa_status, amazon_restricted, cpsc_recalled, required_certifications.
+        # ── Stage 5: Review Quality & Manipulation Detection ─────────────────
+        # Fetches up to 2 pages of reviews per product (AJAX + HTML fallback).
+        # ReviewSummarizer computes RCI / semantic-overlap / RSR risk score and
+        # generates an LLM-backed quality summary stored in review_summary.
         # Config knobs:
-        #   enable_cpsc_check       (bool, default True)  — toggle network CPSC call
-        #   compliance_status_allowed (list, default ["pass","warning"]) — allowed statuses
+        #   enable_review_analysis  (bool,  default True)  — toggle entire stage
+        #   review_benchmark        (int,   default 500)   — target review count for barrier calc
+        #   manipulation_risk_max   (float, default 70.0)  — max acceptable risk score (0-100)
+        EnrichStep(
+            name="enrich_reviews",
+            extractor_fn=_enrich_reviews,
+            parallel=True,
+            concurrency=5,
+            enabled=config.get("enable_review_analysis", True),
+        ),
+        ProcessStep(
+            name="summarize_reviews",
+            fn=_summarize_reviews,
+            compute_target=ComputeTarget.PURE_PYTHON,
+            enabled=config.get("enable_review_analysis", True),
+        ),
+        FilterStep(
+            name="review_manipulation_filter",
+            rules=[
+                ThresholdRule("manipulation_risk_score", max_val=config.get("manipulation_risk_max", 70.0)),
+            ],
+            enabled=config.get("enable_review_analysis", True),
+        ),
+
+        # ── Stage 6: Compliance ──────────────────────────────────────────────
         EnrichStep(
             name="enrich_compliance",
             extractor_fn=_enrich_compliance,
@@ -450,10 +572,14 @@ def build_product_screening(config: dict) -> Workflow:
                     "compliance_status",
                     config.get("compliance_status_allowed", ["pass", "warning"]),
                 ),
+                EnumRule(
+                    "epa_status",
+                    config.get("epa_status_allowed", ["exempt", "not_required"]),
+                ),
             ],
         ),
 
-        # ── Stage 6: Advertising Analysis (Third-party) ──
+        # ── Stage 7: Advertising Analysis (Third-party) ──
         EnrichStep(
             name="enrich_ad_metrics",
             extractor_fn=_enrich_ad_metrics_xiyou,
@@ -468,13 +594,29 @@ def build_product_screening(config: dict) -> Workflow:
             enabled=config.get("enable_ad_analysis_xiyou", True)
         ),
 
-        # ── Stage 7: Final Synthesis (Cloud LLM) ──
+        # ── Stage 8: Social Media Assessment (Optional) ──
+        EnrichStep(
+            name="enrich_social_data",
+            extractor_fn=_enrich_social_data,
+            parallel=True,
+            enabled=config.get("enable_social_analysis", True)
+        ),
+        ProcessStep(
+            name="social_virality_analysis",
+            fn=lambda items, ctx: items, # Placeholder for SocialViralityProcessor
+            compute_target=ComputeTarget.PURE_PYTHON,
+            enabled=config.get("enable_social_analysis", True)
+        ),
+
+        # ── Stage 9: Final Synthesis (Cloud LLM) ──
         ProcessStep(
             name="final_synthesis",
             prompt_template=(
                 "Analyze these {count} candidate products for Amazon US market entry. "
                 "Rank them by overall potential considering profit margin, competition, "
-                "market demand, and compliance risk (compliance_status, required_certifications). "
+                "market demand, compliance risk (compliance_status, required_certifications), "
+                "and review quality (manipulation_risk_verdict, manipulation_risk_score, review_velocity). "
+                "Flag any product with manipulation_risk_verdict='SUSPICIOUS' or 'CRITICAL' and explain why. "
                 "Flag any product with compliance_status='warning' and explain the cert/regulatory requirement. "
                 "Provide a brief recommendation for each."
             ),
