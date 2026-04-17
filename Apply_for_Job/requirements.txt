@@ -1,4 +1,11 @@
+# 爬虫层（原有）
 DrissionPage
 pandas
 requests
 tqdm
+
+# 分析层（新增）
+statsmodels       # OLS 回归
+scikit-learn      # 倾向得分匹配 PSM（可选）
+numpy
+matplotlib        # 图表生成（可选）

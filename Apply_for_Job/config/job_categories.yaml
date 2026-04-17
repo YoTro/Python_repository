@@ -1,0 +1,140 @@
+# job_categories.yaml
+# 岗位归一化词典：key = 标准名，value = 匹配关键词正则列表（任一命中即归入该类）
+# 规则：
+#   - 大小写不敏感
+#   - 列表内顺序即优先级（先命中先返回）
+#   - 支持 Python re.search 语法（如 ".*" "?" "\b"）
+#   - 新增岗位直接在此文件追加，无需改代码
+
+categories:
+  Amazon运营:
+    - amazon
+    - 亚马逊
+    - 跨境电商.*运营
+    - ebay.*运营
+    - 独立站.*运营
+
+  跨境电商:
+    - 跨境
+    - cross.?border
+    - shopify
+    - wish
+    - 速卖通
+    - aliexpress
+
+  算法工程师:
+    - 算法工程
+    - machine.?learning
+    - ml.*engineer
+    - 深度学习
+    - nlp工程
+    - cv工程
+
+  数据分析师:
+    - 数据分析师
+    - data anal
+    - bi工程师
+    - 商业分析
+    - 数据挖掘
+
+  AI产品经理:
+    - ai.*产品经理
+    - aigc.*产品
+    - 大模型.*产品
+    - llm.*产品
+    - 智能.*产品经理
+
+  AI应用开发:
+    - ai.*开发
+    - llm.*开发
+    - \brag\b
+    - agent.*开发
+    - 大模型.*开发
+    - prompt.*工程师
+
+  后端开发:
+    - 后端开发
+    - backend.*engineer
+    - 服务端开发
+    - java开发
+    - python开发
+    - golang开发
+
+  前端开发:
+    - 前端开发
+    - frontend.*engineer
+    - web.*开发
+    - \breact\b
+    - \bvue\b
+    - h5开发
+
+  运维/DevOps:
+    - 运维工程师
+    - \bdevops\b
+    - \bsre\b
+    - k8s工程师
+    - kubernetes
+    - 云.*运维
+
+  测试工程师:
+    - 测试工程师
+    - qa工程师
+    - quality.*assur
+    - 自动化测试
+
+  产品经理:
+    - 产品经理
+    - product.*manager
+    - 产品策划
+
+  项目经理:
+    - 项目经理
+    - \bpmo\b
+    - project.*manager
+
+  电商运营:
+    - 电商运营
+    - 淘宝.*运营
+    - 天猫.*运营
+    - 京东.*运营
+    - 拼多多.*运营
+
+  市场营销:
+    - 市场营销
+    - \bmarketing\b
+    - 品牌运营
+    - 市场推广
+
+  销售:
+    - 销售
+    - \bsales\b
+    - 商务拓展
+    - \bbd\b
+    - 业务拓展
+
+  UI设计师:
+    - ui设计
+    - ux设计
+    - 视觉设计
+    - 交互设计
+    - 界面设计
+
+  供应链:
+    - 供应链
+    - supply.*chain
+    - 采购
+    - 仓储
+    - 物流
+
+  人力资源:
+    - 人力资源
+    - hr\b
+    - 招聘
+    - 猎头
+    - 培训专员
+
+  财务会计:
+    - 财务
+    - 会计
+    - 审计
+    - 税务
