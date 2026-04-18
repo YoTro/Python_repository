@@ -1,49 +1,54 @@
 #!/usr/bin/env python3
 """
-main.py - 职位采集 + AI 技能溢价分析主流程
+main.py - Job scraper + AI skill premium analyser
 
-用法:
-    # 爬取 + 分析（默认）
-    python3 main.py 51job          "amazon运营"          深圳       3
-    python3 main.py zhipin         "amazon运营"          深圳       5
-    python3 main.py both           "amazon运营"          深圳       3   # 同时抓两个中文平台
-    python3 main.py ziprecruiter   "amazon operations"   "Remote"   3   # 英文平台
-    python3 main.py indeed         "amazon operations"   "Remote"   3   # 英文平台
-    python3 main.py all            "amazon"              "Remote"   3   # 四平台同时
+Sub-commands
+────────────
+  scrape   Scrape job postings from one or more platforms
+  analyze  Run analysis on existing CSVs (no new scraping)
+  chat     Run the HR chat bot on a live recruitment platform
 
-    # 仅分析已有 CSV（不重新爬取）
-    python3 main.py analyze --51job data/raw/51job_jobs.csv --zhipin data/raw/zhipin_jobs.csv
-    python3 main.py analyze --ziprecruiter data/raw/ziprecruiter_jobs.csv --keyword "amazon operations"
-    python3 main.py analyze --indeed data/raw/indeed_jobs.csv --keyword "amazon operations"
+Examples
+────────
+  # Scrape + auto-analyse
+  python3 main.py scrape 51job          "amazon运营"        深圳     3
+  python3 main.py scrape zhipin         "amazon运营"        深圳     5
+  python3 main.py scrape both           "amazon运营"        深圳     3
+  python3 main.py scrape ziprecruiter   "amazon operations" Remote   3
+  python3 main.py scrape all            "amazon"            Remote   3
 
-    # 真实 HR 对话补全（扮演求职者，与真实 HR 对话采集数据）
-    # 支持平台: zhipin / lagou / liepin / linkedin
-    python3 main.py chat zhipin
-    python3 main.py chat zhipin --max-turns 4 --max-chats 10
-    python3 main.py chat lagou  --unread-only          # 仅处理有未读消息的对话
-    python3 main.py chat liepin --reply-timeout 120    # 等待 HR 回复超时秒数
-    python3 main.py chat linkedin --output data/raw/linkedin_chat.csv
+  # Scrape only (skip analysis)
+  python3 main.py scrape zhipin "前端开发" 北京 3 --no-analyze
 
-    # 其他开关
-    --no-analyze      只爬取，不分析
-    --no-plot         不生成图表
-    --psm             分析时使用倾向得分匹配（需 scikit-learn）
-    --proxy-url URL   指定代理地址
+  # Analyse existing CSVs
+  python3 main.py analyze --zhipin data/raw/zhipin_jobs.csv --keyword "amazon运营"
+  python3 main.py analyze --51job data/raw/51job_jobs.csv --zhipin data/raw/zhipin_jobs.csv
+
+  # HR chat bot
+  python3 main.py chat zhipin
+  python3 main.py chat zhipin --max-turns 4 --max-chats 20 --unread-only
+  python3 main.py chat zhipin --reply-timeout 120 --output data/raw/zhipin_chat.csv
 """
-import os
-import sys
-import time
+import argparse
+import logging
 import random
-import requests
+import time
 from pathlib import Path
 from typing import Optional
+
+# ── Logging must be set up before any src imports that use it ─────────
+from src.utils.logging_config import setup_logging
+setup_logging()
 
 from src.job51 import api_scraper, drission_scraper
 from src.zhipin import scraper as zhipin_scraper
 from src.ziprecruiter import scraper as zr_scraper
 from src.indeed import scraper as indeed_scraper
+from src.utils.http import build_session
 
-# ── 目录 ──────────────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+
+# ── Directory constants ───────────────────────────────────────────────
 ROOT     = Path(__file__).parent
 RAW_DIR  = ROOT / "data" / "raw"
 PROC_DIR = ROOT / "data" / "processed"
@@ -61,38 +66,40 @@ ZHIPIN_CITY_MAP = {
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 采集层（保持原有逻辑，仅调整输出路径到 data/raw/）
+# Proxy helper
 # ══════════════════════════════════════════════════════════════════════
 
-def _resolve_proxy(proxy_url):
+def _resolve_proxy(proxy_url: Optional[str]):
     if not proxy_url:
         return None, None
     from src.utils.proxy import proxies as get_proxies
-    raw = get_proxies(None if proxy_url is True else proxy_url)
-    http  = random.choice(raw['http'])  if isinstance(raw['http'],  list) else raw['http']
-    https = random.choice(raw['https']) if isinstance(raw['https'], list) else raw['https']
-    http  = http  if http.startswith('http')  else f"http://{http}"
-    https = https if https.startswith('http') else f"http://{https}"
+    raw   = get_proxies(None if proxy_url is True else proxy_url)
+    http  = random.choice(raw["http"])  if isinstance(raw["http"],  list) else raw["http"]
+    https = random.choice(raw["https"]) if isinstance(raw["https"], list) else raw["https"]
+    http  = http  if http.startswith("http")  else f"http://{http}"
+    https = https if https.startswith("http") else f"http://{https}"
     return {"http": http, "https": https}, http
 
+
+# ══════════════════════════════════════════════════════════════════════
+# Scrapers
+# ══════════════════════════════════════════════════════════════════════
 
 def run_51job(keyword: str, city: str, pages: int, proxy_url=None) -> Path:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     output_csv = RAW_DIR / "51job_jobs.csv"
-
     if output_csv.exists():
         output_csv.unlink()
-        print(f"[51job] 已清空旧数据: {output_csv}")
+        logger.info("[51job] Cleared previous data: %s", output_csv)
 
-    session = requests.Session()
     proxies_dict, _ = _resolve_proxy(proxy_url)
+    session = build_session(proxies=proxies_dict)
     if proxies_dict:
-        session.proxies.update(proxies_dict)
-        print(f"[51job] 启用代理: {proxies_dict}")
+        logger.info("[51job] Proxy enabled: %s", proxies_dict)
 
     nc_params = None
     for page in range(1, pages + 1):
-        print(f"\n{'='*20} 51job 第 {page}/{pages} 页 {'='*20}")
+        logger.info("[51job] Page %d/%d", page, pages)
         api_success, nc_params = api_scraper.run(
             keyword=keyword,
             city_code=drission_scraper.get_city_code(city),
@@ -102,7 +109,7 @@ def run_51job(keyword: str, city: str, pages: int, proxy_url=None) -> Path:
             nc_params=nc_params,
         )
         if not api_success:
-            print("[51job] API 失败，启动 DrissionPage 备用...")
+            logger.warning("[51job] API failed — falling back to DrissionPage")
             try:
                 dp_proxy = proxies_dict["http"] if proxies_dict else None
                 drission_scraper.run_single_page(
@@ -110,40 +117,35 @@ def run_51job(keyword: str, city: str, pages: int, proxy_url=None) -> Path:
                     output_csv_path=str(output_csv), proxy_url=dp_proxy,
                 )
             except Exception as e:
-                print(f"[51job] DrissionPage 第 {page} 页失败: {e}，终止。")
+                logger.error("[51job] DrissionPage page %d failed: %s", page, e)
                 break
         if page < pages:
             t = random.uniform(2, 4)
-            print(f"[51job] 休眠 {t:.1f}s...")
+            logger.debug("[51job] Sleeping %.1fs", t)
             time.sleep(t)
 
-    print(f"[51job] 完成，CSV → {output_csv}")
+    logger.info("[51job] Done → %s", output_csv)
     return output_csv
 
 
 def run_zhipin(keyword: str, city: str, pages: int, proxy_url=None) -> Path:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     output_csv = RAW_DIR / "zhipin_jobs.csv"
-
     if output_csv.exists():
         output_csv.unlink()
-        print(f"[zhipin] 已清空旧数据: {output_csv}")
+        logger.info("[zhipin] Cleared previous data: %s", output_csv)
 
     city_code = ZHIPIN_CITY_MAP.get(city)
     if not city_code:
-        print(f"[ERROR] 不支持的城市 '{city}'，支持: {list(ZHIPIN_CITY_MAP.keys())}")
-        sys.exit(1)
+        raise ValueError(f"Unsupported city '{city}'. Choose from: {list(ZHIPIN_CITY_MAP)}")
 
     _, dp_proxy = _resolve_proxy(proxy_url)
-    print("[zhipin] 请确保 Chrome 已在 9222 端口启动调试模式")
+    logger.info("[zhipin] Chrome must be running with --remote-debugging-port=9222")
     zhipin_scraper.scrape_zhipin(
-        query=keyword,
-        city_code=city_code,
-        output_filename=str(output_csv),
-        max_pages=pages,
-        proxy_url=dp_proxy,
+        query=keyword, city_code=city_code,
+        output_filename=str(output_csv), max_pages=pages, proxy_url=dp_proxy,
     )
-    print(f"[zhipin] 完成，CSV → {output_csv}")
+    logger.info("[zhipin] Done → %s", output_csv)
     return output_csv
 
 
@@ -151,22 +153,16 @@ def run_ziprecruiter(keyword: str, location: str, pages: int,
                      proxy_url=None, fetch_descriptions: bool = True) -> Path:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     output_csv = RAW_DIR / "ziprecruiter_jobs.csv"
-
     if output_csv.exists():
         output_csv.unlink()
-        print(f"[ZipRecruiter] Cleared previous data: {output_csv}")
+        logger.info("[ZipRecruiter] Cleared previous data: %s", output_csv)
 
-    print("[ZipRecruiter] Ensure Chrome is running with --remote-debugging-port=9222")
     _, dp_proxy = _resolve_proxy(proxy_url)
     zr_scraper.scrape_ziprecruiter(
-        query=keyword,
-        location=location,
-        output_filename=str(output_csv),
-        max_pages=pages,
-        proxy_url=dp_proxy,
-        fetch_descriptions=fetch_descriptions,
+        query=keyword, location=location, output_filename=str(output_csv),
+        max_pages=pages, proxy_url=dp_proxy, fetch_descriptions=fetch_descriptions,
     )
-    print(f"[ZipRecruiter] Done, CSV → {output_csv}")
+    logger.info("[ZipRecruiter] Done → %s", output_csv)
     return output_csv
 
 
@@ -174,203 +170,253 @@ def run_indeed(keyword: str, location: str, pages: int,
                proxy_url=None, fetch_descriptions: bool = True) -> Path:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     output_csv = RAW_DIR / "indeed_jobs.csv"
-
     if output_csv.exists():
         output_csv.unlink()
-        print(f"[Indeed] Cleared previous data: {output_csv}")
+        logger.info("[Indeed] Cleared previous data: %s", output_csv)
 
-    print("[Indeed] Ensure Chrome is running with --remote-debugging-port=9222")
     _, dp_proxy = _resolve_proxy(proxy_url)
     indeed_scraper.scrape_indeed(
-        query=keyword,
-        location=location,
-        output_filename=str(output_csv),
-        max_pages=pages,
-        proxy_url=dp_proxy,
-        fetch_descriptions=fetch_descriptions,
+        query=keyword, location=location, output_filename=str(output_csv),
+        max_pages=pages, proxy_url=dp_proxy, fetch_descriptions=fetch_descriptions,
     )
-    print(f"[Indeed] Done, CSV → {output_csv}")
+    logger.info("[Indeed] Done → %s", output_csv)
     return output_csv
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 分析层
+# Analysis
 # ══════════════════════════════════════════════════════════════════════
 
-def run_analysis(path_51job: Optional[Path],
-                 path_zhipin: Optional[Path],
-                 keyword: str,
-                 use_psm: bool = False,
-                 plot: bool = True,
-                 path_ziprecruiter: Optional[Path] = None,
-                 path_indeed: Optional[Path] = None) -> None:
-    """标准化 → 技能提取 → 溢价估算 → 趋势快照 → 报告"""
-    from src.analysis.normalizer      import load_and_normalize
-    from src.analysis.skill_extractor import enrich_dataframe
+def run_analysis(
+    path_51job: Optional[Path],
+    path_zhipin: Optional[Path],
+    keyword: str,
+    use_psm: bool = False,
+    plot: bool = True,
+    path_ziprecruiter: Optional[Path] = None,
+    path_indeed: Optional[Path] = None,
+) -> None:
+    from src.analysis.normalizer       import load_and_normalize
+    from src.analysis.skill_extractor  import enrich_dataframe
     from src.analysis.premium_estimator import estimate_all_groups
-    from src.analysis.trend_tracker   import build_snapshot, save_snapshot
-    from src.analysis.report          import generate_report
+    from src.analysis.trend_tracker    import build_snapshot, save_snapshot
+    from src.analysis.report           import generate_report
 
-    # 1. 标准化合并
     p51  = str(path_51job)        if path_51job        and path_51job.exists()        else None
     pzp  = str(path_zhipin)       if path_zhipin       and path_zhipin.exists()       else None
     pzr  = str(path_ziprecruiter) if path_ziprecruiter and path_ziprecruiter.exists() else None
     pind = str(path_indeed)       if path_indeed       and path_indeed.exists()       else None
-    if not p51 and not pzp and not pzr and not pind:
-        print("[分析] 没有可用数据文件，跳过分析。")
+
+    if not any([p51, pzp, pzr, pind]):
+        logger.warning("[analyze] No data files found — skipping analysis")
         return
 
-    print(f"\n[分析] 正在标准化数据...")
+    logger.info("[analyze] Normalising data …")
     df = load_and_normalize(path_51job=p51, path_zhipin=pzp,
                             path_ziprecruiter=pzr, path_indeed=pind,
                             search_keyword=keyword)
-    print(f"[分析] 合并后共 {len(df)} 条记录")
+    logger.info("[analyze] %d records after merge", len(df))
 
-    # 2. 技能提取
-    print("[分析] 正在提取 AI 技能信号...")
+    logger.info("[analyze] Extracting AI skill signals …")
     df = enrich_dataframe(df)
     ai_cnt = df["has_ai_skill"].sum()
-    print(f"[分析] 含 AI 技能要求: {ai_cnt} 条 ({ai_cnt/len(df):.1%})")
+    logger.info("[analyze] AI skill requirement: %d records (%.1f%%)",
+                ai_cnt, 100 * ai_cnt / len(df))
 
-    # 4. 保存标准化数据
     PROC_DIR.mkdir(parents=True, exist_ok=True)
     processed_path = PROC_DIR / f"processed_{keyword.replace(' ', '_')}.csv"
     df.to_csv(processed_path, index=False, encoding="utf-8-sig")
-    print(f"[分析] 标准化数据 → {processed_path}")
+    logger.info("[analyze] Normalised data → %s", processed_path)
 
-    # 5. 溢价估算
-    print(f"[分析] 正在估算 AI 技能薪酬溢价 (PSM={'开启' if use_psm else '关闭'})...")
+    logger.info("[analyze] Estimating AI skill premium (PSM=%s) …", use_psm)
     premium_df = estimate_all_groups(df, use_psm=use_psm)
 
-    # 6. 趋势快照
     snapshot = build_snapshot(df, keyword=keyword)
     save_snapshot(snapshot)
 
-    # 7. 生成报告
-    print("[分析] 正在生成报告...")
+    logger.info("[analyze] Generating report …")
     md_path = generate_report(
-        df=df,
-        premium_df=premium_df,
-        snapshot=snapshot,
-        keyword=keyword,
-        output_dir=RPT_DIR,
-        plot=plot,
+        df=df, premium_df=premium_df, snapshot=snapshot,
+        keyword=keyword, output_dir=RPT_DIR, plot=plot,
     )
-    print(f"\n[分析] 报告已生成: {md_path}")
+    logger.info("[analyze] Report → %s", md_path)
 
 
 # ══════════════════════════════════════════════════════════════════════
-# CLI 入口
+# CLI — argument parser
 # ══════════════════════════════════════════════════════════════════════
 
-def _flag(name: str) -> bool:
-    return name in sys.argv
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="Job scraper + AI skill premium analyser",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--log-level",
+        default=None,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Override log level (default: INFO, or LOG_LEVEL env var)",
+    )
 
-def _flag_val(name: str) -> Optional[str]:
-    if name in sys.argv:
-        idx = sys.argv.index(name)
-        if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("--"):
-            return sys.argv[idx + 1]
-    return None
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+    sub.required = True
+
+    # ── scrape ────────────────────────────────────────────────────────
+    sp = sub.add_parser(
+        "scrape",
+        help="Scrape job postings from one or more platforms",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Platforms: 51job | zhipin | both | ziprecruiter | indeed | all\n\n"
+            "Examples:\n"
+            "  python3 main.py scrape zhipin  \"amazon运营\"        深圳   5\n"
+            "  python3 main.py scrape both    \"amazon运营\"        深圳   3\n"
+            "  python3 main.py scrape indeed  \"amazon operations\" Remote 3\n"
+        ),
+    )
+    sp.add_argument("platform",
+                    choices=["51job", "zhipin", "both", "ziprecruiter", "indeed", "all"],
+                    help="Platform(s) to scrape")
+    sp.add_argument("keyword",  help="Search keyword (e.g. 'amazon运营')")
+    sp.add_argument("location", help="City (CN) or location string (EN)")
+    sp.add_argument("pages",    type=int, help="Number of pages to scrape")
+    sp.add_argument("--proxy-url", metavar="URL",
+                    help="Proxy URL (e.g. http://127.0.0.1:7890)")
+    sp.add_argument("--no-analyze", action="store_true",
+                    help="Scrape only, skip analysis")
+    sp.add_argument("--no-plot",    action="store_true",
+                    help="Skip chart generation")
+    sp.add_argument("--psm",        action="store_true",
+                    help="Use Propensity Score Matching in analysis")
+    sp.add_argument("--no-desc",    action="store_true",
+                    help="Skip per-job description fetching (faster; ZipRecruiter/Indeed)")
+
+    # ── analyze ───────────────────────────────────────────────────────
+    ap = sub.add_parser(
+        "analyze",
+        help="Run analysis on existing CSV files",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Examples:\n"
+            "  python3 main.py analyze --zhipin data/raw/zhipin_jobs.csv --keyword amazon运营\n"
+            "  python3 main.py analyze --51job data/raw/51job_jobs.csv --zhipin data/raw/zhipin_jobs.csv\n"
+        ),
+    )
+    ap.add_argument("--51job",        dest="path_51job",        metavar="CSV")
+    ap.add_argument("--zhipin",       dest="path_zhipin",       metavar="CSV")
+    ap.add_argument("--ziprecruiter", dest="path_ziprecruiter", metavar="CSV")
+    ap.add_argument("--indeed",       dest="path_indeed",       metavar="CSV")
+    ap.add_argument("--keyword",      default="综合", metavar="KEYWORD")
+    ap.add_argument("--psm",          action="store_true")
+    ap.add_argument("--no-plot",      action="store_true")
+
+    # ── chat ──────────────────────────────────────────────────────────
+    cp = sub.add_parser(
+        "chat",
+        help="Run the AI job-seeker chat bot on a live recruitment platform",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Supported platforms: zhipin | lagou | liepin | linkedin\n\n"
+            "Examples:\n"
+            "  python3 main.py chat zhipin\n"
+            "  python3 main.py chat zhipin --max-turns 4 --unread-only\n"
+            "  python3 main.py chat zhipin --reply-timeout 120 --output data/raw/zhipin_chat.csv\n"
+        ),
+    )
+    cp.add_argument("platform",
+                    choices=["zhipin", "lagou", "liepin", "linkedin"],
+                    help="Recruitment platform")
+    cp.add_argument("--max-turns",     type=int, default=6,   metavar="N",
+                    help="Max questions per conversation (default: 6)")
+    cp.add_argument("--max-chats",     type=int, default=50,  metavar="N",
+                    help="Max conversations to process (default: 50)")
+    cp.add_argument("--reply-timeout", type=int, default=180, metavar="SECS",
+                    help="Seconds to wait for HR reply (default: 180)")
+    cp.add_argument("--unread-only",   action="store_true",
+                    help="Only process conversations with unread messages")
+    cp.add_argument("--output",        metavar="PATH",
+                    help="Output CSV path (default: data/raw/<platform>_chat.csv)")
+
+    return parser
 
 
-def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+# ══════════════════════════════════════════════════════════════════════
+# Entry point
+# ══════════════════════════════════════════════════════════════════════
 
-    # ── 通用 chat bot 模式 ────────────────────────────────────────────
-    # python3 main.py chat <platform> [--options]
-    if args and args[0].lower() == "chat":
-        from src.chat_bot import run_chat_sessions, SUPPORTED
-        if len(args) < 2:
-            print(f"Usage: python3 main.py chat <platform>")
-            print(f"Supported platforms: {', '.join(SUPPORTED)}")
-            sys.exit(1)
-        platform    = args[1].lower()
-        output      = _flag_val("--output")        or str(RAW_DIR / f"{platform}_chat.csv")
-        max_turns   = int(_flag_val("--max-turns")     or 6)
-        max_chats   = int(_flag_val("--max-chats")     or 50)
-        reply_to    = int(_flag_val("--reply-timeout") or 180)
-        unread_only = _flag("--unread-only")
+def main() -> None:
+    parser = _build_parser()
+    args   = parser.parse_args()
+
+    # Re-apply log level if overridden via CLI
+    if args.log_level:
+        logging.getLogger().setLevel(getattr(logging, args.log_level))
+
+    logger.info("command=%s", args.command)
+
+    # ── chat ──────────────────────────────────────────────────────────
+    if args.command == "chat":
+        from src.chat_bot import run_chat_sessions
+        output = args.output or str(RAW_DIR / f"{args.platform}_chat.csv")
         run_chat_sessions(
-            platform=platform,
+            platform=args.platform,
             output_path=output,
-            max_turns=max_turns,
-            max_chats=max_chats,
-            reply_timeout=reply_to,
-            unread_only=unread_only,
+            max_turns=args.max_turns,
+            max_chats=args.max_chats,
+            reply_timeout=args.reply_timeout,
+            unread_only=args.unread_only,
         )
         return
 
-    # ── 仅分析模式 ─────────────────────────────────────────────────────
-    if args and args[0].lower() == "analyze":
-        p51  = Path(_flag_val("--51job"))        if _flag_val("--51job")        else None
-        pzp  = Path(_flag_val("--zhipin"))       if _flag_val("--zhipin")       else None
-        pzr  = Path(_flag_val("--ziprecruiter")) if _flag_val("--ziprecruiter") else None
-        pind = Path(_flag_val("--indeed"))       if _flag_val("--indeed")       else None
-        kw   = _flag_val("--keyword") or "综合"
-        run_analysis(p51, pzp, keyword=kw,
-                     use_psm=_flag("--psm"),
-                     plot=not _flag("--no-plot"),
-                     path_ziprecruiter=pzr,
-                     path_indeed=pind)
+    # ── analyze ───────────────────────────────────────────────────────
+    if args.command == "analyze":
+        run_analysis(
+            path_51job        = Path(args.path_51job)        if args.path_51job        else None,
+            path_zhipin       = Path(args.path_zhipin)       if args.path_zhipin       else None,
+            path_ziprecruiter = Path(args.path_ziprecruiter) if args.path_ziprecruiter else None,
+            path_indeed       = Path(args.path_indeed)       if args.path_indeed       else None,
+            keyword           = args.keyword,
+            use_psm           = args.psm,
+            plot              = not args.no_plot,
+        )
         return
 
-    # ── 爬取模式 ───────────────────────────────────────────────────────
-    if len(args) < 4:
-        print(__doc__)
-        sys.exit(1)
+    # ── scrape ────────────────────────────────────────────────────────
+    platform = args.platform
+    keyword  = args.keyword
+    location = args.location
+    pages    = args.pages
+    proxy    = args.proxy_url
 
-    source   = args[0].lower()
-    keyword  = args[1]
-    location = args[2]   # city name for CN platforms; location string for ZipRecruiter
-    pages    = int(args[3])
-
-    proxy_url  = _flag_val("--proxy-url") or (_flag("--proxy-url") or None)
-    no_analyze = _flag("--no-analyze")
-    use_psm    = _flag("--psm")
-    no_plot    = _flag("--no-plot")
-    no_desc    = _flag("--no-desc")   # skip per-job description fetching (faster)
-
-    print(f"[MAIN] source={source}  keyword={keyword}  location={location}  pages={pages}")
+    logger.info("platform=%s  keyword=%s  location=%s  pages=%d",
+                platform, keyword, location, pages)
 
     path_51job = path_zhipin = path_ziprecruiter = path_indeed = None
 
-    if source in ("51job", "both", "all"):
-        path_51job = run_51job(keyword, location, pages, proxy_url)
+    if platform in ("51job", "both", "all"):
+        path_51job = run_51job(keyword, location, pages, proxy)
 
-    if source in ("zhipin", "both", "all"):
-        path_zhipin = run_zhipin(keyword, location, pages, proxy_url)
+    if platform in ("zhipin", "both", "all"):
+        path_zhipin = run_zhipin(keyword, location, pages, proxy)
 
-    if source in ("ziprecruiter", "all"):
+    if platform in ("ziprecruiter", "all"):
         path_ziprecruiter = run_ziprecruiter(
             keyword, location, pages,
-            proxy_url=proxy_url,
-            fetch_descriptions=not no_desc,
+            proxy_url=proxy, fetch_descriptions=not args.no_desc,
         )
 
-    if source in ("indeed", "all"):
+    if platform in ("indeed", "all"):
         path_indeed = run_indeed(
             keyword, location, pages,
-            proxy_url=proxy_url,
-            fetch_descriptions=not no_desc,
+            proxy_url=proxy, fetch_descriptions=not args.no_desc,
         )
 
-    if source not in ("51job", "zhipin", "both", "ziprecruiter", "indeed", "all"):
-        print(
-            f"[ERROR] Unknown source '{source}'. "
-            "Choose from: 51job / zhipin / both / ziprecruiter / indeed / all"
-        )
-        sys.exit(1)
-
-    if not no_analyze:
+    if not args.no_analyze:
         run_analysis(
-            path_51job=path_51job,
-            path_zhipin=path_zhipin,
-            keyword=keyword,
-            use_psm=use_psm,
-            plot=not no_plot,
-            path_ziprecruiter=path_ziprecruiter,
-            path_indeed=path_indeed,
+            path_51job=path_51job, path_zhipin=path_zhipin,
+            keyword=keyword, use_psm=args.psm, plot=not args.no_plot,
+            path_ziprecruiter=path_ziprecruiter, path_indeed=path_indeed,
         )
 
 

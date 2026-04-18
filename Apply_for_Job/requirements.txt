@@ -1,17 +1,25 @@
-# 爬虫层（原有）
-DrissionPage
-pandas
-requests
-tqdm
+# ── Scraper layer ─────────────────────────────────────────────────────
+DrissionPage>=4.0,<5.0
+pandas>=2.0,<3.0
+requests>=2.31,<3.0
+tqdm>=4.66,<5.0
 
-# 分析层
-statsmodels       # OLS 回归
-scikit-learn      # 倾向得分匹配 PSM（可选）
-numpy
-matplotlib        # 图表生成（可选）
+# ── HTTP reliability ───────────────────────────────────────────────────
+urllib3>=2.0,<3.0          # retry + backoff (used by requests)
+tenacity>=8.2,<10.0        # optional app-level retry (with_tenacity helper)
 
-# HR 对话层（可选，不用 --hr-chat 时无需安装）
-python-dotenv     # .env 文件加载
-anthropic         # Anthropic Claude
-# openai          # OpenAI ChatGPT (pip install openai)
-# google-generativeai  # Google Gemini (pip install google-generativeai)
+# ── Analysis layer ────────────────────────────────────────────────────
+numpy>=1.24,<2.0
+statsmodels>=0.14,<0.16    # OLS regression
+scikit-learn>=1.3,<2.0     # PSM (optional)
+matplotlib>=3.7,<4.0       # chart generation (optional)
+
+# ── Chat bot / LLM layer ──────────────────────────────────────────────
+python-dotenv>=1.0,<2.0
+openai>=1.12,<2.0          # DeepSeek + OpenAI (shared client)
+anthropic>=0.25,<1.0       # Anthropic Claude (optional)
+PyYAML>=6.0,<7.0           # candidate_profile.yaml loader
+# google-generativeai>=0.5  # Google Gemini (uncomment if needed)
+
+# ── Dev / logging ─────────────────────────────────────────────────────
+colorlog>=6.8,<7.0         # optional coloured console output
