@@ -21,28 +21,49 @@ from typing import Optional
 
 # Tier 3 — 核心 AI 技能（溢价最高）
 AI_TIER3 = [
-    "大模型", "llm", r"\bgpt[-\d]", r"gpt模型", "fine.?tun", "微调", "rag",
-    "agent", "prompt.*engineer", "提示词工程",
-    "langchain", "llamaindex", "向量数据库", "embedding",
-    "stable.?diffusion", "midjourney", "comfyui",
+    # Chinese
+    "大模型", r"\bgpt[-\d]", r"gpt模型", "fine.?tun", "微调", "rag",
+    "prompt.*engineer", "提示词工程",
+    "langchain", "llamaindex", "向量数据库",
+    "stable.?diffusion", "comfyui",
     "机器学习", "deep.?learning", "pytorch", "tensorflow",
-    "nlp", "cv", "computer.?vision", "目标检测", "语义分割",
+    "nlp", "cv", "目标检测", "语义分割",
+    # English
+    r"\bllm\b", r"\brag\b", "fine.?tun",
+    r"prompt.{0,4}engineer", "vector.{0,8}database", r"\bembedding\b",
+    r"machine.?learning", r"deep.?learning",
+    r"computer.?vision", "object.?detection",
+    r"\bpytorch\b", r"\btensorflow\b", r"\bhugging.?face\b",
+    r"generative.?ai", r"\bgenai\b", r"foundation.?model",
 ]
 
 # Tier 2 — 数据分析 / 自动化能力（运营岗的 AI 入口）
 AI_TIER2 = [
+    # Chinese
     r"\bpython\b", r"\bsql\b", r"\br语言\b",
     "数据分析", "数据挖掘", "bi工具", "power.?bi", "tableau", "metabase",
     "自动化运营", "rpa", "n8n", "zapier", "make\\.com",
     "数据看板", "报表", "excel.*函数", "数据驱动",
+    # English
+    r"\bpython\b", r"\bsql\b",
+    "data.{0,6}analyt", "data.{0,6}science", "business.?intelligence",
+    r"\bpower.?bi\b", r"\btableau\b", r"\bmetabase\b", r"\blooker\b",
+    "process.?automation", r"\brpa\b", r"\bn8n\b", r"\bzapier\b",
+    "data.{0,6}driven", "a/b.{0,4}test",
 ]
 
 # Tier 1 — 通用 AI 工具（基础门槛，溢价相对较低）
 AI_TIER1 = [
+    # Chinese
     "chatgpt", "claude", "gemini", "copilot", "kimi", "豆包",
     "文心一言", "通义千问", "讯飞星火", r"ai.{0,8}工具", "aigc",
     r"ai.{0,8}辅助", r"ai.{0,8}写作", r"ai.{0,8}客服", r"ai.{0,8}选品", r"ai.{0,8}作图",
     "midjourney", "sora",
+    # English
+    r"\bchatgpt\b", r"\bclaude\b", r"\bgemini\b", r"\bcopilot\b",
+    r"\bmidjourney\b", r"\bsora\b", r"\bdall.?e\b",
+    r"ai.{0,8}tool", r"ai.{0,8}generat", r"ai.{0,8}assist",
+    r"\baigc\b", "generative.{0,8}content",
 ]
 
 # 通用技术技能（不影响 AI 溢价计算，仅供描述统计）
@@ -55,13 +76,17 @@ TECH_SKILLS = [
     "aws", "gcp", "azure", "阿里云", "腾讯云",
 ]
 
-# 电商运营专项 AI 词（Amazon运营场景）
+# 电商运营专项 AI 词（中文 Amazon / 跨境运营）
 ECOMMERCE_AI = [
     r"ai.{0,12}listing", r"listing.{0,8}ai", r"ai.{0,8}广告", r"广告.{0,8}自动化",
     r"ai.{0,8}选品", r"选品.{0,8}ai", r"ai.{0,8}定价", "动态定价",
     "sellersprite", "卖家精灵", r"helium.?10", r"jungle.?scout",
     r"数据.{0,8}分析.{0,8}运营", r"运营.{0,8}数据.{0,8}分析",
     r"chat.{0,4}gpt.{0,8}运营", r"运营.{0,8}chat.{0,4}gpt",
+    # English e-commerce AI terms
+    r"ai.{0,12}listing", r"ai.{0,8}pricing", "dynamic.{0,6}pricing",
+    r"helium.?10", r"jungle.?scout", r"seller.?sprite",
+    r"ai.{0,8}advertis", r"ppc.{0,8}automat", r"automat.{0,8}ppc",
 ]
 
 

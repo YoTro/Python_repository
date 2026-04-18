@@ -22,9 +22,21 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-def _fmt_salary(val) -> str:
+def _detect_currency(df: pd.DataFrame) -> str:
+    """Return dominant currency from salary_currency column: 'USD', 'CNY', or 'MIXED'."""
+    if "salary_currency" not in df.columns:
+        return "CNY"
+    vals = df["salary_currency"].dropna().unique().tolist()
+    if len(vals) == 1:
+        return vals[0]
+    return "MIXED"
+
+
+def _fmt_salary(val, currency: str = "CNY") -> str:
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return "N/A"
+    if currency == "USD":
+        return f"${int(val):,}/mo"
     return f"¥{int(val):,}/月"
 
 
@@ -56,18 +68,22 @@ def print_summary(df: pd.DataFrame,
                   premium_df: pd.DataFrame,
                   snapshot: dict,
                   keyword: str = "") -> None:
+    currency = _detect_currency(df)
+
     print(_section(f"招聘市场 AI 技能溢价分析报告  [{keyword}]"))
     print(f"生成时间 : {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print(f"有效样本 : {snapshot['total_jobs']} 条  "
           f"(含 AI 要求: {snapshot['ai_jobs']} 条 / "
           f"占比: {snapshot['ai_ratio']:.1%})")
+    if currency == "MIXED":
+        print(f"货币     : 混合（CNY + USD）— 薪资按各自货币/月显示")
 
     if "salary_mid" in df.columns:
         sal = df["salary_mid"].dropna()
         if len(sal) > 0:
-            print(f"整体薪资 : P25={_fmt_salary(np.percentile(sal, 25))}  "
-                  f"P50={_fmt_salary(np.percentile(sal, 50))}  "
-                  f"P75={_fmt_salary(np.percentile(sal, 75))}")
+            print(f"整体薪资 : P25={_fmt_salary(np.percentile(sal, 25), currency)}  "
+                  f"P50={_fmt_salary(np.percentile(sal, 50), currency)}  "
+                  f"P75={_fmt_salary(np.percentile(sal, 75), currency)}")
 
     print(_section("AI 技能薪酬溢价（按岗位）"))
     if premium_df.empty:
@@ -76,16 +92,16 @@ def print_summary(df: pd.DataFrame,
 
     for _, row in premium_df.iterrows():
         job   = row.get("job_group", "")
-        raw_p = _fmt_salary(row.get("raw_premium"))
+        raw_p = _fmt_salary(row.get("raw_premium"), currency)
         raw_r = _fmt_pct(row.get("raw_premium_pct"))
-        ols_p = _fmt_salary(row.get("ols_premium"))
+        ols_p = _fmt_salary(row.get("ols_premium"), currency)
         pval  = _fmt_pval(row.get("ols_pvalue"))
         n_ai  = int(row.get("n_ai", 0))
         n_no  = int(row.get("n_no_ai", 0))
 
         print(f"\n  [{job}]  AI样本={n_ai} / 非AI样本={n_no}")
-        print(f"    无 AI 平均薪资 : {_fmt_salary(row.get('mean_salary_no_ai'))}")
-        print(f"    有 AI 平均薪资 : {_fmt_salary(row.get('mean_salary_ai'))}")
+        print(f"    无 AI 平均薪资 : {_fmt_salary(row.get('mean_salary_no_ai'), currency)}")
+        print(f"    有 AI 平均薪资 : {_fmt_salary(row.get('mean_salary_ai'), currency)}")
         print(f"    原始溢价       : {raw_p} ({raw_r})")
         print(f"    OLS净溢价      : {ols_p}  {pval}")
 
@@ -117,6 +133,13 @@ def save_markdown(df: pd.DataFrame,
     ts = datetime.now().strftime("%Y%m%d_%H%M")
     path = output_dir / f"report_{keyword or 'all'}_{ts}.md"
 
+    currency = _detect_currency(df)
+    currency_note = ""
+    if currency == "USD":
+        currency_note = "USD"
+    elif currency == "MIXED":
+        currency_note = "CNY + USD 混合"
+
     lines = [
         f"# 招聘市场 AI 技能溢价分析报告",
         f"",
@@ -124,6 +147,10 @@ def save_markdown(df: pd.DataFrame,
         f"- **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"- **有效样本**: {snapshot['total_jobs']} 条",
         f"- **含 AI 要求**: {snapshot['ai_jobs']} 条（占比 {snapshot['ai_ratio']:.1%}）",
+    ]
+    if currency_note:
+        lines.append(f"- **货币**: {currency_note}")
+    lines += [
         f"",
         f"---",
         f"",
@@ -142,11 +169,11 @@ def save_markdown(df: pd.DataFrame,
                 r.get("job_group", ""),
                 int(r.get("n_ai", 0)),
                 int(r.get("n_no_ai", 0)),
-                _fmt_salary(r.get("mean_salary_no_ai")),
-                _fmt_salary(r.get("mean_salary_ai")),
-                _fmt_salary(r.get("raw_premium")),
+                _fmt_salary(r.get("mean_salary_no_ai"), currency),
+                _fmt_salary(r.get("mean_salary_ai"), currency),
+                _fmt_salary(r.get("raw_premium"), currency),
                 _fmt_pct(r.get("raw_premium_pct")),
-                _fmt_salary(r.get("ols_premium")),
+                _fmt_salary(r.get("ols_premium"), currency),
                 f"{sig} {_fmt_pval(r.get('ols_pvalue'))}",
             ])
         lines.append(_md_table(headers, rows))
@@ -206,9 +233,9 @@ def save_markdown(df: pd.DataFrame,
             sal_rows.append([
                 g["job"], g["n_total"],
                 f"{g['ai_ratio']:.0%}",
-                _fmt_salary(s.get("p50")),
-                _fmt_salary(sa.get("p50")),
-                _fmt_salary(sn.get("p50")),
+                _fmt_salary(s.get("p50"), currency),
+                _fmt_salary(sa.get("p50"), currency),
+                _fmt_salary(sn.get("p50"), currency),
             ])
         lines.append(_md_table(
             ["岗位", "样本数", "AI占比", "整体P50", "有AI的P50", "无AI的P50"],
@@ -222,6 +249,35 @@ def save_markdown(df: pd.DataFrame,
 
 # ── 可视化（可选）──────────────────────────────────────────────────
 
+def _setup_matplotlib_fonts() -> None:
+    """Configure matplotlib to use a CJK-capable font when available, with ASCII fallback."""
+    import matplotlib.pyplot as plt
+    import matplotlib.font_manager as fm
+
+    # Priority list: macOS → Windows → Linux → cross-platform
+    _FONT_PRIORITY = [
+        "Arial Unicode MS",   # macOS (supports CJK)
+        "PingFang SC",        # macOS
+        "Heiti SC",           # macOS
+        "STHeiti",            # macOS
+        "Microsoft YaHei",    # Windows
+        "SimHei",             # Windows
+        "WenQuanYi Micro Hei",# Linux
+        "Noto Sans CJK SC",   # cross-platform
+        "Noto Sans",          # cross-platform fallback
+    ]
+    available = {f.name for f in fm.fontManager.ttflist}
+    chosen = next((f for f in _FONT_PRIORITY if f in available), None)
+    current_sans = list(plt.rcParams.get("font.sans-serif", []))
+    if chosen:
+        plt.rcParams["font.sans-serif"] = [chosen] + current_sans
+    else:
+        # No CJK font found — use DejaVu (ASCII only, avoids Glyph warnings)
+        plt.rcParams["font.sans-serif"] = ["DejaVu Sans"] + current_sans
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["axes.unicode_minus"] = False
+
+
 def save_charts(df: pd.DataFrame,
                 premium_df: pd.DataFrame,
                 snapshot: dict,
@@ -231,72 +287,81 @@ def save_charts(df: pd.DataFrame,
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        import matplotlib.font_manager as fm
     except ImportError:
-        logger.warning("matplotlib 未安装，跳过图表生成。pip install matplotlib")
+        logger.warning("matplotlib not installed, skipping charts. pip install matplotlib")
         return
 
-    # 尝试使用系统中文字体
-    zh_fonts = [f.name for f in fm.fontManager.ttflist
-                if any(k in f.name for k in ["PingFang", "Heiti", "SimHei", "WenQuanYi", "Noto"])]
-    if zh_fonts:
-        plt.rcParams["font.family"] = zh_fonts[0]
-    plt.rcParams["axes.unicode_minus"] = False
+    _setup_matplotlib_fonts()
+
+    currency = _detect_currency(df)
+    # Build currency-neutral axis labels (ASCII only to avoid font issues when mixed)
+    if currency == "USD":
+        salary_label = "Monthly Salary (USD)"
+        premium_label = "OLS Monthly Premium (USD)"
+        salary_fmt = lambda v: f"${int(v):,}"
+        box_labels = ["No AI Req", "AI Req"]
+    else:
+        salary_label = "Monthly Salary (CNY)"
+        premium_label = "OLS Monthly Premium (CNY)"
+        salary_fmt = lambda v: f"Y{int(v):,}"
+        box_labels = ["No AI", "Has AI"]
 
     output_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M")
 
-    # 图1：各岗位 AI 溢价对比
+    # Chart 1: per-group OLS premium
     if not premium_df.empty and "ols_premium" in premium_df.columns:
         sub = premium_df.dropna(subset=["ols_premium"]).head(12)
         fig, ax = plt.subplots(figsize=(10, 5))
-        colors = ["#2ecc71" if s else "#e74c3c" for s in sub.get("ols_significant", [False] * len(sub))]
+        colors = ["#2ecc71" if s else "#e74c3c"
+                  for s in sub.get("ols_significant", [False] * len(sub))]
         bars = ax.barh(sub["job_group"], sub["ols_premium"], color=colors)
-        ax.set_xlabel("OLS 月薪净溢价（元）")
-        ax.set_title(f"AI 技能薪酬溢价（{keyword}）  绿=显著 红=不显著")
+        ax.set_xlabel(premium_label)
+        ax.set_title(f"AI Skill Salary Premium ({keyword})  green=significant  red=ns")
         ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
         for bar, val in zip(bars, sub["ols_premium"]):
             ax.text(bar.get_width() + 50, bar.get_y() + bar.get_height() / 2,
-                    f"¥{int(val):,}", va="center", fontsize=8)
+                    salary_fmt(val), va="center", fontsize=8)
         fig.tight_layout()
         p = output_dir / f"premium_{keyword}_{ts}.png"
         fig.savefig(p, dpi=150)
         plt.close(fig)
-        logger.info(f"溢价图表: {p}")
+        logger.info(f"Premium chart: {p}")
 
-    # 图2：薪资分布箱线图（有AI vs 无AI）
+    # Chart 2: salary distribution boxplot (AI vs non-AI)
     if "has_ai_skill" in df.columns and "salary_mid" in df.columns:
         sub = df.dropna(subset=["salary_mid"])
         ai_sal  = sub[sub["has_ai_skill"] == True]["salary_mid"]
         nai_sal = sub[sub["has_ai_skill"] == False]["salary_mid"]
-        fig, ax = plt.subplots(figsize=(6, 5))
-        ax.boxplot([nai_sal.values, ai_sal.values],
-                   labels=["无 AI 要求", "有 AI 要求"],
-                   patch_artist=True,
-                   boxprops=dict(facecolor="#aed6f1"),
-                   medianprops=dict(color="red", linewidth=2))
-        ax.set_ylabel("月薪（元）")
-        ax.set_title(f"薪资分布对比（{keyword}）")
-        fig.tight_layout()
-        p = output_dir / f"salary_dist_{keyword}_{ts}.png"
-        fig.savefig(p, dpi=150)
-        plt.close(fig)
-        logger.info(f"薪资分布图表: {p}")
+        if len(ai_sal) > 0 or len(nai_sal) > 0:
+            fig, ax = plt.subplots(figsize=(6, 5))
+            ax.boxplot([nai_sal.values, ai_sal.values],
+                       labels=box_labels,
+                       patch_artist=True,
+                       boxprops=dict(facecolor="#aed6f1"),
+                       medianprops=dict(color="red", linewidth=2))
+            ax.set_ylabel(salary_label)
+            ax.set_title(f"Salary Distribution ({keyword})")
+            fig.tight_layout()
+            p = output_dir / f"salary_dist_{keyword}_{ts}.png"
+            fig.savefig(p, dpi=150)
+            plt.close(fig)
+            logger.info(f"Salary dist chart: {p}")
 
-    # 图3：高频 AI 技能词横向条形图
+    # Chart 3: top AI skill frequency bar chart
     freq = snapshot.get("skill_freq", {})
     if freq:
         top = list(freq.items())[:15]
         skills, counts = zip(*top)
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.barh(list(reversed(skills)), list(reversed(counts)), color="#8e44ad")
-        ax.set_xlabel("出现次数")
-        ax.set_title(f"高频 AI 技能词 Top-15（{keyword}）")
+        ax.set_xlabel("Occurrences")
+        ax.set_title(f"Top-15 AI Skills ({keyword})")
         fig.tight_layout()
         p = output_dir / f"skill_freq_{keyword}_{ts}.png"
         fig.savefig(p, dpi=150)
         plt.close(fig)
-        logger.info(f"技能词图表: {p}")
+        logger.info(f"Skill freq chart: {p}")
 
 
 # ── 统一入口 ────────────────────────────────────────────────────────
