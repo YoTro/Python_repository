@@ -1,14 +1,14 @@
 # Job Scraper & AI Salary Premium Analyzer (Apply_for_Job)
 
-招聘数据采集 + AI 技能薪酬溢价分析工具。支持从前程无忧（51job）和 BOSS 直聘（Zhipin）批量采集招聘信息，并对采集结果进行自动化分析，量化**"会 AI"对不同岗位薪资的提升幅度**。
+招聘数据采集 + AI 技能薪酬溢价分析工具。支持从前程无忧（51job）、BOSS 直聘、拉勾、猎聘、ZipRecruiter、Indeed、LinkedIn 批量采集招聘信息，并以 **AI Bot 扮演求职者与真实 HR 对话**补全 JD 缺失字段，最终量化 **"会 AI" 对不同岗位薪资的提升幅度**。
 
 ## 功能概览
 
 | 模块 | 功能 |
 |---|---|
 | 采集层 | 51job API + WAF 绕过、Zhipin / ZipRecruiter / Indeed 浏览器自动化，支持代理 |
-| 标准化 | 统一双平台字段、解析薪资/经验、岗位名归一化 |
-| HR 对话补全 | AI 机器人自动与 HR 对话，补全品类/客单价/站点等 JD 中缺失的关键信息 |
+| 标准化 | 统一多平台字段、解析薪资/经验、岗位名归一化 |
+| Chat Bot | AI Bot 扮演求职者，在真实招聘平台与 HR 对话，补全品类/客单价/站点等关键信息 |
 | 技能提取 | AI 技能三级分层（通用工具/数据能力/核心AI）+ 电商专项词表 |
 | 溢价估算 | 均值对比 + OLS 回归（控制城市/经验/公司规模）+ PSM 倾向得分匹配（可选）|
 | 趋势追踪 | 多次运行快照追加，观察 AI 需求随时间变化 |
@@ -37,46 +37,50 @@
 
 ```
 /Apply_for_Job/
-├── main.py                      # 主入口：采集 + 分析一体化调度
+├── main.py                      # 主入口：采集 + 分析 + Chat Bot 一体化调度
 ├── requirements.txt             # Python 依赖
+├── .env                         # LLM API Key 及 provider 配置（gitignored）
+├── .env.example                 # 配置模板
 ├── config/
 │   ├── amapkey.json             # 高德地图 API Key（地理编码需求时使用）
 │   └── job_categories.yaml      # 岗位归一化词典（可自由扩展）
 ├── data/
-│   ├── raw/                     # 爬虫原始 CSV（51job_jobs.csv / zhipin_jobs.csv）
+│   ├── raw/                     # 爬虫原始 CSV + Chat Bot 对话结果
 │   ├── processed/               # 标准化 + 技能提取后的 CSV + 趋势快照
 │   └── reports/                 # Markdown 报告 + 图表 PNG
-├── src/
-│   ├── job51/                   # 51job 采集模块
-│   │   ├── api_scraper.py          # API 方式（含 WAF/NC 绕过）
-│   │   ├── drission_scraper.py     # DrissionPage 浏览器自动化备用方案
-│   │   └── nc_env/                 # NC 滑块 Node.js 补环境（破解阿里云 WAF）
-│   ├── zhipin/                  # Zhipin 采集模块
-│   │   └── scraper.py              # DrissionPage 接管本地浏览器
-│   ├── ziprecruiter/            # ZipRecruiter 采集模块
-│   │   └── scraper.py              # SSR HTML 拦截 + JSON-LD 解析 + 详情页抓取
-│   ├── indeed/                  # Indeed 采集模块
-│   │   └── scraper.py              # window.mosaic JS 提取 + DOM 兜底 + 详情页抓取
-│   ├── analysis/                # 分析层
-│   │   ├── normalizer.py           # 字段标准化、薪资/经验解析、岗位归一化
-│   │   ├── skill_extractor.py      # AI 技能提取（Tier 1/2/3 + 电商专项）
-│   │   ├── premium_estimator.py    # AI 薪酬溢价估算（OLS 回归 + PSM）
-│   │   ├── trend_tracker.py        # 多次运行快照追加 + 趋势摘要
-│   │   └── report.py               # 控制台 / Markdown / 图表报告生成
-│   ├── hr_chat/                 # HR 对话补全层
-│   │   ├── schemas.py              # DTO：JobSnapshot / ChatTurn / HrChatResult
-│   │   ├── questioner.py           # Strategy 模式问题集（Amazon/跨境/国内/供应链/默认）
-│   │   ├── parser.py               # 结构化提取：regex 快速层 + Claude 兜底层
-│   │   └── agent.py                # 多轮对话驱动，回填 hrc_* 字段到 DataFrame
-│   └── utils/                   # 公共工具（代理等）
-└── tests/                       # 单元测试
-    ├── test_51job.py
-    ├── test_zhipin.py
-    ├── test_normalizer.py
-    ├── test_skill_extractor.py
-    ├── test_premium_estimator.py
-    ├── test_trend_tracker.py
-    └── test_report.py
+└── src/
+    ├── job51/                   # 51job 采集模块
+    │   ├── api_scraper.py          # API 方式（含 WAF/NC 绕过）
+    │   ├── drission_scraper.py     # DrissionPage 浏览器自动化备用方案
+    │   └── nc_env/                 # NC 滑块 Node.js 补环境（破解阿里云 WAF）
+    ├── zhipin/                  # BOSS直聘采集模块
+    │   └── scraper.py              # DrissionPage 接管本地浏览器
+    ├── ziprecruiter/            # ZipRecruiter 采集模块
+    │   └── scraper.py              # SSR HTML 拦截 + JSON-LD 解析 + 详情页抓取
+    ├── indeed/                  # Indeed 采集模块
+    │   └── scraper.py              # window.mosaic JS 提取 + DOM 兜底 + 详情页抓取
+    ├── chat_bot/                # AI 求职者 Chat Bot（跨平台通用）
+    │   ├── __init__.py             # 公开入口：run_chat_sessions(platform, ...)
+    │   ├── base.py                 # PlatformAdapter 抽象接口（4 个方法）
+    │   ├── core.py                 # ChatBotCore：问答循环 / 等待回复 / LLM 提取
+    │   ├── schemas.py              # DTO：JobSnapshot / ChatTurn / HrChatResult
+    │   ├── questioner.py           # DataGoal + Strategy + LLM 问题生成（自动跳过已知字段）
+    │   ├── parser.py               # 结构化提取：regex 快速层
+    │   ├── llm.py                  # LLM provider 工厂（Anthropic/OpenAI/Gemini/DeepSeek）
+    │   ├── profile.py              # 候选人配置加载器（读取 candidate_profile.yaml）
+    │   ├── candidate_profile.yaml  # 个人求职偏好：薪资/城市/硬约束（可直接编辑）
+    │   └── adapters/               # 各平台 DOM 适配器
+    │       ├── zhipin.py           # BOSS直聘
+    │       ├── lagou.py            # 拉勾
+    │       ├── liepin.py           # 猎聘
+    │       └── linkedin.py         # LinkedIn
+    ├── analysis/                # 分析层
+    │   ├── normalizer.py           # 字段标准化、薪资/经验解析、岗位归一化
+    │   ├── skill_extractor.py      # AI 技能提取（Tier 1/2/3 + 电商专项）
+    │   ├── premium_estimator.py    # AI 薪酬溢价估算（OLS 回归 + PSM）
+    │   ├── trend_tracker.py        # 多次运行快照追加 + 趋势摘要
+    │   └── report.py               # 控制台 / Markdown / 图表报告生成
+    └── utils/                   # 公共工具（代理等）
 ```
 
 ---
@@ -89,8 +93,12 @@
    pip3 install -r requirements.txt
    ```
 3. 安装 Node.js（v18+）——仅 51job API 模式需要（用于 NC 滑块补环境）
-4. 安装 Chrome 浏览器——DrissionPage 备用方案及 Zhipin 采集均需要
-5. （可选）设置 `ANTHROPIC_API_KEY` 环境变量——仅 `--hr-chat` 模式需要
+4. 安装 Chrome 浏览器——DrissionPage 及各招聘平台 Chat Bot 均需要
+5. 配置 LLM API Key（Chat Bot 需要）：
+   ```bash
+   cp .env.example .env
+   # 编辑 .env，填入 API Key 和 provider
+   ```
 
 ---
 
@@ -133,49 +141,71 @@ python3 main.py analyze \
     --zhipin data/raw/zhipin_jobs.csv \
     --keyword "amazon运营"
 
-# 分析 ZipRecruiter 数据（支持混合多平台）
-python3 main.py analyze \
-    --ziprecruiter data/raw/ziprecruiter_jobs.csv \
-    --keyword "amazon operations"
-
-# 分析 Indeed 数据
-python3 main.py analyze \
-    --indeed data/raw/indeed_jobs.csv \
-    --keyword "amazon operations"
-
-# 混合分析（ZipRecruiter + Indeed）
+# 分析英文平台数据
 python3 main.py analyze \
     --ziprecruiter data/raw/ziprecruiter_jobs.csv \
     --indeed       data/raw/indeed_jobs.csv \
     --keyword "amazon operations"
 ```
 
-### HR 对话补全（`--hr-chat`）
+### Chat Bot：AI 扮演求职者与真实 HR 对话
 
-JD 中往往缺少品类、客单价、站点等关键信息。`--hr-chat` 开启后，系统会针对每个信息不完整的岗位，用 Claude 模拟 HR 角色进行多轮对话，将回答解析为结构化字段（`hrc_*` 前缀）并回填到数据中，再送入分析层。
+JD 中往往缺少品类、客单价、站点等关键信息。Chat Bot 连接真实招聘平台，扮演求职者主动向 HR 发问，将 HR 的真实回答解析为结构化字段（`hrc_*` 前缀）保存至 CSV，供后续分析使用。
+
+**支持平台：** BOSS直聘 / 拉勾 / 猎聘 / LinkedIn
 
 **前置条件：**
-```bash
-pip3 install anthropic
-export ANTHROPIC_API_KEY=sk-ant-...
-```
+1. 在对应平台完成登录
+2. 以调试端口启动 Chrome（见下方）
+3. 配置好 `.env` 中的 LLM API Key
+4. （可选）编辑 `src/chat_bot/candidate_profile.yaml` 填入个人求职偏好
 
 **用法：**
 ```bash
-# 爬取 + HR 对话补全 + 分析（一体化）
-python3 main.py zhipin "amazon运营" 深圳 3 --hr-chat
+# 处理 BOSS直聘 所有对话
+python3 main.py chat zhipin
+
+# 仅处理有未读消息的对话（推荐，避免重复）
+python3 main.py chat zhipin --unread-only
 
 # 控制每个岗位最多问几轮（默认 6）
-python3 main.py zhipin "amazon运营" 深圳 3 --hr-chat --hr-chat-turns 4
+python3 main.py chat zhipin --max-turns 4
 
-# 对已有数据补全
-python3 main.py analyze \
-    --zhipin data/raw/zhipin_jobs.csv \
-    --keyword "amazon运营" \
-    --hr-chat
+# 限制处理对话数量
+python3 main.py chat zhipin --max-chats 20
+
+# 等待 HR 回复的超时时间（默认 180s）
+python3 main.py chat zhipin --reply-timeout 120
+
+# 指定输出路径
+python3 main.py chat zhipin --output data/raw/zhipin_chat.csv
+
+# 其他平台
+python3 main.py chat lagou   --unread-only
+python3 main.py chat liepin  --max-turns 4
+python3 main.py chat linkedin --reply-timeout 240
 ```
 
-**补全字段说明：**
+**候选人配置（`src/chat_bot/candidate_profile.yaml`）：**
+
+直接编辑此文件，无需改代码。Bot 在回答 HR 问题时会自动读取：
+
+```yaml
+preferences:
+  salary:
+    min_monthly: 15000      # 月薪下限，低于此值视为不匹配
+    target_monthly: 20000   # 期望月薪
+  locations: ["深圳", "广州", "远程"]
+  work_mode: "hybrid"       # remote / hybrid / onsite
+
+constraints:
+  reject_if:                # Bot 遇到以下条件会礼貌拒绝
+    - "纯提成无底薪"
+    - "需要长期驻厂或长期出差"
+  notice_period: "两周"
+```
+
+**Chat Bot 补全字段：**
 
 | 字段 | 含义 |
 |---|---|
@@ -188,7 +218,22 @@ python3 main.py analyze \
 | `hrc_tools_used` | 常用工具（Helium10、卖家精灵等）|
 | `hrc_work_mode` | 办公方式（remote/hybrid/onsite）|
 
-> 岗位 JD 中已含品类、客单价、站点中至少两项时，自动跳过对话，节省 API 调用。
+**LLM Provider 配置（`.env`）：**
+```env
+HRC_PROVIDER=deepseek          # anthropic / openai / gemini / deepseek
+HRC_MODEL=deepseek-chat        # 留空则使用各 provider 默认模型
+HRC_MAX_TURNS=6
+DEEPSEEK_API_KEY=sk-...
+# ANTHROPIC_API_KEY=sk-ant-...
+# OPENAI_API_KEY=sk-...
+# GEMINI_API_KEY=AIza...
+```
+
+**扩展新平台：**
+1. 在 `src/chat_bot/adapters/` 新建 `<platform>.py`，实现 4 个方法：
+   `list_conversations` / `open_conversation` / `read_messages` / `send_message`
+2. 在 `src/chat_bot/adapters/__init__.py` 的 `REGISTRY` 注册一行
+3. `main.py` 和 `core.py` 无需修改
 
 ---
 
@@ -202,9 +247,7 @@ python3 main.py 51job "python" 深圳 3 --proxy-url
 python3 main.py 51job "python" 深圳 3 --proxy-url http://127.0.0.1:7890
 ```
 
-### Zhipin / ZipRecruiter / Indeed 前置步骤
-
-三者均使用 DrissionPage 接管本地 Chrome，运行前须先以调试端口启动 Chrome：
+### Chrome 调试模式（Zhipin / ZipRecruiter / Indeed / Chat Bot 均需要）
 
 ```bash
 # 无代理
@@ -219,7 +262,8 @@ python3 main.py 51job "python" 深圳 3 --proxy-url http://127.0.0.1:7890
     --proxy-server="http://127.0.0.1:7890"
 ```
 
-> ZipRecruiter 和 Indeed 均无需登录，直接浏览即可采集。
+> ZipRecruiter 和 Indeed 无需登录，直接浏览即可采集。  
+> BOSS直聘、拉勾、猎聘、LinkedIn 需在 Chrome 中提前完成登录。
 
 ---
 
@@ -228,7 +272,7 @@ python3 main.py 51job "python" 深圳 3 --proxy-url http://127.0.0.1:7890
 The 51job API is protected by a dual-layer Alibaba Cloud WAF mechanism. To bypass this, the project includes a complex Node.js environment simulation inside `src/job51/nc_env`.
 
 ### 1. The Two Layers of WAF
-- **Layer 1 (acw_sc__v2 JS Challenge):** 
+- **Layer 1 (acw_sc__v2 JS Challenge):**
   The initial request returns a JS challenge. The Python script (`get_challenge.py`) automatically calculates the required `acw_sc__v2` cookie to retry the request.
 - **Layer 2 (NC Slider Challenge):**
   If Layer 1 triggers a slider verification, it returns a page containing `requestInfo.token` and `requestInfo.refer`. The `nc_env` Node.js scripts then simulate a browser environment to pass the slider, outputting `u_asession` and `u_asig` tokens to authorize the API access.
@@ -237,7 +281,7 @@ The 51job API is protected by a dual-layer Alibaba Cloud WAF mechanism. To bypas
 To pass the NC Slider without a real browser, `src/job51/nc_env/js/env.js` implements a sophisticated environment emulation layer. This is not just a simple variable mock, but a recursive, proxy-based simulation designed to withstand deep detection.
 
 #### Core Emulation Strategies
-*   **Recursive Proxy Trapping**: 
+*   **Recursive Proxy Trapping**:
     Global objects like `window`, `navigator`, and `document` are wrapped in ES6 `Proxy` objects. This allows the environment to:
     - Log every property access (getter/setter) attempted by the WAF scripts (e.g., `fireyejs.js`).
     - Return a "Safe Stub" (a function that returns itself) for any undefined property, preventing `TypeError: ... is not defined` which is a primary detection signal.
@@ -257,7 +301,7 @@ To pass the NC Slider without a real browser, `src/job51/nc_env/js/env.js` imple
 #### Data Synchronization Flow
 The bypass operates as a cross-language bridge:
 1.  **Python (`api_scraper.py`)**: Detects a 405/WAF block, extracts the `token` and `refer` from the HTML, and writes them to `nc_env/data/challenge.json`.
-2.  **Node.js (`simulate_slide.js`)**: 
+2.  **Node.js (`simulate_slide.js`)**:
     - Loads the mocked environment from `env.js`.
     - Reads the challenge parameters.
     - Loads and executes the Alibaba `AWSC` suite (`awsc.js`, `nc.js`, `um.js`, etc.).
@@ -276,8 +320,6 @@ python3 src/job51/nc_env/python/collect_fingerprints.py
 python3 src/job51/nc_env/python/collect_trajectory.py
 ```
 *When collecting the trajectory, browse the page for 10-30 seconds, drag the slider to pass the verification, and let the script save the updated trajectories and UMID tokens into `nc_env/data/`.*
-
-The `main.py` script seamlessly integrates with `get_challenge.py` and `simulate_slide.js` to perform these calculations automatically during the scraping process.
 
 ---
 
@@ -341,6 +383,49 @@ ZipRecruiter 使用 Next.js SSR 渲染，职位数据**不通过独立 XHR API**
 
 ---
 
+## Chat Bot 架构
+
+```
+PlatformAdapter（抽象接口）
+  list_conversations()   读取侧边栏对话列表
+  open_conversation()    点击打开并返回职位/公司信息（含懒加载滚动历史）
+  read_messages()        读取当前对话消息列表（自动去除已读回执前缀）
+  send_message()         输入并发送消息
+
+ChatBotCore（通用引擎，不依赖任何平台）
+  connect()              接管 Chrome，导航到对话页
+  run_session()          单次对话：问题生成 → 提问 → 等待回复 → LLM 提取
+  run_all()              遍历侧边栏，批量处理
+
+问题生成（questioner.py）— DataGoal + Strategy + LLM
+  DataGoal               描述"需要收集的信息"（字段名 + 标签 + 重要性）
+  AmazonOperationsStrategy   亚马逊运营岗数据目标
+  CrossBorderEcommerceStrategy  跨境电商数据目标
+  DomesticEcommerceStrategy  国内电商数据目标
+  SupplyChainStrategy        供应链/采购数据目标
+  DefaultStrategy            兜底数据目标
+  generate_questions()   ① 代码层关键词过滤已知字段 → ② LLM 生成自然问题
+
+候选人配置（profile.py + candidate_profile.yaml）
+  render_profile()       将 YAML 配置渲染为 LLM 系统提示注入块
+```
+
+**单次对话流程：**
+```
+1. 打开对话 → 滚动加载完整历史 → 读取 header（职位 + 公司）
+2. 根据 Job Description + 对话历史生成本次待问问题
+   - 代码层：关键词过滤 JD / HR 已回答的字段
+   - LLM 层：为剩余数据目标生成上下文相关的自然问法
+3. HR 有未回复的打招呼消息 → candidate_profile 注入 LLM → 礼貌回应
+4. 逐条发送 LLM 生成的问题
+5. 等待 HR 回复（轮询 DOM，超时 180s）
+6. HR 反问 → LLM 以 candidate_profile 为背景生成求职者回答
+7. 全部完成 → LLM 提取结构化 JSON + regex 兜底
+8. 追加写入 CSV
+```
+
+---
+
 ## 分析层说明
 
 ### AI 技能分级（Tier）
@@ -377,6 +462,7 @@ categories:
 
 ## 配置
 
+- `.env`：LLM provider 及 API Key（Chat Bot 必填，参见 `.env.example`）
 - `config/amapkey.json`：高德地图 API Key（地理编码需求时使用）
 - `config/job_categories.yaml`：岗位归一化词典（支持正则，修改后重启生效）
 - `src/job51/nc_env/data/`：51job WAF 绕过所需指纹/轨迹数据（遭遇持续 API 封锁时重新采集）

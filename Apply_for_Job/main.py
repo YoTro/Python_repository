@@ -16,14 +16,19 @@ main.py - 职位采集 + AI 技能溢价分析主流程
     python3 main.py analyze --ziprecruiter data/raw/ziprecruiter_jobs.csv --keyword "amazon operations"
     python3 main.py analyze --indeed data/raw/indeed_jobs.csv --keyword "amazon operations"
 
+    # 真实 HR 对话补全（扮演求职者，与真实 HR 对话采集数据）
+    # 支持平台: zhipin / lagou / liepin / linkedin
+    python3 main.py chat zhipin
+    python3 main.py chat zhipin --max-turns 4 --max-chats 10
+    python3 main.py chat lagou  --unread-only          # 仅处理有未读消息的对话
+    python3 main.py chat liepin --reply-timeout 120    # 等待 HR 回复超时秒数
+    python3 main.py chat linkedin --output data/raw/linkedin_chat.csv
+
     # 其他开关
     --no-analyze      只爬取，不分析
     --no-plot         不生成图表
     --psm             分析时使用倾向得分匹配（需 scikit-learn）
     --proxy-url URL   指定代理地址
-    --hr-chat         爬取后对信息不完整的岗位自动发起 AI 与 HR 对话以补充细节
-                      需设置环境变量 ANTHROPIC_API_KEY
-    --hr-chat-turns N 每个岗位最多问 N 个问题（默认 6）
 """
 import os
 import sys
@@ -192,51 +197,14 @@ def run_indeed(keyword: str, location: str, pages: int,
 # 分析层
 # ══════════════════════════════════════════════════════════════════════
 
-def run_hr_chat(df, keyword: str, max_turns: int = 6):
-    """
-    对 DataFrame 中信息不完整的岗位发起 AI 与 HR 对话，
-    将提取到的结构化字段（品类、客单价等）回填到 df 并返回。
-    """
-    import pandas as pd
-    from src.hr_chat import run_session
-    from src.hr_chat.schemas import JobSnapshot
-    from src.hr_chat.agent import _is_sufficiently_known
-
-    print(f"\n[HR Chat] 开始对话补全，最多 {max_turns} 轮/岗位...")
-
-    enriched_rows = []
-    skipped = 0
-    for idx, row in df.iterrows():
-        job = JobSnapshot.from_series(row)
-        if _is_sufficiently_known(job):
-            skipped += 1
-            continue
-        print(f"  [{idx}] {job.job_title} @ {job.company}")
-        try:
-            result = run_session(job, max_turns=max_turns)
-            for k, v in result.to_dict().items():
-                df.at[idx, k] = v
-            enriched_rows.append(idx)
-        except Exception as e:
-            print(f"    [警告] 对话失败: {e}")
-
-    print(
-        f"[HR Chat] 完成：补全 {len(enriched_rows)} 条，"
-        f"已有足够信息跳过 {skipped} 条"
-    )
-    return df
-
-
 def run_analysis(path_51job: Optional[Path],
                  path_zhipin: Optional[Path],
                  keyword: str,
                  use_psm: bool = False,
                  plot: bool = True,
-                 hr_chat: bool = False,
-                 hr_chat_turns: int = 6,
                  path_ziprecruiter: Optional[Path] = None,
                  path_indeed: Optional[Path] = None) -> None:
-    """标准化 → (可选)HR对话补全 → 技能提取 → 溢价估算 → 趋势快照 → 报告"""
+    """标准化 → 技能提取 → 溢价估算 → 趋势快照 → 报告"""
     from src.analysis.normalizer      import load_and_normalize
     from src.analysis.skill_extractor import enrich_dataframe
     from src.analysis.premium_estimator import estimate_all_groups
@@ -258,11 +226,7 @@ def run_analysis(path_51job: Optional[Path],
                             search_keyword=keyword)
     print(f"[分析] 合并后共 {len(df)} 条记录")
 
-    # 2. (可选) HR 对话补全
-    if hr_chat:
-        df = run_hr_chat(df, keyword=keyword, max_turns=hr_chat_turns)
-
-    # 3. 技能提取
+    # 2. 技能提取
     print("[分析] 正在提取 AI 技能信号...")
     df = enrich_dataframe(df)
     ai_cnt = df["has_ai_skill"].sum()
@@ -313,6 +277,30 @@ def _flag_val(name: str) -> Optional[str]:
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
 
+    # ── 通用 chat bot 模式 ────────────────────────────────────────────
+    # python3 main.py chat <platform> [--options]
+    if args and args[0].lower() == "chat":
+        from src.chat_bot import run_chat_sessions, SUPPORTED
+        if len(args) < 2:
+            print(f"Usage: python3 main.py chat <platform>")
+            print(f"Supported platforms: {', '.join(SUPPORTED)}")
+            sys.exit(1)
+        platform    = args[1].lower()
+        output      = _flag_val("--output")        or str(RAW_DIR / f"{platform}_chat.csv")
+        max_turns   = int(_flag_val("--max-turns")     or 6)
+        max_chats   = int(_flag_val("--max-chats")     or 50)
+        reply_to    = int(_flag_val("--reply-timeout") or 180)
+        unread_only = _flag("--unread-only")
+        run_chat_sessions(
+            platform=platform,
+            output_path=output,
+            max_turns=max_turns,
+            max_chats=max_chats,
+            reply_timeout=reply_to,
+            unread_only=unread_only,
+        )
+        return
+
     # ── 仅分析模式 ─────────────────────────────────────────────────────
     if args and args[0].lower() == "analyze":
         p51  = Path(_flag_val("--51job"))        if _flag_val("--51job")        else None
@@ -320,12 +308,9 @@ def main():
         pzr  = Path(_flag_val("--ziprecruiter")) if _flag_val("--ziprecruiter") else None
         pind = Path(_flag_val("--indeed"))       if _flag_val("--indeed")       else None
         kw   = _flag_val("--keyword") or "综合"
-        hrc_turns = int(_flag_val("--hr-chat-turns") or 6)
         run_analysis(p51, pzp, keyword=kw,
                      use_psm=_flag("--psm"),
                      plot=not _flag("--no-plot"),
-                     hr_chat=_flag("--hr-chat"),
-                     hr_chat_turns=hrc_turns,
                      path_ziprecruiter=pzr,
                      path_indeed=pind)
         return
@@ -344,8 +329,6 @@ def main():
     no_analyze = _flag("--no-analyze")
     use_psm    = _flag("--psm")
     no_plot    = _flag("--no-plot")
-    hr_chat    = _flag("--hr-chat")
-    hrc_turns  = int(_flag_val("--hr-chat-turns") or 6)
     no_desc    = _flag("--no-desc")   # skip per-job description fetching (faster)
 
     print(f"[MAIN] source={source}  keyword={keyword}  location={location}  pages={pages}")
@@ -386,8 +369,6 @@ def main():
             keyword=keyword,
             use_psm=use_psm,
             plot=not no_plot,
-            hr_chat=hr_chat,
-            hr_chat_turns=hrc_turns,
             path_ziprecruiter=path_ziprecruiter,
             path_indeed=path_indeed,
         )
