@@ -11,4 +11,7 @@ numpy
 matplotlib        # 图表生成（可选）
 
 # HR 对话层（可选，不用 --hr-chat 时无需安装）
-anthropic         # Claude API client
+python-dotenv     # .env 文件加载
+anthropic         # Anthropic Claude
+# openai          # OpenAI ChatGPT (pip install openai)
+# google-generativeai  # Google Gemini (pip install google-generativeai)

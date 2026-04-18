@@ -1,0 +1,50 @@
+# candidate_profile.yaml
+# Personal job-seeker profile read by the chat agent.
+# Edit this file to reflect your real background, preferences, and hard limits.
+# The LLM uses it when answering HR questions and will not accept offers that
+# violate the constraints listed under `reject_if`.
+
+identity:
+  # Brief background the LLM draws on when answering "tell me about yourself"
+  background: >
+    3年亚马逊跨境电商运营经验，主要负责美国站/欧洲站精品类目的选品、
+    广告投放（SP/SB/SD）和利润分析。熟悉亚马逊后台运营、FBA物流及库存管理，
+    有从0到1孵化新品经验。
+
+  skills:
+    - "Amazon PPC广告投放（SP / SB / SD）"
+    - "Helium10 / 卖家精灵 / Jungle Scout"
+    - "产品选品与竞品分析"
+    - "FBA物流与库存管理"
+    - "Excel / Google Sheets 数据分析"
+    - "Listing优化与A+ Content"
+
+preferences:
+  salary:
+    min_monthly: 15000        # 月薪硬下限（元），低于此值视为不匹配
+    target_monthly: 20000     # 期望月薪（元）
+    note: "优先接受底薪+绩效结构，底薪不低于15k"
+
+  locations:                  # 可接受城市，含"远程"表示支持远程
+    - "深圳"
+    - "广州"
+    - "远程"
+
+  work_mode: "hybrid"         # remote（全远程）/ hybrid（混合）/ onsite（全驻场）
+
+  job_types:                  # 优先考虑的岗位类型关键词
+    - "亚马逊运营"
+    - "跨境电商运营"
+    - "Amazon Operations"
+
+constraints:
+  # Hard rules: if HR confirms any of these, the agent should politely decline
+  # and note it in the conversation. Leave list empty [] to disable.
+  reject_if:
+    - "纯提成无底薪"
+    - "底薪低于10000"
+    - "需要长期驻厂或长期出差（超过1个月/年）"
+    - "试用期薪资低于12000"
+
+  notice_period: "两周"       # 可入职时间（HR问到时使用）
+  availability: "随时可面试"  # 面试档期
