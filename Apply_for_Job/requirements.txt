@@ -4,8 +4,11 @@ pandas
 requests
 tqdm
 
-# 分析层（新增）
+# 分析层
 statsmodels       # OLS 回归
 scikit-learn      # 倾向得分匹配 PSM（可选）
 numpy
 matplotlib        # 图表生成（可选）
+
+# HR 对话层（可选，不用 --hr-chat 时无需安装）
+anthropic         # Claude API client

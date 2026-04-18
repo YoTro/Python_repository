@@ -2,8 +2,9 @@
 normalizer.py - 原始招聘数据标准化
 
 负责：
-  1. 统一两个来源（51job / zhipin）的字段名
-  2. 解析薪资字符串 → salary_min / salary_max / salary_mid（元/月）
+  1. 统一各来源（51job / zhipin / ziprecruiter）的字段名
+  2. 解析薪资字符串 → salary_min / salary_max / salary_mid（月薪，本币）
+     中文平台：元/月；ZipRecruiter：USD/月
   3. 岗位名称归一化（关键词聚类）→ job_canonical
   4. 经验年限 / 城市 / 公司规模数字化
 
@@ -161,6 +162,75 @@ def parse_salary(s: Optional[str]) -> dict:
     return empty
 
 
+def parse_salary_en(s: Optional[str]) -> dict:
+    """
+    Parse English salary strings from ZipRecruiter into monthly USD.
+
+    Supported formats:
+      "$50,000–$70,000 a year"   "$25–$35/hr"   "$80K–$100K a year"
+      "$50,000 a year"           "$30/hour"      "Up to $60,000 a year"
+      "$20–$25 an hour"          "From $45,000 a year"
+    """
+    empty = {"salary_min": None, "salary_max": None, "salary_mid": None,
+             "salary_months": 12, "salary_raw": s}
+    if not s or not isinstance(s, str):
+        return empty
+
+    t = s.strip().replace(",", "").replace("\u2013", "-").replace("\u2014", "-")
+
+    def _parse_num(raw: str) -> float:
+        raw = raw.replace("$", "").replace("k", "000").replace("K", "000").strip()
+        return float(raw)
+
+    # ── Hourly ─────────────────────────────────────────────────────────
+    # "$20–$35/hr"  "$25 an hour"  "$20-$35 per hour"
+    m = re.search(
+        r'\$?([\d.]+[kK]?)\s*[-–]\s*\$?([\d.]+[kK]?)\s*(?:/hr|/hour|an hour|per hour)',
+        t, re.IGNORECASE,
+    )
+    if m:
+        lo = _parse_num(m.group(1)) * 160   # 40 h/wk × 4 wk
+        hi = _parse_num(m.group(2)) * 160
+        return {"salary_min": round(lo), "salary_max": round(hi),
+                "salary_mid": round((lo + hi) / 2),
+                "salary_months": 12, "salary_raw": s}
+
+    m = re.search(
+        r'\$?([\d.]+[kK]?)\s*(?:/hr|/hour|an hour|per hour)',
+        t, re.IGNORECASE,
+    )
+    if m:
+        mid = _parse_num(m.group(1)) * 160
+        return {"salary_min": None, "salary_max": None, "salary_mid": round(mid),
+                "salary_months": 12, "salary_raw": s}
+
+    # ── Annual range ────────────────────────────────────────────────────
+    # "$50000–$70000 a year"  "$80K–$100K"
+    m = re.search(
+        r'\$?([\d.]+[kK]?)\s*[-–]\s*\$?([\d.]+[kK]?)\s*(?:a year|/year|per year|annually)?',
+        t, re.IGNORECASE,
+    )
+    if m:
+        lo = _parse_num(m.group(1)) / 12
+        hi = _parse_num(m.group(2)) / 12
+        return {"salary_min": round(lo), "salary_max": round(hi),
+                "salary_mid": round((lo + hi) / 2),
+                "salary_months": 12, "salary_raw": s}
+
+    # ── Single annual figure ────────────────────────────────────────────
+    # "Up to $60,000 a year"  "From $45,000 a year"
+    m = re.search(
+        r'(?:up to|from|starting at)?\s*\$?([\d.]+[kK]?)\s*(?:a year|/year|per year|annually)',
+        t, re.IGNORECASE,
+    )
+    if m:
+        mid = _parse_num(m.group(1)) / 12
+        return {"salary_min": None, "salary_max": None, "salary_mid": round(mid),
+                "salary_months": 12, "salary_raw": s}
+
+    return empty
+
+
 def parse_experience(s: Optional[str]) -> Optional[float]:
     """'3-5年经验' → 4.0（中位数）  '应届' → 0  '10年以上' → 10"""
     if not s or not isinstance(s, str):
@@ -273,11 +343,101 @@ def normalize_zhipin(df: pd.DataFrame,
     return _enrich(out, search_keyword=search_keyword)
 
 
+def normalize_ziprecruiter(df: pd.DataFrame,
+                           search_keyword: Optional[str] = None) -> pd.DataFrame:
+    """
+    Normalise a ZipRecruiter CSV (output of src/ziprecruiter/scraper.py)
+    into the unified schema.
+
+    Salary values are stored in USD/month; a `salary_currency` column
+    is added so downstream analysis can segment by market.
+    """
+    is_remote = df.get("is_remote", pd.Series([False] * len(df), index=df.index)).fillna(False)
+    location = df.get("location", pd.Series([""] * len(df), index=df.index)).fillna("")
+    # Append "Remote" flag to location string when applicable
+    location = location.where(
+        ~is_remote.astype(bool),
+        location.where(location.str.contains("Remote", case=False), location + " (Remote)"),
+    )
+
+    employment_type = df.get("employment_type", pd.Series([""] * len(df), index=df.index))
+
+    out = pd.DataFrame({
+        "source":       "ziprecruiter",
+        "job_title":    df.get("title",        pd.Series([""] * len(df), index=df.index)),
+        "company":      df.get("company",      pd.Series([""] * len(df), index=df.index)),
+        "location":     location,
+        "education":    None,
+        "experience":   None,
+        "salary_raw":   df.get("salary_raw",   pd.Series([""] * len(df), index=df.index)),
+        "description":  df.get("description",  pd.Series([""] * len(df), index=df.index)),
+        "welfare":      employment_type,
+        "company_size": None,
+        "update_date":  df.get("posted_time",  pd.Series([""] * len(df), index=df.index)),
+        "url":          df.get("url",          pd.Series([""] * len(df), index=df.index)),
+    }, index=df.index)
+
+    return _enrich(out, search_keyword=search_keyword, salary_parser=parse_salary_en,
+                   currency="USD")
+
+
+def normalize_indeed(df: pd.DataFrame,
+                     search_keyword: Optional[str] = None) -> pd.DataFrame:
+    """
+    Normalise an Indeed CSV (output of src/indeed/scraper.py)
+    into the unified schema.
+
+    Salary values are stored in USD/month; salary_currency = "USD".
+    """
+    is_remote = df.get("is_remote", pd.Series([False] * len(df), index=df.index)).fillna(False)
+    location  = df.get("location", pd.Series([""] * len(df), index=df.index)).fillna("")
+    location  = location.where(
+        ~is_remote.astype(bool),
+        location.where(location.str.contains("Remote", case=False), location + " (Remote)"),
+    )
+
+    out = pd.DataFrame({
+        "source":       "indeed",
+        "job_title":    df.get("title",           pd.Series([""] * len(df), index=df.index)),
+        "company":      df.get("company",          pd.Series([""] * len(df), index=df.index)),
+        "location":     location,
+        "education":    None,
+        "experience":   None,
+        "salary_raw":   df.get("salary_raw",       pd.Series([""] * len(df), index=df.index)),
+        "description":  df.get("description",      pd.Series([""] * len(df), index=df.index)),
+        "welfare":      df.get("employment_type",  pd.Series([""] * len(df), index=df.index)),
+        "company_size": None,
+        "update_date":  df.get("posted_time",      pd.Series([""] * len(df), index=df.index)),
+        "url":          df.get("url",              pd.Series([""] * len(df), index=df.index)),
+    }, index=df.index)
+
+    return _enrich(out, search_keyword=search_keyword, salary_parser=parse_salary_en,
+                   currency="USD")
+
+
 def _enrich(df: pd.DataFrame,
-            search_keyword: Optional[str] = None) -> pd.DataFrame:
-    """共用后处理：解析薪资 / 经验 / 归一化岗位 / 城市tier"""
-    salary_parsed = df["salary_raw"].apply(parse_salary).apply(pd.Series)
+            search_keyword: Optional[str] = None,
+            salary_parser=None,
+            currency: str = "CNY") -> pd.DataFrame:
+    """
+    Shared post-processing: parse salary / experience / canonicalise job /
+    city tier.
+
+    Parameters
+    ----------
+    salary_parser : callable that maps a raw salary string → dict.
+                    Defaults to parse_salary (CNY). Pass parse_salary_en for
+                    English-market sources.
+    currency      : "CNY" or "USD" — stored in salary_currency column.
+    """
+    if salary_parser is None:
+        salary_parser = parse_salary
+
+    salary_parsed = df["salary_raw"].apply(salary_parser).apply(pd.Series)
+    # Drop duplicate salary_raw column that comes out of the parser dict
+    salary_parsed = salary_parsed.drop(columns=["salary_raw"], errors="ignore")
     df = pd.concat([df, salary_parsed], axis=1)
+    df["salary_currency"] = currency
 
     df["exp_years"]      = df["experience"].apply(parse_experience)
     df["job_canonical"]  = df["job_title"].apply(
@@ -299,14 +459,16 @@ def _enrich(df: pd.DataFrame,
 
 def load_and_normalize(path_51job: Optional[str] = None,
                        path_zhipin: Optional[str] = None,
+                       path_ziprecruiter: Optional[str] = None,
+                       path_indeed: Optional[str] = None,
                        search_keyword: Optional[str] = None) -> pd.DataFrame:
     """
-    读取一个或两个来源的 CSV，标准化后合并返回。
-    至少提供其中一个路径。
+    Load one or more source CSVs, normalise, and merge.
+    At least one path must be provided.
 
     Parameters
     ----------
-    search_keyword : 本次爬取关键词，透传给 canonicalize_job 作为 fallback 分组名
+    search_keyword : Search keyword passed to canonicalize_job as fallback group name.
     """
     frames = []
     if path_51job:
@@ -315,6 +477,12 @@ def load_and_normalize(path_51job: Optional[str] = None,
     if path_zhipin:
         raw = pd.read_csv(path_zhipin, encoding="utf-8-sig")
         frames.append(normalize_zhipin(raw, search_keyword=search_keyword))
+    if path_ziprecruiter:
+        raw = pd.read_csv(path_ziprecruiter, encoding="utf-8-sig")
+        frames.append(normalize_ziprecruiter(raw, search_keyword=search_keyword))
+    if path_indeed:
+        raw = pd.read_csv(path_indeed, encoding="utf-8-sig")
+        frames.append(normalize_indeed(raw, search_keyword=search_keyword))
     if not frames:
-        raise ValueError("至少提供一个数据来源路径")
+        raise ValueError("At least one data source path must be provided.")
     return pd.concat(frames, ignore_index=True)
