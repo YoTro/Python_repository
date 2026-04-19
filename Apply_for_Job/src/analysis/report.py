@@ -159,31 +159,72 @@ def save_markdown(df: pd.DataFrame,
     ]
 
     if not premium_df.empty:
+        has_boot = "ols_ci_95_boot" in premium_df.columns
+        has_psm  = "psm_premium"    in premium_df.columns
+
         headers = ["岗位", "AI样本", "非AI样本",
                    "无AI均薪", "有AI均薪", "原始溢价", "原始溢价%",
-                   "OLS净溢价", "显著性"]
+                   "OLS净溢价(HC3)", "95% CI", "显著性"]
+        if has_boot:
+            headers.append("Bootstrap 95% CI")
+        if has_psm:
+            headers.append("PSM ATT")
+
         rows = []
         for _, r in premium_df.iterrows():
-            sig = "✅" if r.get("ols_significant") else "❌"
-            rows.append([
+            sig     = "✅" if r.get("ols_significant") else "❌"
+            ci_ana  = r.get("ols_ci_95")
+            ci_str  = (f"[{_fmt_salary(ci_ana[0], currency)}, {_fmt_salary(ci_ana[1], currency)}]"
+                       if isinstance(ci_ana, list) else "N/A")
+            row = [
                 r.get("job_group", ""),
-                int(r.get("n_ai", 0)),
+                int(r.get("n_ai",    0)),
                 int(r.get("n_no_ai", 0)),
                 _fmt_salary(r.get("mean_salary_no_ai"), currency),
-                _fmt_salary(r.get("mean_salary_ai"), currency),
-                _fmt_salary(r.get("raw_premium"), currency),
+                _fmt_salary(r.get("mean_salary_ai"),    currency),
+                _fmt_salary(r.get("raw_premium"),       currency),
                 _fmt_pct(r.get("raw_premium_pct")),
-                _fmt_salary(r.get("ols_premium"), currency),
+                _fmt_salary(r.get("ols_premium"),       currency),
+                ci_str,
                 f"{sig} {_fmt_pval(r.get('ols_pvalue'))}",
-            ])
+            ]
+            if has_boot:
+                ci_b = r.get("ols_ci_95_boot")
+                row.append(
+                    f"[{_fmt_salary(ci_b[0], currency)}, {_fmt_salary(ci_b[1], currency)}]"
+                    if isinstance(ci_b, list) else "N/A"
+                )
+            if has_psm:
+                row.append(_fmt_salary(r.get("psm_premium"), currency))
+            rows.append(row)
+
         lines.append(_md_table(headers, rows))
+
+        # Balance tables (one per group, only when PSM was run)
+        if has_psm:
+            lines += ["", "### PSM 协变量平衡表", ""]
+            for _, r in premium_df.iterrows():
+                balance = r.get("psm_balance_table")
+                if not isinstance(balance, list) or not balance:
+                    continue
+                from src.analysis.premium_estimator import format_balance_table
+                lines += [
+                    f"**{r.get('job_group', '')}**"
+                    f"  (n_matched={int(r.get('psm_n_matched', 0))},"
+                    f"  PSM ATT={_fmt_salary(r.get('psm_premium'), currency)},"
+                    f"  95% CI boot={r.get('psm_ci_95_boot', 'N/A')})",
+                    "",
+                    format_balance_table(balance),
+                    "",
+                ]
     else:
         lines.append("> 样本量不足，无法估算。")
 
     lines += [
         f"",
-        f"> **OLS净溢价** = 控制城市/经验/公司规模后，有 AI 要求 JD 相比无 AI 要求的月薪差值。",
-        f"> ✅ p<0.05 表示统计显著。",
+        f"> **OLS净溢价** = 控制城市/经验/公司规模后的 HC3 稳健标准误估计。",
+        f"> **Bootstrap CI** = 1000次重抽样分位数置信区间（与解析 CI 一致表明模型稳健）。",
+        f"> **PSM ATT** = 倾向得分匹配后的平均处理效应。✅ p<0.05 表示统计显著。",
         f"",
         f"---",
         f"",
