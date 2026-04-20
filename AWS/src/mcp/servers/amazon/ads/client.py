@@ -24,7 +24,7 @@ class AmazonAdsClient:
     }
 
     _REPORT_POLL_INTERVAL = 10  # seconds between status checks
-    _REPORT_POLL_MAX = 90       # max attempts → 15 min ceiling
+    _REPORT_POLL_MAX = 180      # max attempts → 30 min ceiling
 
     def __init__(self, store_id: Optional[str] = None, region: str = "NA"):
         self.auth = AmazonAdsAuth(store_id)
@@ -406,15 +406,23 @@ class AmazonAdsClient:
         logger.info(f"Created report {report_id} ({report_type} {start_date}→{end_date})")
         return report_id
 
-    async def _poll_report(self, report_id: str) -> str:
-        url = f"{self.base_url}/reporting/reports/{report_id}"
-        headers = {
+    def _build_poll_headers(self) -> dict:
+        return {
             "Authorization": f"Bearer {self.auth.get_access_token()}",
             "Amazon-Advertising-API-ClientId": self.auth.client_id,
             "Amazon-Advertising-API-Scope": self.auth.get_profile_id(),
         }
+
+    async def _poll_report(self, report_id: str) -> str:
+        url = f"{self.base_url}/reporting/reports/{report_id}"
         for attempt in range(self._REPORT_POLL_MAX):
+            headers = self._build_poll_headers()
             resp = await asyncio.to_thread(requests.get, url, headers=headers)
+            if resp.status_code == 401:
+                logger.info(f"Poll got 401 on attempt {attempt + 1}, refreshing token and retrying")
+                self.auth._token_cache.pop(self.auth.store_id, None)
+                headers = self._build_poll_headers()
+                resp = await asyncio.to_thread(requests.get, url, headers=headers)
             resp.raise_for_status()
             data = resp.json()
             status = data.get("status")
