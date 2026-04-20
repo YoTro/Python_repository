@@ -37,19 +37,24 @@ AI_TIER3 = [
     r"generative.?ai", r"\bgenai\b", r"foundation.?model",
 ]
 
-# Tier 2 — 数据分析 / 自动化能力（运营岗的 AI 入口）
+# Tier 2 — 明确与 AI/自动化工具结合的数据能力
+# 注意：通用的"数据分析"、"报表"、"数据驱动"是运营基础技能，不计入 AI 技能
 AI_TIER2 = [
-    # Chinese
+    # 编程语言（运营岗出现说明有技术门槛）
     r"\bpython\b", r"\bsql\b", r"\br语言\b",
-    "数据分析", "数据挖掘", "bi工具", "power.?bi", "tableau", "metabase",
-    "自动化运营", "rpa", "n8n", "zapier", "make\\.com",
-    "数据看板", "报表", "excel.*函数", "数据驱动",
-    # English
+    # BI / 可视化工具（超出 Excel 的专业工具）
+    "bi工具", r"power.?bi", "tableau", "metabase", "looker",
+    # 流程自动化 / RPA（明确自动化工具）
+    "自动化运营", r"\brpa\b", r"\bn8n\b", "zapier", r"make\.com",
+    # AI 驱动的数据分析（必须含 AI 字样）
+    r"ai.{0,12}数据", r"数据.{0,12}ai", r"ai.{0,12}analyt",
+    r"ai.{0,12}insight", r"智能.{0,8}分析", r"ai.{0,8}报告",
+    # English equivalents
     r"\bpython\b", r"\bsql\b",
-    "data.{0,6}analyt", "data.{0,6}science", "business.?intelligence",
     r"\bpower.?bi\b", r"\btableau\b", r"\bmetabase\b", r"\blooker\b",
-    "process.?automation", r"\brpa\b", r"\bn8n\b", r"\bzapier\b",
-    "data.{0,6}driven", "a/b.{0,4}test",
+    r"process.?automat", r"\brpa\b", r"\bn8n\b", r"\bzapier\b",
+    r"ai.{0,8}data", r"ai.{0,8}analyt", r"ai.{0,8}insight",
+    r"automat.{0,8}report", r"data.{0,6}science",
 ]
 
 # Tier 1 — 通用 AI 工具（基础门槛，溢价相对较低）
@@ -77,16 +82,20 @@ TECH_SKILLS = [
 ]
 
 # 电商运营专项 AI 词（中文 Amazon / 跨境运营）
+# 只计入明确带"AI/智能/自动化"字样的电商工具，或专属的 AI 选品工具
 ECOMMERCE_AI = [
-    r"ai.{0,12}listing", r"listing.{0,8}ai", r"ai.{0,8}广告", r"广告.{0,8}自动化",
-    r"ai.{0,8}选品", r"选品.{0,8}ai", r"ai.{0,8}定价", "动态定价",
-    "sellersprite", "卖家精灵", r"helium.?10", r"jungle.?scout",
-    r"数据.{0,8}分析.{0,8}运营", r"运营.{0,8}数据.{0,8}分析",
+    # 必须带 AI 字样的电商操作
+    r"ai.{0,12}listing", r"listing.{0,8}ai",
+    r"ai.{0,8}广告", r"广告.{0,8}自动化",
+    r"ai.{0,8}选品", r"选品.{0,8}ai",
+    r"ai.{0,8}定价", r"智能.{0,8}定价",
     r"chat.{0,4}gpt.{0,8}运营", r"运营.{0,8}chat.{0,4}gpt",
-    # English e-commerce AI terms
-    r"ai.{0,12}listing", r"ai.{0,8}pricing", "dynamic.{0,6}pricing",
-    r"helium.?10", r"jungle.?scout", r"seller.?sprite",
+    # 专属 AI 辅助选品工具（非通用数据分析）
+    "sellersprite", "卖家精灵", r"helium.?10", r"jungle.?scout",
+    # English
+    r"ai.{0,12}listing", r"ai.{0,8}pricing",
     r"ai.{0,8}advertis", r"ppc.{0,8}automat", r"automat.{0,8}ppc",
+    r"helium.?10", r"jungle.?scout", r"seller.?sprite",
 ]
 
 
