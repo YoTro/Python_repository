@@ -44,3 +44,4 @@ __all__ = [
 
 # Auto-register workflow definitions
 import src.workflows.definitions.product_screening  # noqa: F401
+import src.workflows.definitions.ad_diagnosis       # noqa: F401
