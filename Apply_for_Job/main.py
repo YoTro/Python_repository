@@ -241,6 +241,22 @@ def run_analysis(
     )
     logger.info("[analyze] Report → %s", md_path)
 
+    # ── 历史趋势摘要（每次分析后自动打印）───────────────────────────
+    from src.analysis.trend_tracker import summarize_trend
+    df_trend = summarize_trend(keyword_filter=keyword)
+    if len(df_trend) > 1:
+        print(f"\n{'─'*60}")
+        print(f"[趋势] 历史快照 {len(df_trend)} 次  关键词: {keyword}")
+        print(f"{'─'*60}")
+        for _, row in df_trend.iterrows():
+            print(f"  {row['snapshot_time']}  {row['total_jobs']:>5}条  AI占比 {row['ai_ratio']:.1%}")
+        first, last = df_trend.iloc[0], df_trend.iloc[-1]
+        delta = last["ai_ratio"] - first["ai_ratio"]
+        sign  = "+" if delta >= 0 else ""
+        print(f"\n  整体变化: {first['ai_ratio']:.1%} → {last['ai_ratio']:.1%}  ({sign}{delta:.1%})")
+        print(f"  完整快照: data/processed/trend_snapshots.csv")
+        print()
+
 
 # ══════════════════════════════════════════════════════════════════════
 # CLI — argument parser
