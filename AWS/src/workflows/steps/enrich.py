@@ -75,6 +75,8 @@ class EnrichStep(Step):
 
         if errors:
             logger.warning(f"[{self.name}] {len(errors)}/{len(items)} items failed enrichment")
+            for e in errors[:3]:
+                logger.warning(f"[{self.name}] error[{e['index']}]: {e['error']}")
 
         elapsed = self._elapsed_ms(start)
         logger.info(f"[{self.name}] Completed in {elapsed}ms, {len(enriched)} items")

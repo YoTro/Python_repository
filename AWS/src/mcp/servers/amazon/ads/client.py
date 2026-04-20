@@ -3,7 +3,9 @@ import logging
 import time
 import json
 import os
+import gzip
 import asyncio
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 from .auth import AmazonAdsAuth
 
@@ -11,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class AmazonAdsClient:
     """
-    Client for Amazon Advertising API (Sponsored Products v5.0).
+    Client for Amazon Advertising API (Sponsored Products v3/v5).
     Fully async-compatible with robust 422 fallback.
     """
 
@@ -20,6 +22,9 @@ class AmazonAdsClient:
         "EU": "https://advertising-api-eu.amazon.com",
         "FE": "https://advertising-api-fe.amazon.com"
     }
+
+    _REPORT_POLL_INTERVAL = 10  # seconds between status checks
+    _REPORT_POLL_MAX = 90       # max attempts → 15 min ceiling
 
     def __init__(self, store_id: Optional[str] = None, region: str = "NA"):
         self.auth = AmazonAdsAuth(store_id)
@@ -149,5 +154,342 @@ class AmazonAdsClient:
                 if attempt == max_retries - 1:
                     raise
                 await asyncio.sleep(2)
-        
+
         return {}
+
+    # ── helpers ────────────────────────────────────────────────────────────
+
+    def _v3_headers(self, media_type: str) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.auth.get_access_token()}",
+            "Amazon-Advertising-API-ClientId": self.auth.client_id,
+            "Amazon-Advertising-API-Scope": self.auth.get_profile_id(),
+            "Content-Type": media_type,
+            "Accept": media_type,
+        }
+
+    async def _post_list(self, path: str, media_type: str, body: Dict) -> Dict:
+        url = f"{self.base_url}{path}"
+        resp = await asyncio.to_thread(
+            requests.post, url, json=body, headers=self._v3_headers(media_type)
+        )
+        if resp.status_code == 429:
+            await asyncio.sleep(10)
+            resp = await asyncio.to_thread(
+                requests.post, url, json=body, headers=self._v3_headers(media_type)
+            )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ── Campaigns ──────────────────────────────────────────────────────────
+
+    async def list_campaigns(
+        self,
+        states: Optional[List[str]] = None,
+        max_results: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        List Sponsored Products campaigns (v3) with auto-pagination.
+
+        Returns per-campaign dict:
+          campaign_id, name, state, daily_budget, start_date, end_date,
+          bidding_strategy, placement_adjustments
+        """
+        all_campaigns: List[Dict] = []
+        next_token: Optional[str] = None
+
+        while True:
+            body: Dict[str, Any] = {"maxResults": min(max_results, 100)}
+            if states:
+                body["stateFilter"] = {"include": [s.upper() for s in states]}
+            if next_token:
+                body["nextToken"] = next_token
+
+            data = await self._post_list(
+                "/sp/campaigns/list",
+                "application/vnd.spCampaign.v3+json",
+                body,
+            )
+            page = data.get("campaigns", [])
+            all_campaigns.extend([_parse_campaign(c) for c in page])
+            next_token = data.get("nextToken")
+
+            if not next_token or len(all_campaigns) >= max_results:
+                break
+
+        return all_campaigns[:max_results]
+
+    # ── Ad Groups ──────────────────────────────────────────────────────────
+
+    async def list_ad_groups(
+        self,
+        campaign_ids: Optional[List[str]] = None,
+        states: Optional[List[str]] = None,
+        max_results: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        List Sponsored Products ad groups (v3).
+
+        Returns per-ad-group dict:
+          ad_group_id, campaign_id, name, state, default_bid
+        """
+        body: Dict[str, Any] = {"maxResults": max_results}
+        if campaign_ids:
+            body["campaignIdFilter"] = {"include": campaign_ids}
+        if states:
+            body["stateFilter"] = {"include": [s.upper() for s in states]}
+
+        data = await self._post_list(
+            "/sp/adGroups/list",
+            "application/vnd.spAdGroup.v3+json",
+            body,
+        )
+        return [_parse_ad_group(g) for g in data.get("adGroups", [])]
+
+    # ── Keywords ───────────────────────────────────────────────────────────
+
+    async def list_keywords(
+        self,
+        campaign_ids: Optional[List[str]] = None,
+        ad_group_ids: Optional[List[str]] = None,
+        states: Optional[List[str]] = None,
+        max_results: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """
+        List Sponsored Products keywords (v3).
+
+        Returns per-keyword dict:
+          keyword_id, ad_group_id, campaign_id, keyword_text,
+          match_type, state, bid
+        """
+        all_keywords: List[Dict] = []
+        next_token: Optional[str] = None
+
+        while True:
+            body: Dict[str, Any] = {"maxResults": min(max_results, 100)}
+            if campaign_ids:
+                body["campaignIdFilter"] = {"include": campaign_ids}
+            if ad_group_ids:
+                body["adGroupIdFilter"] = {"include": ad_group_ids}
+            if states:
+                body["stateFilter"] = {"include": [s.upper() for s in states]}
+            if next_token:
+                body["nextToken"] = next_token
+
+            data = await self._post_list(
+                "/sp/keywords/list",
+                "application/vnd.spKeyword.v3+json",
+                body,
+            )
+            page = data.get("keywords", [])
+            all_keywords.extend([_parse_keyword(k) for k in page])
+            next_token = data.get("nextToken")
+
+            if not next_token or len(all_keywords) >= max_results:
+                break
+
+        return all_keywords[:max_results]
+
+    # ── Performance Report ─────────────────────────────────────────────────
+
+    async def get_performance_report(
+        self,
+        report_type: str = "spKeywords",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        days: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """
+        Request an async SP performance report and return parsed records.
+
+        report_type: "spKeywords" or "spCampaigns"
+        start_date / end_date: "YYYY-MM-DD"; if omitted, last `days` days are used.
+
+        Keyword report metrics:
+          keyword_text, match_type, campaign_id, ad_group_id,
+          impressions, clicks, spend, orders, sales, acos, ctr
+
+        Campaign report metrics:
+          campaign_id, campaign_name, impressions, clicks, spend,
+          orders, sales, acos, ctr
+        """
+        today = datetime.utcnow().date()
+        end = end_date or str(today - timedelta(days=1))
+        start = start_date or str(today - timedelta(days=days))
+
+        if report_type == "spKeywords":
+            metrics = [
+                "impressions", "clicks", "spend",
+                "purchases7d", "sales7d",
+                "keywordText", "matchType",
+                "campaignId", "adGroupId",
+            ]
+        else:
+            metrics = [
+                "impressions", "clicks", "spend",
+                "purchases7d", "sales7d",
+                "campaignName", "campaignId",
+            ]
+
+        report_id = await self._create_report(report_type, start, end, metrics)
+        download_url = await self._poll_report(report_id)
+        records = await self._download_report(download_url)
+        return [_parse_report_record(r, report_type) for r in records]
+
+    async def _create_report(
+        self,
+        report_type: str,
+        start_date: str,
+        end_date: str,
+        metrics: List[str],
+    ) -> str:
+        url = f"{self.base_url}/reporting/reports"
+        headers = {
+            "Authorization": f"Bearer {self.auth.get_access_token()}",
+            "Amazon-Advertising-API-ClientId": self.auth.client_id,
+            "Amazon-Advertising-API-Scope": self.auth.get_profile_id(),
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        group_by_map = {
+            "spCampaigns": ["campaign"],
+            "spKeywords": ["keyword"],
+            "spAdGroups": ["adGroup"],
+        }
+        ts = int(time.time())
+        body = {
+            "name": f"{report_type}_{start_date}_{end_date}_{ts}",
+            "startDate": start_date,
+            "endDate": end_date,
+            "configuration": {
+                "adProduct": "SPONSORED_PRODUCTS",
+                "reportTypeId": report_type,
+                "groupBy": group_by_map.get(report_type, ["campaign"]),
+                "columns": metrics,
+                "timeUnit": "SUMMARY",
+                "format": "GZIP_JSON",
+            },
+        }
+        # 425 means a previous identical report is still processing; wait and retry
+        for attempt in range(6):
+            resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
+            if resp.status_code == 425:
+                wait = 30 * (attempt + 1)
+                logger.info(f"Report 425 (too early), waiting {wait}s before retry {attempt+1}/6")
+                await asyncio.sleep(wait)
+                body["name"] = f"{report_type}_{start_date}_{end_date}_{int(time.time())}"
+                continue
+            if not resp.ok:
+                logger.error(f"Report creation failed {resp.status_code}: {resp.text[:500]}")
+            resp.raise_for_status()
+            break
+
+        report_id = resp.json().get("reportId")
+        if not report_id:
+            raise ValueError(f"No reportId in response: {resp.text[:200]}")
+        logger.info(f"Created report {report_id} ({report_type} {start_date}→{end_date})")
+        return report_id
+
+    async def _poll_report(self, report_id: str) -> str:
+        url = f"{self.base_url}/reporting/reports/{report_id}"
+        headers = {
+            "Authorization": f"Bearer {self.auth.get_access_token()}",
+            "Amazon-Advertising-API-ClientId": self.auth.client_id,
+            "Amazon-Advertising-API-Scope": self.auth.get_profile_id(),
+        }
+        for attempt in range(self._REPORT_POLL_MAX):
+            resp = await asyncio.to_thread(requests.get, url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            status = data.get("status")
+            logger.debug(f"Report {report_id} status: {status} (attempt {attempt + 1})")
+
+            if status == "COMPLETED":
+                download_url = data.get("url")
+                if not download_url:
+                    raise ValueError("Report COMPLETED but no download URL returned.")
+                return download_url
+
+            if status == "FAILED":
+                raise RuntimeError(f"Report {report_id} failed: {data.get('statusDetails')}")
+
+            await asyncio.sleep(self._REPORT_POLL_INTERVAL)
+
+        raise TimeoutError(f"Report {report_id} did not complete after {self._REPORT_POLL_MAX} polls.")
+
+    async def _download_report(self, url: str) -> List[Dict]:
+        resp = await asyncio.to_thread(requests.get, url, timeout=60)
+        resp.raise_for_status()
+        raw = gzip.decompress(resp.content)
+        return json.loads(raw.decode("utf-8"))
+
+# ── module-level parsers ────────────────────────────────────────────────────
+
+def _parse_campaign(c: Dict) -> Dict[str, Any]:
+    bidding = c.get("bidding", {})
+    adjustments = bidding.get("adjustments", [])
+    placement_map = {a["placement"]: a["percentage"] for a in adjustments if "placement" in a}
+    return {
+        "campaign_id": c.get("campaignId"),
+        "name": c.get("name"),
+        "state": c.get("state"),
+        "daily_budget": c.get("budget", {}).get("budget"),
+        "budget_type": c.get("budget", {}).get("budgetType"),
+        "start_date": c.get("startDate"),
+        "end_date": c.get("endDate"),
+        "bidding_strategy": bidding.get("strategy"),
+        "placement_top_of_search_pct": placement_map.get("PLACEMENT_TOP_OF_SEARCH"),
+        "placement_product_page_pct": placement_map.get("PLACEMENT_PRODUCT_PAGE"),
+    }
+
+
+def _parse_ad_group(g: Dict) -> Dict[str, Any]:
+    return {
+        "ad_group_id": g.get("adGroupId"),
+        "campaign_id": g.get("campaignId"),
+        "name": g.get("name"),
+        "state": g.get("state"),
+        "default_bid": g.get("defaultBid"),
+    }
+
+
+def _parse_keyword(k: Dict) -> Dict[str, Any]:
+    return {
+        "keyword_id": k.get("keywordId"),
+        "ad_group_id": k.get("adGroupId"),
+        "campaign_id": k.get("campaignId"),
+        "keyword_text": k.get("keywordText"),
+        "match_type": k.get("matchType"),
+        "state": k.get("state"),
+        "bid": k.get("bid"),
+    }
+
+
+def _parse_report_record(r: Dict, report_type: str) -> Dict[str, Any]:
+    spend = r.get("spend", 0) or 0
+    sales = r.get("sales7d", 0) or 0
+    clicks = r.get("clicks", 0) or 0
+    impressions = r.get("impressions", 0) or 0
+    orders = r.get("purchases7d", 0) or 0
+    acos = round(spend / sales * 100, 2) if sales > 0 else None
+    ctr = round(clicks / impressions * 100, 4) if impressions > 0 else None
+
+    base = {
+        "campaign_id": r.get("campaignId"),
+        "impressions": impressions,
+        "clicks": clicks,
+        "spend": spend,
+        "orders": orders,
+        "sales": sales,
+        "acos": acos,
+        "ctr": ctr,
+    }
+    if report_type == "spKeywords":
+        base.update({
+            "ad_group_id": r.get("adGroupId"),
+            "keyword_text": r.get("keywordText"),
+            "match_type": r.get("matchType"),
+        })
+    else:
+        base["campaign_name"] = r.get("campaignName")
+    return base

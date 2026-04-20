@@ -23,6 +23,7 @@ from src.mcp.servers.amazon.extractors.products_num import ProductsNumExtractor
 from src.mcp.servers.amazon.extractors.search_result_asins import AsinExtractor
 from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
 from src.mcp.servers.amazon.ads.client import AmazonAdsClient
+from src.mcp.servers.amazon.sp_api.client import SPAPIClient
 from src.core.utils.cookie_helper import AmazonCookieHelper
 from src.mcp.servers.amazon.extractors.bsr_category_extractor import BSRCategoryExtractor
 from src.core.data_cache import data_cache
@@ -324,6 +325,69 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
             include_analysis=arguments.get("include_analysis", False),
             asins=arguments.get("asins"),
         )
+        return _json_response(result)
+
+    # ── Tier 6: Ads-API campaign / keyword / performance ─────────────────
+    if name == "list_sp_campaigns":
+        client = AmazonAdsClient(
+            store_id=arguments.get("store_id"),
+            region=arguments.get("region", "NA"),
+        )
+        result = await client.list_campaigns(
+            states=arguments.get("states", ["ENABLED"]),
+            max_results=arguments.get("max_results", 100),
+        )
+        return _json_response(result)
+
+    if name == "list_sp_ad_groups":
+        client = AmazonAdsClient(
+            store_id=arguments.get("store_id"),
+            region=arguments.get("region", "NA"),
+        )
+        result = await client.list_ad_groups(
+            campaign_ids=arguments.get("campaign_ids"),
+            states=arguments.get("states", ["ENABLED"]),
+            max_results=arguments.get("max_results", 100),
+        )
+        return _json_response(result)
+
+    if name == "list_sp_keywords":
+        client = AmazonAdsClient(
+            store_id=arguments.get("store_id"),
+            region=arguments.get("region", "NA"),
+        )
+        result = await client.list_keywords(
+            campaign_ids=arguments.get("campaign_ids"),
+            ad_group_ids=arguments.get("ad_group_ids"),
+            states=arguments.get("states", ["ENABLED"]),
+            max_results=arguments.get("max_results", 200),
+        )
+        return _json_response(result)
+
+    if name == "get_sp_performance_report":
+        client = AmazonAdsClient(
+            store_id=arguments.get("store_id"),
+            region=arguments.get("region", "NA"),
+        )
+        result = await client.get_performance_report(
+            report_type=arguments.get("report_type", "spCampaigns"),
+            start_date=arguments.get("start_date"),
+            end_date=arguments.get("end_date"),
+            days=arguments.get("days", 30),
+        )
+        return _json_response(result)
+
+    # ── Tier 7: SP-API (inventory / catalog) ─────────────────────────────
+    if name == "get_sp_inventory":
+        client = SPAPIClient(store_id=arguments.get("store_id"))
+        result = await client.get_inventory(
+            seller_skus=arguments.get("seller_skus"),
+        )
+        return _json_response(result)
+
+    if name == "get_sp_catalog_item":
+        client = SPAPIClient(store_id=arguments.get("store_id"))
+        result = await client.get_catalog_item(asin=arguments["asin"])
         return _json_response(result)
 
     return [TextContent(type="text", text=f"Unknown Amazon tool: {name}")]
@@ -686,7 +750,7 @@ amazon_tools = [
             "properties": {
                 "keyword": {"type": "string", "description": "The keyword to check (e.g. 'wireless charger')"},
                 "match_types": {
-                    "type": "array", 
+                    "type": "array",
                     "items": {"type": "string", "enum": ["EXACT", "PHRASE", "BROAD"]},
                     "default": ["EXACT"],
                     "description": "List of match types to get recommendations for"
@@ -713,6 +777,147 @@ amazon_tools = [
             "required": ["keyword"]
         }
     ),
+    # ── Ads-API: campaigns / ad groups / keywords / performance ───────────
+    Tool(
+        name="list_sp_campaigns",
+        description=(
+            "List Sponsored Products campaigns from Amazon Advertising API (v3). "
+            "Returns: campaign_id, name, state, daily_budget, budget_type, start_date, end_date, "
+            "bidding_strategy, placement_top_of_search_pct, placement_product_page_pct."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "states": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["ENABLED", "PAUSED", "ARCHIVED"]},
+                    "default": ["ENABLED"],
+                    "description": "Filter by campaign state.",
+                },
+                "max_results": {"type": "integer", "default": 100, "description": "Max campaigns to return."},
+                "store_id": {"type": "string", "description": "Store ID suffix (e.g. 'US'). Defaults to env default."},
+                "region": {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA"},
+            },
+        },
+    ),
+    Tool(
+        name="list_sp_ad_groups",
+        description=(
+            "List Sponsored Products ad groups from Amazon Advertising API (v3). "
+            "Returns: ad_group_id, campaign_id, name, state, default_bid."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "campaign_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter by campaign IDs. If omitted, returns all ad groups.",
+                },
+                "states": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["ENABLED", "PAUSED", "ARCHIVED"]},
+                    "default": ["ENABLED"],
+                },
+                "max_results": {"type": "integer", "default": 100},
+                "store_id": {"type": "string"},
+                "region": {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA"},
+            },
+        },
+    ),
+    Tool(
+        name="list_sp_keywords",
+        description=(
+            "List Sponsored Products manual keywords from Amazon Advertising API (v3). "
+            "Returns: keyword_id, ad_group_id, campaign_id, keyword_text, match_type, state, bid."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "campaign_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter by campaign IDs.",
+                },
+                "ad_group_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter by ad group IDs.",
+                },
+                "states": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["ENABLED", "PAUSED", "ARCHIVED"]},
+                    "default": ["ENABLED"],
+                },
+                "max_results": {"type": "integer", "default": 200},
+                "store_id": {"type": "string"},
+                "region": {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA"},
+            },
+        },
+    ),
+    Tool(
+        name="get_sp_performance_report",
+        description=(
+            "Request an async Amazon SP performance report and return parsed records. "
+            "spCampaigns returns campaign-level metrics; spKeywords returns keyword-level metrics. "
+            "Each record includes: impressions, clicks, spend, orders, sales, acos (%), ctr (%)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "report_type": {
+                    "type": "string",
+                    "enum": ["spCampaigns", "spKeywords"],
+                    "default": "spCampaigns",
+                    "description": "spCampaigns for campaign-level; spKeywords for keyword-level (includes bid).",
+                },
+                "days": {
+                    "type": "integer",
+                    "default": 30,
+                    "description": "Number of past days to report on. Ignored if start_date/end_date provided.",
+                },
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD (inclusive)."},
+                "end_date": {"type": "string", "description": "End date YYYY-MM-DD (inclusive)."},
+                "store_id": {"type": "string"},
+                "region": {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA"},
+            },
+        },
+    ),
+    # ── SP-API: inventory / catalog ───────────────────────────────────────
+    Tool(
+        name="get_sp_inventory",
+        description=(
+            "Query FBA inventory from Amazon Selling Partner API. "
+            "Returns per-SKU: sku, asin, fn_sku, condition, total_quantity, available_quantity, "
+            "reserved_quantity, inbound_quantity, last_updated."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "seller_skus": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of seller SKUs to query. If omitted, returns all FBA inventory.",
+                },
+                "store_id": {"type": "string", "description": "Store ID suffix (e.g. 'US')."},
+            },
+        },
+    ),
+    Tool(
+        name="get_sp_catalog_item",
+        description=(
+            "Fetch product metadata from Amazon Catalog Items API (2022-04-01). "
+            "Returns: asin, title, brand, product_type, color, size, bullet_point_count."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin": {"type": "string", "description": "Amazon ASIN to look up."},
+                "store_id": {"type": "string", "description": "Store ID suffix (e.g. 'US')."},
+            },
+            "required": ["asin"],
+        },
+    ),
 ]
 
 _AMAZON_META = {
@@ -738,6 +943,14 @@ _AMAZON_META = {
     "get_top_bsr_categories": ("DATA", "list of top-level BSR categories with URLs"),
     "get_bsr_subcategories": ("DATA", "list of subcategories within a BSR category"),
     "get_amazon_keyword_bid_recommendations": ("DATA", "keyword bid recommendations from Advertising API"),
+    # Ads-API v3
+    "list_sp_campaigns":       ("DATA", "list of SP campaigns with budget, state, bidding strategy"),
+    "list_sp_ad_groups":       ("DATA", "list of SP ad groups with default bid"),
+    "list_sp_keywords":        ("DATA", "list of SP manual keywords with bid and match type"),
+    "get_sp_performance_report": ("DATA", "SP performance records with impressions, clicks, spend, orders, sales, ACOS, CTR"),
+    # SP-API
+    "get_sp_inventory":        ("DATA", "FBA inventory per SKU: available, reserved, inbound quantities"),
+    "get_sp_catalog_item":     ("DATA", "product metadata from Catalog API: title, brand, size, bullet points"),
 }
 
 for tool in amazon_tools:
