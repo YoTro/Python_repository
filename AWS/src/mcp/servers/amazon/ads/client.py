@@ -317,13 +317,17 @@ class AmazonAdsClient:
         end = end_date or str(today - timedelta(days=1))
         start = start_date or str(today - timedelta(days=days))
 
-        if report_type == "spKeywords":
+        filters = None
+        if report_type == "spSearchTerm":
+            # spSearchTerm uses "cost" for spend and "keyword" for keyword text.
+            # Filter to manual keyword types to exclude auto-targeting noise.
             metrics = [
-                "impressions", "clicks", "spend",
+                "impressions", "clicks", "cost",
                 "purchases7d", "sales7d",
-                "keywordText", "matchType",
+                "keyword", "matchType", "keywordBid",
                 "campaignId", "adGroupId",
             ]
+            filters = [{"field": "keywordType", "values": ["BROAD", "EXACT", "PHRASE"]}]
         else:
             metrics = [
                 "impressions", "clicks", "spend",
@@ -331,7 +335,7 @@ class AmazonAdsClient:
                 "campaignName", "campaignId",
             ]
 
-        report_id = await self._create_report(report_type, start, end, metrics)
+        report_id = await self._create_report(report_type, start, end, metrics, filters=filters)
         download_url = await self._poll_report(report_id)
         records = await self._download_report(download_url)
         return [_parse_report_record(r, report_type) for r in records]
@@ -342,6 +346,7 @@ class AmazonAdsClient:
         start_date: str,
         end_date: str,
         metrics: List[str],
+        filters: Optional[List[Dict]] = None,
     ) -> str:
         url = f"{self.base_url}/reporting/reports"
         headers = {
@@ -352,30 +357,41 @@ class AmazonAdsClient:
             "Accept": "application/json",
         }
         group_by_map = {
-            "spCampaigns": ["campaign"],
-            "spKeywords": ["keyword"],
-            "spAdGroups": ["adGroup"],
+            "spCampaigns":  ["campaign"],
+            "spSearchTerm": ["searchTerm"],
+            "spAdGroups":   ["adGroup"],
         }
         ts = int(time.time())
+        configuration: Dict[str, Any] = {
+            "adProduct": "SPONSORED_PRODUCTS",
+            "reportTypeId": report_type,
+            "groupBy": group_by_map.get(report_type, ["campaign"]),
+            "columns": metrics,
+            "timeUnit": "SUMMARY",
+            "format": "GZIP_JSON",
+        }
+        if filters:
+            configuration["filters"] = filters
         body = {
             "name": f"{report_type}_{start_date}_{end_date}_{ts}",
             "startDate": start_date,
             "endDate": end_date,
-            "configuration": {
-                "adProduct": "SPONSORED_PRODUCTS",
-                "reportTypeId": report_type,
-                "groupBy": group_by_map.get(report_type, ["campaign"]),
-                "columns": metrics,
-                "timeUnit": "SUMMARY",
-                "format": "GZIP_JSON",
-            },
+            "configuration": configuration,
         }
-        # 425 means a previous identical report is still processing; wait and retry
+        # 425 means a previous identical report is still processing; wait and retry.
+        # Amazon sometimes returns HTTP 200 with {"code":"425"} in the body instead
+        # of a proper HTTP 425, so we check both.
         for attempt in range(6):
             resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
-            if resp.status_code == 425:
+            is_425 = resp.status_code == 425
+            if not is_425 and resp.ok:
+                try:
+                    is_425 = str(resp.json().get("code", "")) == "425"
+                except Exception:
+                    pass
+            if is_425:
                 wait = 30 * (attempt + 1)
-                logger.info(f"Report 425 (too early), waiting {wait}s before retry {attempt+1}/6")
+                logger.info(f"Report 425 (duplicate), waiting {wait}s before retry {attempt+1}/6")
                 await asyncio.sleep(wait)
                 body["name"] = f"{report_type}_{start_date}_{end_date}_{int(time.time())}"
                 continue
@@ -466,7 +482,8 @@ def _parse_keyword(k: Dict) -> Dict[str, Any]:
 
 
 def _parse_report_record(r: Dict, report_type: str) -> Dict[str, Any]:
-    spend = r.get("spend", 0) or 0
+    # spSearchTerm uses "cost"; spCampaigns uses "spend"
+    spend = r.get("spend") or r.get("cost") or 0
     sales = r.get("sales7d", 0) or 0
     clicks = r.get("clicks", 0) or 0
     impressions = r.get("impressions", 0) or 0
@@ -484,11 +501,13 @@ def _parse_report_record(r: Dict, report_type: str) -> Dict[str, Any]:
         "acos": acos,
         "ctr": ctr,
     }
-    if report_type == "spKeywords":
+    if report_type == "spSearchTerm":
         base.update({
-            "ad_group_id": r.get("adGroupId"),
-            "keyword_text": r.get("keywordText"),
-            "match_type": r.get("matchType"),
+            "keyword_text": r.get("keyword"),
+            "match_type":   r.get("matchType"),
+            "keyword_bid":  r.get("keywordBid"),
+            "ad_group_id":  r.get("adGroupId"),
+            "search_term":  r.get("searchTerm"),
         })
     else:
         base["campaign_name"] = r.get("campaignName")
