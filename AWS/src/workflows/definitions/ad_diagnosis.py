@@ -93,8 +93,10 @@ async def _ensure_keyword_performance(ctx: WorkflowContext) -> List[Dict]:
         region   = ctx.config.get("region", "NA")
         days     = ctx.config.get("days", 30)
         client   = AmazonAdsClient(store_id=store_id, region=region)
+        # spSearchTerm groups by search term but includes keywordText + matchType,
+        # allowing us to aggregate up to keyword-level click/spend/order data.
         records  = await client.get_performance_report(
-            report_type="spKeywords", days=days
+            report_type="spSearchTerm", days=days
         )
         ctx.cache[_KEY_KW_PERFORMANCE] = records
         logger.info(f"Fetched {len(records)} keyword performance records")
