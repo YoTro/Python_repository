@@ -235,6 +235,87 @@ class ProductScreeningCommand(BotCommand):
         asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
 
 
+class AdDiagnosisCommand(BotCommand):
+    """
+    Handles '广告诊断 <ASIN>' messages.
+
+    Dispatches the ad_diagnosis workflow which fetches keyword/placement/change-history
+    data, correlates changes with performance shifts, and produces an LLM report.
+    """
+
+    _PATTERN = re.compile(r"广告诊断\s+([A-Z0-9]{10})", re.IGNORECASE)
+
+    def match(self, text: str) -> bool:
+        return bool(self._PATTERN.search(text))
+
+    def execute(self, text: str, chat_id: str):
+        match = self._PATTERN.search(text)
+        asin = match.group(1).upper()
+
+        feishu_client = FeishuClient(bot_name=self.bot_name)
+        eta = TimeEstimator.estimate_workflow("ad_diagnosis", params={"asin": asin})
+        feishu_client.send_text_message(
+            "chat_id", chat_id,
+            f"🔍 开始诊断 {asin} 广告表现...\n⏱️ 预计耗时: {eta}\n"
+            "将分析关键词绩效、版位数据及变更历史，请耐心等待。"
+        )
+
+        async def _dispatch_job():
+            try:
+                from src.gateway import APIGateway
+                import src.workflows.definitions.ad_diagnosis
+
+                job_id = APIGateway.dispatch_feishu_command(
+                    workflow_name="ad_diagnosis",
+                    params={"asin": asin},
+                    chat_id=chat_id,
+                    bot_name=self.bot_name
+                )
+                logger.info(f"Ad diagnosis routed to Gateway, job_id={job_id}, bot_name={self.bot_name}")
+            except Exception as e:
+                logger.error(f"Ad diagnosis dispatch failed: {e}")
+                feishu_client.send_text_message("chat_id", chat_id, f"❌ 广告诊断任务启动失败: {e}")
+
+        asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+
+
+class HelpCommand(BotCommand):
+    """响应'常用命令'菜单，列出所有可用指令。"""
+
+    _HELP_TEXT = (
+        "📋 **常用命令列表**\n\n"
+        "🍪 **更新亚马逊 Cookies**\n"
+        "　触发词：`更新亚马逊 Cookies`\n"
+        "　作用：启动有头浏览器刷新亚马逊登录凭证\n\n"
+        "▶️ **恢复中断任务**\n"
+        "　触发词：`恢复任务 <job_id>`\n"
+        "　示例：`恢复任务 a1b2c3d4`\n\n"
+        "📊 **抓取 BSR 榜单**\n"
+        "　触发词：`获取 <类目> BSR`\n"
+        "　示例：`获取 Electronics BSR`\n"
+        "　支持类目：Electronics / Camera / Software\n\n"
+        "🏆 **分析类目垄断度**\n"
+        "　触发词：`分析垄断度 <URL>` 或 `分析类目垄断度 <URL>`\n"
+        "　示例：`分析垄断度 https://www.amazon.com/...`\n\n"
+        "🔎 **产品筛选**\n"
+        "　触发词：`产品筛选 <关键词>`\n"
+        "　示例：`产品筛选 yoga mat`\n\n"
+        "📈 **广告诊断**\n"
+        "　触发词：`广告诊断 <ASIN>`\n"
+        "　示例：`广告诊断 B0FXFGMD7Z`\n\n"
+        "🤖 **智能 Agent（其他问题）**\n"
+        "　触发词：任意文本（以上命令未匹配时自动触发）\n"
+    )
+
+    def match(self, text: str) -> bool:
+        return text.strip() == "常用命令"
+
+    def execute(self, text: str, chat_id: str):
+        FeishuClient(bot_name=self.bot_name).send_text_message(
+            "chat_id", chat_id, self._HELP_TEXT
+        )
+
+
 class AgentExploreCommand(BotCommand):
 
     def match(self, text: str) -> bool:
@@ -260,11 +341,13 @@ class AgentExploreCommand(BotCommand):
 class CommandDispatcher:
     def __init__(self, bot_name: str = "amazon_bot", loop: Optional[asyncio.AbstractEventLoop] = None):
         self.commands = [
+            HelpCommand(bot_name, loop),
             RefreshCookieCommand(bot_name, loop),
             ResumeJobCommand(bot_name, loop),
             ExtractBSRCommand(bot_name, loop),
             AnalyzeCategoryMonopolyCommand(bot_name, loop),
             ProductScreeningCommand(bot_name, loop),
+            AdDiagnosisCommand(bot_name, loop),
             AgentExploreCommand(bot_name, loop),  # fallback — must stay last
         ]
         
