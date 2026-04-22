@@ -80,7 +80,12 @@ class Workflow:
 
         # Check for checkpoint to resume from
         start_index = 0
-        items = params.get("initial_items", [])
+        items = params.get("initial_items") or []
+        if not items:
+            # Convenience: seed from a bare asin / asins param
+            asin = params.get("asin")
+            asins = params.get("asins", [asin] if asin else [])
+            items = [{"asin": a} for a in asins if a]
 
         if checkpoint_mgr:
             checkpoint = checkpoint_mgr.load(job_id)

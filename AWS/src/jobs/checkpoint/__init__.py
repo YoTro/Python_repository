@@ -114,7 +114,7 @@ class CheckpointManager:
                 WorkflowEvent(**e) if isinstance(e, dict) else e
                 for e in raw_events
             ]
-            logger.info(
+            logger.debug(
                 f"Checkpoint loaded: job={job_id}, resuming from step "
                 f"{checkpoint.step_index} ({checkpoint.step_name}), "
                 f"{len(checkpoint.events)} events"

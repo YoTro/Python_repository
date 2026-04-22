@@ -10,9 +10,16 @@ Resilience:
 
 import json
 import asyncio
+import functools
 import logging
 from datetime import datetime
 from typing import Set
+
+
+def _to_thread(func, *args, **kwargs):
+    """asyncio.to_thread back-port for Python < 3.9."""
+    loop = asyncio.get_event_loop()
+    return loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
 
 from src.jobs.callbacks.base import JobCallback, CallbackCapability
 from src.core.telemetry.tracker import TelemetryTracker
@@ -338,18 +345,21 @@ class FeishuCallback(JobCallback):
                     logger.error(f"Failed to send artifact attachment: {e}")
 
             if self.output_mode == "card":
-                # Handle agent exploration or other text-based results
                 text = "Workflow completed, but no textual response was provided."
-                if items and "response" in items[0]:
-                    text = items[0]["response"]
-                elif items:
-                    # Fallback for generic workflows using card output
-                    text = f"Workflow completed with {len(items)} items. First item: {items[0]}"
-                
+                if items:
+                    item = items[0]
+                    # Try common LLM output field names in priority order
+                    for key in ("response", "ad_diagnosis_llm", "result", "output"):
+                        if key in item and item[key]:
+                            text = item[key] if isinstance(item[key], str) else json.dumps(item[key], ensure_ascii=False)
+                            break
+                    else:
+                        text = json.dumps(item, ensure_ascii=False, indent=2)
+
                 self.feishu.send_card_message(
-                    receive_id_type="chat_id", 
-                    receive_id=self.chat_id, 
-                    text=text
+                    receive_id_type="chat_id",
+                    receive_id=self.chat_id,
+                    text=text,
                 )
                 logger.info("Final result sent via Feishu card successfully.")
                 return

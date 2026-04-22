@@ -35,20 +35,13 @@ class RefreshCookieCommand(BotCommand):
 
         async def _do_refresh():
             try:
-                # Import here to avoid circular imports if any
                 from src.core.utils.cookie_helper import AmazonCookieHelper
                 helper = AmazonCookieHelper(headless=False)
-                # Run the blocking fetch_fresh_cookies in a separate thread
-                await asyncio.to_thread(helper.fetch_fresh_cookies)
-                feishu_client.send_text_message("chat_id", chat_id, "✅ 亚马逊 Cookies 更新成功！")
-                
-                bot_cfg = ConfigHelper.get_feishu_bot(self.bot_name)
-                webhook_url = bot_cfg["webhook_url"] if bot_cfg else ""
-                if webhook_url:
-                    feishu_client.send_webhook_message(webhook_url, "✅ 亚马逊 Cookies 手动刷新任务已完成。")
+                await asyncio.to_thread(helper.fetch_fresh_cookies, True)
+                feishu_client.send_card_message("chat_id", chat_id, "✅ 亚马逊 Cookies 更新成功！")
             except Exception as e:
                 logger.error(f"Cookie refresh failed: {e}")
-                feishu_client.send_text_message("chat_id", chat_id, f"❌ Cookies 更新失败: {str(e)}")
+                feishu_client.send_card_message("chat_id", chat_id, f"❌ Cookies 更新失败: {str(e)}")
 
         # Execute in background task
         asyncio.run_coroutine_threadsafe(_do_refresh(), self.loop)
@@ -269,7 +262,8 @@ class AdDiagnosisCommand(BotCommand):
                     workflow_name="ad_diagnosis",
                     params={"asin": asin},
                     chat_id=chat_id,
-                    bot_name=self.bot_name
+                    bot_name=self.bot_name,
+                    callback_type="feishu_card",
                 )
                 logger.info(f"Ad diagnosis routed to Gateway, job_id={job_id}, bot_name={self.bot_name}")
             except Exception as e:

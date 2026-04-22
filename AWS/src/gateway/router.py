@@ -58,23 +58,25 @@ class APIGateway:
 
     @staticmethod
     def dispatch_feishu_command(
-        workflow_name: str, 
-        params: Dict[str, Any], 
+        workflow_name: str,
+        params: Dict[str, Any],
         chat_id: str,
-        bot_name: str = "amazon_bot"
+        bot_name: str = "amazon_bot",
+        callback_type: str = "feishu_bitable",
     ) -> str:
         """
         Handles async Feishu Bot commands.
         Immediately returns job_id so bot can reply 'Accepted'.
+        Pass callback_type="feishu_card" for LLM text results that should be
+        sent as a card instead of written to Bitable.
         """
         identity = AuthMiddleware.authenticate()
 
         if not RateLimiter().check_limit(identity, request_type="feishu_workflow", chat_id=chat_id):
             raise AWSBaseError(f"Rate limit exceeded for Feishu workflow (chat: {chat_id}).")
 
-        # Injects the appropriate Callback preset with the dynamic bot_name
         callback = CallbackConfig(
-            type="feishu_bitable",
+            type=callback_type,
             target=chat_id,
             options={"bot_name": bot_name}
         )

@@ -52,49 +52,44 @@ class AmazonCookieHelper:
         
         page = None
         cookies_dict = {}
-        
+
         try:
             page = ChromiumPage(co)
-            page.set.load_mode.eager() 
+            page.set.load_mode.eager()
             page.get(target_url, timeout=30)
-            
+
             if wait_for_manual:
-                logger.info("🕒 WAITING FOR MANUAL LOGIN (60s)... Please finish login in the opened window.")
-                # Loop to detect login success
-                for _ in range(60):
-                    # Check for logout link or account name which indicates login
+                logger.info("🕒 WAITING FOR MANUAL LOGIN (120s)... Please finish login in the opened window.")
+                for _ in range(120):
                     if page.ele('#nav-item-signout') or page.ele('text:Account & Lists'):
                         logger.info("✅ Login detected!")
                         break
                     time.sleep(1)
+                else:
+                    raise RuntimeError("Login timeout — no login detected within 120 seconds.")
             else:
-                # Basic anonymous wait
                 time.sleep(5)
-                # Handle potential simple captchas or "Continue shopping" automatically
                 continue_btn = page.ele('text:Continue shopping', timeout=2)
                 if continue_btn: continue_btn.click(); time.sleep(2)
-            
+
             raw_cookies = page.cookies()
             cookies_dict = {c.get('name'): c.get('value') for c in raw_cookies}
-            
-            if 'session-id' in cookies_dict:
-                # Add regional defaults
-                cookies_dict['i18n-prefs'] = 'USD'
-                cookies_dict['lc-main'] = 'en_US'
-                
-                data_to_save = {
-                    "cookies": cookies_dict,
-                    "user_agent": ua,
-                    "is_logged_in": wait_for_manual # Mark if this session is authenticated
-                }
-                
-                self._save_to_cache(data_to_save)
-                logger.info(f"💾 Captured {len(cookies_dict)} cookies. Session saved to {self.cache_file}.")
-            else:
-                logger.warning("⚠️ Failed to capture 'session-id'. Cookies might be invalid.")
-                
+
+            if 'session-id' not in cookies_dict:
+                raise RuntimeError("Failed to capture 'session-id' — Amazon may have blocked the request or shown a CAPTCHA.")
+
+            cookies_dict['i18n-prefs'] = 'USD'
+            cookies_dict['lc-main'] = 'en_US'
+            self._save_to_cache({
+                "cookies": cookies_dict,
+                "user_agent": ua,
+                "is_logged_in": wait_for_manual,
+            })
+            logger.info(f"💾 Captured {len(cookies_dict)} cookies. Session saved to {self.cache_file}.")
+
         except Exception as e:
             logger.error(f"❌ CookieHelper Error: {e}")
+            raise
         finally:
             if page: page.quit()
             

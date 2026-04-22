@@ -1,0 +1,29 @@
+{
+  "metadata": {
+    "source": "local inference — no API cost",
+    "last_verified": "2026-04-22",
+    "currency": "USD",
+    "schema_version": "1",
+    "note": "All prices are 0.0; local models run on-device and incur no per-token billing."
+  },
+  "model_string_index": {
+    "qwen2.5-1.5b-instruct-q4_k_m.gguf": {
+      "canonical_id": "qwen2.5-1.5b-instruct-q4_k_m",
+      "is_alias": false
+    }
+  },
+  "lookup": {
+    "qwen2.5-1.5b-instruct-q4_k_m#standard#input": {
+      "price": 0.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "qwen2.5-1.5b-instruct-q4_k_m#standard#output": {
+      "price": 0.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    }
+  }
+}
