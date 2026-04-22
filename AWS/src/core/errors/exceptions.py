@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any
 """
 Unified exception hierarchy for the AWS project.
 
@@ -75,6 +76,34 @@ class FatalError(AWSBaseError):
 class CheckpointError(AWSBaseError):
     """Checkpoint save or load failure."""
     pass
+
+class BatchPendingError(AWSBaseError):
+    """
+    Raised by a Step when it submits a provider batch job and needs
+    the workflow to suspend until results arrive.
+
+    ActivityRunner catches this, writes BATCH_SUBMITTED (with full reconstruction
+    payload) to the event log, then re-raises so WorkflowEngine → JobManager
+    can transition the job to SUSPENDED.
+    """
+    def __init__(
+        self,
+        message: str,
+        batch_job_id: str,
+        handle: Any,                  # BatchJobHandle instance
+        requests: list = None,        # [{"custom_id": str, "item_idx": int}]
+        items_snapshot: list = None,  # full items list at submission time
+        output_field: str = None,
+        schema_path: str = None,      # "module.ClassName" or None
+    ):
+        self.batch_job_id = batch_job_id
+        self.handle = handle
+        self.requests = requests or []
+        self.items_snapshot = items_snapshot or []
+        self.output_field = output_field
+        self.schema_path = schema_path
+        super().__init__(message, details={"batch_job_id": batch_job_id})
+
 
 class JobSuspendedError(AWSBaseError):
     """

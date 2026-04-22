@@ -13,7 +13,7 @@ import logging
 from abc import ABC, abstractmethod
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,7 @@ class WorkflowContext:
     router: Any = None  # IntelligenceRouter instance (injected)
     mcp: Any = None     # MCPClient instance (injected)
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("workflow"))
+    heartbeat: Optional[Callable[[dict], None]] = None  # Injected by ActivityRunner
 
 
 class Step(ABC):

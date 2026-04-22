@@ -923,8 +923,12 @@ def build_ad_diagnosis(config: dict) -> Workflow:
         ),
 
         # ── Stage 7: LLM diagnostic synthesis ────────────────────────────────
+        # batch_threshold=1: always submit via Batch API regardless of item count.
+        # Rationale: data collection already takes 30+ min, so async batch adds no
+        # perceived latency; the enriched payload per ASIN is large → 50% cost saving.
         ProcessStep(
             name="ad_diagnosis_llm",
+            batch_threshold=1,
             prompt_template=(
                 "You are an Amazon advertising specialist. Analyze the following advertising "
                 "data for {count} ASIN(s) and produce a structured diagnostic report.\n\n"
@@ -972,5 +976,8 @@ def build_ad_diagnosis(config: dict) -> Workflow:
             compute_target=ComputeTarget.CLOUD_LLM,
         ),
     ]
+
+    if config.get("no_llm", False):
+        steps = [s for s in steps if s.name != "ad_diagnosis_llm"]
 
     return Workflow(name="ad_diagnosis", steps=steps)

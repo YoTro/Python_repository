@@ -52,11 +52,12 @@ class PriceManager:
         return clean_name
 
     def calculate_cost(
-        self, 
-        model_name: str, 
-        input_tokens: int, 
-        output_tokens: int, 
+        self,
+        model_name: str,
+        input_tokens: int,
+        output_tokens: int,
         tier: str = "standard",
+        is_batch: bool = False,
         **kwargs
     ) -> float:
         """
@@ -95,7 +96,8 @@ class PriceManager:
             # Output = (regular output + thoughts tokens) * output price
             output_cost = (output_tokens + thoughts_tokens) * out_price
             
-            return round((input_cost + output_cost) / 1000000.0, 10)
+            cost = round((input_cost + output_cost) / 1000000.0, 10)
+            return cost * 0.5 if is_batch else cost
 
         elif self.provider == "claude":
             # Claude Pattern: {model}#{tier}#{dimension}
@@ -117,5 +119,5 @@ class PriceManager:
 
         # Calculation (Price is per 1M tokens)
         total_cost = (input_tokens * in_price / 1000000.0) + (output_tokens * out_price / 1000000.0)
-        
-        return round(total_cost, 10)
+        total_cost = round(total_cost, 10)
+        return total_cost * 0.5 if is_batch else total_cost

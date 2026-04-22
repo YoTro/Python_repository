@@ -15,6 +15,7 @@ from typing import List, Dict, Any, Callable, Optional, Type
 from pydantic import BaseModel
 
 from src.workflows.steps.base import Step, StepResult, WorkflowContext, ComputeTarget
+from src.core.errors.exceptions import BatchPendingError
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,8 @@ class ProcessStep(Step):
         sent to IntelligenceRouter, result parsed and merged into item.
     """
 
+    BATCH_THRESHOLD = 10  # min items to trigger batch mode
+
     def __init__(
         self,
         name: str,
@@ -36,6 +39,7 @@ class ProcessStep(Step):
         output_schema: Optional[Type[BaseModel]] = None,
         output_field: str = None,
         compute_target: ComputeTarget = ComputeTarget.PURE_PYTHON,
+        batch_threshold: Optional[int] = None,
         **kwargs,
     ):
         super().__init__(name=name, compute_target=compute_target, **kwargs)
@@ -43,6 +47,7 @@ class ProcessStep(Step):
         self.prompt_template = prompt_template
         self.output_schema = output_schema
         self.output_field = output_field or name
+        self.batch_threshold = batch_threshold if batch_threshold is not None else self.BATCH_THRESHOLD
 
     async def run(self, items: List[Dict[str, Any]], ctx: WorkflowContext) -> StepResult:
         start = self._start_timer()
@@ -130,34 +135,72 @@ class ProcessStep(Step):
         if not prompts_to_process:
             return items
 
-        # Fast token estimation
         estimated_tokens = sum(len(p) // 4 for p in prompts_to_process)
-        logger.info(f"[{self.name}] Initiating batch execution for {len(prompts_to_process)} prompts (est. {estimated_tokens} tokens)...")
-        
-        # Parallel execution using standard route_and_execute
-        # This ensures each item is independently classified, logged, and costed
-        logger.info(f"[{self.name}] Initiating parallel execution for {len(prompts_to_process)} items...")
-        
-        try:
-            tasks = []
-            for prompt in prompts_to_process:
-                tasks.append(
-                    router.route_and_execute(
-                        prompt, 
-                        category=category, 
-                        schema=self.output_schema,
-                        session_id=ctx.job_id
-                    )
+        n = len(prompts_to_process)
+
+        # ── Batch path: large jobs with a batch-capable cloud provider ────────
+        cloud_provider = getattr(getattr(ctx, "router", None), "cloud", None)
+        use_batch = (
+            self.compute_target == ComputeTarget.CLOUD_LLM
+            and cloud_provider is not None
+            and cloud_provider.supports_batch()
+            and n >= self.batch_threshold
+        )
+
+        if use_batch:
+            logger.info(f"[{self.name}] Submitting batch ({n} items, ~{estimated_tokens} tokens)")
+            from src.intelligence.dto import BatchRequest as _BatchRequest
+            api_requests = []
+            event_requests = []
+            for idx, (prompt, (item, cache_key)) in enumerate(
+                zip(prompts_to_process, items_to_process)
+            ):
+                api_requests.append(_BatchRequest(
+                    custom_id=cache_key,
+                    prompt=prompt,
+                    schema=self.output_schema,
+                ))
+                event_requests.append({"custom_id": cache_key, "item_idx": idx})
+
+            schema_path = None
+            if self.output_schema:
+                schema_path = (
+                    f"{self.output_schema.__module__}.{self.output_schema.__qualname__}"
                 )
-            
+
+            handle = await cloud_provider.generate_batch(api_requests)
+            raise BatchPendingError(
+                f"[{self.name}] Batch submitted ({n} items)",
+                batch_job_id=handle.job_id,
+                handle=handle,
+                requests=event_requests,
+                items_snapshot=list(items),   # snapshot before further mutation
+                output_field=self.output_field,
+                schema_path=schema_path,
+            )
+
+        # ── Realtime parallel path ────────────────────────────────────────────
+        logger.info(f"[{self.name}] Parallel execution for {n} items (~{estimated_tokens} tokens)")
+        try:
+            tasks = [
+                router.route_and_execute(
+                    prompt,
+                    category=category,
+                    schema=self.output_schema,
+                    session_id=ctx.job_id,
+                )
+                for prompt in prompts_to_process
+            ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-                
+
             for (item, cache_key), result in zip(items_to_process, results):
                 if isinstance(result, Exception):
-                    logger.warning(f"[{self.name}] LLM processing failed for item: {result}")
+                    logger.warning(f"[{self.name}] LLM call failed for item: {result}")
                     item[self.output_field] = None
                 else:
-                    item[self.output_field] = result.model_dump() if hasattr(result, "model_dump") else result
+                    item[self.output_field] = (
+                        result.model_dump() if hasattr(result, "model_dump") else result
+                    )
                     ctx.cache[cache_key] = item[self.output_field]
 
         except Exception as e:

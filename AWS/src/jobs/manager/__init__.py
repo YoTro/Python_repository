@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, List, Any, Union
 from datetime import datetime
 
-from src.core.errors.exceptions import AWSBaseError, RetryableError, JobSuspendedError
+from src.core.errors.exceptions import AWSBaseError, RetryableError, JobSuspendedError, BatchPendingError
 from src.core.models.request import UnifiedRequest
 
 logger = logging.getLogger(__name__)
@@ -49,22 +49,36 @@ class JobManager:
 
     def __init__(self, max_workers: int = 2):
         self._jobs: Dict[str, JobRecord] = {}
-        
-        # In-memory queue instead of launching raw tasks
+
         self._queue = asyncio.Queue()
         self._workers: List[asyncio.Task] = []
         self._max_workers = max_workers
         self._reaper_task: Optional[asyncio.Task] = None
+        self._batch_poller = None
         self._start_workers()
 
     def _start_workers(self):
-        """Initialize the background worker pool and reaper task."""
+        """Initialize background worker pool, reaper, and batch poller."""
         for i in range(self._max_workers):
             task = asyncio.create_task(self._worker_loop(f"worker-{i}"))
             self._workers.append(task)
-            
-        # Start the reaper task for suspended jobs
+
         self._reaper_task = asyncio.create_task(self._reaper_loop())
+        self._start_batch_poller()
+
+    def _start_batch_poller(self) -> None:
+        try:
+            from src.jobs.batch_poller import BatchPoller
+            from src.jobs.checkpoint import CheckpointManager
+            from src.jobs.signals import get_signal_bus
+            self._batch_poller = BatchPoller(
+                checkpoint_mgr=CheckpointManager(),
+                signal_bus=get_signal_bus(),
+                job_manager=self,
+            )
+            self._batch_poller.start()
+        except Exception as e:
+            logger.warning(f"BatchPoller could not start: {e}")
 
     async def _reaper_loop(self):
         """Periodically checks for and cancels expired SUSPENDED jobs."""
@@ -120,10 +134,12 @@ class JobManager:
         request_or_workflow: Union[UnifiedRequest, str],
         params: dict = None,
         callback=None,
+        job_id: Optional[str] = None,
     ) -> str:
         """
         Submit a new job to the queue.
         Accepts either a UnifiedRequest DTO or backward-compatible arguments.
+        Pass job_id to pin the ID (e.g. for checkpoint-resume in tests).
         """
         if isinstance(request_or_workflow, str):
             request = UnifiedRequest(
@@ -132,8 +148,8 @@ class JobManager:
             )
         else:
             request = request_or_workflow
-            
-        job_id = uuid.uuid4().hex[:8]
+
+        job_id = job_id or uuid.uuid4().hex[:8]
         
         # Build callback from config if missing
         if not callback and request.callback:
@@ -240,6 +256,33 @@ class JobManager:
                     await self._run_agent_mode(record)
                 else:
                     raise ValueError("Neither workflow_name nor intent provided in UnifiedRequest.")
+
+        except BatchPendingError as e:
+            # A Step submitted a provider batch job and needs to wait for results.
+            # Suspend the workflow job; BatchPoller will resume it via SignalBus.
+            logger.info(
+                f"Job {job_id} suspended: waiting for batch '{e.batch_job_id}' "
+                f"(timeout={record.suspend_timeout_sec}s)"
+            )
+            record.status = JobStatus.SUSPENDED
+            record.suspended_at = datetime.utcnow().timestamp()
+            record.suspend_timeout_sec = 7200  # 2 h — batch jobs can be slow
+            if record.callback:
+                try:
+                    provider_name = getattr(e.handle, "provider", "LLM").upper()
+                    await record.callback.on_progress(
+                        step_index=0,
+                        total_steps=1,
+                        step_name="batch_pending",
+                        message=(
+                            f"📋 数据采集完成，已提交 Batch 分析任务\n"
+                            f"🔖 Batch ID: `{e.batch_job_id}`\n"
+                            f"⏳ {provider_name} Batch API 通常需要 10–60 分钟处理，完成后自动推送结果。\n"
+                            f"💡 如需查看进度，可发送：恢复任务 {job_id}"
+                        ),
+                    )
+                except Exception as cb_err:
+                    logger.warning(f"Batch pending callback failed: {cb_err}")
 
         except RetryableError as e:
             logger.warning(f"Job {job_id} hit retryable error: {e}")

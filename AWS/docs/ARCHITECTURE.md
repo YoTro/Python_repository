@@ -65,6 +65,10 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   cancel(job_id)                     --> bool                                |
 |   get_status(job_id)                 --> JobStatus                           |
 |                                                                              |
+|   Job Statuses: PENDING · RUNNING · COMPLETED · FAILED · CANCELLED          |
+|                 SUSPENDED  ← batch job submitted; awaiting provider results  |
+|                             (timeout 7200s; auto-cancelled by reaper)        |
+|                                                                              |
 |   Queue Implementation:                                                      |
 |   [Single-User] asyncio.Queue (Memory)  [Ext Point #3] Redis Priority Queue  |
 |   +----------------+   +-------------------------------------------------+  |
@@ -72,6 +76,19 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   |  Agent Session |   |  Pro:        High priority, N concurrency        |  |
 |   |  (Unified MGMT)|   |  Free:       Low priority, 1 concurrency, limit  |  |
 |   +----------------+   +-------------------------------------------------+  |
+|                                                                              |
+|   Background Services:                                                       |
+|   +──────────────────────────────────────────────────────────────────────+  |
+|   | BatchPoller   60s scan loop; polls provider batch jobs; on complete: |  |
+|   |               appends BATCH_COMPLETED event → signals SignalBus →    |  |
+|   |               calls job_manager.resume(job_id)                       |  |
+|   |               24h TTL expiry: appends BATCH_FAILED, cancels job      |  |
+|   +──────────────────────────────────────────────────────────────────────+  |
+|   | SignalBus     In-process asyncio.Event pub/sub; decouples BatchPoller|  |
+|   |               from JobManager.  [Ext Point #7] Redis Pub/Sub         |  |
+|   +──────────────────────────────────────────────────────────────────────+  |
+|   | Reaper        60s loop; auto-cancels SUSPENDED jobs past timeout     |  |
+|   +──────────────────────────────────────────────────────────────────────+  |
 +=======================================|======================================+
                                         |
                +------------------------+------------------------+
@@ -89,15 +106,26 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |    ...register(name, fn)     |             |  | cumulative_cost: $ (cloud)|     |
 |                              |             |  | dynamic_step_extension    |     |
 |  Execution Engine:           |             |  | convergence_hints: true   |     |
-|  for step in steps:          |             |  +---------------------------+     |
+|  activity_runner =           |             |  +---------------------------+     |
+|    ActivityRunner(ckpt, id)  |             |                                  |
+|  for step in active_steps:   |             |  Step Logic:                     |
 |    checkpoint.save()  ───────┼─ Resume ───┼── session.save() (inc. cost)     |
-|    result = step.run() ──────┼────────────┼── tool = agent.decide()          |
+|    result = activity_runner  |             |                                  |
+|      .run(step,items,ctx)    |             |                                  |
+|       ├ idempotency: replay  |             |                                  |
+|       │  ACTIVITY_COMPLETED  |             |                                  |
+|       ├ batch wait: re-raise |             |                                  |
+|       │  BatchPendingError   |             |                                  |
+|       ├ heartbeat: inject fn |             |                                  |
+|       └─► step.run() ────────┼────────────┼── tool = agent.decide()          |
 |    if not items: break       |             |                                  |
 |                              |             |  Step Logic:                     |
 |  Step Tri-primitives:        |             |   1. Check steps vs budget/cost  |
 |  +----------------------+    |             |   2. If steps > max:             |
 |  | EnrichStep  ─────────┼────┼── MCP Client|      - Budget > 20%: +5 steps    |
 |  | ProcessStep ─────────┼────┼── Intel Router      - Budget < 20%: Force Final |
+|  |  batch_threshold=N   |    |             |                                  |
+|  |  N items→ Batch API  |    |             |                                  |
 |  | FilterStep  (Python) |    |             |                                  |
 |  +----------------------+    |             |  System Prompt Architecture:     |
 |                              |             |   · .md template (editable)      |
@@ -268,14 +296,25 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |     generate_text(prompt, system_message)     --> LLMResponse                |
 |     generate_structured(prompt, schema)       --> LLMResponse                |
 |     count_tokens(prompt)                      --> int                        |
+|     supports_batch()                          --> bool  (default False)      |
+|     generate_batch(requests: List[BatchRequest]) --> BatchJobHandle          |
+|     poll_batch(handle: BatchJobHandle)        --> Dict[str, LLMResponse]|None|
+|       None = still running; dict = complete (keyed by custom_id)            |
+|                                                                              |
+|   Batch pricing: create_response(..., is_batch=True) → PriceManager applies |
+|   50% discount on both Gemini and Claude batch completions.                  |
 |                                                                              |
 |   ProviderFactory.get_provider(type) --> BaseLLMProvider                     |
 |   +──────────────────────+──────────────────────────────────────────────+   |
 |   | "local" / "llama"    | LlamaCppProvider  (llama-cpp-python, GPU)    |   |
 |   +──────────────────────+──────────────────────────────────────────────+   |
-|   | "gemini"             | GeminiProvider    (google-generativeai)      |   |
+|   | "gemini"             | GeminiProvider    supports_batch=True        |   |
+|   |                      |   generate_batch: client.batches.create()    |   |
+|   |                      |   poll_batch: JOB_STATE_SUCCEEDED check      |   |
 |   +──────────────────────+──────────────────────────────────────────────+   |
-|   | "claude"/"anthropic" | ClaudeProvider    (anthropic SDK)            |   |
+|   | "claude"/"anthropic" | ClaudeProvider    supports_batch=True        |   |
+|   |                      |   generate_batch: messages.batches.create()  |   |
+|   |                      |   poll_batch: processing_status=="ended"     |   |
 |   +──────────────────────+──────────────────────────────────────────────+   |
 |                                                                              |
 +==============================================================================+
@@ -304,14 +343,40 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   }                                                                          |
 |   Standardized across all providers for unified downstream handling.          |
 |                                                                              |
+|   BatchRequest = {                                                           |
+|     custom_id, prompt, system_message?, schema?                              |
+|   }  — submitted to provider.generate_batch()                               |
+|                                                                              |
+|   BatchJobHandle = {                                                         |
+|     job_id, provider, status, created_at, metadata                          |
+|   }  — stored in BATCH_SUBMITTED event; used by BatchPoller for TTL check   |
+|                                                                              |
+|   WorkflowEvent = {                                                          |
+|     timestamp, event_type, step_name, payload                               |
+|   }                                                                          |
+|   event_type values:                                                         |
+|     ACTIVITY_COMPLETED  — step ran successfully; payload has cached result  |
+|     BATCH_SUBMITTED     — batch job dispatched to provider; includes handle,|
+|                           requests, items_snapshot, output_field, schema_path|
+|     BATCH_COMPLETED     — BatchPoller wrote results; payload has final items |
+|     BATCH_FAILED        — batch expired (>24h TTL) or provider error        |
+|     HEARTBEAT           — liveness ping from long-running step               |
+|                                                                              |
 +==============================================================================+
 |                                                                              |
 |   ── Integration Points ────────────────────────────────────────────────────  |
 |                                                                              |
 |   +──────────────────+──────────────────────────────────────────────────+   |
 |   | WorkflowEngine   | ProcessStep.run()                                |   |
-|   |                  | --> asyncio.gather(router.route_and_execute)      |   |
-|   |                  | compute_target maps to TaskCategory automatically |   |
+|   |                  | Sync path: asyncio.gather(router.route_and_execute)|  |
+|   |                  | Batch path (n >= batch_threshold):               |   |
+|   |                  |   provider.generate_batch(requests)              |   |
+|   |                  |   → raise BatchPendingError                      |   |
+|   |                  |   → ActivityRunner writes BATCH_SUBMITTED        |   |
+|   |                  |   → JobManager suspends job (7200s timeout)      |   |
+|   |                  |   → BatchPoller polls; writes BATCH_COMPLETED    |   |
+|   |                  |   → job_manager.resume() re-runs from checkpoint |   |
+|   |                  | compute_target maps to TaskCategory automatically|   |
 |   +──────────────────+──────────────────────────────────────────────────+   |
 |   | MCP Agent        | BaseAgent.__init__(router)                       |   |
 |   |                  | --> router.route_and_execute()                    |   |
@@ -375,6 +440,37 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
                     CROSS-CUTTING CONCERNS
 ================================================================================
 
++──────────────────────────────────────────────────────────────────────────────+
+|  DURABLE EXECUTION  (Temporal-inspired, no Temporal dependency)              |
+|                                                                              |
+|  Goal: survive process restarts and async provider delays without losing     |
+|  workflow state or resubmitting already-completed LLM calls.                 |
+|                                                                              |
+|  Key components:                                                             |
+|  +──────────────────+──────────────────────────────────────────────────────+|
+|  | ActivityRunner   | Wraps every step execution. On each run:             ||
+|  |                  |  1. Check ACTIVITY_COMPLETED → replay cached result  ||
+|  |                  |  2. Check BATCH_SUBMITTED+COMPLETED → use results    ||
+|  |                  |  3. Check BATCH_SUBMITTED only → re-raise pending    ||
+|  |                  |  4. Execute step; inject heartbeat callable          ||
+|  |                  |  5. Persist result as ACTIVITY_COMPLETED             ||
+|  +──────────────────+──────────────────────────────────────────────────────+|
+|  | Event Log        | Append-only List[WorkflowEvent] in CheckpointData.   ||
+|  |                  | Source of truth for idempotency and batch handoff.   ||
+|  +──────────────────+──────────────────────────────────────────────────────+|
+|  | BatchPoller      | Background service that polls provider APIs every 60s||
+|  |                  | Reconstructs items via stored items_snapshot and      ||
+|  |                  | schema_path. Survives process restarts.              ||
+|  +──────────────────+──────────────────────────────────────────────────────+|
+|  | SignalBus        | Decouples poller (writer) from JobManager (reader).  ||
+|  |                  | asyncio.Event per job_id.                            ||
+|  +──────────────────+──────────────────────────────────────────────────────+|
+|                                                                              |
+|  Batch API cost benefit: 50% discount applied when is_batch=True.           |
+|  Use batch_threshold=1 to force a step to always use batch mode             |
+|  (recommended when prior steps already take 30+ min, e.g. ad_diagnosis).   |
++──────────────────────────────────────────────────────────────────────────────+
+
 +────────────────────────────────────+  +──────────────────────────────────────+
 |  STATE STORE                       |  |  OBSERVABILITY                       |
 |                                    |  |                                      |
@@ -394,6 +490,11 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                    steps)          |  |                                      |
 |    workflow_name, workflow_params  |  |                                      |
 |    metadata, created_at            |  |                                      |
+|    events  List[WorkflowEvent]     |  |                                      |
+|      append-only durable event log |  |                                      |
+|      enables idempotent replay and |  |                                      |
+|      batch state recovery on       |  |                                      |
+|      process restart               |  |                                      |
 |  [Ext Point #6]                    |  |                                      |
 |    Redis:      Queue / Checkpoint  |  |  Metrics:                            |
 |                Rate limit / Session|  |    Funnel conversion / Token usage   |
@@ -432,11 +533,13 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
   4   Tool ACL              No filtering                Per-tenant visibility control
   5   API credentials       .env single key set         Vault per tenant_id lookup
   6   Persistent storage    Local files + SQLite        Redis + PostgreSQL
+  7   SignalBus             asyncio.Event (in-process)  Redis Pub/Sub (cross-process)
   ─── ─────────────────── ─────────────────────────── ──────────────────────────────
   Unchanged core (never needs modification):
     JobRequest DTO structure  ·  Workflow Engine  ·  Step tri-primitives
     MCP Server business logic ·  Intelligence Router routing rules
     Callback interface        ·  All WorkflowRegistry Workflow definitions
+    ActivityRunner / BatchPoller / event log schema
 
 
 ================================================================================

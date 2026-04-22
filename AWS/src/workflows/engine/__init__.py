@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 
 from src.workflows.steps.base import Step, WorkflowContext, StepResult
-from src.core.errors.exceptions import RetryableError, FatalError, StepError
+from src.core.errors.exceptions import RetryableError, FatalError, StepError, BatchPendingError
+from src.workflows.engine.activity_runner import ActivityRunner
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,7 @@ class Workflow:
         """
         total_start = time.monotonic()
         result = WorkflowResult(name=self.name)
+        activity_runner = ActivityRunner(checkpoint_mgr, job_id)
 
         # Check for checkpoint to resume from
         start_index = 0
@@ -112,9 +114,9 @@ class Workflow:
                 except Exception as e:
                     logger.warning(f"Callback on_progress failed: {e}")
 
-            # Execute step
+            # Execute step via ActivityRunner (idempotency + heartbeat + batch suspend)
             try:
-                step_result = await step.run(items, ctx)
+                step_result = await activity_runner.run(step, items, ctx, step_index=i)
                 items = step_result.items
 
                 # Record step report
@@ -157,6 +159,12 @@ class Workflow:
                     f"Step '{step.name}' complete: {report.input_count} → "
                     f"{report.output_count} items"
                 )
+
+            except BatchPendingError:
+                # Checkpoint already has BATCH_SUBMITTED event (written by ActivityRunner).
+                # Propagate to JobManager to transition job → SUSPENDED.
+                logger.info(f"Step '{step.name}' suspended: waiting for batch completion")
+                raise
 
             except RetryableError:
                 logger.warning(
