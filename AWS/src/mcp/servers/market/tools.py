@@ -288,6 +288,7 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
             "xiyou_get_traffic_scores": "get_traffic_scores",
             "xiyou_get_asin_daily_trends": "get_asin_daily_trends",
             "xiyou_get_search_term_trends": "get_search_term_trends",
+            "xiyou_get_asin_keywords": "get_asin_keywords",
         }
 
         if name in tool_map:
@@ -621,6 +622,36 @@ market_tools = [
         },
     ),
     Tool(
+        name="xiyou_get_asin_keywords",
+        description=(
+            "[Xiyouzhaoci] Fetch keywords that drive traffic to an ASIN, with per-keyword "
+            "topAsins (top 3 competitor ASINs by click/conversion share). "
+            "Returns: list of {searchTerm, weeklySearchVolume, searchFrequencyRank, "
+            "ranks[{position, totalRank, page, pageRank}], "
+            "trafficRatio.{total, organic, advertising}, "
+            "searchTermShare.{clickShare, conversionShare}, "
+            "topAsins.list[{asin, clickShare, conversionShare}]}. "
+            "Use start_date/end_date to set the comparison window. "
+            "API uses monthly cycleFilter internally — set start_date to first day of month "
+            "and end_date to last day of month for clean monthly snapshots. "
+            "Daily granularity (e.g. start_date='2026-04-01', end_date='2026-04-21') "
+            "may also work — test to confirm actual API behaviour. "
+            "Ideal for: finding non-brand competitor ASINs, measuring keyword-level ad vs organic split."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin":       {"type": "string", "description": "Target ASIN to reverse-lookup"},
+                "country":    {"type": "string", "default": "US", "description": "Marketplace country code"},
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD (e.g. '2026-01-01')"},
+                "end_date":   {"type": "string", "description": "End date YYYY-MM-DD (e.g. '2026-04-21')"},
+                "page":       {"type": "integer", "default": 1,  "description": "Page number (1-based)"},
+                "page_size":  {"type": "integer", "default": 50, "description": "Keywords per page (max 50)"},
+            },
+            "required": ["asin", "start_date", "end_date"],
+        },
+    ),
+    Tool(
         name="xiyou_get_search_term_trends",
         description=(
             "[Third-party Xiyouzhaoci tool] Fetch weekly historical ABA search-volume trends "
@@ -666,6 +697,7 @@ _MARKET_META = {
     "xiyou_get_traffic_scores": ("DATA", "JSON containing traffic scores, ad ratio, and growth for ASINs"),
     "xiyou_get_asin_daily_trends": ("DATA", "JSON containing daily historical trends for price and ratings"),
     "xiyou_get_search_term_trends": ("DATA", "JSON containing weekly ABA SFR history for a keyword (52-week seasonality signal)"),
+    "xiyou_get_asin_keywords": ("DATA", "JSON list of keywords driving traffic to an ASIN, with topAsins per keyword and traffic ratio breakdown"),
 }
 
 for tool in market_tools:

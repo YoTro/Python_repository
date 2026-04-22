@@ -390,6 +390,34 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await client.get_catalog_item(asin=arguments["asin"])
         return _json_response(result)
 
+    if name == "get_sp_placement_report":
+        client = AmazonAdsClient(
+            store_id=arguments.get("store_id"),
+            region=arguments.get("region", "NA"),
+        )
+        result = await client.get_performance_report(
+            report_type="spCampaignsPlacement",
+            start_date=arguments.get("start_date"),
+            end_date=arguments.get("end_date"),
+            days=arguments.get("days", 30),
+        )
+        return _json_response(result)
+
+    if name == "get_ad_change_history":
+        client = AmazonAdsClient(
+            store_id=arguments.get("store_id"),
+            region=arguments.get("region", "NA"),
+        )
+        result = await client.get_change_history(
+            from_date=arguments["from_date"],
+            to_date=arguments["to_date"],
+            event_types=arguments.get("event_types"),
+            count=arguments.get("count", 200),
+            sort_direction=arguments.get("sort_direction", "DESC"),
+            next_token=arguments.get("next_token"),
+        )
+        return _json_response(result)
+
     return [TextContent(type="text", text=f"Unknown Amazon tool: {name}")]
 
 
@@ -918,6 +946,83 @@ amazon_tools = [
             "required": ["asin"],
         },
     ),
+    # ── Placement Report ──────────────────────────────────────────────────
+    Tool(
+        name="get_sp_placement_report",
+        description=(
+            "Request an SP campaign placement report (spCampaigns grouped by campaignPlacement). "
+            "Returns per-campaign × per-placement rows: impressions, clicks, spend, orders, sales, "
+            "ACOS, CPC, bidding strategy, budget. "
+            "Placement values: PLACEMENT_TOP (Top of Search), PLACEMENT_PRODUCT_PAGE (PDPs), "
+            "PLACEMENT_REST_OF_SEARCH (Other). "
+            "Use this to diagnose placement mix efficiency and TOS/PP bid adjustment impact."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "default": 30,
+                    "description": "Lookback days. Ignored if start_date/end_date are set.",
+                },
+                "start_date": {"type": "string", "description": "YYYY-MM-DD inclusive."},
+                "end_date":   {"type": "string", "description": "YYYY-MM-DD inclusive."},
+                "store_id":   {"type": "string"},
+                "region":     {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA"},
+            },
+        },
+    ),
+    # ── Ads Change History ────────────────────────────────────────────────
+    Tool(
+        name="get_ad_change_history",
+        description=(
+            "Return change history for Sponsored Products / Sponsored Brands campaigns. "
+            "Covers changes to campaigns, ad groups, keywords, ads, targeting, budget rules, and themes. "
+            "Times are UTC epoch milliseconds. Does NOT return who made the change. "
+            "SD campaigns are not included."
+        ),
+        inputSchema={
+            "type": "object",
+            "required": ["from_date", "to_date"],
+            "properties": {
+                "from_date": {
+                    "type": "integer",
+                    "description": "Start of query range in UTC epoch milliseconds.",
+                },
+                "to_date": {
+                    "type": "integer",
+                    "description": "End of query range in UTC epoch milliseconds.",
+                },
+                "event_types": {
+                    "type": "object",
+                    "description": (
+                        "Map of event type → filter/parent config. "
+                        "Supported keys: CAMPAIGN, AD_GROUP, KEYWORD, AD, BUDGET_RULE, TARGETING, THEME. "
+                        "Each value may have 'filters' (list of field names, e.g. STATUS, BID, BUDGET) "
+                        "and 'parents' (list of {campaignId, adGroupId} to scope the query). "
+                        "Example: {\"KEYWORD\": {\"filters\": [\"BID\"], \"parents\": [{\"campaignId\": \"123\"}]}}"
+                    ),
+                },
+                "count": {
+                    "type": "integer",
+                    "default": 200,
+                    "description": "Max records per page (1–200).",
+                },
+                "sort_direction": {
+                    "type": "string",
+                    "enum": ["DESC", "ASC"],
+                    "default": "DESC",
+                    "description": "DESC = newest first.",
+                },
+                "next_token": {
+                    "type": "string",
+                    "description": "Pagination token from a previous response.",
+                },
+                "store_id": {"type": "string"},
+                "region": {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA"},
+            },
+        },
+    ),
 ]
 
 _AMAZON_META = {
@@ -951,6 +1056,9 @@ _AMAZON_META = {
     # SP-API
     "get_sp_inventory":        ("DATA", "FBA inventory per SKU: available, reserved, inbound quantities"),
     "get_sp_catalog_item":     ("DATA", "product metadata from Catalog API: title, brand, size, bullet points"),
+    # Ads Placement + Change History
+    "get_sp_placement_report": ("DATA", "SP campaign metrics split by placement: Top of Search, Product Pages, Other"),
+    "get_ad_change_history":   ("DATA", "SP/SB campaign change history events with old/new values, sorted by date"),
 }
 
 for tool in amazon_tools:

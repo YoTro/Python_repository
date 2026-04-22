@@ -591,6 +591,69 @@ class XiyouZhaociAPI:
             logger.error(f"Error querying traffic scores: {e}")
             return {}
 
+    def get_asin_keywords(
+        self,
+        country: str,
+        asin: str,
+        start_date: str,
+        end_date: str,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict:
+        """
+        Fetch keywords that drive traffic to an ASIN, with topAsins per keyword.
+
+        Uses the synchronous /v3/asins/research/list endpoint (not the async
+        /resource export variant) — returns JSON directly, no polling needed.
+
+        Each record in ``list`` contains:
+          searchTerm, searchTermReport.weeklySearchVolume,
+          topAsins.list[{asin, clickShare, conversionShare}],
+          trafficRatio.{total, organic, advertising}
+
+        Args:
+            start_date / end_date: YYYY-MM-DD boundaries for the cycleFilter
+                                   (monthly cycle, typically last 30 days).
+        """
+        url = f"{self.base_url}/v3/asins/research/list"
+
+        # Use daily cycle to allow precise date ranges without automatic month alignment
+        start_cycle = {"startDate": start_date, "endDate": start_date}
+        end_cycle   = {"startDate": end_date,   "endDate": end_date}
+
+        payload = {
+            "resource": {"country": country, "asin": asin},
+            "biz": {
+                "asin":       asin,
+                "country":    country,
+                "page":       page,
+                "pageSize":   page_size,
+                "query":      "",
+                "orders":     [{"field": "follow", "order": "desc"}],
+                "filters":    [{"field": "asinResearchType", "filter": ["all"]}],
+                "rangeFilters": [],
+                "cycleFilter": {
+                    "cycle":      "daily",
+                    "period":     "",
+                    "startCycle": start_cycle,
+                    "endCycle":   end_cycle,
+                },
+            },
+        }
+
+        headers = self.common_headers.copy()
+        headers["request-url"] = f"/detail/asin/look_up/{country}/{asin}?listType=dataList"
+        headers["krs-ver"]     = self._krs_ver()
+
+        logger.info(f"[xiyouzhaoci] get_asin_keywords: {asin} {country} {start_date}→{end_date}")
+        try:
+            response = self._request("POST", url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"[xiyouzhaoci] get_asin_keywords error for {asin}: {e}")
+            return {}
+
     def get_asin_daily_trends(self, country: str, asin: str, start_date: str, end_date: str) -> dict:
         """
         Fetch daily trends (price, ratings, stars) for an ASIN.
