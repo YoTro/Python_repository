@@ -289,6 +289,7 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
             "xiyou_get_asin_daily_trends": "get_asin_daily_trends",
             "xiyou_get_search_term_trends": "get_search_term_trends",
             "xiyou_get_asin_keywords": "get_asin_keywords",
+            "xiyou_get_asin_search_term_rank_trends": "get_asin_search_term_rank_trends",
         }
 
         if name in tool_map:
@@ -673,6 +674,53 @@ market_tools = [
                 },
             },
             "required": ["search_term"],
+        },
+    ),
+    Tool(
+        name="xiyou_get_asin_search_term_rank_trends",
+        description=(
+            "[Xiyouzhaoci] Fetch daily organic search rank history for an ASIN × keyword(s) "
+            "combination. Returns per-keyword daily series of organic page, pageRank, and "
+            "totalRank positions. Supports up to 24 months of history (earliest: 2023-02-01). "
+            "Use this to: (1) track how organic rank changes after ad bid/budget adjustments "
+            "(halo effect); (2) provide time-series input for ITS/CausalImpact rank analysis; "
+            "(3) identify keywords where ads are compensating for poor organic rank. "
+            "Response shape: {entities: [{country, asin, searchTerm, "
+            "trends: [{localDate, displayPositions: {or: {page, pageRank, totalRank}}}]}]}"
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin": {
+                    "type": "string",
+                    "description": "Amazon ASIN (e.g. 'B0FXFGMD7Z')",
+                },
+                "country": {
+                    "type": "string",
+                    "default": "US",
+                    "description": "Marketplace country code (e.g. 'US', 'DE', 'JP')",
+                },
+                "search_terms": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "List of keywords to track (≤5 recommended). "
+                        "Use the highest-spend or LP-top-allocation keywords for best signal."
+                    ),
+                },
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date YYYY-MM-DD.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": (
+                        "End date YYYY-MM-DD. Max span from start_date: 24 calendar months "
+                        "(e.g. start 2024-04-21 → end 2026-04-21)."
+                    ),
+                },
+            },
+            "required": ["asin", "search_terms", "start_date", "end_date"],
         },
     ),
 ]

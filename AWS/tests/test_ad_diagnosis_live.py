@@ -121,8 +121,8 @@ def _parse_args() -> argparse.Namespace:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 # Fields kept from the raw item for LLM context.
-# Drop campaigns(367), campaign_ids(367), performance_records(116), keywords(200)
-# — these are large raw arrays whose summaries are already captured in other fields.
+# Drop campaigns, campaign_ids, performance_records, keywords — large raw arrays
+# whose summaries are already captured in other fields.
 _LLM_SCALAR_FIELDS = [
     "asin", "title", "brand", "size", "bullet_point_count",
     "total_available", "can_sell_days", "inventory_risk",
@@ -133,6 +133,10 @@ _LLM_SCALAR_FIELDS = [
     "placement_performance", "placement_configured_pcts",
     "change_event_count", "has_compound_change",
     "lp_summary", "lp_top_allocations", "lp_zero_keywords", "lp_maxed_keywords",
+    # Xiyou traffic scores
+    "ad_traffic_ratio", "organic_traffic_ratio", "traffic_growth_7d",
+    # Keyword signals (merged from fetch_keyword_signals)
+    "rank_tracked_keywords", "market_trends_meta",
 ]
 
 
@@ -140,11 +144,11 @@ def _compress_item_for_llm(item: dict) -> dict:
     """Retain only LLM-relevant fields; truncate large lists."""
     compressed = {k: item[k] for k in _LLM_SCALAR_FIELDS if k in item}
 
-    # Top-8 high-ACOS campaigns (already a small list, but cap just in case)
+    # Top-8 high-ACOS campaigns
     if "high_acos_campaigns" in item:
         compressed["high_acos_campaigns"] = item["high_acos_campaigns"][:8]
 
-    # Full keyword_performance (18 entries — small enough as-is)
+    # Full keyword_performance (small enough as-is)
     if "keyword_performance" in item:
         compressed["keyword_performance"] = item["keyword_performance"]
 
@@ -152,8 +156,21 @@ def _compress_item_for_llm(item: dict) -> dict:
     if "change_events" in item:
         compressed["change_events"] = item["change_events"][:20]
 
-    if "change_attributions" in item and item["change_attributions"]:
+    # change_attributions now embeds ITS/CausalImpact/DML/consensus per event
+    if item.get("change_attributions"):
         compressed["change_attributions"] = item["change_attributions"]
+
+    # natural_rank_series: daily organic rank per keyword (needed for LLM dim 5)
+    if item.get("natural_rank_series"):
+        compressed["natural_rank_series"] = item["natural_rank_series"]
+
+    # market_trends: weekly SFR per keyword (needed for LLM dim 5 + dim 10)
+    if item.get("market_trends"):
+        compressed["market_trends"] = item["market_trends"]
+
+    # competitor_price_summary: used in causal covariate annotation
+    if item.get("competitor_price_summary"):
+        compressed["competitor_price_summary"] = item["competitor_price_summary"]
 
     return compressed
 
@@ -215,6 +232,11 @@ def _print_result(result, workflow_steps) -> None:
             "lp_maxed_keywords":       item.get("lp_maxed_keywords", [])[:5],
             "ad_traffic_ratio":        item.get("ad_traffic_ratio"),
             "organic_traffic_ratio":   item.get("organic_traffic_ratio"),
+            "rank_tracked_keywords":   item.get("rank_tracked_keywords"),
+            "rank_series_days":        len(next(iter((item.get("natural_rank_series") or {}).values()), {})),
+            "market_trends_keywords":  list((item.get("market_trends") or {}).keys()),
+            "change_attributions":     len(item.get("change_attributions") or []),
+            "causal_consensus_sample": (item.get("change_attributions") or [{}])[0].get("consensus"),
         }
         for k, v in highlights.items():
             print(f"  {k:<30} {json.dumps(v, ensure_ascii=False)}")
@@ -470,8 +492,8 @@ async def _run_llm_only(args: argparse.Namespace, source_job_id: str) -> None:
         f"(was {sum(len(json.dumps(i, ensure_ascii=False)) for i in source.items):,} chars)"
     )
 
-    # 3. Save a new checkpoint at step_index=10 (fetch_xiyou_rankings) with
-    #    compressed items so the engine resumes at step 11 (ad_diagnosis_llm).
+    # 3. Save a new checkpoint at the source step_index with compressed items
+    #    so the engine resumes at the next step (ad_diagnosis_llm).
     llm_job_id = f"{source_job_id}-llm"
     # Merge source params but force no_llm=False so ad_diagnosis_llm is not filtered out
     llm_params = {**(source.workflow_params or {}), "no_llm": False}

@@ -299,12 +299,15 @@ class AmazonAdsClient:
         end_date: Optional[str] = None,
         days: int = 30,
         time_unit: str = "SUMMARY",
+        filters: Optional[List[Dict]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Request an async SP performance report and return parsed records.
 
-        report_type: "spKeywords" or "spCampaigns"
+        report_type: "spKeywords", "spCampaigns", or "spAdvertisedProduct"
         start_date / end_date: "YYYY-MM-DD"; if omitted, last `days` days are used.
+        filters: optional list of {"field": ..., "values": [...]} API filters;
+                 caller-supplied filters are merged with any report-type defaults.
 
         Keyword report metrics:
           keyword_text, match_type, campaign_id, ad_group_id,
@@ -313,12 +316,15 @@ class AmazonAdsClient:
         Campaign report metrics:
           campaign_id, campaign_name, impressions, clicks, spend,
           orders, sales, acos, ctr
+
+        Advertised-product report metrics:
+          advertised_asin, impressions, clicks, spend, orders, sales, acos, ctr
         """
         today = datetime.utcnow().date()
         end = end_date or str(today - timedelta(days=1))
         start = start_date or str(today - timedelta(days=days))
 
-        filters = None
+        type_filters: Optional[List[Dict]] = None
         if report_type == "spSearchTerm":
             # spSearchTerm uses "cost" for spend and "keyword" for keyword text.
             # Filter to manual keyword types to exclude auto-targeting noise.
@@ -328,7 +334,7 @@ class AmazonAdsClient:
                 "keyword", "matchType", "keywordBid",
                 "campaignId", "adGroupId",
             ]
-            filters = [{"field": "keywordType", "values": ["BROAD", "EXACT", "PHRASE"]}]
+            type_filters = [{"field": "keywordType", "values": ["BROAD", "EXACT", "PHRASE"]}]
         elif report_type == "spCampaignsPlacement":
             # Placement report reuses spCampaigns reportTypeId but groups by
             # campaign + campaignPlacement to get per-placement breakdown.
@@ -339,6 +345,21 @@ class AmazonAdsClient:
                 "campaignId", "campaignName",
                 "campaignBiddingStrategy", "campaignBudgetAmount",
             ]
+        elif report_type == "spAdvertisedProduct":
+            # SponsoredProductsAdvertisedProductDailyReport: per-ASIN daily.
+            # groupBy=advertiser returns one row per (ASIN, campaignId, date).
+            # advertisedAsin filter is not supported; we filter client-side.
+            # campaignStatus filter is required to include all campaign states.
+            metrics = [
+                "impressions", "clicks", "cost",
+                "purchases7d", "sales7d",
+                "advertisedAsin", "campaignId", "campaignName",
+            ]
+            if time_unit == "DAILY":
+                metrics.append("date")
+            type_filters = [
+                {"field": "adCreativeStatus", "values": ["ENABLED", "PAUSED", "ARCHIVED"]},
+            ]
         else:
             metrics = [
                 "impressions", "clicks", "spend",
@@ -348,7 +369,10 @@ class AmazonAdsClient:
             if time_unit == "DAILY":
                 metrics.append("date")
 
-        report_id = await self._create_report(report_type, start, end, metrics, filters=filters, time_unit=time_unit)
+        # Merge report-type default filters with any caller-supplied filters.
+        combined_filters: Optional[List[Dict]] = (type_filters or []) + (filters or []) or None
+
+        report_id = await self._create_report(report_type, start, end, metrics, filters=combined_filters, time_unit=time_unit)
         download_url = await self._poll_report(report_id)
         records = await self._download_report(download_url)
         return [_parse_report_record(r, report_type) for r in records]
@@ -378,6 +402,7 @@ class AmazonAdsClient:
             "spCampaignsPlacement": ["campaign", "campaignPlacement"],
             "spSearchTerm":         ["searchTerm"],
             "spAdGroups":           ["adGroup"],
+            "spAdvertisedProduct":  ["advertiser"],
         }
         ts = int(time.time())
         configuration: Dict[str, Any] = {
@@ -467,6 +492,9 @@ class AmazonAdsClient:
 
     # ── Change History ─────────────────────────────────────────────────────
 
+    _CH_BATCH_SIZE   = 10   # max campaign IDs per history request (API limit)
+    _CH_CONCURRENCY  = 1    # sequential batches — /history rate-limit is strict
+
     async def get_change_history(
         self,
         from_date: int,
@@ -480,87 +508,61 @@ class AmazonAdsClient:
         """
         Return change history for SP campaigns.
 
-        Args:
-            from_date:    Start of range in UTC epoch milliseconds.
-            to_date:      End of range in UTC epoch milliseconds.
-            campaign_ids: Campaign IDs to scope the query. Required — each eventType
-                          needs a `parents` list with campaignId entries.
-                          Max 10 per request.
-            event_types:  Dict mapping event type names to extra filter/parent config.
-                          Defaults to CAMPAIGN + KEYWORD + AD_GROUP with standard filters.
-                          Valid filters by entity:
-                            CAMPAIGN  → STATUS, BUDGET_AMOUNT, IN_BUDGET, END_DATE,
-                                        START_DATE, PLACEMENT_GROUP, SMART_BIDDING_STRATEGY, NAME
-                            AD_GROUP  → STATUS, BID_AMOUNT, NAME
-                            KEYWORD   → STATUS
-            count:        Max records to return (50–200).
-            sort_direction: "DESC" (newest first) or "ASC".
-            next_token:   Pagination token from a previous response.
+        When campaign_ids is provided the API is called in batches of
+        _CH_BATCH_SIZE with parents=[{id, type:CAMPAIGN}] — avoiding the
+        profile-wide fetch that triggers 429 on large accounts.
 
-        Returns dict with keys:
-            events      – list of change-history event dicts
-            nextToken   – pagination token (None if no more pages)
+        When campaign_ids is empty, falls back to useProfileIdAdvertiser:true
+        (profile-wide), which is the only option when no scope is known.
+
+        Args:
+            from_date:      Start of range in UTC epoch milliseconds.
+            to_date:        End of range in UTC epoch milliseconds.
+            campaign_ids:   Campaign IDs to scope the query (batched, max 10/req).
+            event_types:    Override default CAMPAIGN/AD_GROUP/KEYWORD event filters.
+            count:          Max records per page (50–200).
+            sort_direction: "DESC" (newest first) or "ASC".
+            next_token:     Resume token — only used in profile-wide (no campaign_ids) mode.
+
+        Returns:
+            {"events": [...], "total": int}
         """
-        # Validate: API only accepts up to 90 days of history
         _90_days_ms = 90 * 24 * 3600 * 1000
         if int(to_date) - int(from_date) > _90_days_ms:
             raise ValueError(
                 f"Change history window exceeds 90 days: "
-                f"from_date={from_date}, to_date={to_date}, "
                 f"span={(int(to_date) - int(from_date)) // (24*3600*1000)} days"
             )
 
         url = f"{self.base_url}/history"
-        # v1.1 Accept required only when THEME is in event_types; plain json otherwise
         needs_v11 = event_types and "THEME" in event_types
-        accept = "application/vnd.historyresponse.v1.1+json" if needs_v11 else "application/json"
         headers = {
             "Authorization": f"Bearer {self.auth.get_access_token()}",
             "Amazon-Advertising-API-ClientId": self.auth.client_id,
             "Amazon-Advertising-API-Scope": self.auth.get_profile_id(),
             "Content-Type": "application/json",
-            "Accept": accept,
+            "Accept": "application/vnd.historyresponse.v1.1+json" if needs_v11 else "application/json",
         }
-        # campaignId + useProfileIdAdvertiser:true is not supported by the API.
-        # Only useProfileIdAdvertiser:true (no campaignId) works; campaign filtering
-        # must be done client-side. Log a warning if caller passes campaign_ids.
-        ids = campaign_ids or []
-        if ids:
-            logger.warning(
-                "get_change_history: campaign_ids are ignored by the API "
-                "(useProfileIdAdvertiser:true + campaignId combination unsupported). "
-                "All profile events will be fetched; filter client-side by campaign_ids."
-            )
-        parents = [{"useProfileIdAdvertiser": True}]
 
-        # Default event types ordered by priority. IN_BUDGET is excluded — it is
-        # auto-generated by Amazon (not a human action) and dominates volume.
-        default_event_types: Dict[str, Any] = {
+        # Default event types. IN_BUDGET excluded — auto-generated, dominates volume.
+        default_et: Dict[str, Any] = {
             "CAMPAIGN": {"filters": ["SMART_BIDDING_STRATEGY", "PLACEMENT_GROUP",
                                      "BUDGET_AMOUNT", "STATUS"]},
             "AD_GROUP": {"filters": ["BID_AMOUNT", "STATUS"]},
             "KEYWORD":  {"filters": ["STATUS"]},
         }
-        resolved = {**default_event_types, **(event_types or {})}
+        resolved_base = {**default_et, **(event_types or {})}
 
-        # Inject parents into every event type (required by API)
-        for et_cfg in resolved.values():
-            et_cfg.setdefault("parents", parents)
-
-        base_body: Dict[str, Any] = {
-            "count":     min(max(50, count), 200),
-            "fromDate":  int(from_date),
-            "toDate":    int(to_date),
-            "sort":      {"direction": sort_direction.upper(), "key": "DATE"},
-            "eventTypes": resolved,
+        count_clamped = min(max(50, count), 200)
+        base_fields: Dict[str, Any] = {
+            "count":    count_clamped,
+            "fromDate": int(from_date),
+            "toDate":   int(to_date),
+            "sort":     {"direction": sort_direction.upper(), "key": "DATE"},
         }
 
-        async def _post_page(token: Optional[str]) -> Dict:
-            body = dict(base_body)
-            if token:
-                body["nextToken"] = token
-            body_bytes = json.dumps(body).encode("utf-8")
-            logger.debug(f"Change history page request (token={token}): {body_bytes.decode()[:300]}")
+        async def _post_with_retry(body_dict: Dict) -> Dict:
+            body_bytes = json.dumps(body_dict).encode("utf-8")
             for attempt in range(5):
                 resp = await asyncio.to_thread(
                     requests.post, url, data=body_bytes, headers=headers
@@ -568,36 +570,84 @@ class AmazonAdsClient:
                 if resp.status_code == 429:
                     retry_after = int(resp.headers.get("Retry-After", 60))
                     wait = max(retry_after, 60 * (attempt + 1))
-                    logger.info(f"Change history 429, Retry-After={retry_after}s, waiting {wait}s (attempt {attempt+1}/5)")
+                    logger.info(
+                        f"Change history 429, Retry-After={retry_after}s, "
+                        f"waiting {wait}s (attempt {attempt+1}/5)"
+                    )
                     await asyncio.sleep(wait)
                     continue
                 break
             if not resp.ok:
                 logger.error(f"Change history failed {resp.status_code}: {resp.text[:300]}")
-            resp.raise_for_status()
+                resp.raise_for_status()
             return resp.json()
 
-        # Paginate via nextToken until all pages fetched or safety ceiling reached
-        max_pages   = 20
-        all_events: List[Dict] = []
-        token: Optional[str] = next_token
-        for page in range(max_pages):
-            data       = await _post_page(token)
-            page_events = data.get("events", [])
-            all_events.extend(page_events)
-            token = data.get("nextToken")
-            total = data.get("totalRecords", len(all_events))
-            logger.info(
-                f"Change history page {page + 1}: {len(page_events)} events "
-                f"(cumulative {len(all_events)}/{total})"
-            )
-            if not token or len(all_events) >= total:
-                break
+        async def _paginate(initial_body: Dict, label: str = "") -> List[Dict]:
+            """Exhaust all pages for a given request body."""
+            events: List[Dict] = []
+            token: Optional[str] = None
+            for page in range(20):
+                body = dict(initial_body)
+                if token:
+                    body["nextToken"] = token
+                data = await _post_with_retry(body)
+                page_events = data.get("events", [])
+                events.extend(page_events)
+                token = data.get("nextToken")
+                total = data.get("totalRecords", len(events))
+                if label:
+                    logger.debug(
+                        f"Change history {label} page {page+1}: "
+                        f"{len(page_events)} events (cum {len(events)}/{total})"
+                    )
+                if not token or len(events) >= total:
+                    break
+            return events
 
-        return {
-            "events": all_events,
-            "total":  total,
-        }
+        ids = [str(c) for c in (campaign_ids or [])]
+
+        if ids:
+            # ── Campaign-batched mode ─────────────────────────────────────
+            # Each batch of _CH_BATCH_SIZE campaigns becomes one API request
+            # using parents=[{id, type:CAMPAIGN}].  Max _CH_CONCURRENCY in
+            # flight at once to stay well below rate-limit thresholds.
+            batches = [
+                ids[i: i + self._CH_BATCH_SIZE]
+                for i in range(0, len(ids), self._CH_BATCH_SIZE)
+            ]
+            sem = asyncio.Semaphore(self._CH_CONCURRENCY)
+
+            async def _fetch_batch(batch: List[str]) -> List[Dict]:
+                parents = [{"campaignId": cid} for cid in batch]
+                et_cfg  = {k: {**v, "parents": parents} for k, v in resolved_base.items()}
+                body    = {**base_fields, "eventTypes": et_cfg}
+                async with sem:
+                    return await _paginate(body)
+
+            results   = await asyncio.gather(*(_fetch_batch(b) for b in batches))
+            all_events: List[Dict] = [ev for batch_evs in results for ev in batch_evs]
+
+            # Re-sort globally (each batch is ordered; merge needs a global sort)
+            desc = sort_direction.upper() == "DESC"
+            all_events.sort(
+                key=lambda e: int(e.get("changedAt") or e.get("timestamp") or 0),
+                reverse=desc,
+            )
+            logger.info(
+                f"Change history (batched): {len(all_events)} events "
+                f"from {len(batches)} batches ({len(ids)} campaigns)"
+            )
+        else:
+            # ── Profile-wide fallback ─────────────────────────────────────
+            parents = [{"useProfileIdAdvertiser": True}]
+            et_cfg  = {k: {**v, "parents": parents} for k, v in resolved_base.items()}
+            body    = {**base_fields, "eventTypes": et_cfg}
+            if next_token:
+                body["nextToken"] = next_token
+            all_events = await _paginate(body, label="profile-wide")
+            logger.info(f"Change history (profile-wide): {len(all_events)} events")
+
+        return {"events": all_events, "total": len(all_events)}
 
 # ── module-level parsers ────────────────────────────────────────────────────
 
@@ -642,7 +692,7 @@ def _parse_keyword(k: Dict) -> Dict[str, Any]:
 
 
 def _parse_report_record(r: Dict, report_type: str) -> Dict[str, Any]:
-    # spSearchTerm and spCampaignsPlacement use "cost"; spCampaigns uses "spend"
+    # spSearchTerm, spCampaignsPlacement, spAdvertisedProduct use "cost"; spCampaigns uses "spend"
     spend = r.get("spend") or r.get("cost") or 0
     sales = r.get("sales7d", 0) or 0
     clicks = r.get("clicks", 0) or 0
@@ -677,6 +727,12 @@ def _parse_report_record(r: Dict, report_type: str) -> Dict[str, Any]:
             "bidding_strategy":    r.get("campaignBiddingStrategy"),
             "daily_budget":        r.get("campaignBudgetAmount"),
             "cpc":                 r.get("costPerClick"),
+        })
+    elif report_type == "spAdvertisedProduct":
+        base.update({
+            "advertised_asin": r.get("advertisedAsin"),
+            "campaign_id":     r.get("campaignId"),
+            "campaign_name":   r.get("campaignName"),
         })
     else:
         base["campaign_name"] = r.get("campaignName")

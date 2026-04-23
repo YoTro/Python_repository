@@ -695,6 +695,72 @@ class XiyouZhaociAPI:
             return {}
 
 
+    def get_asin_search_term_rank_trends(
+        self,
+        country: str,
+        asin: str,
+        search_terms: List[str],
+        start_date: str,
+        end_date: str,
+    ) -> dict:
+        """
+        Fetch daily organic rank trends for an ASIN × keyword combination.
+
+        POST /v3/asinSearchTerms/rank/trends/daily
+
+        Supports up to 24 calendar months of history per request.
+
+        Response shape (per entity):
+            {"country": "US", "asin": "B0XX", "searchTerm": "keyword",
+             "trends": [{"localDate": "2026-01-01T00:00:00-08:00",
+                         "displayPositions": {
+                             "or": {"page": 1, "pageRank": 5, "totalRank": 5,
+                                    "campaignId": "", "adId": "", ...}
+                         }}, ...]}
+
+        :param search_terms: list of keyword strings (≤5 per call recommended).
+        :param start_date:   YYYY-MM-DD or full ISO string.
+        :param end_date:     YYYY-MM-DD or full ISO string.
+                             Max span: 24 calendar months (e.g. 2024-04-21 → 2026-04-21).
+        :returns:            Raw JSON response or {} on error.
+        """
+        if len(start_date) == 10:
+            start_date += "T00:00:00.000-07:00"
+        if len(end_date) == 10:
+            end_date += "T00:00:00.000-07:00"
+
+        url = f"{self.base_url}/v3/asinSearchTerms/rank/trends/daily"
+        payload = {
+            "resource": {"country": country, "asin": asin},
+            "biz": {
+                "entities": [
+                    {
+                        "asin": asin,
+                        "country": country,
+                        "searchTerm": term,
+                        "startDate": start_date,
+                        "endDate": end_date,
+                    }
+                    for term in search_terms
+                ]
+            },
+        }
+        headers = self.common_headers.copy()
+        headers["request-url"] = f"/detail/asin/look_up/{country}/{asin}"
+        headers["krs-ver"] = self._krs_ver()
+
+        logger.info(
+            f"[xiyouzhaoci] rank trends: asin={asin} terms={search_terms} "
+            f"({start_date[:10]} → {end_date[:10]})"
+        )
+        try:
+            response = self._request("POST", url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"[xiyouzhaoci] rank trends error: {e}")
+            return {}
+
     def get_search_term_trends(
         self,
         country: str,

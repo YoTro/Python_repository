@@ -33,11 +33,15 @@ Config keys (with defaults):
   acos_crit_threshold     float 0.50     critical if campaign ACOS > 50%
   budget_exhaustion_pct   float 0.90     flag if spend/budget > 90%
   enable_xiyou            bool  True     fetch organic rankings from xiyouzhaoci
+  rank_lookback_months    int   6        organic rank history depth (max 24 calendar months)
+                                         covariate_series extends to match this window for ITS alignment
+  enable_causal_analysis  bool  True     run ITS / CausalImpact / DML on change events
+  causal_metric           str   "orders" metric to model: orders | acos | clicks | spend
 """
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 
@@ -46,6 +50,7 @@ from src.workflows.engine import Workflow, WorkflowContext
 from src.workflows.steps.enrich import EnrichStep
 from src.workflows.steps.process import ProcessStep
 from src.workflows.steps.base import ComputeTarget
+from src.intelligence.processors.causal_analysis import ATTR_PRE_START, ATTR_POST_END
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +63,6 @@ _KEY_DAILY_PERF       = "ad_diag:daily_performance"
 _KEY_CHANGE_HISTORY   = "ad_diag:change_history"
 _KEY_PLACEMENT        = "ad_diag:placement"
 _KEY_COVARIATES       = "ad_diag:covariates"
-
-# Attribution window: compare [T-9,T-2] (before) vs [T+2,T+9] (after) relative to
-# a change event. The ±2-day buffer avoids attribution lag noise.
-_ATTR_PRE_START  = -9
-_ATTR_PRE_END    = -2
-_ATTR_POST_START = +2
-_ATTR_POST_END   = +9
 
 # Noise thresholds — changes smaller than these are low-signal
 _NOISE_BID_PCT    = 0.05  # bid changes < 5% → low_weight
@@ -160,20 +158,56 @@ async def _ensure_keywords(ctx: WorkflowContext, campaign_ids: List[str]) -> Lis
     return ctx.cache[cache_key]
 
 
-async def _ensure_daily_performance(ctx: WorkflowContext) -> List[Dict]:
-    """Fetch day-by-day spCampaigns report for the lookback window, cached once."""
-    if _KEY_DAILY_PERF not in ctx.cache:
+_ADVERT_PROD_MAX_DAYS = 31  # spAdvertisedProduct API window limit
+
+
+async def _ensure_daily_performance(ctx: WorkflowContext, asin: str) -> List[Dict]:
+    """
+    Fetch spAdvertisedProduct daily report for the target ASIN.
+
+    The full attribution window requires days + |ATTR_PRE_START| + |ATTR_POST_END| + 1
+    days of data, which often exceeds the API's 31-day limit.  We issue multiple
+    31-day chunks going backwards from yesterday and merge results, then filter
+    client-side to the target ASIN (the API doesn't allow advertisedAsin filters
+    with groupBy=advertiser).
+
+    Cache key is per-ASIN so concurrent items don't collide.
+    """
+    cache_key = f"{_KEY_DAILY_PERF}:{asin}"
+    if cache_key not in ctx.cache:
         from src.mcp.servers.amazon.ads.client import AmazonAdsClient
-        store_id = ctx.config.get("store_id")
-        region   = ctx.config.get("region", "NA")
-        days     = ctx.config.get("days", 30)
-        client   = AmazonAdsClient(store_id=store_id, region=region)
-        records  = await client.get_performance_report(
-            report_type="spCampaigns", days=days, time_unit="DAILY"
+        store_id    = ctx.config.get("store_id")
+        region      = ctx.config.get("region", "NA")
+        days        = ctx.config.get("days", 30)
+        client      = AmazonAdsClient(store_id=store_id, region=region)
+        days_needed = days + abs(ATTR_PRE_START) + abs(ATTR_POST_END) + 1
+
+        today     = datetime.utcnow().date()
+        chunk_end = today - timedelta(days=1)
+        remaining = days_needed
+        all_raw: List[Dict] = []
+
+        while remaining > 0:
+            chunk      = min(remaining, _ADVERT_PROD_MAX_DAYS)
+            chunk_start = chunk_end - timedelta(days=chunk - 1)
+            batch = await client.get_performance_report(
+                report_type="spAdvertisedProduct",
+                start_date=str(chunk_start),
+                end_date=str(chunk_end),
+                time_unit="DAILY",
+            )
+            all_raw.extend(batch)
+            chunk_end  = chunk_start - timedelta(days=1)
+            remaining -= chunk
+
+        records = [r for r in all_raw if r.get("advertised_asin") == asin]
+        ctx.cache[cache_key] = records
+        chunks = -(-days_needed // _ADVERT_PROD_MAX_DAYS)  # ceiling div
+        logger.info(
+            f"[daily_perf] {asin}: {len(records)}/{len(all_raw)} records "
+            f"({days_needed}d, {chunks} chunk(s))"
         )
-        ctx.cache[_KEY_DAILY_PERF] = records
-        logger.info(f"Fetched {len(records)} daily campaign performance records")
-    return ctx.cache[_KEY_DAILY_PERF]
+    return ctx.cache[cache_key]
 
 
 async def _ensure_placement_performance(ctx: WorkflowContext) -> List[Dict]:
@@ -192,9 +226,23 @@ async def _ensure_placement_performance(ctx: WorkflowContext) -> List[Dict]:
     return ctx.cache[_KEY_PLACEMENT]
 
 
-async def _ensure_change_history(ctx: WorkflowContext) -> List[Dict]:
-    """Fetch change history for the lookback window + attribution tail, cached once."""
-    if _KEY_CHANGE_HISTORY not in ctx.cache:
+async def _ensure_change_history(
+    ctx: WorkflowContext,
+    asin: str,
+    campaign_ids: List[str],
+) -> List[Dict]:
+    """
+    Fetch change history scoped to this ASIN's campaigns.
+
+    Uses campaign-batched API calls (10 campaigns per request, up to
+    _CH_CONCURRENCY concurrent) instead of a profile-wide fetch, avoiding
+    the 429 throttling that large accounts trigger with thousands of events.
+
+    end_dt is capped at today − 1 − ATTR_POST_END so every returned event
+    already has a complete post-attribution window within the available data.
+    """
+    cache_key = f"{_KEY_CHANGE_HISTORY}:{asin}"
+    if cache_key not in ctx.cache:
         from src.mcp.servers.amazon.ads.client import AmazonAdsClient
         store_id = ctx.config.get("store_id")
         region   = ctx.config.get("region", "NA")
@@ -203,26 +251,22 @@ async def _ensure_change_history(ctx: WorkflowContext) -> List[Dict]:
 
         tz       = _store_tz(ctx)
         today    = datetime.now(tz=tz).date()
-        # Extend window by |_ATTR_POST_END| days so attribution tail is covered
-        end_dt   = today - timedelta(days=1)
-        start_dt = today - timedelta(days=days + abs(_ATTR_POST_END))
-        # Boundaries must be in store tz so the API returns events for the correct
-        # local calendar days (e.g. an event at 23:30 PST would be next UTC day).
-        to_ms   = int(datetime(end_dt.year,   end_dt.month,   end_dt.day,   23, 59, 59, tzinfo=tz).timestamp() * 1000)
-        from_ms = int(datetime(start_dt.year, start_dt.month, start_dt.day,  0,  0,  0, tzinfo=tz).timestamp() * 1000)
+        end_dt   = today - timedelta(days=1 + abs(ATTR_POST_END))
+        start_dt = today - timedelta(days=days + abs(ATTR_POST_END))
+        to_ms    = int(datetime(end_dt.year,   end_dt.month,   end_dt.day,   23, 59, 59, tzinfo=tz).timestamp() * 1000)
+        from_ms  = int(datetime(start_dt.year, start_dt.month, start_dt.day,  0,  0,  0, tzinfo=tz).timestamp() * 1000)
 
-        # No campaign_ids: API only supports useProfileIdAdvertiser:true (profile-wide).
-        # Per-ASIN filtering happens client-side in _enrich_change_history.
         result = await client.get_change_history(
             from_date=from_ms,
             to_date=to_ms,
+            campaign_ids=campaign_ids,
             count=200,
             sort_direction="DESC",
         )
         events = result.get("events", [])
-        ctx.cache[_KEY_CHANGE_HISTORY] = events
-        logger.info(f"Fetched {len(events)} change history events")
-    return ctx.cache[_KEY_CHANGE_HISTORY]
+        ctx.cache[cache_key] = events
+        logger.info(f"[change_history] {asin}: {len(events)} events ({len(campaign_ids)} campaigns)")
+    return ctx.cache[f"{_KEY_CHANGE_HISTORY}:{asin}"]
 
 
 # ---------------------------------------------------------------------------
@@ -515,29 +559,32 @@ async def _enrich_placement(item: Dict, ctx: WorkflowContext) -> Dict:
 
 async def _enrich_change_history(item: Dict, ctx: WorkflowContext) -> Dict:
     """
-    Filter change history to this ASIN's campaigns, apply noise filter,
-    detect compound changes (multiple dimensions within 48h on same campaign).
+    Fetch and normalise change history for this ASIN's campaigns, apply noise
+    filter, detect compound changes (multiple dimensions within 48h on same
+    campaign).
 
-    _ensure_daily_performance is gathered concurrently here intentionally:
-    _correlate_changes is a synchronous ProcessStep that reads daily_perf from
-    ctx.cache. It runs AFTER all EnrichStep items complete, so the cache must
-    be populated before then. Fetching it here (in parallel with change_history)
-    ensures it is warmed — do NOT remove this gather without moving the fetch elsewhere.
+    Uses campaign-batched API calls via _ensure_change_history — no client-side
+    campaign filtering needed since the API already scopes to campaign_ids.
+
+    _ensure_daily_performance is gathered concurrently intentionally:
+    run_causal_analysis reads daily_perf from ctx.cache via _run_causal_analysis.
+    It runs AFTER all EnrichStep items complete, so the cache must be populated
+    before then. Fetching it here (in parallel with change_history) ensures it
+    is warmed — do NOT remove this gather without moving the fetch elsewhere.
     """
-    campaign_ids = set(item.get("campaign_ids", []))
+    asin         = item.get("asin", "").upper()
+    campaign_ids = list(item.get("campaign_ids") or [])
     all_events, _ = await asyncio.gather(
-        _ensure_change_history(ctx),
-        _ensure_daily_performance(ctx),
+        _ensure_change_history(ctx, asin, campaign_ids),
+        _ensure_daily_performance(ctx, asin),
     )
 
     relevant = []
     for ev in all_events:
-        # Campaign ID: prefer metadata.campaignId (present for AD_GROUP/KEYWORD events),
+        # Campaign ID: prefer metadata.campaignId (AD_GROUP/KEYWORD events),
         # fall back to entityId for CAMPAIGN-level events.
         meta = ev.get("metadata") or {}
         cid  = str(meta.get("campaignId") or ev.get("entityId") or "")
-        if campaign_ids and cid not in campaign_ids:
-            continue
 
         # Noise filter: IN_BUDGET is auto-generated (not a human action); tiny tweaks are low-signal
         change_type = ev.get("changeType", "")
@@ -601,165 +648,6 @@ async def _enrich_change_history(item: Dict, ctx: WorkflowContext) -> Dict:
         "change_event_count":  len(notable),
         "has_compound_change": any(e["compound_change"] for e in notable),
     }
-
-
-def _correlate_changes(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
-    """
-    ProcessStep (pure Python): for each significant change event, compare
-    [T-9,T-2] (before) vs [T+2,T+9] (after) daily campaign KPIs.
-
-    Adds to each item:
-        change_attributions  list of attribution dicts (one per notable change)
-    """
-    daily_perf = ctx.cache.get(_KEY_DAILY_PERF, [])
-
-    # Index daily records by (campaign_id, date)
-    daily_index: Dict[tuple, Dict] = {}
-    for rec in daily_perf:
-        cid  = str(rec.get("campaign_id") or "")
-        date = rec.get("date") or ""
-        if cid and date:
-            daily_index[(cid, date)] = rec
-
-    def _window_avg(cid: str, anchor_date: datetime, day_start: int, day_end: int) -> Optional[Dict]:
-        """Aggregate KPIs over [anchor + day_start, anchor + day_end] inclusive.
-
-        spend/orders/clicks are averaged per day for comparability across windows
-        of different lengths. ACOS is derived from summed spend/sales to avoid the
-        ratio-averaging fallacy (low-spend days would dilute a simple mean of ACOS%).
-        """
-        records = []
-        for offset in range(day_start, day_end + 1):
-            d = (anchor_date + timedelta(days=offset)).strftime("%Y-%m-%d")
-            rec = daily_index.get((cid, d))
-            if rec:
-                records.append(rec)
-        if not records:
-            return None
-        n           = len(records)
-        total_spend = sum(r.get("spend", 0) or 0 for r in records)
-        total_sales = sum(r.get("sales", 0) or 0 for r in records)
-        return {
-            "spend":   round(total_spend / n, 2),
-            "orders":  round(sum(r.get("orders", 0) or 0 for r in records) / n, 2),
-            "acos":    round(total_spend / total_sales * 100, 2) if total_sales > 0 else None,
-            "clicks":  round(sum(r.get("clicks", 0) or 0 for r in records) / n, 2),
-            "days":    n,
-        }
-
-    def _classify(delta: float, metric: str, pre_val: float) -> str:
-        if metric == "acos":
-            # Absolute ACOS delta in percentage points; ±3pp is meaningful regardless of scale
-            if delta < -3:  return "improved"
-            if delta >  3:  return "worsened"
-        else:
-            # Relative change: signal only if ≥15% shift from pre-window baseline
-            # (avoids flagging a 0.5-order swing as signal on a 50-order/day campaign)
-            if pre_val > 0 and abs(delta) / pre_val >= 0.15:
-                return "improved" if delta > 0 else "worsened"
-        return "neutral"
-
-    tz = _store_tz(ctx)
-
-    for item in items:
-        events           = item.get("change_events", [])
-        covariate_series = item.get("covariate_series", {})
-        attributions     = []
-
-        for ev in events:
-            ts = ev.get("changed_at")
-            if not ts:
-                continue
-            try:
-                # changedAt is UTC epoch-ms; convert to store local time so the
-                # calendar date matches performance-report dates and xiyou localDate.
-                anchor = datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc).astimezone(tz)
-            except (TypeError, ValueError):
-                continue
-
-            cid  = str(ev.get("campaign_id") or "")
-            pre  = _window_avg(cid, anchor, _ATTR_PRE_START, _ATTR_PRE_END)
-            post = _window_avg(cid, anchor, _ATTR_POST_START, _ATTR_POST_END)
-
-            if pre is None or post is None:
-                continue  # insufficient daily data to attribute
-
-            pre_acos  = pre["acos"]
-            post_acos = post["acos"]
-            delta_acos   = round(post_acos - pre_acos, 2) if (pre_acos is not None and post_acos is not None) else None
-            delta_orders = round(post["orders"] - pre["orders"], 2)
-            delta_clicks = round(post["clicks"] - pre["clicks"], 2)
-
-            direction = _classify(delta_orders, "orders", pre["orders"])
-            if direction == "neutral" and delta_acos is not None:
-                direction = _classify(delta_acos, "acos", pre_acos or 0)
-
-            # ── Covariate context on the change date ──────────────────────
-            change_date  = anchor.strftime("%Y-%m-%d")
-            cov          = covariate_series.get(change_date, {})
-            comp_summary = item.get("competitor_price_summary", {})
-
-            # Confound flag: promotion active on change date → post-window
-            # lift may be driven by promotion, not the bid/budget change.
-            had_promotion = cov.get("promotion_flag", False)
-
-            # Pre-window avg price from covariate series (±window dates)
-            pre_prices = [
-                covariate_series.get(
-                    (anchor + timedelta(days=d)).strftime("%Y-%m-%d"), {}
-                ).get("sale_price")
-                for d in range(_ATTR_PRE_START, _ATTR_PRE_END + 1)
-            ]
-            post_prices = [
-                covariate_series.get(
-                    (anchor + timedelta(days=d)).strftime("%Y-%m-%d"), {}
-                ).get("sale_price")
-                for d in range(_ATTR_POST_START, _ATTR_POST_END + 1)
-            ]
-            pre_prices  = [p for p in pre_prices  if p is not None]
-            post_prices = [p for p in post_prices if p is not None]
-            price_delta = (
-                round(sum(post_prices) / len(post_prices) - sum(pre_prices) / len(pre_prices), 2)
-                if pre_prices and post_prices else None
-            )
-
-            attributions.append({
-                "event_id":      ev.get("event_id"),
-                "campaign_id":   cid,
-                "change_type":   ev.get("change_type"),
-                "entity_type":   ev.get("entity_type"),
-                "old_value":     ev.get("old_value"),
-                "new_value":     ev.get("new_value"),
-                "changed_at":    change_date,
-                "priority":      ev.get("priority", 0),
-                "compound":      ev.get("compound_change", False),
-                "pre_window":    pre,
-                "post_window":   post,
-                "delta_acos":    delta_acos,
-                "delta_orders":  delta_orders,
-                "delta_clicks":  delta_clicks,
-                "direction":     direction,
-                # Covariate snapshot — used by ITS/CausalImpact/DML layers
-                "covariates_at_change": cov,
-                "had_promotion":        had_promotion,
-                "price_delta_window":   price_delta,      # +ve = own price rose post-change
-                # Competitive price gap on change date (own sale_price − competitor median)
-                # Negative = priced below median (competitive), positive = priced above (at risk)
-                "price_gap_to_comp_median": (
-                    round(cov["sale_price"] - comp_summary[change_date]["median"], 2)
-                    if cov.get("sale_price") and comp_summary.get(change_date, {}).get("median")
-                    else None
-                ),
-            })
-
-        # Sort: priority desc (SMART_BIDDING_STRATEGY first), then impact magnitude desc
-        attributions.sort(
-            key=lambda a: (a.get("priority", 0), abs(a["delta_orders"])),
-            reverse=True,
-        )
-        item["change_attributions"] = attributions[:20]
-
-    return items
 
 
 def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
@@ -866,7 +754,7 @@ async def _enrich_covariates(item: Dict, ctx: WorkflowContext) -> Dict:
     """
     Fetch daily price / promotion / rating time series via Xiyouzhaoci get_asin_daily_trends.
 
-    Covers the same window as the change-history lookback so that _correlate_changes
+    Covers the same window as the change-history lookback so that run_causal_analysis
     can annotate each change event with the covariate state on the change date.
 
     Returned covariate_series shape:
@@ -890,10 +778,24 @@ async def _enrich_covariates(item: Dict, ctx: WorkflowContext) -> Dict:
         from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
         api = XiyouZhaociAPI(tenant_id=ctx.config.get("tenant_id", "default"))
 
-        tz       = ZoneInfo(ctx.config.get("timezone", "America/Los_Angeles"))
-        today    = datetime.now(tz=tz).date()
-        end_dt   = today - timedelta(days=1)
-        start_dt = today - timedelta(days=days + abs(_ATTR_POST_END))
+        tz     = ZoneInfo(ctx.config.get("timezone", "America/Los_Angeles"))
+        today  = datetime.now(tz=tz).date()
+        end_dt = today - timedelta(days=1)
+
+        # Two-tier window:
+        #   Attribution window  (days):                 aligns with change_history for Before/After
+        #   Causal baseline window (rank_lookback_months): aligns with natural_rank_series for ITS
+        # Use the longer of the two so covariate_series covers the full ITS baseline.
+        import calendar as _cal
+        rank_months = min(ctx.config.get("rank_lookback_months", 6), 24)
+        rm_y = end_dt.year - (rank_months // 12)
+        rm_m = end_dt.month - (rank_months % 12)
+        if rm_m <= 0:
+            rm_m += 12; rm_y -= 1
+        from datetime import date as _date
+        causal_start = _date(rm_y, rm_m, min(end_dt.day, _cal.monthrange(rm_y, rm_m)[1]))
+        attr_start   = today - timedelta(days=days + abs(ATTR_POST_END))
+        start_dt     = min(causal_start, attr_start)
 
         raw = api.get_asin_daily_trends(
             country=country,
@@ -1059,7 +961,7 @@ async def _enrich_competitor_prices(item: Dict, ctx: WorkflowContext) -> Dict:
 
         # ── Fetch daily price history for each competitor (parallel) ─────
         cov_end   = today - timedelta(days=1)
-        cov_start = today - timedelta(days=days + abs(_ATTR_POST_END))
+        cov_start = today - timedelta(days=days + abs(ATTR_POST_END))
 
         async def _fetch_prices(comp_asin: str):
             try:
@@ -1158,6 +1060,199 @@ async def _enrich_xiyou_rankings(item: Dict, ctx: WorkflowContext) -> Dict:
         return {}
 
 
+def _select_rank_keywords(item: Dict, top_n: int = 3) -> List[str]:
+    """
+    Choose the most signal-rich keywords for organic rank and market trend tracking.
+
+    Priority order:
+      1. lp_top_allocations — LP-validated efficient terms (high spend + positive CVR).
+      2. keyword_performance sorted by total_spend, filtered ACOS ≤ 80%
+         (avoid zero-CVR keywords that burn budget with no organic signal).
+
+    Returns at most `top_n` unique lowercase keyword strings.
+    """
+    seen: list = []
+
+    for entry in item.get("lp_top_allocations") or []:
+        # lp_top_allocations stores "keyword text|MATCH_TYPE" — strip the suffix
+        kw = (entry.get("keyword") or "").split("|")[0].strip().lower()
+        if kw and kw not in seen:
+            seen.append(kw)
+        if len(seen) >= top_n:
+            return seen
+
+    kw_perf = sorted(
+        item.get("keyword_performance") or [],
+        key=lambda x: x.get("total_spend", 0),
+        reverse=True,
+    )
+    for entry in kw_perf:
+        acos = entry.get("acos")
+        if acos is not None and acos > 80:
+            continue
+        kw = (entry.get("keyword_text") or "").strip().lower()
+        if kw and kw not in seen:
+            seen.append(kw)
+        if len(seen) >= top_n:
+            return seen
+
+    return seen
+
+
+async def _enrich_keyword_signals(item: Dict, ctx: WorkflowContext) -> Dict:
+    """
+    Fetch daily organic rank and weekly ABA market trends for the top-N keywords
+    in a single enricher, avoiding duplicate keyword selection and API client setup.
+
+    Keyword selection: _select_rank_keywords() called once — LP allocations first,
+    fallback to top-spend keywords with ACOS ≤ 80%.
+
+    Both API calls (rank trends, SFR trends) are issued concurrently via asyncio.gather.
+
+    Returned keys:
+        natural_rank_series   {keyword: {date: {page, pageRank, totalRank}}}
+        rank_tracked_keywords list of keywords that returned rank data
+        market_trends         {keyword: {YYYY-Www: {sfr, weekly_searches}}}
+        market_trends_meta    {keyword: {current_sfr, current_weekly_searches}}
+    """
+    if not ctx.config.get("enable_xiyou", True):
+        return {}
+
+    asin    = item.get("asin")
+    country = ctx.config.get("country", "US")
+    if not asin:
+        return {}
+
+    keywords = _select_rank_keywords(item)
+    if not keywords:
+        logger.info(f"[keyword_signals] No keywords for {asin}, skipping.")
+        return {}
+
+    import calendar as _cal
+    from datetime import date as _date
+
+    rank_months  = min(ctx.config.get("rank_lookback_months", 6), 24)
+    weeks_needed = rank_months * 4 + 4   # slight overestimate; API caps internally
+
+    tz     = ZoneInfo(ctx.config.get("timezone", "America/Los_Angeles"))
+    today  = datetime.now(tz=tz).date()
+    end_dt = today - timedelta(days=1)
+
+    # Calendar-month start date for rank series
+    y, m = end_dt.year - (rank_months // 12), end_dt.month - (rank_months % 12)
+    if m <= 0:
+        m += 12; y -= 1
+    rank_start = _date(y, m, min(end_dt.day, _cal.monthrange(y, m)[1]))
+
+    try:
+        from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
+        api = XiyouZhaociAPI(tenant_id=ctx.config.get("tenant_id", "default"))
+
+        # ── Fetch rank trends and SFR trends concurrently ─────────────────────
+        async def _fetch_rank() -> Dict:
+            raw      = await asyncio.to_thread(
+                api.get_asin_search_term_rank_trends,
+                country, asin, keywords,
+                rank_start.strftime("%Y-%m-%d"),
+                end_dt.strftime("%Y-%m-%d"),
+            )
+            entities = raw.get("entities") or []
+            series: Dict[str, Dict] = {}
+            for entity in entities:
+                term  = (entity.get("searchTerm") or "").strip().lower()
+                daily: Dict[str, Dict] = {}
+                for trend in entity.get("trends") or []:
+                    try:
+                        dt = datetime.fromisoformat(str(trend.get("localDate") or "")).astimezone(tz)
+                        date_key = dt.strftime("%Y-%m-%d")
+                    except Exception:
+                        continue
+                    or_pos = (trend.get("displayPositions") or {}).get("or") or {}
+                    if or_pos:
+                        daily[date_key] = {
+                            "page":      or_pos.get("page"),
+                            "pageRank":  or_pos.get("pageRank"),
+                            "totalRank": or_pos.get("totalRank"),
+                        }
+                if daily:
+                    series[term] = daily
+            return series
+
+        async def _fetch_trends() -> tuple:
+            latest_monday = today - timedelta(days=today.weekday() + 7)
+            trends: Dict[str, Dict] = {}
+            meta:   Dict[str, Dict] = {}
+            for kw in keywords:
+                raw     = await asyncio.to_thread(api.get_search_term_trends, country, kw, weeks_needed)
+                entries = raw.get("searchTerms") or []
+                if not entries:
+                    continue
+                entry      = entries[0]
+                sfr_arr    = (entry.get("trends") or {}).get("searchFrequencyRank") or []
+                search_arr = (entry.get("trends") or {}).get("weekSearch") or []
+                n = len(sfr_arr)
+                if not n:
+                    continue
+                weekly: Dict[str, Dict] = {}
+                for i, sfr in enumerate(sfr_arr):
+                    week_monday = latest_monday - timedelta(days=(n - 1 - i) * 7)
+                    weekly[week_monday.strftime("%G-W%V")] = {
+                        "sfr":             sfr,
+                        "weekly_searches": search_arr[i] if i < len(search_arr) else None,
+                    }
+                trends[kw] = weekly
+                current    = entry.get("values") or {}
+                meta[kw]   = {
+                    "current_sfr":             current.get("searchFrequencyRank"),
+                    "current_weekly_searches": current.get("weekSearch"),
+                }
+            return trends, meta
+
+        rank_series, (market_trends, market_trends_meta) = await asyncio.gather(
+            _fetch_rank(),
+            _fetch_trends(),
+        )
+
+        logger.info(
+            f"[keyword_signals] {asin}: rank={list(rank_series.keys())}, "
+            f"trends={list(market_trends.keys())}"
+        )
+        return {
+            "natural_rank_series":   rank_series,
+            "rank_tracked_keywords": list(rank_series.keys()),
+            "market_trends":         market_trends,
+            "market_trends_meta":    market_trends_meta,
+        }
+
+    except Exception as e:
+        logger.warning(f"[keyword_signals] Failed for {asin}: {e}")
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Causal analysis wrapper (delegates to intelligence/processors/causal_analysis)
+# ---------------------------------------------------------------------------
+
+def _run_causal_analysis(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
+    """
+    ProcessStep wrapper: runs the full attribution + causal pipeline
+    (window comparison, ITS, CausalImpact, DML) for each item.
+
+    Passes daily_perf from cache so the processor can build the campaign-level
+    daily performance index without depending on workflow internals.
+    """
+    from src.intelligence.processors.causal_analysis import run_causal_analysis
+    for item in items:
+        try:
+            asin       = item.get("asin", "").upper()
+            daily_perf = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
+            result = run_causal_analysis(item, ctx.config, daily_perf=daily_perf)
+            item.update(result)
+        except Exception as e:
+            logger.warning(f"[causal_analysis] Failed for {item.get('asin', '?')}: {e}")
+    return items
+
+
 # ---------------------------------------------------------------------------
 # Workflow builder
 # ---------------------------------------------------------------------------
@@ -1186,7 +1281,7 @@ def build_ad_diagnosis(config: dict) -> Workflow:
         ),
         # Covariate time series: daily price/promotion/rating from Xiyouzhaoci.
         # Runs in Stage 1 (independent of campaign data) so the series is ready
-        # before _correlate_changes annotates each change event with covariate context.
+        # before run_causal_analysis annotates each change event with covariate context.
         EnrichStep(
             name="fetch_covariates",
             extractor_fn=_enrich_covariates,
@@ -1247,11 +1342,6 @@ def build_ad_diagnosis(config: dict) -> Workflow:
             parallel=True,
             concurrency=5,
         ),
-        ProcessStep(
-            name="correlate_changes",
-            fn=_correlate_changes,
-            compute_target=ComputeTarget.PURE_PYTHON,
-        ),
 
         # ── Stage 5b: LP budget optimisation (pure Python, OR-Tools) ─────────
         ProcessStep(
@@ -1260,12 +1350,35 @@ def build_ad_diagnosis(config: dict) -> Workflow:
             compute_target=ComputeTarget.PURE_PYTHON,
         ),
 
-        # ── Stage 6: organic keyword rankings from Xiyouzhaoci ───────────────
+        # ── Stage 5c: causal analysis (window attribution + ITS/CI/DML) ──────
+        # Absorbs the old correlate_changes step: produces change_attributions
+        # with ITS/CausalImpact/DML results embedded per event.
+        # Runs before stage 6 so statistical evidence reaches the LLM prompt
+        # even when rank/trends data is not yet available.
+        ProcessStep(
+            name="run_causal_analysis",
+            fn=_run_causal_analysis,
+            compute_target=ComputeTarget.PURE_PYTHON,
+            enabled=config.get("enable_causal_analysis", True),
+        ),
+
+        # ── Stage 6: Xiyouzhaoci keyword signals ─────────────────────────────
         EnrichStep(
             name="fetch_xiyou_rankings",
             extractor_fn=_enrich_xiyou_rankings,
             parallel=True,
             concurrency=3,
+            enabled=config.get("enable_xiyou", True),
+        ),
+        # Fetches natural_rank_series + market_trends in one step.
+        # Keywords selected once via _select_rank_keywords; both API calls
+        # (rank trends, SFR trends) run concurrently inside the enricher.
+        # Requires keyword_performance (Stage 4) and lp_top_allocations (Stage 5b).
+        EnrichStep(
+            name="fetch_keyword_signals",
+            extractor_fn=_enrich_keyword_signals,
+            parallel=True,
+            concurrency=2,   # each call issues 2 Xiyou requests; keep low
             enabled=config.get("enable_xiyou", True),
         ),
 
@@ -1292,8 +1405,17 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "   PP has high ACOS but high spend_share → lower PP modifier or bid.\n"
                 "4. **Keywords** — Are keyword_count and match_type_dist healthy? "
                 "   Flag keywords with ACOS above threshold in high_acos_campaigns.\n"
-                "5. **Organic ranking** — Does ad_traffic_ratio suggest over-reliance on ads? "
+                "5. **Organic ranking & Market demand** — Does ad_traffic_ratio suggest over-reliance on ads? "
                 "   Is organic_traffic_ratio growing or declining?\n"
+                "   Use natural_rank_series (daily pageRank per keyword) to identify rank trends: "
+                "   is organic rank improving or degrading over the analysis window? "
+                "   Cross-reference rank changes with change_attributions — did a bid increase "
+                "   coincide with improved organic rank (halo effect)?\n"
+                "   Use market_trends (weekly SFR per keyword) as a market demand proxy: "
+                "   lower SFR = higher search volume. Identify whether ACOS/CVR shifts in "
+                "   change_attributions are driven by market seasonality (SFR rising/falling) "
+                "   rather than internal bid changes. Cite the ISO week (YYYY-Www) when demand "
+                "   peaked or troughed relative to key change events.\n"
                 "6. **Inventory** — Is inventory_risk=True? What is can_sell_days? "
                 "   Will a stockout hurt ad performance?\n"
                 "7. **ACOS & profitability** — Is account_acos acceptable? "
@@ -1323,7 +1445,21 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "     Positive = priced above market (conversion headwind — factor this into ACOS analysis).\n"
                 "   - Use competitor_price_summary {min,max,median} time series to explain "
                 "     sustained ACOS/CVR shifts that correlate with competitor price movements "
-                "     rather than internal bid changes.\n\n"
+                "     rather than internal bid changes.\n"
+                "10. **Causal Analysis** — Each change_attribution entry embeds three causal model "
+                "    outputs directly: its, causal_impact, dml, and a consensus summary string.\n"
+                "    - Read the consensus field first — it summarises cross-model agreement.\n"
+                "    - its.level_shift: estimated immediate level change in the outcome metric "
+                "      at the intervention point. its.p_level < 0.10 = statistically significant.\n"
+                "    - causal_impact.point_effect: counterfactual gap (actual − predicted without "
+                "      the change). Positive = metric rose more than the trend-based forecast.\n"
+                "    - dml.theta: clean causal effect after removing covariate-driven variation "
+                "      (price, organic rank, SFR, competitor price) via ML residualisation. "
+                "      Significant DML + significant ITS = effect is not a confounder artefact.\n"
+                "    - When all three agree (consensus starts with 'Strong evidence'), treat the "
+                "      causal claim as high-confidence and lead with it in your recommendations.\n"
+                "    - When models disagree or skipped=True, fall back to the pre/post window "
+                "      delta_orders / delta_acos fields in the same entry.\n\n"
                 "Output format:\n"
                 "- One section per ASIN with a severity rating: 🟢 Healthy / 🟡 Warning / 🔴 Critical\n"
                 "- Bullet-point findings per dimension\n"
