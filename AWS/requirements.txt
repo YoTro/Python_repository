@@ -13,6 +13,7 @@ pyyaml
 jinja2
 python-dotenv>=1.0.0
 llama-cpp-python
+redis
 
 # Analysis & Data
 scikit-learn

@@ -74,24 +74,39 @@ class _JsonFileBackend(_CacheBackend):
         return key in self._mem[domain]
 
 
-# Swap this class for a RedisBackend when ready:
-#
-# class _RedisBackend(_CacheBackend):
-#     def __init__(self, url: str = "redis://localhost:6379"):
-#         import redis
-#         self._r = redis.from_url(url)
-#
-#     def _key(self, domain, key): return f"{domain}:{key}"
-#
-#     def get_raw(self, domain, key):
-#         raw = self._r.get(self._key(domain, key))
-#         return json.loads(raw) if raw else None
-#
-#     def set_raw(self, domain, key, envelope):
-#         self._r.set(self._key(domain, key), json.dumps(envelope, ensure_ascii=False))
-#
-#     def exists(self, domain, key):
-#         return bool(self._r.exists(self._key(domain, key)))
+class _RedisBackend(_CacheBackend):
+    """Distributed, Redis-backed store."""
+
+    def __init__(self, url: str):
+        import redis
+        self._url = url
+        # decode_responses=True returns strings instead of bytes
+        self._r = redis.from_url(url, decode_responses=True)
+        logger.info(f"[cache] RedisBackend initialized with {url}")
+
+    def _key(self, domain: str, key: str) -> str:
+        return f"aws:cache:{domain}:{key}"
+
+    def get_raw(self, domain: str, key: str) -> Optional[Dict[str, Any]]:
+        try:
+            raw = self._r.get(self._key(domain, key))
+            return json.loads(raw) if raw else None
+        except Exception as e:
+            logger.error(f"[cache] Redis get failed: {e}")
+            return None
+
+    def set_raw(self, domain: str, key: str, envelope: Dict[str, Any]) -> None:
+        try:
+            self._r.set(self._key(domain, key), json.dumps(envelope, ensure_ascii=False))
+        except Exception as e:
+            logger.error(f"[cache] Redis set failed: {e}")
+
+    def exists(self, domain: str, key: str) -> bool:
+        try:
+            return bool(self._r.exists(self._key(domain, key)))
+        except Exception as e:
+            logger.error(f"[cache] Redis exists failed: {e}")
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -105,17 +120,28 @@ class DataCache:
     L1 Servers (Amazon, Market, Social) write raw scraped data here.
     L2 Servers (Finance, Compliance) read from here to perform calculations.
 
-    Backend is swappable (JsonFile now, Redis later) without touching callers.
+    Backend is swappable (JsonFile by default, Redis if REDIS_URL is set).
     """
 
     def __init__(self, backend: _CacheBackend = None, cache_dir: str = None):
         if backend is not None:
             self._backend = backend
         else:
-            _dir = cache_dir or os.path.join(
-                os.path.dirname(__file__), "..", "..", "data", "cache"
-            )
-            self._backend = _JsonFileBackend(_dir)
+            redis_url = os.getenv("REDIS_URL")
+            if redis_url:
+                try:
+                    self._backend = _RedisBackend(redis_url)
+                except Exception as e:
+                    logger.error(f"[cache] Failed to initialize RedisBackend: {e} — falling back to JsonFile")
+                    self._backend = self._init_json_backend(cache_dir)
+            else:
+                self._backend = self._init_json_backend(cache_dir)
+
+    def _init_json_backend(self, cache_dir: str = None) -> _JsonFileBackend:
+        _dir = cache_dir or os.path.join(
+            os.path.dirname(__file__), "..", "..", "data", "cache"
+        )
+        return _JsonFileBackend(_dir)
 
     @staticmethod
     def _to_serializable(value: Any) -> Any:
