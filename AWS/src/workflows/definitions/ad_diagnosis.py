@@ -226,23 +226,9 @@ async def _ensure_placement_performance(ctx: WorkflowContext) -> List[Dict]:
     return ctx.cache[_KEY_PLACEMENT]
 
 
-async def _ensure_change_history(
-    ctx: WorkflowContext,
-    asin: str,
-    campaign_ids: List[str],
-) -> List[Dict]:
-    """
-    Fetch change history scoped to this ASIN's campaigns.
-
-    Uses campaign-batched API calls (10 campaigns per request, up to
-    _CH_CONCURRENCY concurrent) instead of a profile-wide fetch, avoiding
-    the 429 throttling that large accounts trigger with thousands of events.
-
-    end_dt is capped at today − 1 − ATTR_POST_END so every returned event
-    already has a complete post-attribution window within the available data.
-    """
-    cache_key = f"{_KEY_CHANGE_HISTORY}:{asin}"
-    if cache_key not in ctx.cache:
+async def _ensure_change_history(ctx: WorkflowContext) -> List[Dict]:
+    """Fetch change history for the lookback window + attribution tail, cached once."""
+    if _KEY_CHANGE_HISTORY not in ctx.cache:
         from src.mcp.servers.amazon.ads.client import AmazonAdsClient
         store_id = ctx.config.get("store_id")
         region   = ctx.config.get("region", "NA")
@@ -251,22 +237,26 @@ async def _ensure_change_history(
 
         tz       = _store_tz(ctx)
         today    = datetime.now(tz=tz).date()
-        end_dt   = today - timedelta(days=1 + abs(ATTR_POST_END))
+        # Extend window by ATTR_POST_END days so attribution tail is covered
+        end_dt   = today - timedelta(days=1)
         start_dt = today - timedelta(days=days + abs(ATTR_POST_END))
-        to_ms    = int(datetime(end_dt.year,   end_dt.month,   end_dt.day,   23, 59, 59, tzinfo=tz).timestamp() * 1000)
-        from_ms  = int(datetime(start_dt.year, start_dt.month, start_dt.day,  0,  0,  0, tzinfo=tz).timestamp() * 1000)
+        # Boundaries must be in store tz so the API returns events for the correct
+        # local calendar days (e.g. an event at 23:30 PST would be next UTC day).
+        to_ms   = int(datetime(end_dt.year,   end_dt.month,   end_dt.day,   23, 59, 59, tzinfo=tz).timestamp() * 1000)
+        from_ms = int(datetime(start_dt.year, start_dt.month, start_dt.day,  0,  0,  0, tzinfo=tz).timestamp() * 1000)
 
+        # No campaign_ids: API only supports useProfileIdAdvertiser:true (profile-wide).
+        # Per-ASIN filtering happens client-side in _enrich_change_history.
         result = await client.get_change_history(
             from_date=from_ms,
             to_date=to_ms,
-            campaign_ids=campaign_ids,
             count=200,
             sort_direction="DESC",
         )
         events = result.get("events", [])
-        ctx.cache[cache_key] = events
-        logger.info(f"[change_history] {asin}: {len(events)} events ({len(campaign_ids)} campaigns)")
-    return ctx.cache[f"{_KEY_CHANGE_HISTORY}:{asin}"]
+        ctx.cache[_KEY_CHANGE_HISTORY] = events
+        logger.info(f"Fetched {len(events)} change history events")
+    return ctx.cache[_KEY_CHANGE_HISTORY]
 
 
 # ---------------------------------------------------------------------------
@@ -559,23 +549,19 @@ async def _enrich_placement(item: Dict, ctx: WorkflowContext) -> Dict:
 
 async def _enrich_change_history(item: Dict, ctx: WorkflowContext) -> Dict:
     """
-    Fetch and normalise change history for this ASIN's campaigns, apply noise
-    filter, detect compound changes (multiple dimensions within 48h on same
-    campaign).
+    Filter change history to this ASIN's campaigns, apply noise filter,
+    detect compound changes (multiple dimensions within 48h on same campaign).
 
-    Uses campaign-batched API calls via _ensure_change_history — no client-side
-    campaign filtering needed since the API already scopes to campaign_ids.
-
-    _ensure_daily_performance is gathered concurrently intentionally:
-    run_causal_analysis reads daily_perf from ctx.cache via _run_causal_analysis.
-    It runs AFTER all EnrichStep items complete, so the cache must be populated
-    before then. Fetching it here (in parallel with change_history) ensures it
-    is warmed — do NOT remove this gather without moving the fetch elsewhere.
+    _ensure_daily_performance is gathered concurrently here intentionally:
+    _correlate_changes is a synchronous ProcessStep that reads daily_perf from
+    ctx.cache. It runs AFTER all EnrichStep items complete, so the cache must
+    be populated before then. Fetching it here (in parallel with change_history)
+    ensures it is warmed — do NOT remove this gather without moving the fetch elsewhere.
     """
     asin         = item.get("asin", "").upper()
-    campaign_ids = list(item.get("campaign_ids") or [])
+    campaign_ids = set(item.get("campaign_ids") or [])
     all_events, _ = await asyncio.gather(
-        _ensure_change_history(ctx, asin, campaign_ids),
+        _ensure_change_history(ctx),
         _ensure_daily_performance(ctx, asin),
     )
 
@@ -585,6 +571,10 @@ async def _enrich_change_history(item: Dict, ctx: WorkflowContext) -> Dict:
         # fall back to entityId for CAMPAIGN-level events.
         meta = ev.get("metadata") or {}
         cid  = str(meta.get("campaignId") or ev.get("entityId") or "")
+
+        # Filter to this ASIN's campaigns since we now fetch profile-wide
+        if campaign_ids and cid not in campaign_ids:
+            continue
 
         # Noise filter: IN_BUDGET is auto-generated (not a human action); tiny tweaks are low-signal
         change_type = ev.get("changeType", "")

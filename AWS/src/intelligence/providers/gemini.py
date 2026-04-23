@@ -90,12 +90,18 @@ class GeminiProvider(BaseLLMProvider):
     async def generate_text(self, prompt: str, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
         await self._check_context_limit(prompt, system_message)
         try:
-            config = types.GenerateContentConfig(
-                system_instruction=system_message
-            ) if system_message else None
-
             # Filter out internal metadata from kwargs
             filtered_kwargs = self._filter_kwargs(kwargs)
+            
+            # Extract and handle temperature (default to 0.2)
+            temp = filtered_kwargs.pop("temperature", 0.2)
+
+            config = types.GenerateContentConfig(
+                system_instruction=system_message,
+                temperature=temp,
+            ) if system_message else types.GenerateContentConfig(
+                temperature=temp,
+            )
 
             response = await asyncio.to_thread(
                 self.client.models.generate_content,

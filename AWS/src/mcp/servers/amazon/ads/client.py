@@ -8,6 +8,7 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 from .auth import AmazonAdsAuth
+from src.core.utils.decorators import exponential_backoff
 
 logger = logging.getLogger(__name__)
 
@@ -561,25 +562,13 @@ class AmazonAdsClient:
             "sort":     {"direction": sort_direction.upper(), "key": "DATE"},
         }
 
+        @exponential_backoff(max_retries=5, base_delay=60.0, jitter=False) # history rate-limit is strict
         async def _post_with_retry(body_dict: Dict) -> Dict:
             body_bytes = json.dumps(body_dict).encode("utf-8")
-            for attempt in range(5):
-                resp = await asyncio.to_thread(
-                    requests.post, url, data=body_bytes, headers=headers
-                )
-                if resp.status_code == 429:
-                    retry_after = int(resp.headers.get("Retry-After", 60))
-                    wait = max(retry_after, 60 * (attempt + 1))
-                    logger.info(
-                        f"Change history 429, Retry-After={retry_after}s, "
-                        f"waiting {wait}s (attempt {attempt+1}/5)"
-                    )
-                    await asyncio.sleep(wait)
-                    continue
-                break
-            if not resp.ok:
-                logger.error(f"Change history failed {resp.status_code}: {resp.text[:300]}")
-                resp.raise_for_status()
+            resp = await asyncio.to_thread(
+                requests.post, url, data=body_bytes, headers=headers
+            )
+            resp.raise_for_status()
             return resp.json()
 
         async def _paginate(initial_body: Dict, label: str = "") -> List[Dict]:
@@ -652,9 +641,23 @@ class AmazonAdsClient:
 # ── module-level parsers ────────────────────────────────────────────────────
 
 def _parse_campaign(c: Dict) -> Dict[str, Any]:
-    bidding = c.get("bidding", {})
-    adjustments = bidding.get("adjustments", [])
+    # v3 uses dynamicBidding instead of bidding
+    db = c.get("dynamicBidding", {})
+    adjustments = db.get("placementBidding", [])
     placement_map = {a["placement"]: a["percentage"] for a in adjustments if "placement" in a}
+
+    # Map internal strategy codes to human-readable UI names
+    # MANUAL -> Fixed bids
+    # AUTO_FOR_SALES -> Dynamic bids - down only
+    # LEGACY_FOR_SALES -> Dynamic bids - up and down (usually)
+    raw_strategy = db.get("strategy")
+    strategy_map = {
+        "MANUAL": "Fixed bids",
+        "AUTO_FOR_SALES": "Dynamic bids - down only",
+        "LEGACY_FOR_SALES": "Dynamic bids - up and down",
+    }
+    bidding_strategy = strategy_map.get(raw_strategy, raw_strategy)
+
     return {
         "campaign_id": c.get("campaignId"),
         "name": c.get("name"),
@@ -663,8 +666,8 @@ def _parse_campaign(c: Dict) -> Dict[str, Any]:
         "budget_type": c.get("budget", {}).get("budgetType"),
         "start_date": c.get("startDate"),
         "end_date": c.get("endDate"),
-        "bidding_strategy": bidding.get("strategy"),
-        "placement_top_of_search_pct": placement_map.get("PLACEMENT_TOP_OF_SEARCH"),
+        "bidding_strategy": bidding_strategy,
+        "placement_top_of_search_pct": placement_map.get("PLACEMENT_TOP"),
         "placement_product_page_pct": placement_map.get("PLACEMENT_PRODUCT_PAGE"),
     }
 

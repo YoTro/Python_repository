@@ -25,6 +25,15 @@ class TaskCategory(Enum):
     CREATIVE_WRITING = "creative"
     SIMPLE_CHAT = "simple_chat"
 
+# Default temperature mapping per task category
+_CATEGORY_TEMPERATURES = {
+    TaskCategory.SIMPLE_CLEANING: 0.1,
+    TaskCategory.DATA_EXTRACTION: 0.1,
+    TaskCategory.DEEP_REASONING: 0.3,
+    TaskCategory.CREATIVE_WRITING: 0.8,
+    TaskCategory.SIMPLE_CHAT: 0.7,
+}
+
 class RouterLogger:
     """Handles persistent logging of classification and execution results."""
     def __init__(self, log_path: str = None):
@@ -82,6 +91,11 @@ class IntelligenceRouter:
             category, confidence = await self._classify_task(prompt)
             classification_metadata = {"confidence": confidence, "auto_classified": True}
             logger.info(f"Task auto-classified as: {category} (Confidence: {confidence if confidence else 'N/A'})")
+
+        # 1.5 Inject dynamic temperature based on category
+        if "temperature" not in kwargs:
+            kwargs["temperature"] = _CATEGORY_TEMPERATURES.get(category, 0.3)
+            logger.debug(f"Applied dynamic temperature: {kwargs['temperature']} for category: {category.value}")
 
         # 2. Execution logic
         response: Optional[LLMResponse] = None

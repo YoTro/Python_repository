@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from .auth import SPAPIAuth
+from src.core.utils.decorators import exponential_backoff
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,16 @@ class SPAPIClient:
 
     # ── Inventory ──────────────────────────────────────────────────────────
 
+    @exponential_backoff(max_retries=5, base_delay=1.0)
+    async def _fetch_inventory_page(self, params: Dict) -> Dict:
+        """Internal helper to fetch a single page of inventory with retries."""
+        url = f"{self.auth.endpoint}/fba/inventory/v1/summaries"
+        resp = await asyncio.to_thread(
+            requests.get, url, headers=self._headers(), params=params, timeout=30
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def get_inventory(
         self,
         seller_skus: Optional[List[str]] = None,
@@ -71,25 +82,52 @@ class SPAPIClient:
     ) -> List[Dict[str, Any]]:
         """
         FBA Inventory Summaries (v1).
+        Usage Plan: Rate 2, Burst 2.
 
         Returns per-SKU dict with:
           sku, asin, fn_sku, condition, total_quantity, available_quantity,
           reserved_quantity, inbound_quantity, last_updated
         """
-        params: Dict[str, Any] = {
+        sem = asyncio.Semaphore(2)
+
+        async def _fetch_all_pages(base_params: Dict) -> List[Dict]:
+            all_items = []
+            params = dict(base_params)
+            while True:
+                async with sem:
+                    data = await self._fetch_inventory_page(params)
+                
+                payload = data.get("payload", {})
+                summaries = payload.get("inventorySummaries", [])
+                all_items.extend([_parse_inventory_summary(s) for s in summaries])
+                
+                next_token = data.get("pagination", {}).get("nextToken")
+                if not next_token:
+                    break
+                logger.info(f"Fetching next page of SP-API inventory with token: {next_token[:20]}...")
+                params["nextToken"] = next_token
+            return all_items
+
+        base_params: Dict[str, Any] = {
             "details": str(include_details).lower(),
             "granularityType": "Marketplace",
             "granularityId": self.auth.marketplace_id,
             "marketplaceIds": self.auth.marketplace_id,
         }
-        if seller_skus:
-            params["sellerSkus"] = ",".join(seller_skus)
 
-        data = await asyncio.to_thread(
-            self._get, "/fba/inventory/v1/summaries", params
-        )
-        summaries = data.get("payload", {}).get("inventorySummaries", [])
-        return [_parse_inventory_summary(s) for s in summaries]
+        if not seller_skus:
+            return await _fetch_all_pages(base_params)
+
+        # Amazon SP-API allows up to 50 SKUs per request.
+        sku_list = list(seller_skus)
+        batches = [sku_list[i:i+50] for i in range(0, len(sku_list), 50)]
+        
+        results = await asyncio.gather(*[
+            _fetch_all_pages({**base_params, "sellerSkus": ",".join(batch)})
+            for batch in batches
+        ])
+        
+        return [item for batch_result in results for item in batch_result]
 
     # ── Sales & Traffic Report ─────────────────────────────────────────────
 
@@ -224,6 +262,7 @@ def _parse_inventory_summary(s: Dict) -> Dict[str, Any]:
         "condition": s.get("condition"),
         "total_quantity": s.get("totalQuantity", 0),
         "available_quantity": fulfillable,
+        "total_available": fulfillable,
         "reserved_quantity": reserved.get("totalReservedQuantity", 0) if isinstance(reserved, dict) else reserved,
         "inbound_quantity": inbound_receiving + inbound_shipped + inbound_working,
         "last_updated": s.get("lastUpdatedTime"),
