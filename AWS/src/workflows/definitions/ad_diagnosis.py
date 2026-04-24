@@ -1035,15 +1035,16 @@ async def _enrich_xiyou_rankings(item: Dict, ctx: WorkflowContext) -> Dict:
         api   = XiyouZhaociAPI(tenant_id=ctx.config.get("tenant_id", "default"))
         scores = api.get_traffic_scores(country=country, asins=[asin])
 
-        if not scores.get("success") or not scores.get("data"):
+        entities = scores.get("entities") or []
+        if not entities:
             return {}
 
-        entry = scores["data"][0] if scores["data"] else {}
+        entry = next((e for e in entities if e.get("asin") == asin), entities[0])
         return {
-            "ad_traffic_ratio":   entry.get("advertisingTrafficScoreRatio"),
-            "organic_traffic_ratio": entry.get("naturalTrafficScoreRatio"),
-            "traffic_growth_7d":  entry.get("totalTrafficScoreGrowthRate"),
-            "xiyou_scores_raw":   entry,
+            "ad_traffic_ratio":      entry.get("advertisingTrafficScoreRatio"),
+            "organic_traffic_ratio": entry.get("organicTrafficScoreRatio"),
+            "traffic_growth_7d":     entry.get("totalTrafficScoreGrowthRate"),
+            "xiyou_scores_raw":      entry,
         }
     except Exception as e:
         logger.warning(f"Xiyou traffic scores failed for {asin}: {e}")

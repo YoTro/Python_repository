@@ -483,6 +483,7 @@ def _dml_analyze(
     treatment_series: np.ndarray,
     outcome_series: np.ndarray,
     covariate_matrix: np.ndarray,
+    t0: int = 0,
 ) -> Dict[str, Any]:
     """
     Two-stage residualisation (Frisch–Waugh–Lovell):
@@ -494,6 +495,9 @@ def _dml_analyze(
     n = len(treatment_series)
     if n < _ITS_MIN_PRE + _ITS_MIN_POST:
         return {"skipped": True, "reason": "insufficient observations for DML"}
+    post_obs = n - t0
+    if post_obs < _ITS_MIN_POST:
+        return {"skipped": True, "reason": f"insufficient post-period observations ({post_obs} < {_ITS_MIN_POST})"}
 
     X = covariate_matrix
 
@@ -539,6 +543,9 @@ def _dml_analyze(
     ss_tot = float(((yt - yt.mean()) ** 2).sum())
     r2     = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
+    if r2 < 0:
+        return {"skipped": True, "reason": f"poor model fit (R²={round(r2, 4)} < 0); theta unreliable"}
+
     return {
         "skipped":   False,
         "theta":     round(theta, 6),
@@ -549,6 +556,8 @@ def _dml_analyze(
 
 
 # ── Consensus ─────────────────────────────────────────────────────────────────
+
+_CAUSAL_MODEL_COUNT = 3  # ITS, CausalImpact, DML — always the denominator
 
 def _build_consensus(its: Dict, ci: Dict, dml: Dict, attr: Dict) -> str:
     sig_flags: List[bool] = []
@@ -570,8 +579,9 @@ def _build_consensus(its: Dict, ci: Dict, dml: Dict, attr: Dict) -> str:
         _vote(dml.get("p_value"), dml.get("theta"))
 
     n_sig  = sum(sig_flags)
-    total  = len(sig_flags)
-    if total == 0:
+    n_ran  = len(sig_flags)
+    total  = _CAUSAL_MODEL_COUNT
+    if n_ran == 0:
         return "Insufficient data for causal analysis."
 
     dominant       = "positive" if votes["positive"] >= votes["negative"] else "negative"
@@ -586,13 +596,13 @@ def _build_consensus(its: Dict, ci: Dict, dml: Dict, attr: Dict) -> str:
 
     if n_sig == 0:
         return f"No significant causal effect detected for {change_type}{note}."
-    if n_sig == total:
+    if n_sig == n_ran == total:
         return (
             f"Strong evidence ({n_sig}/{total} models agree): "
             f"{change_type} caused a significant {direction_lbl} in the outcome metric{note}."
         )
     return (
-        f"Weak evidence ({n_sig}/{total} models significant): "
+        f"Weak evidence ({n_sig}/{total} models significant, {n_ran} ran): "
         f"{change_type} may have contributed to a {direction_lbl} in the outcome metric{note}."
     )
 
@@ -679,6 +689,21 @@ def run_causal_analysis(
 
         t0 = date_idx[change_date]
 
+        # CREATED/DELETED are structural events without a quantitative treatment
+        # magnitude — causal models cannot produce meaningful estimates.
+        _skip_reason = None
+        if attr.get("change_type") in ("CREATED", "DELETED"):
+            _skip_reason = f"{attr['change_type']} events have no quantifiable treatment magnitude"
+
+        if _skip_reason:
+            attr.update({
+                "its":           {"skipped": True, "reason": _skip_reason},
+                "causal_impact": {"skipped": True, "reason": _skip_reason},
+                "dml":           {"skipped": True, "reason": _skip_reason},
+                "consensus":     f"Causal analysis skipped: {_skip_reason}.",
+            })
+            continue
+
         # Stage 2: ITS
         its = _its_analyze(metric_vec, t0)
 
@@ -700,7 +725,7 @@ def run_causal_analysis(
         # Stage 4: DML — binary step treatment (0 before, 1 from change date)
         treatment = np.zeros(len(dates))
         treatment[t0:] = 1.0
-        dml = _dml_analyze(treatment, metric_vec, cov_matrix)
+        dml = _dml_analyze(treatment, metric_vec, cov_matrix, t0=t0)
 
         consensus = _build_consensus(its, ci, dml, attr)
 
