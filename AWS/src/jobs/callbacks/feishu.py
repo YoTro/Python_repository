@@ -305,7 +305,9 @@ class FeishuCallback(JobCallback):
                             "value": {
                                 "action": action_name,
                                 "tenant_id": context.get("tenant_id"),
-                                "job_id": context.get("job_id")
+                                "job_id": context.get("job_id"),
+                                "chat_id": self.chat_id,
+                                "bot_name": self.bot_name,
                             }
                         }
                     ]

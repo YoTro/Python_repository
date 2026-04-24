@@ -43,8 +43,9 @@ class RefreshCookieCommand(BotCommand):
                 logger.error(f"Cookie refresh failed: {e}")
                 feishu_client.send_card_message("chat_id", chat_id, f"❌ Cookies 更新失败: {str(e)}")
 
-        # Execute in background task
         asyncio.run_coroutine_threadsafe(_do_refresh(), self.loop)
+
+
 
 class ExtractBSRCommand(BotCommand):
     def __init__(self, bot_name: str = "amazon_bot", loop: Optional[asyncio.AbstractEventLoop] = None):

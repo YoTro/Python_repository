@@ -258,7 +258,11 @@ class OutputParser:
     @staticmethod
     def clean_for_feishu(text: Any) -> str:
         """Specific cleaning for Feishu messages (interactive cards)."""
-        return OutputParser.clean_markdown(text)
+        text = OutputParser.clean_markdown(text)
+        # Feishu card markdown requires uploaded image_keys, not URLs.
+        # Strip ![alt](url) → alt to avoid ErrCode 11310 "no imagekey is passed in".
+        text = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'\1', text)
+        return text
 
     @staticmethod
     def clean_for_cli(text: Any) -> str:

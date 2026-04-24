@@ -93,6 +93,10 @@ It employs a **Hybrid Intelligence** model:
    # Multiple stores supported: AMAZON_ADS_REFRESH_TOKEN_{STORE}, AMAZON_ADS_PROFILE_ID_{STORE}
    AMAZON_ADS_REFRESH_TOKEN_US=
    AMAZON_ADS_PROFILE_ID_US=
+
+   # ── Infrastructure ─────────────────────────────────────────
+   # Omit to use local JSON-file cache; set to enable Redis backend
+   REDIS_URL=redis://localhost:6379
    ```
 
    | Variable | Required | Description |
@@ -141,6 +145,27 @@ Then in your Feishu group chat, send:
 ```bash
 # One-click deployment of all L1/L2 tools to Claude Desktop
 ./scripts/deploy_claude_desktop.sh
+```
+
+### 4. Deployment to Ubuntu Server (Vultr / any VPS)
+```bash
+# Full server setup: system packages, Python 3.11, venv, CUDA detection,
+# Redis (configured + running), model download, and environment variables.
+bash scripts/deploy_ubuntu.sh
+```
+
+Environment variables set automatically by the script:
+
+| Variable | Value | Purpose |
+|---|---|---|
+| `REDIS_URL` | `redis://localhost:6379` | Enables Redis backend in `DataCache` |
+| `SERVER_IP` | auto-detected via ipify.org | SSH tunnel hint in `cookie_helper.py` |
+| `SERVER_USER` | `$USER` at deploy time | SSH tunnel hint in `cookie_helper.py` |
+
+After deployment, copy your `.env` file to the project root and start the bot:
+```bash
+source .venv311/bin/activate
+PYTHONPATH=. python src/entry/feishu/bot_listener.py --bot amazon_bot
 ```
 
 ---
