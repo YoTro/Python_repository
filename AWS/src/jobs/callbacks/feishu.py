@@ -356,6 +356,9 @@ class FeishuCallback(JobCallback):
                     else:
                         text = json.dumps(item, ensure_ascii=False, indent=2)
 
+                from src.intelligence.parsers.markdown_cleaner import OutputParser
+                text = OutputParser.clean_for_feishu(text)
+
                 self.feishu.send_card_message(
                     receive_id_type="chat_id",
                     receive_id=self.chat_id,
@@ -445,8 +448,12 @@ class FeishuCallback(JobCallback):
             lines.append(f"Job ID: `{job_id}`")
             lines.append("A checkpoint was saved. To resume, run:")
             lines.append(f"  `manager.resume_from_checkpoint(job_id='{job_id}', workflow_name='...')`")
-        text = "\n".join(lines)
+        await self.notify("\n".join(lines))
+
+    async def notify(self, message: str) -> None:
         try:
-            self.feishu.send_text_message("chat_id", self.chat_id, text)
+            await asyncio.to_thread(
+                self.feishu.send_text_message, "chat_id", self.chat_id, message
+            )
         except _FEISHU_ERRORS as e:
-            logger.error(f"Feishu error notification failed: {e}")
+            logger.error(f"Feishu notify failed: {e}")

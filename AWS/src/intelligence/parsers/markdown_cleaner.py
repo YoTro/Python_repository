@@ -212,11 +212,21 @@ class OutputParser:
     @staticmethod
     def clean_markdown(text: str) -> str:
         """
-        Standardizes markdown formatting, fixes unclosed blocks, 
+        Standardizes markdown formatting, fixes unclosed blocks,
         and removes LLM conversational filler.
         """
         if not isinstance(text, str):
             return str(text)
+
+        # 0. If the whole text is a bare action-call JSON, extract content directly.
+        # Handles LLM outputs like {"action": "export_md", "action_input": {"content": "..."}}
+        stripped = text.strip()
+        if stripped.startswith("{") and '"action"' in stripped:
+            parsed = OutputParser.parse_dirty_json(stripped)
+            action = parsed.get("action", "")
+            content = (parsed.get("action_input") or {}).get("content")
+            if content and isinstance(content, str):
+                text = content
 
         # 1. Normalize JSON blocks (and fix dirty ones while we're at it)
         def replace_json_block(match):
@@ -225,7 +235,7 @@ class OutputParser:
             if parsed:
                 return "```json\n" + json.dumps(parsed, indent=2, ensure_ascii=False) + "\n```"
             return "```json\n" + raw_content + "\n```"
-        
+
         text = re.sub(r"```(?:json)?\s*([^`]+?)\s*```", replace_json_block, text, flags=re.DOTALL)
 
         # 2. Normalize whitespace

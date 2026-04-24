@@ -53,3 +53,15 @@ class JobCallback(ABC):
                        the job can be resumed via JobManager.resume_from_checkpoint().
         """
         ...
+
+    async def notify(self, message: str) -> None:
+        """
+        Send a plain-text notification to the user on this channel.
+
+        Used for system-level messages (e.g. rate-limit rejection, job queued)
+        that are not tied to a specific step or error.  Default implementation
+        delegates to on_progress so all existing callbacks work without changes.
+        Subclasses may override for a lighter-weight send (e.g. a simple chat
+        message instead of a full progress card).
+        """
+        await self.on_progress(step_index=0, total_steps=1, step_name="notify", message=message)

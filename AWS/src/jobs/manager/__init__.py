@@ -294,6 +294,29 @@ class JobManager:
                 except Exception:
                     pass
 
+        except RuntimeError as e:
+            err_str = str(e)
+            record.status = JobStatus.FAILED
+            record.error = err_str
+            record.completed_at = datetime.utcnow().isoformat()
+            # Concurrent-slot rejections get a user-friendly Feishu message instead
+            # of the raw internal error text.
+            if "concurrent limit reached" in err_str and record.callback:
+                try:
+                    await record.callback.notify(
+                        "⏳ 上一个任务仍在进行中，请等待完成后再发送新任务。\n"
+                        "如任务长时间未响应，请联系管理员检查任务状态。"
+                    )
+                except Exception:
+                    pass
+            elif record.callback:
+                try:
+                    await record.callback.on_error(e, job_id=job_id)
+                except Exception:
+                    pass
+            else:
+                logger.error(f"Job {job_id} failed (RuntimeError): {e}")
+
         except Exception as e:
             logger.error(f"Job {job_id} failed: {e}")
             record.status = JobStatus.FAILED
