@@ -133,7 +133,12 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                              |             |   · ToolCatalogFormatter         |
 |                              |             |  Autonomous output rules:        |
 |                              |             |  · Auto-populate Bitable (robust)|
-|                              |             |  · Direct File Attachments       |
+|                              |             |  · Attachment-First Policy:      |
+|                              |             |    Answer > 8000 chars →         |
+|                              |             |    export_md → session.context   |
+|                              |             |    ["report_file_path"] →        |
+|                              |             |    final_items → on_complete     |
+|                              |             |    (channel-agnostic delivery)   |
 |                              |             |                                  |
 +==============|===============+             +=================|================+
                |                                               |
@@ -400,6 +405,10 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |     on_error(error, job_id=None)         ── job_id present when checkpoint   |
 |                                             exists; surface to user for      |
 |                                             manual resume via Feishu command |
+|     notify(message)                     ── Channel-agnostic lightweight msg  |
+|                                             (default delegates to on_progress)|
+|                                             Override per channel for cheaper |
+|                                             delivery (e.g. Feishu text msg)  |
 |                                                                              |
 |   ── Artifact Delivery Mechanism ──────────────────────────────────────────  |
 |   Workflows can generate local artifacts (e.g., .md, .csv, .pdf). If a       |
@@ -548,19 +557,26 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 
   Step  Type          Tool / Target        Input --> Output
   ────  ────────────  ───────────────────  ────────────────────────────────────
-   1    EnrichStep    profitability_api    keyword  -->  ASIN + Dims + BSR + Price
+   0    ProcessStep   search_and_expand    keyword  -->  []{asin, title, price}
+                      (SearchExtractor,               parallel pages 1..N,
+                       pages=search_pages)            deduped by ASIN
+   1    EnrichStep    profitability_api    ASIN     -->  Dims + BSR + Price + Weight
    2    EnrichStep    past_sales_api       ASIN     -->  Monthly Sales Volume
-   3    FilterStep    price/rating         Filter   -->  Basic candidates remain
+   3    FilterStep    price/rating/weight  Filter   -->  Basic candidates remain
    4    EnrichStep    fulfillment_api      ASIN     -->  FBA/FBM Status
    5    EnrichStep    deal_history         ASIN     -->  Promo history appended
    6    ProcessStep   promo_analysis       PURE_PYTHON -> Risk score
    7    FilterStep    promo_risk           Filter   -->  Stable prices remain
    8    ProcessStep   calc_profit (MCP)    FINANCE  -->  Exact Margin & ROI
    9    FilterStep    profitability        Filter   -->  Profitable ASINs remain
-  10    ProcessStep   epa_check            LOCAL_LLM
-  11    FilterStep    compliance           Filter   -->  Low-risk ASINs remain
-  12    EnrichStep    xiyou_traffic (MCP)  MARKET   -->  Actual Ad Dependency %
-  13    FilterStep    ad_dependency        Filter   -->  Natural-traffic winners
-  14    ProcessStep   final_synthesis      CLOUD_LLM --> Selection Report
+  10    EnrichStep    reviews              ASIN     -->  Raw review list
+  11    ProcessStep   summarize_reviews    CLOUD_LLM --> Manipulation risk score
+  12    FilterStep    review_manipulation  Filter   -->  Clean-review ASINs remain
+  13    EnrichStep    compliance           ASIN     -->  CPSC/EPA/restriction flags
+  14    FilterStep    compliance_filter    Filter   -->  Low-risk ASINs remain
+  15    EnrichStep    xiyou_traffic (MCP)  MARKET   -->  Actual Ad Dependency %
+  16    FilterStep    ad_dependency        Filter   -->  Natural-traffic winners
+  17    ProcessStep   final_synthesis      CLOUD_LLM --> Selection Report
   ────  ────────────  ───────────────────  ────────────────────────────────────
-  Key: Efficiency optimized via Profitability API; Logic unified via Finance MCP.
+  Key: Step 0 seeds ASIN list from keyword; engine seeds items=[{keyword}] when
+       no asin/initial_items param is present. Finance MCP unifies profit calc.

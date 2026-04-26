@@ -124,8 +124,15 @@ CUDA_VERSION=""
 CUDA_RUNTIME_OK=false
 
 if command -v nvidia-smi &> /dev/null; then
-    CUDA_VERSION=$(nvidia-smi | grep "CUDA Version" | awk '{print $9}' | cut -d. -f1)
-    echo "⚡ CUDA driver detected (version: $CUDA_VERSION) — runtime is required"
+    # Prefer nvcc (actual toolkit version) over nvidia-smi (driver max version).
+    # nvcc gives e.g. "release 11.5" → "115"; nvidia-smi gives major only → "12" → "121" (wrong minor).
+    if command -v nvcc &> /dev/null; then
+        CUDA_VERSION=$(nvcc --version | grep "release" | sed 's/.*release \([0-9]*\)\.\([0-9]*\).*/\1\2/')
+    else
+        # Fall back to major version from nvidia-smi; assume minor=1 (common on fresh installs)
+        CUDA_VERSION=$(nvidia-smi | grep "CUDA Version" | awk '{print $9}' | awk -F. '{printf "%s%s", $1, $2}')
+    fi
+    echo "⚡ CUDA toolkit detected (wheel suffix: cu$CUDA_VERSION) — runtime is required"
 
     # Stage b: already in ldconfig
     if ldconfig -p 2>/dev/null | grep -q "libcudart.so"; then
@@ -164,10 +171,9 @@ fi
 pip install --upgrade pip
 
 if [ -n "$CUDA_VERSION" ] && [ "$CUDA_RUNTIME_OK" = true ]; then
-    # Map driver-reported major version to pre-compiled wheel suffix
-    # CUDA 12.x → cu121  |  CUDA 11.x → cu111
-    WHL_INDEX="cu${CUDA_VERSION}1"
-    echo "⚙️ Installing llama-cpp-python with CUDA $CUDA_VERSION (wheel: $WHL_INDEX)..."
+    # CUDA_VERSION is already major+minor digits, e.g. "115" or "121"
+    WHL_INDEX="cu${CUDA_VERSION}"
+    echo "⚙️ Installing llama-cpp-python with CUDA (wheel: $WHL_INDEX)..."
     pip install llama-cpp-python \
         --extra-index-url "https://abetlen.github.io/llama-cpp-python/whl/$WHL_INDEX"
 else

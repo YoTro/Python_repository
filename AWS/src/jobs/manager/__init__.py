@@ -416,7 +416,11 @@ class JobManager:
             if record.callback:
                 try:
                     from src.workflows.engine import WorkflowResult
-                    mock_res = WorkflowResult(name="Agent Exploration", final_items=[{"response": response}])
+                    session = session_mgr.load(record.job_id)
+                    item = {"response": response}
+                    if session and session.context.get("report_file_path"):
+                        item["report_file_path"] = session.context["report_file_path"]
+                    mock_res = WorkflowResult(name="Agent Exploration", final_items=[item])
                     await record.callback.on_complete(mock_res)
                 except Exception as e:
                     logger.warning(f"Agent callback failed: {e}")

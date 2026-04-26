@@ -86,6 +86,9 @@ class Workflow:
             asin = params.get("asin")
             asins = params.get("asins", [asin] if asin else [])
             items = [{"asin": a} for a in asins if a]
+        if not items and params.get("keyword"):
+            # Keyword-based workflows: seed a single item; the first step expands it
+            items = [{"keyword": params["keyword"]}]
 
         if checkpoint_mgr:
             checkpoint = checkpoint_mgr.load(job_id)

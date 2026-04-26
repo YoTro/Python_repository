@@ -30,14 +30,47 @@ logger = logging.getLogger(__name__)
 # Extractor wrapper functions
 # ---------------------------------------------------------------------------
 
-async def _search_products(item: dict, ctx: WorkflowContext) -> dict:
-    """Search Amazon for candidate ASINs by keyword."""
+async def _search_and_expand(items: list, ctx: WorkflowContext) -> list:
+    """
+    Expand a single keyword item into one item per discovered ASIN.
+    Searches pages 1..search_pages (default 3) in parallel and deduplicates.
+    """
     from src.mcp.servers.amazon.extractors.search import SearchExtractor
+    import asyncio
+
     extractor = SearchExtractor()
-    keyword = item.get("keyword", "")
-    page = item.get("page", 1)
-    results = await extractor.search(keyword, page)
-    return {"search_results": results}
+    pages = ctx.config.get("search_pages", 3)
+    keyword = (items[0].get("keyword") if items else None) or ctx.config.get("keyword", "")
+    if not keyword:
+        return items
+
+    async def _fetch_page(page: int):
+        try:
+            return await extractor.search(keyword, page)
+        except Exception as e:
+            logger.warning(f"Search page {page} failed for '{keyword}': {e}")
+            return []
+
+    page_results = await asyncio.gather(*[_fetch_page(p) for p in range(1, pages + 1)])
+
+    seen: set = set()
+    expanded = []
+    for page_items in page_results:
+        for r in (page_items or []):
+            asin = r.get("asin")
+            if asin and asin not in seen:
+                seen.add(asin)
+                expanded.append({
+                    "asin": asin,
+                    "keyword": keyword,
+                    "title": r.get("title"),
+                    "price": r.get("price"),
+                    "rating": r.get("rating"),
+                    "review_count": r.get("review_count"),
+                })
+
+    logger.info(f"search_and_expand: keyword='{keyword}', pages={pages}, found {len(expanded)} unique ASINs")
+    return expanded
 
 
 async def _enrich_product_details(item: dict, ctx: WorkflowContext) -> dict:
@@ -465,6 +498,13 @@ def build_product_screening(config: dict) -> Workflow:
     Config values come from merge(workflow_defaults, job_override).
     """
     steps = [
+        # ── Stage 0: Keyword → ASIN expansion ──
+        ProcessStep(
+            name="search_and_expand",
+            fn=_search_and_expand,
+            compute_target=ComputeTarget.PURE_PYTHON,
+        ),
+
         # ── Stage 1: Market Discovery & Data Enrichment ──
         # Optimization: Use Profitability API to fetch most data in one shot
         EnrichStep(

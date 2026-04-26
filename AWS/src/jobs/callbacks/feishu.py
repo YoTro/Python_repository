@@ -361,6 +361,35 @@ class FeishuCallback(JobCallback):
                 from src.intelligence.parsers.markdown_cleaner import OutputParser
                 text = OutputParser.clean_for_feishu(text)
 
+                # When content exceeds card limit, send as file attachment + brief card summary
+                _CARD_LIMIT = 8000
+                if len(text) > _CARD_LIMIT:
+                    try:
+                        import tempfile, os as _os
+                        suffix = ".md" if text.strip().startswith("#") else ".txt"
+                        with tempfile.NamedTemporaryFile(
+                            mode="w", encoding="utf-8", suffix=suffix, delete=False
+                        ) as tmp:
+                            tmp.write(text)
+                            tmp_path = tmp.name
+                        upload_res = await asyncio.to_thread(
+                            self.feishu.upload_file, tmp_path,
+                            "stream", f"report{suffix}"
+                        )
+                        _os.unlink(tmp_path)
+                        if upload_res.get("success"):
+                            await asyncio.to_thread(
+                                self.feishu.send_file_message,
+                                "chat_id", self.chat_id, upload_res["file_key"]
+                            )
+                            preview = text[:500].rstrip() + "\n\n…（内容较长，已作为附件发送，请下载查看完整报告）"
+                            self.feishu.send_card_message("chat_id", self.chat_id, preview)
+                            logger.info(f"Large result ({len(text)} chars) sent as file attachment.")
+                            return
+                    except Exception as e:
+                        logger.error(f"Failed to send oversized result as attachment: {e}")
+                        # Fall through to truncated card
+
                 self.feishu.send_card_message(
                     receive_id_type="chat_id",
                     receive_id=self.chat_id,

@@ -263,6 +263,44 @@ class MCPAgent(BaseAgent):
                 if "Final Answer:" in response:
                     final_answer = response.split("Final Answer:")[-1].strip()
                     session.add_message(role="assistant", content=response)
+
+                    # Enforce Attachment-First Policy: if the answer exceeds the
+                    # card/message limit, save to a local file and let the callback
+                    # handle channel-specific delivery (Feishu, WeChat, web, etc.).
+                    _CARD_LIMIT = 8000
+                    if len(final_answer) > _CARD_LIMIT:
+                        try:
+                            import re as _re, datetime as _dt, json as _json
+                            slug = _re.sub(r"\W+", "_", session.session_id[:8])
+                            filename = f"report_{slug}_{_dt.date.today()}.md"
+                            export_res = await self.mcp.call_tool_json(
+                                "export_md",
+                                {"content": final_answer, "filename": filename,
+                                 "_metadata": {"tenant_id": session.tenant_id,
+                                               "job_id": session.session_id}}
+                            )
+                            file_path = None
+                            if isinstance(export_res, dict):
+                                file_path = export_res.get("file_path")
+                            elif isinstance(export_res, list) and export_res:
+                                file_path = _json.loads(
+                                    export_res[0].get("text", "{}")
+                                ).get("file_path")
+                            if file_path:
+                                # Store for _run_agent_mode to forward to on_complete
+                                session.context["report_file_path"] = file_path
+                                session.context["report_filename"] = filename
+                                preview = final_answer[:500].rstrip()
+                                final_answer = (
+                                    f"{preview}\n\n…（内容较长，完整报告已保存为附件：`{filename}`）"
+                                )
+                                logger.info(
+                                    f"Oversized Final Answer ({len(response)} chars) "
+                                    f"auto-exported to {file_path}"
+                                )
+                        except Exception as _e:
+                            logger.error(f"Auto-export of oversized Final Answer failed: {_e}")
+
                     session.status = "completed"
                     self.session_mgr.save(session)
                     return final_answer
