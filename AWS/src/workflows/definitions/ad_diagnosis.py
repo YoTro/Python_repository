@@ -51,6 +51,7 @@ from src.workflows.steps.enrich import EnrichStep
 from src.workflows.steps.process import ProcessStep
 from src.workflows.steps.base import ComputeTarget
 from src.intelligence.processors.causal_analysis import ATTR_PRE_START, ATTR_POST_END
+from src.core.data_cache import data_cache as _data_cache
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,35 @@ _KEY_DAILY_PERF       = "ad_diag:daily_performance"
 _KEY_CHANGE_HISTORY   = "ad_diag:change_history"
 _KEY_PLACEMENT        = "ad_diag:placement"
 _KEY_COVARIATES       = "ad_diag:covariates"
+
+# ── L2 cache helpers (DataCache-backed, multi-tenant safe) ──────────────────
+# Key format: {tenant_id}:{store_id}:{part...}
+# - tenant_id isolates different seller accounts (multi-user safety)
+# - store_id isolates marketplaces (US / EU / JP)
+# - extra parts carry data-type-specific discriminators (days, asin, ids_hash)
+#
+# DataCache auto-selects Redis (if REDIS_URL set) or JSON-file backend.
+# L1 (ctx.cache) is always checked first — L2 is only hit on job start / resume.
+
+_L2_DOMAIN = "ad_diag"
+_TTL_STATIC = 3600   # campaigns, keywords — account config, stable within a session
+_TTL_PERF   = 3600   # performance reports — fetched once per day range
+_TTL_CHANGE = 1800   # change history — more volatile, shorter TTL
+
+
+def _l2_key(ctx: WorkflowContext, *parts) -> str:
+    tid = ctx.tenant_id or "default"
+    sid = ctx.config.get("store_id", "US")
+    return ":".join(str(p) for p in (tid, sid) + parts)
+
+
+def _l2_get(ctx: WorkflowContext, ttl: int, *parts):
+    return _data_cache.get(_L2_DOMAIN, _l2_key(ctx, *parts), ttl_seconds=ttl)
+
+
+def _l2_set(ctx: WorkflowContext, value, *parts) -> None:
+    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value)
+
 
 # Noise thresholds — changes smaller than these are low-signal
 _NOISE_BID_PCT    = 0.05  # bid changes < 5% → low_weight
@@ -100,46 +130,61 @@ def _store_tz(ctx: WorkflowContext) -> ZoneInfo:
 
 async def _ensure_campaigns(ctx: WorkflowContext) -> List[Dict]:
     if _KEY_CAMPAIGNS not in ctx.cache:
-        from src.mcp.servers.amazon.ads.client import AmazonAdsClient
-        store_id = ctx.config.get("store_id")
-        region   = ctx.config.get("region", "NA")
-        client   = AmazonAdsClient(store_id=store_id, region=region)
-        campaigns = await client.list_campaigns(states=["ENABLED", "PAUSED"], max_results=2000)
-        ctx.cache[_KEY_CAMPAIGNS] = campaigns
-        logger.info(f"Fetched {len(campaigns)} campaigns from Ads API")
+        cached = _l2_get(ctx, _TTL_STATIC, "campaigns")
+        if cached is not None:
+            ctx.cache[_KEY_CAMPAIGNS] = cached
+        else:
+            from src.mcp.servers.amazon.ads.client import AmazonAdsClient
+            store_id = ctx.config.get("store_id")
+            region   = ctx.config.get("region", "NA")
+            client   = AmazonAdsClient(store_id=store_id, region=region)
+            campaigns = await client.list_campaigns(states=["ENABLED", "PAUSED"], max_results=2000)
+            ctx.cache[_KEY_CAMPAIGNS] = campaigns
+            _l2_set(ctx, campaigns, "campaigns")
+            logger.info(f"Fetched {len(campaigns)} campaigns from Ads API")
     return ctx.cache[_KEY_CAMPAIGNS]
 
 
 async def _ensure_performance(ctx: WorkflowContext) -> List[Dict]:
     if _KEY_PERFORMANCE not in ctx.cache:
-        from src.mcp.servers.amazon.ads.client import AmazonAdsClient
-        store_id = ctx.config.get("store_id")
-        region   = ctx.config.get("region", "NA")
-        days     = ctx.config.get("days", 30)
-        client   = AmazonAdsClient(store_id=store_id, region=region)
-        records  = await client.get_performance_report(
-            report_type="spCampaigns", days=days
-        )
-        ctx.cache[_KEY_PERFORMANCE] = records
-        logger.info(f"Fetched {len(records)} campaign performance records")
+        days   = ctx.config.get("days", 30)
+        cached = _l2_get(ctx, _TTL_PERF, "sp_performance", days)
+        if cached is not None:
+            ctx.cache[_KEY_PERFORMANCE] = cached
+        else:
+            from src.mcp.servers.amazon.ads.client import AmazonAdsClient
+            store_id = ctx.config.get("store_id")
+            region   = ctx.config.get("region", "NA")
+            client   = AmazonAdsClient(store_id=store_id, region=region)
+            records  = await client.get_performance_report(
+                report_type="spCampaigns", days=days
+            )
+            ctx.cache[_KEY_PERFORMANCE] = records
+            _l2_set(ctx, records, "sp_performance", days)
+            logger.info(f"Fetched {len(records)} campaign performance records")
     return ctx.cache[_KEY_PERFORMANCE]
 
 
 async def _ensure_keyword_performance(ctx: WorkflowContext) -> List[Dict]:
     """Fetch account-wide spKeywords performance report, cached for the run."""
     if _KEY_KW_PERFORMANCE not in ctx.cache:
-        from src.mcp.servers.amazon.ads.client import AmazonAdsClient
-        store_id = ctx.config.get("store_id")
-        region   = ctx.config.get("region", "NA")
-        days     = ctx.config.get("days", 30)
-        client   = AmazonAdsClient(store_id=store_id, region=region)
-        # spSearchTerm groups by search term but includes keywordText + matchType,
-        # allowing us to aggregate up to keyword-level click/spend/order data.
-        records  = await client.get_performance_report(
-            report_type="spSearchTerm", days=days
-        )
-        ctx.cache[_KEY_KW_PERFORMANCE] = records
-        logger.info(f"Fetched {len(records)} keyword performance records")
+        days   = ctx.config.get("days", 30)
+        cached = _l2_get(ctx, _TTL_PERF, "kw_performance", days)
+        if cached is not None:
+            ctx.cache[_KEY_KW_PERFORMANCE] = cached
+        else:
+            from src.mcp.servers.amazon.ads.client import AmazonAdsClient
+            store_id = ctx.config.get("store_id")
+            region   = ctx.config.get("region", "NA")
+            client   = AmazonAdsClient(store_id=store_id, region=region)
+            # spSearchTerm groups by search term but includes keywordText + matchType,
+            # allowing us to aggregate up to keyword-level click/spend/order data.
+            records  = await client.get_performance_report(
+                report_type="spSearchTerm", days=days
+            )
+            ctx.cache[_KEY_KW_PERFORMANCE] = records
+            _l2_set(ctx, records, "kw_performance", days)
+            logger.info(f"Fetched {len(records)} keyword performance records")
     return ctx.cache[_KEY_KW_PERFORMANCE]
 
 
@@ -147,14 +192,21 @@ async def _ensure_keywords(ctx: WorkflowContext, campaign_ids: List[str]) -> Lis
     """Fetch keywords for a set of campaign_ids, cached by sorted id-tuple."""
     cache_key = f"{_KEY_KEYWORDS}:{','.join(sorted(campaign_ids))}"
     if cache_key not in ctx.cache:
-        from src.mcp.servers.amazon.ads.client import AmazonAdsClient
-        store_id = ctx.config.get("store_id")
-        region   = ctx.config.get("region", "NA")
-        client   = AmazonAdsClient(store_id=store_id, region=region)
-        keywords = await client.list_keywords(
-            campaign_ids=campaign_ids, states=["ENABLED", "PAUSED"]
-        )
-        ctx.cache[cache_key] = keywords
+        import hashlib as _hl
+        ids_hash = _hl.md5(",".join(sorted(campaign_ids)).encode()).hexdigest()[:12]
+        cached = _l2_get(ctx, _TTL_STATIC, "keywords", ids_hash)
+        if cached is not None:
+            ctx.cache[cache_key] = cached
+        else:
+            from src.mcp.servers.amazon.ads.client import AmazonAdsClient
+            store_id = ctx.config.get("store_id")
+            region   = ctx.config.get("region", "NA")
+            client   = AmazonAdsClient(store_id=store_id, region=region)
+            keywords = await client.list_keywords(
+                campaign_ids=campaign_ids, states=["ENABLED", "PAUSED"]
+            )
+            ctx.cache[cache_key] = keywords
+            _l2_set(ctx, keywords, "keywords", ids_hash)
     return ctx.cache[cache_key]
 
 
@@ -175,10 +227,14 @@ async def _ensure_daily_performance(ctx: WorkflowContext, asin: str) -> List[Dic
     """
     cache_key = f"{_KEY_DAILY_PERF}:{asin}"
     if cache_key not in ctx.cache:
+        days   = ctx.config.get("days", 30)
+        cached = _l2_get(ctx, _TTL_PERF, "daily_perf", asin, days)
+        if cached is not None:
+            ctx.cache[cache_key] = cached
+            return cached
         from src.mcp.servers.amazon.ads.client import AmazonAdsClient
         store_id    = ctx.config.get("store_id")
         region      = ctx.config.get("region", "NA")
-        days        = ctx.config.get("days", 30)
         client      = AmazonAdsClient(store_id=store_id, region=region)
         days_needed = days + abs(ATTR_PRE_START) + abs(ATTR_POST_END) + 1
 
@@ -202,6 +258,7 @@ async def _ensure_daily_performance(ctx: WorkflowContext, asin: str) -> List[Dic
 
         records = [r for r in all_raw if r.get("advertised_asin") == asin]
         ctx.cache[cache_key] = records
+        _l2_set(ctx, records, "daily_perf", asin, days)
         chunks = -(-days_needed // _ADVERT_PROD_MAX_DAYS)  # ceiling div
         logger.info(
             f"[daily_perf] {asin}: {len(records)}/{len(all_raw)} records "
@@ -213,26 +270,35 @@ async def _ensure_daily_performance(ctx: WorkflowContext, asin: str) -> List[Dic
 async def _ensure_placement_performance(ctx: WorkflowContext) -> List[Dict]:
     """Fetch account-wide spCampaignsPlacement report, cached once per run."""
     if _KEY_PLACEMENT not in ctx.cache:
-        from src.mcp.servers.amazon.ads.client import AmazonAdsClient
-        store_id = ctx.config.get("store_id")
-        region   = ctx.config.get("region", "NA")
-        days     = ctx.config.get("days", 30)
-        client   = AmazonAdsClient(store_id=store_id, region=region)
-        records  = await client.get_performance_report(
-            report_type="spCampaignsPlacement", days=days
-        )
-        ctx.cache[_KEY_PLACEMENT] = records
-        logger.info(f"Fetched {len(records)} placement performance records")
+        days   = ctx.config.get("days", 30)
+        cached = _l2_get(ctx, _TTL_PERF, "placement", days)
+        if cached is not None:
+            ctx.cache[_KEY_PLACEMENT] = cached
+        else:
+            from src.mcp.servers.amazon.ads.client import AmazonAdsClient
+            store_id = ctx.config.get("store_id")
+            region   = ctx.config.get("region", "NA")
+            client   = AmazonAdsClient(store_id=store_id, region=region)
+            records  = await client.get_performance_report(
+                report_type="spCampaignsPlacement", days=days
+            )
+            ctx.cache[_KEY_PLACEMENT] = records
+            _l2_set(ctx, records, "placement", days)
+            logger.info(f"Fetched {len(records)} placement performance records")
     return ctx.cache[_KEY_PLACEMENT]
 
 
 async def _ensure_change_history(ctx: WorkflowContext) -> List[Dict]:
     """Fetch change history for the lookback window + attribution tail, cached once."""
     if _KEY_CHANGE_HISTORY not in ctx.cache:
+        days   = ctx.config.get("days", 30)
+        cached = _l2_get(ctx, _TTL_CHANGE, "change_history", days)
+        if cached is not None:
+            ctx.cache[_KEY_CHANGE_HISTORY] = cached
+            return cached
         from src.mcp.servers.amazon.ads.client import AmazonAdsClient
         store_id = ctx.config.get("store_id")
         region   = ctx.config.get("region", "NA")
-        days     = ctx.config.get("days", 30)
         client   = AmazonAdsClient(store_id=store_id, region=region)
 
         tz       = _store_tz(ctx)
@@ -255,6 +321,7 @@ async def _ensure_change_history(ctx: WorkflowContext) -> List[Dict]:
         )
         events = result.get("events", [])
         ctx.cache[_KEY_CHANGE_HISTORY] = events
+        _l2_set(ctx, events, "change_history", days)
         logger.info(f"Fetched {len(events)} change history events")
     return ctx.cache[_KEY_CHANGE_HISTORY]
 
