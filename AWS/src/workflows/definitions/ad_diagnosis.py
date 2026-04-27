@@ -1245,6 +1245,69 @@ def _run_causal_analysis(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
 
 # ---------------------------------------------------------------------------
+# LLM pre-enrichment (summary injection only — no field stripping)
+# ---------------------------------------------------------------------------
+
+def _build_item_summary(item: Dict) -> Dict:
+    """
+    Pre-compute a flat highlights dict from a fully enriched item.
+    Python-side extraction: 100% accurate, zero LLM token cost.
+    Mirrors the highlights dict in the live test's _print_result.
+    """
+    rank_series: Dict = item.get("natural_rank_series") or {}
+    market_trends: Dict = item.get("market_trends") or {}
+    attributions: List = item.get("change_attributions") or []
+    return {
+        "asin":                      item.get("asin"),
+        "title":                     item.get("title"),
+        "brand":                     item.get("brand"),
+        "total_available":           item.get("total_available"),
+        "can_sell_days":             item.get("can_sell_days"),
+        "inventory_risk":            item.get("inventory_risk"),
+        "campaign_count":            len(item.get("campaigns", [])),
+        "total_daily_budget":        item.get("total_daily_budget"),
+        "bidding_strategies":        item.get("bidding_strategies"),
+        "total_spend":               item.get("total_spend"),
+        "total_sales":               item.get("total_sales"),
+        "total_orders":              item.get("total_orders"),
+        "account_acos":              item.get("account_acos"),
+        "budget_exhaustion_pct":     item.get("budget_exhaustion_pct"),
+        "budget_likely_exhausted":   item.get("budget_likely_exhausted"),
+        "keyword_count":             item.get("keyword_count"),
+        "avg_bid":                   item.get("avg_bid"),
+        "match_type_dist":           item.get("match_type_dist"),
+        "kw_performance_count":      len(item.get("keyword_performance", [])),
+        "lp_summary":                item.get("lp_summary"),
+        "lp_top_allocations":        (item.get("lp_top_allocations") or [])[:3],
+        "lp_zero_keywords":          (item.get("lp_zero_keywords") or [])[:5],
+        "lp_maxed_keywords":         (item.get("lp_maxed_keywords") or [])[:5],
+        "ad_traffic_ratio":          item.get("ad_traffic_ratio"),
+        "organic_traffic_ratio":     item.get("organic_traffic_ratio"),
+        "rank_tracked_keywords":     item.get("rank_tracked_keywords"),
+        "rank_series_days":          len(next(iter(rank_series.values()), {})),
+        "market_trends_keywords":    list(market_trends.keys()),
+        "change_attributions_count": len(attributions),
+        "causal_consensus_sample":   attributions[0].get("consensus") if attributions else None,
+    }
+
+
+def _prepare_for_llm(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
+    """
+    PURE_PYTHON step immediately before ad_diagnosis_llm.
+
+    Injects _summary_json (Python-exact highlights) as a scalar field so
+    ProcessStep auto-substitutes it into {_summary_json} in the prompt.
+    Full item data is preserved — no fields are stripped.
+    """
+    import json as _json
+    for item in items:
+        item["_summary_json"] = _json.dumps(
+            _build_item_summary(item), ensure_ascii=False, default=str
+        )
+    return items
+
+
+# ---------------------------------------------------------------------------
 # Workflow builder
 # ---------------------------------------------------------------------------
 
@@ -1373,7 +1436,17 @@ def build_ad_diagnosis(config: dict) -> Workflow:
             enabled=config.get("enable_xiyou", True),
         ),
 
-        # ── Stage 7: LLM diagnostic synthesis ────────────────────────────────
+        # ── Stage 7a: inject pre-computed summary before LLM ─────────────────
+        # Injects _summary_json (Python-exact highlights) into each item so the
+        # prompt can reference pre-computed values without asking the LLM to
+        # re-derive them from the full JSON. No fields are removed.
+        ProcessStep(
+            name="prepare_for_llm",
+            fn=_prepare_for_llm,
+            compute_target=ComputeTarget.PURE_PYTHON,
+        ),
+
+        # ── Stage 7b: LLM diagnostic synthesis ───────────────────────────────
         # batch_threshold=1: always submit via Batch API regardless of item count.
         # Rationale: data collection already takes 30+ min, so async batch adds no
         # perceived latency; the enriched payload per ASIN is large → 50% cost saving.
@@ -1384,16 +1457,36 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "You are a senior Amazon advertising analyst. Analyse the following enriched "
                 "advertising dataset for {count} ASIN(s) and produce a structured diagnostic "
                 "report strictly following the output format below.\n\n"
-                "Data snapshot (JSON):\n{items_json}\n\n"
+                "Report date: {report_date}  (use this to interpret relative dates — "
+                "e.g., a change_attribution event on 2026-04-17 is 10 days ago; "
+                "the last entry in natural_rank_series is today's rank.)\n\n"
+                "Pre-computed highlights (authoritative — do not re-derive these values):\n"
+                "{_summary_json}\n\n"
+                "Full enriched data (use for keyword-level, attribution, rank-series, "
+                "trend, and competitor analysis):\n{items_json}\n\n"
 
                 # ── Output format ────────────────────────────────────────────
                 "==== OUTPUT FORMAT (repeat for each ASIN) ====\n\n"
 
                 "## ASIN: {{asin}} – Severity: 🟢 Healthy / 🟡 Warning / 🔴 Critical\n\n"
 
+                "### Quick Metrics Snapshot\n\n"
+                "Copy values from the pre-computed highlights above. "
+                "Do NOT re-derive — use them as-is.\n\n"
+                "| Metric | Value | Threshold / Note |\n"
+                "|--------|-------|------------------|\n"
+                "| Account ACOS | account_acos | 30% warn / 50% crit |\n"
+                "| Budget Exhaustion | budget_exhaustion_pct over 30 days "
+                "(budget_likely_exhausted) | > 90% = exhausted |\n"
+                "| Ad Traffic Ratio | ad_traffic_ratio | > 35% = high dependency |\n"
+                "| Inventory | can_sell_days days (inventory_risk) | < 30 d = risk |\n"
+                "| Organic Rank | rank_series_days days tracked, rank_tracked_keywords kw | |\n"
+                "| Orders / Spend | total_orders orders, total_spend spend → account_acos ACOS | |\n\n"
+
                 "> **Evidence Summary**: 1-2 sentences citing the single most critical metric "
-                "(e.g., ACOS 45% above target, budget exhausted 18/30 days, organic rank dropped "
-                "from #12 to #28).\n\n"
+                "from the Quick Metrics Snapshot above "
+                "(e.g., ACOS 45% vs. 30% warn threshold, budget exhausted 27/30 days, "
+                "organic rank dropped from #12 → #28 over 10 days).\n\n"
 
                 "### Diagnostic Findings\n\n"
                 "Each bullet must include a direct data citation in *italics*.\n\n"
@@ -1496,6 +1589,6 @@ def build_ad_diagnosis(config: dict) -> Workflow:
     ]
 
     if config.get("no_llm", False):
-        steps = [s for s in steps if s.name != "ad_diagnosis_llm"]
+        steps = [s for s in steps if s.name not in ("prepare_for_llm", "ad_diagnosis_llm")]
 
     return Workflow(name="ad_diagnosis", steps=steps)
