@@ -10,6 +10,7 @@ pydantic
 # AI & Intelligence
 google-genai
 anthropic
+openai
 pydantic>=2.0
 pyyaml
 jinja2

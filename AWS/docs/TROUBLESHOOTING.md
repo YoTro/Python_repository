@@ -40,6 +40,22 @@ This guide provides solutions to common issues you might encounter while develop
     *   **Cause**: Invalid API key, rate limiting, or model access not enabled for your Anthropic account.
     *   **Solution**: Verify `ANTHROPIC_API_KEY` in `.env`. The `ClaudeProvider` uses model priority fallback (`claude-3-opus-20240229` → `claude-3-sonnet-20240229` → `claude-3-haiku-20240307`). Check your account's model access at console.anthropic.com.
 
+*   **DeepSeek `AuthenticationError` / `401 Unauthorized`**:
+    *   **Cause**: Missing or invalid API key.
+    *   **Solution**: Set `DEEPSEEK_API_KEY` in `.env`. Verify the key at [platform.deepseek.com](https://platform.deepseek.com).
+
+*   **DeepSeek `404 model not found`**:
+    *   **Cause**: Passing a deprecated model name (e.g., `deepseek-chat`, `deepseek-reasoner`, `deepseek-v3`, `deepseek-r1`) directly to the API instead of going through `PriceManager`.
+    *   **Solution**: These names are now aliases in `deepseek_pricing.json` that resolve to `deepseek-v4-flash`. Ensure you are using `DeepSeekProvider` rather than calling the API directly. Set `DEEPSEEK_MODEL=deepseek-v4-flash` (or `deepseek-v4-pro`) in `.env`.
+
+*   **DeepSeek cost shows `0.0` despite successful calls**:
+    *   **Cause**: `PriceManager` cannot find the pricing config, or the model name passed to `calculate_cost` did not resolve to a canonical ID.
+    *   **Solution**: Check that `src/intelligence/providers/config/deepseek_pricing.json` exists. Enable DEBUG logging for `src.intelligence.providers.price_manager` and verify `normalize_model_name()` returns `deepseek-v4-flash` or `deepseek-v4-pro`.
+
+*   **`ImportError: No module named 'openai'` when using DeepSeekProvider**:
+    *   **Cause**: `DeepSeekProvider` uses the `openai` Python package for the OpenAI-compatible endpoint.
+    *   **Solution**: `pip install openai` (or `pip install -r requirements.txt` after adding `openai` to it).
+
 *   **Local LLM (`llama.cpp`) Silent or Slow Response**:
     *   **Cause**: The local model might be taking too long to respond, is stuck, or not running efficiently.
     *   **Solution**: `LlamaCppProvider` now has a 120-second timeout. If it times out, you'll receive a specific fallback message. Check:

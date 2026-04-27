@@ -103,21 +103,53 @@ class PriceManager:
             # Claude Pattern: {model}#{tier}#{dimension}
             in_key = f"{canonical_model}#{tier}#input"
             out_key = f"{canonical_model}#{tier}#output"
-            
+
             # Support for long context tier switch if tokens > 200k
             if kwargs.get("total_tokens", input_tokens) > 200000:
                 long_in = f"{canonical_model}#long_context_gt200k#input"
                 if long_in in self.lookup:
                     in_key = long_in
                     out_key = f"{canonical_model}#long_context_gt200k#output"
+
+            # Extract prices
+            in_price  = self.lookup.get(in_key,  {}).get("price", 0.0)
+            out_price = self.lookup.get(out_key, {}).get("price", 0.0)
+
+            total_cost = (input_tokens * in_price / 1_000_000.0) + (output_tokens * out_price / 1_000_000.0)
+            total_cost = round(total_cost, 10)
+            return total_cost * 0.5 if is_batch else total_cost
+
+        elif self.provider == "deepseek":
+            # DeepSeek Pattern: {model}#{tier}#{dimension}
+            # Server-side KV cache: cached_tokens billed at cache_hit rate, remainder at input rate.
+            # Reasoning tokens (deepseek-v4-flash thinking mode) are folded into output_tokens by the API.
+            import datetime as _dt
+            cached_tokens = kwargs.get("cached_tokens", 0) or 0
+
+            # deepseek-v4-pro: 75% discount tier until 2026-05-05T15:59:00Z, full price after.
+            _V4PRO_DISCOUNT_END = _dt.datetime(2026, 5, 5, 15, 59, 0, tzinfo=_dt.timezone.utc)
+            if (
+                canonical_model == "deepseek-v4-pro"
+                and _dt.datetime.now(_dt.timezone.utc) > _V4PRO_DISCOUNT_END
+            ):
+                ds_tier = "undiscounted"
+            elif is_batch:
+                ds_tier = "batch"
+            else:
+                ds_tier = "standard"
+
+            in_key        = f"{canonical_model}#{ds_tier}#input"
+            cache_hit_key = f"{canonical_model}#{ds_tier}#input_cache_hit"
+            out_key       = f"{canonical_model}#{ds_tier}#output"
+
+            in_price        = self.lookup.get(in_key,        {}).get("price", 0.0)
+            cache_hit_price = self.lookup.get(cache_hit_key, {}).get("price", 0.0)
+            out_price       = self.lookup.get(out_key,       {}).get("price", 0.0)
+
+            non_cached  = max(0, input_tokens - cached_tokens)
+            input_cost  = (non_cached * in_price + cached_tokens * cache_hit_price) / 1_000_000.0
+            output_cost = output_tokens * out_price / 1_000_000.0
+            return round(input_cost + output_cost, 10)
+
         else:
             return 0.0
-
-        # Extract prices
-        in_price = self.lookup.get(in_key, {}).get("price", 0.0)
-        out_price = self.lookup.get(out_key, {}).get("price", 0.0)
-
-        # Calculation (Price is per 1M tokens)
-        total_cost = (input_tokens * in_price / 1000000.0) + (output_tokens * out_price / 1000000.0)
-        total_cost = round(total_cost, 10)
-        return total_cost * 0.5 if is_batch else total_cost

@@ -1,0 +1,167 @@
+{
+  "metadata": {
+    "source": "https://api-docs.deepseek.com/quick_start/pricing",
+    "last_verified": "2026-04-27",
+    "schema_version": "2",
+    "conventions": {
+      "price_entry_shape": {
+        "price": "number (USD)",
+        "unit": "always 'USD'",
+        "billing_unit": "per_1M_tokens",
+        "dimension": "input | input_cache_hit | output"
+      },
+      "lookup_key_pattern": "{canonical_model_id}#{tier}#{dimension}",
+      "tier_values": "standard | batch | undiscounted",
+      "resolution_flow": "any_string → model_string_index → canonical_id → lookup key",
+      "cache_note": "Server-side KV cache. Cache hits billed at input_cache_hit price; misses at input price.",
+      "batch_note": "Batch API (async) offers 50% discount on input, cache hit, and output.",
+      "deprecation_note": "deepseek-chat and deepseek-reasoner are deprecated aliases for deepseek-v4-flash (non-thinking and thinking modes). Their old independent pricing ($0.27/$2.19) is superseded.",
+      "v4_pro_discount_note": "deepseek-v4-pro is at 75% off (standard tier) until 2026-05-05T15:59:00Z. After that, use undiscounted tier prices."
+    }
+  },
+  "model_string_index": {
+    "deepseek-v4-flash": {
+      "canonical_id": "deepseek-v4-flash",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "deepseek-v4-pro": {
+      "canonical_id": "deepseek-v4-pro",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "deepseek-chat": {
+      "canonical_id": "deepseek-v4-flash",
+      "is_alias": true,
+      "is_deprecated": true,
+      "deprecation_note": "Corresponds to deepseek-v4-flash non-thinking mode. Will be removed in future."
+    },
+    "deepseek-reasoner": {
+      "canonical_id": "deepseek-v4-flash",
+      "is_alias": true,
+      "is_deprecated": true,
+      "deprecation_note": "Corresponds to deepseek-v4-flash thinking mode. Will be removed in future.",
+      "thinking_mode": true
+    },
+    "deepseek-v3": {
+      "canonical_id": "deepseek-v4-flash",
+      "is_alias": true,
+      "is_deprecated": false
+    },
+    "deepseek-r1": {
+      "canonical_id": "deepseek-v4-flash",
+      "is_alias": true,
+      "is_deprecated": false,
+      "thinking_mode": true
+    }
+  },
+  "lookup": {
+    "deepseek-v4-flash#standard#input": {
+      "price": 0.14,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "deepseek-v4-flash#standard#input_cache_hit": {
+      "price": 0.0028,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "1/10 of launch cache-hit price"
+    },
+    "deepseek-v4-flash#standard#output": {
+      "price": 0.28,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "deepseek-v4-flash#batch#input": {
+      "price": 0.07,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "deepseek-v4-flash#batch#input_cache_hit": {
+      "price": 0.0014,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5
+    },
+    "deepseek-v4-flash#batch#output": {
+      "price": 0.14,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+
+    "deepseek-v4-pro#standard#input": {
+      "price": 0.435,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "75% off promotion until 2026-05-05T15:59:00Z; full price $1.74"
+    },
+    "deepseek-v4-pro#standard#input_cache_hit": {
+      "price": 0.003625,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "75% off promotion until 2026-05-05T15:59:00Z; full price $0.0145"
+    },
+    "deepseek-v4-pro#standard#output": {
+      "price": 0.87,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "75% off promotion until 2026-05-05T15:59:00Z; full price $3.48"
+    },
+    "deepseek-v4-pro#batch#input": {
+      "price": 0.2175,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "Based on discounted standard price"
+    },
+    "deepseek-v4-pro#batch#input_cache_hit": {
+      "price": 0.0018125,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "Based on discounted standard price"
+    },
+    "deepseek-v4-pro#batch#output": {
+      "price": 0.435,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "Based on discounted standard price"
+    },
+    "deepseek-v4-pro#undiscounted#input": {
+      "price": 1.74,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "Full price after 2026-05-05T15:59:00Z promotion ends"
+    },
+    "deepseek-v4-pro#undiscounted#input_cache_hit": {
+      "price": 0.0145,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "Full price after 2026-05-05T15:59:00Z promotion ends"
+    },
+    "deepseek-v4-pro#undiscounted#output": {
+      "price": 3.48,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "Full price after 2026-05-05T15:59:00Z promotion ends"
+    }
+  }
+}

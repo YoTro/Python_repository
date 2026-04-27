@@ -286,7 +286,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |          |                                                                   |
 |          v                                                                   |
 |   +──────────────────────────────────────────────────────────────────────+  |
-|   |  CLOUD provider (Gemini / Claude)                                    |  |
+|   |  CLOUD provider (Gemini / Claude / DeepSeek)                        |  |
 |   |                                                                      |  |
 |   |  Text prompt   ──► generate_text()                                   |  |
 |   |  With schema   ──► generate_structured() (JSON response_mime_type)   |  |
@@ -307,7 +307,8 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |       None = still running; dict = complete (keyed by custom_id)            |
 |                                                                              |
 |   Batch pricing: create_response(..., is_batch=True) → PriceManager applies |
-|   50% discount on both Gemini and Claude batch completions.                  |
+|   50% discount on Gemini and Claude batch completions.                       |
+|   DeepSeek: cache hit/miss split billing; V4-Pro auto tier-switch post promo.|
 |                                                                              |
 |   ProviderFactory.get_provider(type) --> BaseLLMProvider                     |
 |   +──────────────────────+──────────────────────────────────────────────+   |
@@ -320,6 +321,11 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   | "claude"/"anthropic" | ClaudeProvider    supports_batch=True        |   |
 |   |                      |   generate_batch: messages.batches.create()  |   |
 |   |                      |   poll_batch: processing_status=="ended"     |   |
+|   +──────────────────────+──────────────────────────────────────────────+   |
+|   | "deepseek"           | DeepSeekProvider  supports_batch=False       |   |
+|   |                      |   OpenAI-compatible REST API                 |   |
+|   |                      |   models: deepseek-v4-flash / deepseek-v4-pro|   |
+|   |                      |   KV cache: cached_tokens split billing      |   |
 |   +──────────────────────+──────────────────────────────────────────────+   |
 |                                                                              |
 +==============================================================================+
