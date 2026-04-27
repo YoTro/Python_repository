@@ -200,3 +200,37 @@ This guide provides solutions to common issues you might encounter while develop
 *   **`401 Unauthorized` or `Invalid Profile ID`**:
     *   **Cause**: The `AMAZON_ADS_PROFILE_ID_{STORE}` in your `.env` does not belong to the account authorized by the Refresh Token.
     *   **Solution**: Run `scripts/setup_amazon_ads.py` to list all valid Profile IDs for your authorized account and verify them against your `.env` settings.
+
+## 8. Ad Diagnosis DataCache / Redis Issues
+
+*   **All `_ensure_*` fetchers re-download data on every run even though nothing changed**:
+    *   **Cause**: `REDIS_URL` is not set in `.env`, so `DataCache` falls back to the JSON-file backend which does not persist across process restarts.
+    *   **Solution**: Set `REDIS_URL=redis://localhost:6379` (or your Redis instance URL) in `.env`. On next run all seven `_ensure_*` fetchers will write to Redis with TTL and re-runs within the TTL window will skip the API call. Verify with `redis-cli keys "aws:cache:ad_diag:*"`.
+
+*   **Re-run returns stale data (e.g., shows old campaign list after you added campaigns in Seller Central)**:
+    *   **Cause**: The L2 Redis entry has not expired yet (TTL: 1h for campaigns/performance, 30min for change history).
+    *   **Solution**: Delete the specific key to force a fresh fetch:
+        ```bash
+        # Replace "default" with your tenant_id and "US" with store_id
+        redis-cli del "aws:cache:ad_diag:default:US:campaigns"
+        redis-cli del "aws:cache:ad_diag:default:US:change_history:30"
+        # Delete all ad_diag keys for this tenant/store
+        redis-cli --scan --pattern "aws:cache:ad_diag:default:US:*" | xargs redis-cli del
+        ```
+    *   **Alternative**: Run the test with `--reset` flag which clears the step checkpoint; the `_ensure_*` L1 (`ctx.cache`) is reset automatically. This does NOT clear the Redis L2 — delete the Redis keys separately if you need truly fresh data.
+
+*   **Multi-user: User B sees User A's campaign data**:
+    *   **Cause**: `ctx.tenant_id` is `"default"` for all users (single-user mode). In multi-user deployments the Auth middleware must populate `tenant_id` with a unique per-seller identifier.
+    *   **Solution**: Wire `UnifiedRequest.tenant_id` from JWT/API key in the Auth middleware (Ext Point #1). The `_l2_key` helper in `ad_diagnosis.py` already prefixes every key with `{tenant_id}:{store_id}` — no further changes needed once `tenant_id` is populated correctly.
+
+*   **`redis.exceptions.ConnectionError: Error 111 connecting to localhost:6379`**:
+    *   **Cause**: Redis is not running or `REDIS_URL` points to a wrong host/port.
+    *   **Solution**: `DataCache` automatically falls back to the JSON-file backend and logs `[cache] Failed to initialize RedisBackend: ... — falling back to JsonFile`. The workflow continues normally. Start Redis (`redis-server`) or correct `REDIS_URL` to re-enable the L2 cache.
+
+*   **`_summary_json` field missing from item in LLM prompt**:
+    *   **Cause**: The `prepare_for_llm` ProcessStep (Stage 7a) was excluded — either `no_llm=True` was set (both `prepare_for_llm` and `ad_diagnosis_llm` are skipped together) or the step failed silently.
+    *   **Solution**: Check logs for `[prepare_for_llm]` step. If `no_llm=True` is intentional (data-collection-only run), `_summary_json` is never needed. For LLM runs, ensure `no_llm` is `False` or absent in the workflow config.
+
+*   **`KeyError: '_summary_json'` or `KeyError: 'report_date'` in ProcessStep prompt rendering**:
+    *   **Cause**: A non-`ad_diagnosis` workflow uses a `prompt_template` that references `{_summary_json}` or `{report_date}` without those values being present in the item or injected by `process.py`.
+    *   **Solution**: `report_date` is injected automatically by `ProcessStep._run_llm()` for every workflow. `_summary_json` is specific to `ad_diagnosis` — only reference it in that workflow's prompt. For other workflows, use `{{_summary_json}}` (double-braced) if you need to show the literal text, or remove the reference.

@@ -126,6 +126,11 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |  | ProcessStep ─────────┼────┼── Intel Router      - Budget < 20%: Force Final |
 |  |  batch_threshold=N   |    |             |                                  |
 |  |  N items→ Batch API  |    |             |                                  |
+|  |  prompt auto-injects:|    |             |                                  |
+|  |   {count}            |    |             |                                  |
+|  |   {items_json}       |    |             |                                  |
+|  |   {report_date}      |    |             |                                  |
+|  |   {<item scalars>}   |    |             |                                  |
 |  | FilterStep  (Python) |    |             |                                  |
 |  +----------------------+    |             |  System Prompt Architecture:     |
 |                              |             |   · .md template (editable)      |
@@ -185,10 +190,24 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |           |                        |                        |                |
 |           +------------------------+------------------------+                |
 |                                    |                                         |
-|                         +──────────────────+                                 |
-|                         |   Data Cache     |  (L1 Write / L2 Read)           |
-|                         |   Redis / File   |  Decouples L1-L2 deps           |
-|                         +──────────────────+                                 |
+|                         +──────────────────────────────────+                |
+|                         |   Data Cache  (Redis / File)     |                |
+|                         |                                  |                |
+|                         |  Two roles:                      |                |
+|                         |  1. MCP L1→L2 decoupling         |                |
+|                         |     L1 servers write raw data;   |                |
+|                         |     L2 servers read without      |                |
+|                         |     calling L1 directly.         |                |
+|                         |                                  |                |
+|                         |  2. Workflow _ensure_* L2 cache  |                |
+|                         |     ad_diagnosis fetchers write  |                |
+|                         |     API responses here so re-    |                |
+|                         |     runs / resumes skip refetch. |                |
+|                         |     Key: {tenant}:{store}:{type} |                |
+|                         |     TTL: 1h perf / 30m changes   |                |
+|                         |     Fallback: JSON file if no    |                |
+|                         |     REDIS_URL env var set.       |                |
+|                         +──────────────────────────────────+                |
 |                                    |                                         |
 |   ── L2: Calculation / Compliance (Consume Cache, No L1 calls) ──────────── |
 |                                                                              |
@@ -550,6 +569,12 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
   6   Persistent storage    Local files + SQLite        Redis + PostgreSQL
   7   SignalBus             asyncio.Event (in-process)  Redis Pub/Sub (cross-process)
   ─── ─────────────────── ─────────────────────────── ──────────────────────────────
+  Already multi-tenant safe (no migration needed):
+    ad_diagnosis _ensure_* L2 cache — keys are scoped {tenant_id}:{store_id}:...
+      so different sellers never share cache entries even on shared Redis.
+      Switch from single-user to multi-user: replace ctx.tenant_id="default"
+      with real user IDs from Auth middleware (Ext Point #1) — zero other changes.
+
   Unchanged core (never needs modification):
     JobRequest DTO structure  ·  Workflow Engine  ·  Step tri-primitives
     MCP Server business logic ·  Intelligence Router routing rules

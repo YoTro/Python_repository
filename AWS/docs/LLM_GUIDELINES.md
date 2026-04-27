@@ -14,6 +14,13 @@ This document outlines best practices for interacting with the LLMs integrated i
 *   **Ad Dependency Red-lines**: The platform now enforces an **Advertising Dependency Policy**. If an ASIN's `advertisingTrafficScoreRatio` (from XiyouZhaoci) exceeds the threshold (default 35%), the LLM should flag it as high-risk, as it lacks organic "moat".
 *   **Tool Disambiguation**: Similar tools are explicitly distinguished in descriptions (e.g., `search_products` = Amazon direct search; `xiyou_keyword_analysis` = third-party Xiyouzhaoci database).
 *   **Negative Constraints**: Only use parameters in the tool's schema. One tool call per turn. No hallucinated data.
+*   **ProcessStep Auto-Injected Variables**: Every `prompt_template` in a `ProcessStep` automatically receives the following format variables — no manual injection needed:
+    *   `{count}` — number of items in the current batch
+    *   `{items_json}` — full JSON of all items (use for detailed field-level analysis)
+    *   `{report_date}` — today's ISO date (`YYYY-MM-DD`); use to anchor relative dates in time-series fields (e.g., `natural_rank_series`, `change_attribution`)
+    *   `{<field>}` — any scalar field (`str`, `int`, `float`, `bool`, `None`) on the current item is injected directly (e.g., `{account_acos}`, `{asin}`)
+    *   Escape literal braces with `{{...}}` when they should appear verbatim in the prompt output.
+*   **`_summary_json` (ad_diagnosis only)**: The `prepare_for_llm` step (Stage 7a) computes a Python-exact highlights dict and injects it as `{_summary_json}`. Always use this for the Quick Metrics Snapshot table — never ask the LLM to re-derive these values from `{items_json}`, as computed fields (`rank_series_days`, `campaign_count`) require Python-side aggregation that the LLM cannot reliably reproduce.
 
 ## 2. Token Management & Cost Control
 
