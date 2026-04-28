@@ -66,6 +66,15 @@ class AmazonCookieHelper:
         random_port = random.randint(10000, 60000)
         co.set_local_port(random_port)
 
+        # Resolve Chrome binary — macOS hides it inside an .app bundle
+        if sys.platform == "darwin":
+            _MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            _MAC_CHROMIUM = "/Applications/Chromium.app/Contents/MacOS/Chromium"
+            for _candidate in (_MAC_CHROME, _MAC_CHROMIUM):
+                if os.path.isfile(_candidate):
+                    co.set_browser_path(_candidate)
+                    break
+
         co.incognito()
         co.set_argument("--proxy-server-bypass-list", "<-loopback>")
         co.set_argument("--disable-gpu")

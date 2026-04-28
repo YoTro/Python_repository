@@ -171,11 +171,24 @@ fi
 pip install --upgrade pip
 
 if [ -n "$CUDA_VERSION" ] && [ "$CUDA_RUNTIME_OK" = true ]; then
-    # CUDA_VERSION is already major+minor digits, e.g. "115" or "121"
+    # CUDA_VERSION is major+minor digits, e.g. "115" or "121"
     WHL_INDEX="cu${CUDA_VERSION}"
-    echo "⚙️ Installing llama-cpp-python with CUDA (wheel: $WHL_INDEX)..."
-    pip install llama-cpp-python \
-        --extra-index-url "https://abetlen.github.io/llama-cpp-python/whl/$WHL_INDEX"
+    WHL_URL="https://abetlen.github.io/llama-cpp-python/whl/$WHL_INDEX"
+
+    # Check whether a pre-built wheel index exists for this CUDA version.
+    # CUDA 12.x wheels are published; CUDA 11.x wheels are NOT (index returns 404).
+    HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$WHL_URL/" 2>/dev/null || echo "000")
+
+    if [ "$HTTP_STATUS" = "200" ]; then
+        echo "⚙️ Installing llama-cpp-python from pre-built wheel (CUDA $CUDA_VERSION)..."
+        pip install llama-cpp-python --extra-index-url "$WHL_URL"
+    else
+        # No pre-built wheel for this CUDA version — compile from source.
+        # Required for CUDA 11.x (cu115, cu118, etc.) which have no published wheels.
+        echo "⚙️ No pre-built wheel for cu$CUDA_VERSION — compiling llama-cpp-python from source..."
+        pip install cmake ninja
+        CMAKE_ARGS="-DGGML_CUDA=ON" FORCE_CMAKE=1 pip install llama-cpp-python --no-binary llama-cpp-python
+    fi
 else
     echo "⚙️ Installing llama-cpp-python (CPU only)..."
     pip install llama-cpp-python
