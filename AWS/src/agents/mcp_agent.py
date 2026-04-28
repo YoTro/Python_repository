@@ -267,8 +267,11 @@ class MCPAgent(BaseAgent):
                     # Enforce Attachment-First Policy: if the answer exceeds the
                     # card/message limit, save to a local file and let the callback
                     # handle channel-specific delivery (Feishu, WeChat, web, etc.).
-                    _CARD_LIMIT = 8000
-                    if len(final_answer) > _CARD_LIMIT:
+                    # Skip auto-export if the agent already called export_md explicitly
+                    # (session.context["report_file_path"] was set by the tool interception below).
+                    _CARD_LIMIT_BYTES = 28_000
+                    if (len(final_answer.encode("utf-8")) > _CARD_LIMIT_BYTES
+                            and not session.context.get("report_file_path")):
                         try:
                             import re as _re, datetime as _dt, json as _json
                             slug = _re.sub(r"\W+", "_", session.session_id[:8])
@@ -295,7 +298,7 @@ class MCPAgent(BaseAgent):
                                     f"{preview}\n\n…（内容较长，完整报告已保存为附件：`{filename}`）"
                                 )
                                 logger.info(
-                                    f"Oversized Final Answer ({len(response)} chars) "
+                                    f"Oversized Final Answer ({len(final_answer)} chars) "
                                     f"auto-exported to {file_path}"
                                 )
                         except Exception as _e:
@@ -345,7 +348,22 @@ class MCPAgent(BaseAgent):
                             "chat_id": session.context.get("feishu_chat_id")
                         }
                         result = await self.mcp.call_tool_json(action, action_input)
-                        
+
+                        # --- EXPORT_MD INTERCEPTION ---
+                        # Track the file path so auto-export (Final Answer section) can
+                        # detect that the file was already written and skip overwriting it.
+                        if action == "export_md":
+                            _fp = None
+                            if isinstance(result, dict):
+                                _fp = result.get("file_path")
+                            elif isinstance(result, list) and result:
+                                try:
+                                    _fp = json.loads(result[0].get("text", "{}")).get("file_path")
+                                except Exception:
+                                    pass
+                            if _fp:
+                                session.context["report_file_path"] = _fp
+
                         # --- INTERACTION SIGNAL INTERCEPTION ---
                         # If the tool returned a structural interaction signal, intercept it.
                         if isinstance(result, dict) and result.get("_type") == "INTERACTION_REQUIRED":

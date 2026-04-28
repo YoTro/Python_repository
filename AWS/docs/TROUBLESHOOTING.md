@@ -234,3 +234,32 @@ This guide provides solutions to common issues you might encounter while develop
 *   **`KeyError: '_summary_json'` or `KeyError: 'report_date'` in ProcessStep prompt rendering**:
     *   **Cause**: A non-`ad_diagnosis` workflow uses a `prompt_template` that references `{_summary_json}` or `{report_date}` without those values being present in the item or injected by `process.py`.
     *   **Solution**: `report_date` is injected automatically by `ProcessStep._run_llm()` for every workflow. `_summary_json` is specific to `ad_diagnosis` — only reference it in that workflow's prompt. For other workflows, use `{{_summary_json}}` (double-braced) if you need to show the literal text, or remove the reference.
+
+## 9. LLM Output Truncation Issues
+
+*   **Feishu attachment file contains an incomplete / mid-sentence report**:
+    *   **Cause**: The LLM hit its `max_output_tokens` ceiling before finishing the report. The 8 000-character Feishu card limit is irrelevant here — files always receive the full LLM output; truncation comes from the LLM itself.
+    *   **Diagnosis**: Search logs for `"response truncated at max"` (all three providers emit this `WARNING` when `stop_reason == "max_tokens"`).
+    *   **Solution**: The effective limit is `min(MAX_LLM_OUTPUT_TOKENS env, model_ceiling_from_config)`. For a longer report:
+        1. Check which model is active (`GeminiProvider` logs `"max_output_tokens: N"` at startup).
+        2. If the model ceiling is the bottleneck (e.g., DeepSeek 8 192), switch to a higher-ceiling model (Gemini 2.5 Flash: 65 536).
+        3. If the env var is the bottleneck, increase `MAX_LLM_OUTPUT_TOKENS` in `.env` (up to the model ceiling).
+
+*   **API error `max_tokens exceeds model limit`** after setting a large `MAX_LLM_OUTPUT_TOKENS`:
+    *   **Cause**: Before the config-driven ceiling was introduced, it was possible to set `MAX_LLM_OUTPUT_TOKENS=16384` on a model that only supports 4 096 (e.g., Claude Haiku 3).
+    *   **Solution**: This is now prevented — `_DEFAULT_MAX_TOKENS = min(env, model_ceiling)` at provider init time. No action needed. If you still see the error, restart the process so the provider re-initialises with the correct ceiling.
+
+*   **Adding a new model whose output ceiling is not in config**:
+    *   **Cause**: `get_max_output_tokens()` falls back to `_default` (8 192) for unknown models.
+    *   **Solution**: Add an entry to the `model_limits` section of the relevant `src/intelligence/providers/config/{provider}_pricing.json`. Use the longest common prefix for the model family:
+        ```json
+        "model_limits": {
+          ...
+          "claude-sonnet-5": {"max_output_tokens": 32000}
+        }
+        ```
+        The loader is LRU-cached — restart the process after editing the JSON.
+
+*   **`max_output_tokens` warning appears but report looks complete**:
+    *   **Cause**: The model filled exactly `max_output_tokens` tokens and happened to end at a sentence boundary (rare). The `WARNING` is always emitted when `stop_reason == "max_tokens"` regardless of content completeness.
+    *   **Solution**: No action required if the content is complete. Consider raising `MAX_LLM_OUTPUT_TOKENS` slightly as a safety margin.

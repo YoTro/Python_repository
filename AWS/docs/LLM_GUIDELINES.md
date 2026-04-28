@@ -25,6 +25,31 @@ This document outlines best practices for interacting with the LLMs integrated i
 ## 2. Token Management & Cost Control
 
 *   **Cloud-Only Token Budget**: The `MCPAgent` tracks cumulative cloud token usage separately from local tokens. Only cloud API calls (Gemini, Claude, DeepSeek) count toward the budget (default: 50,000 tokens). Local model tokens are free and unlimited.
+
+*   **Config-Driven Output Token Ceilings**: Each provider reads its hard `max_output_tokens` ceiling from `src/intelligence/providers/config/{provider}_pricing.json` via the `limits.py` loader (`get_max_output_tokens(provider, model)`). The effective limit is:
+    ```
+    effective = min(MAX_LLM_OUTPUT_TOKENS env var, model_ceiling_from_config)
+    ```
+    This prevents API errors when requesting more tokens than a model supports (e.g., Claude Haiku 3 caps at 4 096) and automatically unlocks higher limits for capable models (e.g., Gemini 2.5 Flash supports 65 536). Per-model ceilings:
+
+    | Model family | max_output_tokens |
+    |---|---|
+    | Claude Haiku 3 | 4 096 |
+    | Claude Haiku 3.5 / Haiku 4 | 8 192 |
+    | Claude Sonnet 4 | 16 384 |
+    | Claude Opus 4 | 32 000 |
+    | DeepSeek (all current) | 8 192 |
+    | Gemini 1.5 / 2.0 | 8 192 |
+    | Gemini 2.5 / 3.x | 65 536 |
+
+    To add a new model: update the `model_limits` section in the relevant JSON. Prefix-matching is used (longest prefix wins), so `"claude-opus-4"` covers `claude-opus-4-0`, `claude-opus-4-5`, `claude-opus-4-6`, etc. The loader is LRU-cached — restart the process after editing the JSON.
+
+*   **`MAX_LLM_OUTPUT_TOKENS` env var**: Overrides the default ceiling on a per-deployment basis. Effective value is `min(env, model_ceiling)` — setting it higher than the model's hard limit is safe (the ceiling clamps it). Default: the model's ceiling from config (no env var needed for most cases). Set it lower to conserve costs on deployments that never need long outputs.
+
+*   **Truncation Detection**: All three providers (`ClaudeProvider`, `GeminiProvider`, `DeepSeekProvider`) log a `WARNING` when output hits the token limit (`stop_reason == "max_tokens"` / `finish_reason == "length"` / Gemini `FinishReason.MAX_TOKENS`). Search logs for `"response truncated at max"` to identify truncated reports.
+
+*   **Feishu Attachment vs Card Truncation**: The 8 000-character Feishu card limit applies **only to card messages**. When output exceeds 8 000 chars, `FeishuCallback.on_complete` automatically writes the full text to a temp file and sends it as an attachment — no 8 000-char truncation applies to the file. If the file itself appears truncated, the cause is the LLM's `max_output_tokens` limit (see truncation detection above), not the Feishu channel.
+
 *   **Gemini Advanced Pricing Support**: The `PriceManager` accurately handles modern Gemini billing features:
     *   **Thinking Tokens**: For models like `gemini-2.0-flash-thinking`, the `thoughts_token_count` is included in the output token billing.
     *   **Prompt Caching**: If a request hits the Gemini cache, the `cached_content_token_count` is automatically deducted from the regular input count and billed at a significantly lower `cache_read` rate.
