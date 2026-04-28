@@ -1374,6 +1374,45 @@ def _prepare_for_llm(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     return items
 
 
+def _export_report(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
+    """
+    PURE_PYTHON step after ad_diagnosis_llm.
+
+    Writes the LLM report to data/reports/ad_diagnosis_{ASIN}_{date}.md and
+    sets item["report_file_path"] so FeishuCallback.on_complete sends it as a
+    file attachment automatically.
+
+    Also sets item["response"] to a short preview so the card branch in
+    on_complete shows a summary card instead of trying to upload the full
+    text as a second attachment.
+    """
+    import os
+    import datetime as _dt
+
+    report_dir = os.path.abspath("data/reports")
+    os.makedirs(report_dir, exist_ok=True)
+    date_str = _dt.date.today().isoformat()
+
+    for item in items:
+        text = item.get("ad_diagnosis_llm") or ""
+        if not text:
+            continue
+        asin = (item.get("asin") or "unknown").upper()
+        filename = f"ad_diagnosis_{asin}_{date_str}.md"
+        file_path = os.path.join(report_dir, filename)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        item["report_file_path"] = file_path
+        # Short preview for the card — keeps on_complete from writing a second
+        # temp file when it sees len(text) > 8000 in the card branch.
+        item["response"] = (
+            text[:400].rstrip()
+            + f"\n\n…（完整报告已保存为 `{filename}`，正在发送为附件）"
+        )
+        logger.info(f"[export_report] {asin}: {len(text)} chars → {file_path}")
+    return items
+
+
 # ---------------------------------------------------------------------------
 # Workflow builder
 # ---------------------------------------------------------------------------
@@ -1514,9 +1553,8 @@ def build_ad_diagnosis(config: dict) -> Workflow:
         ),
 
         # ── Stage 7b: LLM diagnostic synthesis ───────────────────────────────
-        # batch_threshold=1: always submit via Batch API regardless of item count.
-        # Rationale: data collection already takes 30+ min, so async batch adds no
-        # perceived latency; the enriched payload per ASIN is large → 50% cost saving.
+        # batch_threshold=1: always use Batch API (data collection takes 30+ min,
+        # so async batch adds no perceived latency; 50% cost saving on large payloads).
         ProcessStep(
             name="ad_diagnosis_llm",
             batch_threshold=1,
@@ -1653,9 +1691,21 @@ def build_ad_diagnosis(config: dict) -> Workflow:
             ),
             compute_target=ComputeTarget.CLOUD_LLM,
         ),
+
+        # ── Stage 8: write report to .md and set report_file_path ────────────
+        # FeishuCallback.on_complete picks up report_file_path and sends it as
+        # a file attachment. item["response"] is set to a short preview so the
+        # card branch shows a summary without creating a duplicate attachment.
+        ProcessStep(
+            name="export_report",
+            fn=_export_report,
+            compute_target=ComputeTarget.PURE_PYTHON,
+        ),
     ]
 
     if config.get("no_llm", False):
-        steps = [s for s in steps if s.name not in ("prepare_for_llm", "ad_diagnosis_llm")]
+        steps = [s for s in steps if s.name not in (
+            "prepare_for_llm", "ad_diagnosis_llm", "export_report"
+        )]
 
     return Workflow(name="ad_diagnosis", steps=steps)
