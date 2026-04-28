@@ -56,8 +56,8 @@ class DeepSeekProvider(BaseLLMProvider):
 
         from .config.limits import get_max_output_tokens
         _ceiling = get_max_output_tokens("deepseek", self.model_name)
-        _user_pref = int(os.getenv("MAX_LLM_OUTPUT_TOKENS", str(_ceiling)))
-        self._DEFAULT_MAX_TOKENS = min(_user_pref, _ceiling)
+        _env = os.getenv("MAX_LLM_OUTPUT_TOKENS", "").strip()
+        self._DEFAULT_MAX_TOKENS = min(int(_env) if _env else _ceiling, _ceiling)
 
         logger.info(f"DeepSeekProvider initialized: model={self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}")
 
