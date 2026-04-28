@@ -422,31 +422,66 @@ class AmazonAdsClient:
             "endDate": end_date,
             "configuration": configuration,
         }
-        # 425 means a previous identical report is still processing; wait and retry.
-        # Amazon sometimes returns HTTP 200 with {"code":"425"} in the body instead
-        # of a proper HTTP 425, so we check both.
-        for attempt in range(6):
-            resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
-            is_425 = resp.status_code == 425
-            if not is_425 and resp.ok:
+        import re as _re
+        from src.core.utils.decorators import exponential_backoff, EARLY_RETURN
+
+        def _is_425(resp: requests.Response) -> bool:
+            """True for HTTP 425 OR HTTP 200 with body {"code":"425"}."""
+            if resp.status_code == 425:
+                return True
+            if resp.ok:
                 try:
-                    is_425 = str(resp.json().get("code", "")) == "425"
+                    return str(resp.json().get("code", "")) == "425"
                 except Exception:
                     pass
-            if is_425:
-                wait = 30 * (attempt + 1)
-                logger.info(f"Report 425 (duplicate), waiting {wait}s before retry {attempt+1}/6")
-                await asyncio.sleep(wait)
-                body["name"] = f"{report_type}_{start_date}_{end_date}_{int(time.time())}"
-                continue
-            if not resp.ok:
-                logger.error(f"Report creation failed {resp.status_code}: {resp.text[:500]}")
-            resp.raise_for_status()
-            break
+            return False
 
-        report_id = resp.json().get("reportId")
+        def _hook(resp: requests.Response):
+            """
+            On 425: if Amazon included the duplicate reportId in detail, return
+            it immediately so the caller can poll without waiting.
+            Otherwise return EARLY_RETURN to let the decorator handle the retry.
+            """
+            if not _is_425(resp):
+                return EARLY_RETURN
+            try:
+                detail = resp.json().get("detail", "")
+            except Exception:
+                return EARLY_RETURN
+            m = _re.search(r"duplicate of\s*:\s*([0-9a-f\-]{30,})", detail, _re.I)
+            if m:
+                dup_id = m.group(1).strip()
+                logger.info(
+                    f"Report 425: reusing existing report {dup_id} "
+                    f"({report_type} {start_date}→{end_date})"
+                )
+                return dup_id
+            return EARLY_RETURN  # no ID found — let decorator retry with backoff
+
+        @exponential_backoff(
+            max_retries=5,
+            base_delay=30.0,
+            max_delay=180.0,
+            jitter=False,
+            is_retryable=_is_425,
+            response_hook=_hook,
+        )
+        async def _post() -> requests.Response:
+            nonlocal body
+            body["name"] = f"{report_type}_{start_date}_{end_date}_{int(time.time())}"
+            resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
+            if not resp.ok and not _is_425(resp):
+                logger.error(f"Report creation failed {resp.status_code}: {resp.text[:500]}")
+            return resp
+
+        result = await _post()
+        # _hook may have returned a dup reportId string directly
+        if isinstance(result, str):
+            return result
+        result.raise_for_status()
+        report_id = result.json().get("reportId")
         if not report_id:
-            raise ValueError(f"No reportId in response: {resp.text[:200]}")
+            raise ValueError(f"No reportId in response: {result.text[:200]}")
         logger.info(f"Created report {report_id} ({report_type} {start_date}→{end_date})")
         return report_id
 

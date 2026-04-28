@@ -449,7 +449,10 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
         if total_budget_capacity > 0 else None
     )
 
-    return {
+    # Backfill can_sell_days: fetch_inventory runs in Stage 1 before performance
+    # data is available, so daily_sales is unknown at that point.  Derive it here
+    # from ad orders / days (a conservative lower bound — excludes organic orders).
+    result: Dict = {
         "performance_records":    matched,
         "total_spend":            total_spend,
         "total_sales":            total_sales,
@@ -463,6 +466,20 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
             and budget_exhaustion_pct > budget_pct_threshold
         ),
     }
+    if item.get("can_sell_days") is None and total_orders > 0:
+        daily_sales_ad = total_orders / days
+        total_available = item.get("total_available") or 0
+        if total_available > 0:
+            can_sell_days = round(total_available / daily_sales_ad)
+            result["daily_sales"]   = round(daily_sales_ad, 2)
+            result["can_sell_days"] = can_sell_days
+            result["inventory_risk"] = can_sell_days < ctx.config.get("inventory_risk_days", 30)
+            logger.info(
+                f"[backfill can_sell_days] {item.get('asin')}: "
+                f"ad_orders={total_orders}/{days}d → daily_sales≈{daily_sales_ad:.1f}, "
+                f"available={total_available}, can_sell_days={can_sell_days}"
+            )
+    return result
 
 
 async def _enrich_keywords(item: Dict, ctx: WorkflowContext) -> Dict:
@@ -1576,22 +1593,49 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "## ASIN: {{asin}} – Severity: 🟢 Healthy / 🟡 Warning / 🔴 Critical\n\n"
 
                 "### Quick Metrics Snapshot\n\n"
-                "Copy values from the pre-computed highlights above. "
-                "Do NOT re-derive — use them as-is.\n\n"
-                "| Metric | Value | Threshold / Note |\n"
-                "|--------|-------|------------------|\n"
-                "| Account ACOS | account_acos | 30% warn / 50% crit |\n"
-                "| Budget Exhaustion | budget_exhaustion_pct over 30 days "
-                "(budget_likely_exhausted) | > 90% = exhausted |\n"
-                "| Ad Traffic Ratio | ad_traffic_ratio | > 35% = high dependency |\n"
-                "| Inventory | can_sell_days days (inventory_risk) | < 30 d = risk |\n"
-                "| Organic Rank | rank_series_days days tracked, rank_tracked_keywords kw | |\n"
-                "| Orders / Spend | total_orders orders, total_spend spend → account_acos ACOS | |\n\n"
-
+                "The block below is the authoritative pre-computed summary. "
+                "Render ALL fields as a three-column table (Field | Value | Source / How derived). "
+                "Use `null` as-is — do NOT substitute guesses. "
+                "Do NOT re-derive any value from the full JSON.\n\n"
+                "Column definitions:\n"
+                "- **Field**: exact key name from the JSON below.\n"
+                "- **Value**: exact value (keep null as `—`).\n"
+                "- **Source / How derived**: one short phrase explaining origin. "
+                "Use the legend below; if a key is not listed, infer from context.\n\n"
+                "Legend (Field → derivation):\n"
+                "  title / brand / size / bullet_point_count → SP-API Catalog\n"
+                "  total_available / total_inbound → SP-API FBA Inventory (unit count)\n"
+                "  can_sell_days → total_available ÷ daily_sales "
+                "(daily_sales from ad orders ÷ days if not supplied by caller; null = no sales data)\n"
+                "  inventory_risk → can_sell_days < inventory_risk_days config (default 30 d)\n"
+                "  campaign_count → count of campaigns whose name contains the ASIN\n"
+                "  total_daily_budget → sum of ENABLED campaign daily budgets (Ads API)\n"
+                "  bidding_strategies → distinct strategies across matched campaigns\n"
+                "  total_spend / total_sales / total_orders / total_clicks → "
+                "spCampaigns performance report, summed over matched campaigns × lookback days\n"
+                "  account_acos → total_spend ÷ total_sales × 100\n"
+                "  budget_exhaustion_pct → total_spend ÷ (total_daily_budget × days)\n"
+                "  budget_likely_exhausted → budget_exhaustion_pct > 90% threshold\n"
+                "  keyword_count / avg_bid / min_bid / max_bid / match_type_dist → "
+                "Ads API keyword list for matched campaigns\n"
+                "  kw_performance_count → rows in spSearchTerm report with ≥ min_clicks_for_cvr clicks\n"
+                "  lp_summary / lp_top_allocations / lp_zero_keywords / lp_maxed_keywords → "
+                "OR-Tools LP (maximise orders s.t. daily_budget; headroom_factor × daily_clicks cap)\n"
+                "  ad_traffic_ratio / organic_traffic_ratio / traffic_growth_7d → "
+                "Xiyouzhaoci traffic score API\n"
+                "  rank_tracked_keywords / rank_series_days → "
+                "Xiyouzhaoci daily organic rank trends (days with rank data for top keyword)\n"
+                "  market_trends_keywords → keywords with SFR weekly trend data (Xiyouzhaoci)\n"
+                "  change_attributions_count → change events that passed noise filter (Ads API history)\n"
+                "  causal_consensus_sample → consensus label of first change_attribution entry "
+                "(ITS + CausalImpact + DML agreement: Strong / Moderate / Weak / Confounded / Skipped)\n\n"
+                "```json\n{_summary_json}\n```\n\n"
                 "> **Evidence Summary**: 1-2 sentences citing the single most critical metric "
-                "from the Quick Metrics Snapshot above "
+                "visible in the snapshot above "
                 "(e.g., ACOS 45% vs. 30% warn threshold, budget exhausted 27/30 days, "
-                "organic rank dropped from #12 → #28 over 10 days).\n\n"
+                "organic rank dropped from #12 → #28 over 10 days, "
+                "can_sell_days=null → daily_sales not resolved). "
+                "If a key field is null, call it out explicitly.\n\n"
 
                 "### Diagnostic Findings\n\n"
                 "Each bullet must include a direct data citation in *italics*.\n\n"

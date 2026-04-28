@@ -19,7 +19,7 @@ def _patch_fetch(html: str | None):
     return patch.object(ReviewRatioExtractor, "fetch", new=AsyncMock(return_value=html))
 
 
-ASIN = "B08N5WRWNW"
+ASIN = "B0CTQDTF1V"
 
 
 # ---------------------------------------------------------------------------
