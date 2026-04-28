@@ -46,7 +46,8 @@ async def _search_and_expand(items: list, ctx: WorkflowContext) -> list:
 
     async def _fetch_page(page: int):
         try:
-            return await extractor.search(keyword, page)
+            results = await extractor.search(keyword, page)
+            return [r.model_dump() if hasattr(r, "model_dump") else r for r in results]
         except Exception as e:
             logger.warning(f"Search page {page} failed for '{keyword}': {e}")
             return []
