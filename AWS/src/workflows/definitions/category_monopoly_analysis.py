@@ -161,13 +161,30 @@ async def _fetch_core_keywords(items: List[dict], ctx: Any) -> List[dict]:
         f"{top_titles}"
     )
 
+    # Prefixes that indicate an LLM refusal / error — must not become keywords
+    _REFUSAL_PREFIXES = ("sorry", "i ", "i'", "based on", "the keyword", "here are",
+                         "unfortunately", "as an", "i cannot", "i can't")
+
     core_keywords = ["unknown niche"]
     try:
         from src.intelligence.router import TaskCategory
         if ctx.router:
             res = await ctx.router.route_and_execute(prompt, category=TaskCategory.SIMPLE_CLEANING)
             raw_text = res.text.strip().replace('"', '').replace("'", "").lower()
-            core_keywords = [k.strip() for k in raw_text.split(",") if k.strip()][:3]
+            candidates = [k.strip() for k in raw_text.split(",") if k.strip()]
+            # Keep only short phrases that look like actual search keywords
+            valid = [
+                k for k in candidates
+                if 1 <= len(k.split()) <= 6
+                and not any(k.startswith(p) for p in _REFUSAL_PREFIXES)
+            ]
+            if valid:
+                core_keywords = valid[:3]
+            else:
+                logger.warning(
+                    f"[fetch_core_keywords] LLM returned no valid keywords "
+                    f"(raw: {raw_text[:120]!r}); keeping default"
+                )
     except Exception as e:
         logger.warning(f"[fetch_core_keywords] Keyword extraction failed: {e}")
 
@@ -823,12 +840,62 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
         "peak_months": peak_months_str + platform_warning,
     }]
 
+def _trim_repetition(text: str, min_run: int = 4) -> str:
+    """
+    Remove trailing repetitive content caused by LLM degeneration near max_output_tokens.
+
+    When a model hits its output limit inside a markdown table it starts repeating
+    the last line (e.g. the separator row "| :--- | :--- |") dozens of times.
+    This function detects any run of ≥ min_run consecutive identical non-empty lines
+    and trims everything from the start of that run onward, keeping exactly one copy.
+
+    Returns the original text unchanged if no repetition is detected.
+    """
+    lines = text.splitlines()
+    n = len(lines)
+    if n < min_run * 2:
+        return text
+
+    i = n - 1
+    while i >= min_run - 1:
+        line = lines[i].strip()
+        if not line:
+            i -= 1
+            continue
+        # Walk backward to find the start of a run of this exact stripped line
+        run_start = i
+        while run_start > 0 and lines[run_start - 1].strip() == line:
+            run_start -= 1
+        run_len = i - run_start + 1
+        if run_len >= min_run:
+            trimmed = "\n".join(lines[:run_start + 1])
+            logger.warning(
+                f"[prepare_report_artifact] Trimmed {run_len - 1} repeated lines "
+                f"(pattern: {line[:60]!r})"
+            )
+            return trimmed.rstrip() + "\n\n*（报告在此截断：模型输出已达上限，重复内容已删除）*\n"
+        # No long run ending at i — move up past this line
+        i = run_start - 1
+
+    return text
+
+
 async def _prepare_report_artifact(items: List[dict], ctx: Any) -> List[dict]:
-    """Saves the report to a local Markdown file."""
-    if not items or "deliver_report" not in items[0]: return items
+    """Saves the report to a local Markdown file, stripping trailing repetition."""
+    if not items or "deliver_report" not in items[0]:
+        return items
     report_data = items[0]["deliver_report"]
-    report_text = report_data.text if hasattr(report_data, "text") else report_data.get("text") if isinstance(report_data, dict) else str(report_data)
-    if not report_text or report_text == "None": return items
+    report_text = (
+        report_data.text if hasattr(report_data, "text")
+        else report_data.get("text") if isinstance(report_data, dict)
+        else str(report_data)
+    )
+    if not report_text or report_text == "None":
+        return items
+
+    # Strip LLM degeneration artifacts before persisting
+    report_text = _trim_repetition(report_text)
+
     import os, tempfile
     from datetime import datetime
     import re as _re
@@ -837,10 +904,12 @@ async def _prepare_report_artifact(items: List[dict], ctx: Any) -> List[dict]:
     filename = f"Monopoly_Analysis_{keyword}_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
     file_path = os.path.normpath(os.path.join(tempfile.gettempdir(), filename))
     try:
-        with open(file_path, "w", encoding="utf-8") as f: f.write(report_text)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(report_text)
         items[0]["report_file_path"] = file_path
-        logger.info(f"Artifact prepared at: {file_path}")
-    except Exception as e: logger.error(f"Failed to write report file: {e}")
+        logger.info(f"Artifact prepared at: {file_path} ({len(report_text)} chars)")
+    except Exception as e:
+        logger.error(f"Failed to write report file: {e}")
     return items
 
 @WorkflowRegistry.register("category_monopoly_analysis")
