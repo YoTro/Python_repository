@@ -96,7 +96,6 @@
       "dimension": "output",
       "discount_vs_standard": 0.5
     },
-
     "deepseek-v4-pro#standard#input": {
       "price": 0.435,
       "unit": "USD",
@@ -162,6 +161,25 @@
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
       "note": "Full price after 2026-05-05T15:59:00Z promotion ends"
+    }
+  },
+  "model_limits": {
+    "_source": "https://api-docs.deepseek.com/",
+    "_last_verified": "2026-04-28",
+    "_default": {
+      "max_output_tokens": 8192
+    },
+    "deepseek-v4-flash": {
+      "max_output_tokens": 8192
+    },
+    "deepseek-v4-pro": {
+      "max_output_tokens": 8192
+    },
+    "deepseek-chat": {
+      "max_output_tokens": 8192
+    },
+    "deepseek-reasoner": {
+      "max_output_tokens": 8192
     }
   }
 }

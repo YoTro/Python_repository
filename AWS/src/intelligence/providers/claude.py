@@ -45,11 +45,16 @@ class ClaudeProvider(BaseLLMProvider):
             raise ValueError("ANTHROPIC_API_KEY missing.")
 
         self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
-        
+
         selected_model = model_name or _MODEL_PRIORITIES[0]
         super().__init__("claude", selected_model)
-        
-        logger.info(f"ClaudeProvider initialized with model: {self.model_name}")
+
+        from .config.limits import get_max_output_tokens
+        _ceiling = get_max_output_tokens("claude", self.model_name)
+        _user_pref = int(os.getenv("MAX_LLM_OUTPUT_TOKENS", str(_ceiling)))
+        self._DEFAULT_MAX_TOKENS = min(_user_pref, _ceiling)
+
+        logger.info(f"ClaudeProvider initialized with model: {self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}")
 
     async def count_tokens(self, prompt: str, system_message: Optional[str] = None) -> int:
         try:
@@ -71,34 +76,40 @@ class ClaudeProvider(BaseLLMProvider):
         try:
             api_kwargs = dict(
                 model=self.model_name,
-                max_tokens=4096,
+                max_tokens=self._DEFAULT_MAX_TOKENS,
                 messages=[{"role": "user", "content": prompt}],
             )
             if system_message:
                 api_kwargs["system"] = system_message
-            
+
             # Filter out internal metadata from kwargs
             filtered_kwargs = self._filter_kwargs(kwargs)
-            
-            # Merge extra kwargs
+
+            # Merge extra kwargs (allows per-call max_tokens override)
             api_kwargs.update(filtered_kwargs)
 
             response = await self.client.messages.create(**api_kwargs)
-            
+
             text_content = ""
             for block in response.content:
                 if block.type == "text":
                     text_content += block.text
-            
+
+            if response.stop_reason == "max_tokens":
+                logger.warning(
+                    f"Claude response truncated at max_tokens={api_kwargs['max_tokens']}. "
+                    f"Set MAX_LLM_OUTPUT_TOKENS env var to increase the limit."
+                )
+
             # Claude usage contains detailed caching tokens
             usage = response.usage
             input_tokens = usage.input_tokens
             output_tokens = usage.output_tokens
-            
+
             # Extract cache info if available
             cache_read = getattr(usage, "cache_read_input_tokens", 0)
             cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
-            
+
             return self.create_response(
                 text=text_content,
                 input_tokens=input_tokens,
@@ -135,7 +146,7 @@ class ClaudeProvider(BaseLLMProvider):
             for req in requests:
                 params: dict = {
                     "model": self.model_name,
-                    "max_tokens": 4096,
+                    "max_tokens": self._DEFAULT_MAX_TOKENS,
                     "messages": [{"role": "user", "content": req.prompt}],
                 }
                 if req.system_message:

@@ -1340,5 +1340,27 @@
         "web_fetch_20260209"
       ]
     }
+  },
+  "model_limits": {
+    "_source": "https://docs.anthropic.com/en/docs/about-claude/models",
+    "_last_verified": "2026-04-28",
+    "_default": {
+      "max_output_tokens": 8192
+    },
+    "claude-haiku-3-5": {
+      "max_output_tokens": 8192
+    },
+    "claude-haiku-3": {
+      "max_output_tokens": 4096
+    },
+    "claude-haiku-4": {
+      "max_output_tokens": 8192
+    },
+    "claude-sonnet-4": {
+      "max_output_tokens": 16384
+    },
+    "claude-opus-4": {
+      "max_output_tokens": 32000
+    }
   }
 }

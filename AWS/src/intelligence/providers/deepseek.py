@@ -54,7 +54,12 @@ class DeepSeekProvider(BaseLLMProvider):
         except ImportError:
             raise ImportError("openai package required: pip install openai")
 
-        logger.info(f"DeepSeekProvider initialized: model={self.model_name}")
+        from .config.limits import get_max_output_tokens
+        _ceiling = get_max_output_tokens("deepseek", self.model_name)
+        _user_pref = int(os.getenv("MAX_LLM_OUTPUT_TOKENS", str(_ceiling)))
+        self._DEFAULT_MAX_TOKENS = min(_user_pref, _ceiling)
+
+        logger.info(f"DeepSeekProvider initialized: model={self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}")
 
     # ── Token counting ────────────────────────────────────────────────────────
 
@@ -79,9 +84,15 @@ class DeepSeekProvider(BaseLLMProvider):
             resp = await self._client.chat.completions.create(
                 model=self.model_name,
                 messages=messages,
+                max_tokens=self._DEFAULT_MAX_TOKENS,
                 temperature=filtered.pop("temperature", 0.0),
                 **filtered,
             )
+            if resp.choices and resp.choices[0].finish_reason == "length":
+                logger.warning(
+                    f"DeepSeek response truncated at max_tokens={self._DEFAULT_MAX_TOKENS}. "
+                    f"Set MAX_LLM_OUTPUT_TOKENS env var to increase the limit (max 8192)."
+                )
             return self._parse_response(resp, is_batch=False)
         except Exception as e:
             logger.error(f"DeepSeek generate_text failed: {e}")
@@ -113,10 +124,16 @@ class DeepSeekProvider(BaseLLMProvider):
             resp = await self._client.chat.completions.create(
                 model=self.model_name,
                 messages=messages,
+                max_tokens=self._DEFAULT_MAX_TOKENS,
                 temperature=filtered.pop("temperature", 0.0),
                 response_format={"type": "json_object"},
                 **filtered,
             )
+            if resp.choices and resp.choices[0].finish_reason == "length":
+                logger.warning(
+                    f"DeepSeek structured response truncated at max_tokens={self._DEFAULT_MAX_TOKENS}. "
+                    f"Set MAX_LLM_OUTPUT_TOKENS env var to increase the limit (max 8192)."
+                )
             return self._parse_response(resp, is_batch=False)
         except Exception as e:
             logger.error(f"DeepSeek generate_structured failed: {e}")

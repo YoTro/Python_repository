@@ -39,11 +39,16 @@ class GeminiProvider(BaseLLMProvider):
             raise ValueError("GEMINI_API_KEY missing.")
 
         self.client = genai.Client(api_key=self.api_key)
-        
+
         discovered_model = self._discover_best_model(model_name)
         super().__init__("gemini", discovered_model)
-        
-        logger.info(f"GeminiProvider initialized with discovered model: {self.model_name}")
+
+        from .config.limits import get_max_output_tokens
+        _ceiling = get_max_output_tokens("gemini", self.model_name)
+        _user_pref = int(os.getenv("MAX_LLM_OUTPUT_TOKENS", str(_ceiling)))
+        self._DEFAULT_MAX_TOKENS = min(_user_pref, _ceiling)
+
+        logger.info(f"GeminiProvider initialized with model: {self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}")
 
     def _discover_best_model(self, preferred: Optional[str]) -> str:
         """Query the API to find the highest-tier available model."""
@@ -92,15 +97,17 @@ class GeminiProvider(BaseLLMProvider):
         try:
             # Filter out internal metadata from kwargs
             filtered_kwargs = self._filter_kwargs(kwargs)
-            
+
             # Extract and handle temperature (default to 0.2)
             temp = filtered_kwargs.pop("temperature", 0.2)
 
             config = types.GenerateContentConfig(
                 system_instruction=system_message,
                 temperature=temp,
+                max_output_tokens=self._DEFAULT_MAX_TOKENS,
             ) if system_message else types.GenerateContentConfig(
                 temperature=temp,
+                max_output_tokens=self._DEFAULT_MAX_TOKENS,
             )
 
             response = await asyncio.to_thread(
@@ -110,15 +117,24 @@ class GeminiProvider(BaseLLMProvider):
                 config=config,
                 **filtered_kwargs
             )
-            
+
+            # Detect truncation
+            candidate = (getattr(response, "candidates", None) or [None])[0]
+            finish_reason = getattr(candidate, "finish_reason", None)
+            if finish_reason and str(finish_reason) in ("FinishReason.MAX_TOKENS", "MAX_TOKENS", "2"):
+                logger.warning(
+                    f"Gemini response truncated at max_output_tokens={self._DEFAULT_MAX_TOKENS}. "
+                    f"Set MAX_LLM_OUTPUT_TOKENS env var to increase the limit."
+                )
+
             usage = getattr(response, "usage_metadata", None)
             input_tokens = usage.prompt_token_count if usage else await self.count_tokens(prompt, system_message)
             output_tokens = usage.candidates_token_count if usage else 0
-            
+
             # Extract advanced usage stats for precise billing
             thought_tokens = getattr(usage, "thought_token_count", 0) or 0
             cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
-            
+
             return self.create_response(
                 text=response.text,
                 input_tokens=input_tokens,

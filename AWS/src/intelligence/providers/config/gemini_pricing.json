@@ -4512,5 +4512,27 @@
       "embedding_cost": 0.15,
       "retrieved_doc_tokens": "charged as regular input tokens at per-model rate"
     }
+  },
+  "model_limits": {
+    "_source": "https://ai.google.dev/gemini-api/docs/models",
+    "_last_verified": "2026-04-28",
+    "_default": {
+      "max_output_tokens": 8192
+    },
+    "models/gemini-1.0": {
+      "max_output_tokens": 2048
+    },
+    "models/gemini-1.5": {
+      "max_output_tokens": 8192
+    },
+    "models/gemini-2.0": {
+      "max_output_tokens": 8192
+    },
+    "models/gemini-2.5": {
+      "max_output_tokens": 65536
+    },
+    "models/gemini-3": {
+      "max_output_tokens": 65536
+    }
   }
 }
