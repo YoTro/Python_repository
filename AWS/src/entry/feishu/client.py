@@ -91,13 +91,24 @@ class FeishuClient:
         content = json.dumps({"text": text})
         return self._send_im_message("text", content, receive_id_type, receive_id)
 
+    # Feishu card body limit: 30 KB total JSON. Reserve 2 KB for card structure.
+    _CARD_TEXT_LIMIT_BYTES: int = 28_000
+
+    @staticmethod
+    def _fit_text_to_card(text: str, limit_bytes: int = 28_000) -> str:
+        """Trim text so its UTF-8 byte size fits within limit_bytes."""
+        encoded = text.encode("utf-8")
+        if len(encoded) <= limit_bytes:
+            return text
+        truncated = encoded[: limit_bytes - 300].decode("utf-8", errors="ignore")
+        return truncated.rstrip() + "\n\n…（内容超出卡片限制，已截断。完整内容请下载附件）"
+
     def send_card_message(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, text: str = ""):
-        """Send a card message, truncating if it exceeds Feishu limits."""
-        # Feishu interactive cards have a size limit. ~8000 chars is a safe threshold.
-        if len(text) > 8000:
-            logger.warning(f"Feishu message truncated from {len(text)} to 8000 characters.")
-            truncated_text = text[:7900] + "\n\n...(Content truncated due to Feishu size limits. Please request an attachment for full report)..."
-            text = truncated_text
+        """Send a card message. Truncates only if the UTF-8 byte size exceeds 28 KB."""
+        text_bytes = len(text.encode("utf-8"))
+        if text_bytes > self._CARD_TEXT_LIMIT_BYTES:
+            logger.warning(f"Feishu card text {text_bytes} bytes exceeds 28 KB limit, truncating.")
+            text = self._fit_text_to_card(text)
 
         content = json.dumps({
             "config": {"wide_screen_mode": True},
@@ -109,7 +120,7 @@ class FeishuClient:
         """Update an existing card message."""
         content = json.dumps({
             "config": {"wide_screen_mode": True},
-            "elements": [{"tag": "markdown", "content": text[:8000]}]
+            "elements": [{"tag": "markdown", "content": self._fit_text_to_card(text)}]
         })
         
         request = PatchMessageRequest.builder() \

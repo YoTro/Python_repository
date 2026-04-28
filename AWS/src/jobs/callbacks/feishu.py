@@ -361,9 +361,10 @@ class FeishuCallback(JobCallback):
                 from src.intelligence.parsers.markdown_cleaner import OutputParser
                 text = OutputParser.clean_for_feishu(text)
 
-                # When content exceeds card limit, send as file attachment + brief card summary
-                _CARD_LIMIT = 8000
-                if len(text) > _CARD_LIMIT:
+                # When content exceeds Feishu's 30 KB card limit, send as file attachment.
+                # Use byte length (UTF-8) to match the API constraint; threshold = 28 KB.
+                _CARD_LIMIT_BYTES = 28_000
+                if len(text.encode("utf-8")) > _CARD_LIMIT_BYTES:
                     try:
                         import tempfile, os as _os
                         suffix = ".md" if text.strip().startswith("#") else ".txt"
@@ -382,7 +383,7 @@ class FeishuCallback(JobCallback):
                                 self.feishu.send_file_message,
                                 "chat_id", self.chat_id, upload_res["file_key"]
                             )
-                            preview = text[:500].rstrip() + "\n\n…（内容较长，已作为附件发送，请下载查看完整报告）"
+                            preview = text[:500].rstrip() + "\n\n…（The content exceeds 8,000 characters and has been sent as an attachment. Please download the attachment to view the full report.）"
                             self.feishu.send_card_message("chat_id", self.chat_id, preview)
                             logger.info(f"Large result ({len(text)} chars) sent as file attachment.")
                             return
