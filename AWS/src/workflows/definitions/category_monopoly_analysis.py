@@ -6,6 +6,7 @@ Performs a deep-dive analysis of an Amazon category to determine monopoly levels
 and competition intensity across 7 dimensions.
 """
 
+import hashlib as _hl
 import logging
 import asyncio
 from typing import List, Dict, Any
@@ -14,8 +15,33 @@ from src.workflows.engine import Workflow
 from src.workflows.steps.enrich import EnrichStep
 from src.workflows.steps.process import ProcessStep
 from src.workflows.steps.base import ComputeTarget
+from src.core.data_cache import data_cache as _data_cache
 
 logger = logging.getLogger(__name__)
+
+# ── L2 cache helpers ─────────────────────────────────────────────────────────
+_L2_DOMAIN = "cat_monopoly"
+
+_TTL_BSR       = 3_600    # 1  h — BSR scrape
+_TTL_SALES     = 86_400   # 24 h — past-month sales
+_TTL_SELLER    = 21_600   # 6  h — seller/fulfillment info
+_TTL_SIGNALS   = 3_600    # 1  h — ABA + SERP + CPC market signals
+_TTL_TIMESERIES = 86_400  # 24 h — 12-month historical trends + keyword weekly
+_TTL_SS_BSR    = 86_400   # 24 h — Sellersprite monthly snapshots
+
+
+def _l2_key(ctx, *parts) -> str:
+    tid = getattr(ctx, "tenant_id", None) or "default"
+    sid = ctx.config.get("store_id", "US") if hasattr(ctx, "config") else "US"
+    return ":".join(str(p) for p in (tid, sid) + parts)
+
+
+def _l2_get(ctx, ttl: int, *parts):
+    return _data_cache.get(_L2_DOMAIN, _l2_key(ctx, *parts), ttl_seconds=ttl)
+
+
+def _l2_set(ctx, value, *parts) -> None:
+    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value)
 
 # ---------------------------------------------------------------------------
 # Extractor Wrappers
@@ -23,40 +49,73 @@ logger = logging.getLogger(__name__)
 
 async def _fetch_bsr_list(items: List[dict], ctx: Any) -> List[dict]:
     """Fetches the Top 100 BSR products from a category URL."""
-    from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
-    extractor = BestSellersExtractor()
-    
     url = ctx.config.get("url")
-    if not url: 
+    if not url:
         logger.error("No URL provided in workflow config for category_monopoly_analysis.")
         return []
-    
+
+    url_hash = _hl.md5(url.encode()).hexdigest()[:12]
+    cached = _l2_get(ctx, _TTL_BSR, "bsr_list", url_hash)
+    if cached is not None:
+        logger.info(f"[cat_monopoly] BSR list L2 cache hit for url_hash={url_hash}")
+        return cached
+
+    from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
+    extractor = BestSellersExtractor()
     products = await extractor.get_bestsellers(url, max_pages=2)
+    _l2_set(ctx, products, "bsr_list", url_hash)
+    logger.info(f"[cat_monopoly] Fetched {len(products)} BSR products, cached url_hash={url_hash}")
     return products
 
 async def _enrich_sales(items: List[dict], ctx: Any) -> List[dict]:
-    """Fetch past month sales for all items in one batch (20 ASINs per request)."""
+    """Fetch past month sales for all items in one batch (20 ASINs per request).
+    Cache per-ASIN; only fetches ASINs that are not already in L2.
+    """
     from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
-    extractor = PastMonthSalesExtractor()
-    asins = [
+
+    all_asins = [
         (item.get("ASIN") or item.get("asin") or "").strip().upper()
         for item in items
     ]
-    sales_map = await extractor.get_batch_past_month_sales([a for a in asins if a])
-    for item, asin in zip(items, asins):
+
+    # Resolve from cache where available
+    sales_map: Dict[str, int] = {}
+    missing: List[str] = []
+    for asin in all_asins:
+        if not asin:
+            continue
+        hit = _l2_get(ctx, _TTL_SALES, "sales", asin)
+        if hit is not None:
+            sales_map[asin] = hit
+        else:
+            missing.append(asin)
+
+    # Batch-fetch only the uncached ASINs
+    if missing:
+        extractor = PastMonthSalesExtractor()
+        fetched = await extractor.get_batch_past_month_sales(missing)
+        for asin, val in fetched.items():
+            sales_map[asin] = val or 0
+            _l2_set(ctx, val or 0, "sales", asin)
+
+    for item, asin in zip(items, all_asins):
         item["sales"] = sales_map.get(asin) or 0
     return items
 
 async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
     """Fetch fulfillment, seller feedback, and written-vs-global review counts."""
-    from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
-    from src.mcp.servers.amazon.extractors.feedback import SellerFeedbackExtractor
-    from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
-
     asin = item.get("ASIN") or item.get("asin")
     if not asin:
         return {"seller_type": "Unknown", "seller_id": None, "feedback_count": 0,
                 "global_ratings": None, "written_reviews": None, "review_ratio": None}
+
+    cached = _l2_get(ctx, _TTL_SELLER, "seller_info", asin)
+    if cached is not None:
+        return cached
+
+    from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
+    from src.mcp.servers.amazon.extractors.feedback import SellerFeedbackExtractor
+    from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
 
     f_extractor, s_extractor, rc_extractor = (
         FulfillmentExtractor(), SellerFeedbackExtractor(), ReviewRatioExtractor()
@@ -72,7 +131,7 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
         s_res = await s_extractor.get_seller_feedback_count(seller_id)
         feedback_count = s_res.get("FeedbackCount", 0)
 
-    return {
+    result = {
         "seller_type":    f_res.get("FulfilledBy", "Unknown"),
         "seller_id":      seller_id,
         "feedback_count": feedback_count,
@@ -80,6 +139,8 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
         "written_reviews": rc_res.get("WrittenReviews"),
         "review_ratio":   rc_res.get("Ratio"),
     }
+    _l2_set(ctx, result, "seller_info", asin)
+    return result
 
 async def _fetch_core_keywords(items: List[dict], ctx: Any) -> List[dict]:
     """
@@ -125,6 +186,15 @@ async def _fetch_market_signals(items: List[dict], ctx: Any) -> List[dict]:
     """
     core_keywords = ctx.cache.get("core_keywords", ["unknown niche"])
     main_keyword = core_keywords[0]
+    kw_hash = _hl.md5(",".join(sorted(core_keywords)).encode()).hexdigest()[:12]
+
+    cached = _l2_get(ctx, _TTL_SIGNALS, "market_signals", kw_hash)
+    if cached is not None:
+        ctx.cache["keyword_data"]         = cached.get("keyword_data", {})
+        ctx.cache["ad_ratio"]             = cached.get("ad_ratio", 0.3)
+        ctx.cache["detailed_bid_analysis"] = cached.get("detailed_bid_analysis", {})
+        logger.info(f"[cat_monopoly] Market signals L2 cache hit kw_hash={kw_hash}")
+        return items
 
     async def _fetch_aba() -> None:
         from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
@@ -172,6 +242,11 @@ async def _fetch_market_signals(items: List[dict], ctx: Any) -> List[dict]:
             ctx.cache.setdefault("detailed_bid_analysis", {})
 
     await asyncio.gather(_fetch_aba(), _fetch_ad_ratio(), _fetch_cpc_bids())
+    _l2_set(ctx, {
+        "keyword_data":          ctx.cache.get("keyword_data", {}),
+        "ad_ratio":              ctx.cache.get("ad_ratio", 0.3),
+        "detailed_bid_analysis": ctx.cache.get("detailed_bid_analysis", {}),
+    }, "market_signals", kw_hash)
     return items
 
 async def _enrich_external_intensity(items: List[dict], ctx: Any) -> List[dict]:
@@ -357,10 +432,34 @@ async def _fetch_time_series_data(items: List[dict], ctx: Any) -> List[dict]:
     concurrently. Both are independent XiyouZhaoci reads with no mutual dependency.
     Replaces the two sequential steps to save ~5-10s of serial wait time.
     """
+    from datetime import datetime, timedelta
+    top_asins = sorted(
+        (item.get("ASIN") or item.get("asin") or "").strip().upper()
+        for item in items[:20]
+        if (item.get("ASIN") or item.get("asin"))
+    )
+    main_keyword = ctx.cache.get("main_keyword", "")
+    end_date   = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+    ts_hash = _hl.md5(
+        (",".join(top_asins) + main_keyword + start_date).encode()
+    ).hexdigest()[:12]
+
+    cached = _l2_get(ctx, _TTL_TIMESERIES, "time_series", ts_hash)
+    if cached is not None:
+        ctx.cache["historical_data"]       = cached.get("historical_data", {})
+        ctx.cache["keyword_weekly_trends"]  = cached.get("keyword_weekly_trends")
+        logger.info(f"[cat_monopoly] Time series L2 cache hit ts_hash={ts_hash}")
+        return items
+
     await asyncio.gather(
         _fetch_historical_trends(items, ctx),
         _fetch_keyword_weekly_trends(items, ctx),
     )
+    _l2_set(ctx, {
+        "historical_data":      ctx.cache.get("historical_data", {}),
+        "keyword_weekly_trends": ctx.cache.get("keyword_weekly_trends"),
+    }, "time_series", ts_hash)
     return items
 
 
@@ -411,6 +510,14 @@ async def _fetch_sellersprite_bsr(items: List[dict], ctx: Any) -> List[dict]:
     ]
 
     try:
+        ss_cache_key = f"{node_id}:{base_ym}"
+        cached = _l2_get(ctx, _TTL_SS_BSR, "ss_bsr", ss_cache_key)
+        if cached is not None:
+            ctx.cache["sellersprite_snapshots"] = cached.get("snapshots", {})
+            ctx.cache["sellersprite_base_ym"]   = cached.get("base_ym", base_ym)
+            logger.info(f"[cat_monopoly] Sellersprite BSR L2 cache hit node={node_id} base_ym={base_ym}")
+            return items
+
         tenant_id = ctx.config.get("tenant_id", "default")
         api = SellerspriteAPI(tenant_id=tenant_id)
         if not api.auth_token:
@@ -468,6 +575,7 @@ async def _fetch_sellersprite_bsr(items: List[dict], ctx: Any) -> List[dict]:
         snapshots = {ym: products for ym, products in results if products}
         ctx.cache["sellersprite_snapshots"] = snapshots
         ctx.cache["sellersprite_base_ym"] = base_ym
+        _l2_set(ctx, {"snapshots": snapshots, "base_ym": base_ym}, "ss_bsr", ss_cache_key)
         logger.info(
             "[sellersprite_bsr] Snapshots: "
             + ", ".join(f"{ym}({len(p)})" for ym, p in sorted(snapshots.items()))

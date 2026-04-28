@@ -14,6 +14,7 @@ Stages:
   6. Social Media Assessment (TikTok/Meta - optional)
 """
 
+import hashlib as _hl
 import logging
 from typing import Dict, Any, List, Optional
 from src.workflows.registry import WorkflowRegistry
@@ -22,8 +23,35 @@ from src.workflows.steps.enrich import EnrichStep
 from src.workflows.steps.process import ProcessStep
 from src.workflows.steps.filter import FilterStep, RangeRule, ThresholdRule, EnumRule
 from src.workflows.steps.base import ComputeTarget
+from src.core.data_cache import data_cache as _data_cache
 
 logger = logging.getLogger(__name__)
+
+# ── L2 cache helpers (DataCache-backed, Redis or JSON-file) ─────────────────
+# Key: {tenant_id}:{store_id}:{data_type}:{discriminator}
+_L2_DOMAIN = "product_screening"
+
+_TTL_PRODUCT   = 86_400   # 24 h — product metadata changes rarely
+_TTL_SALES     = 86_400   # 24 h — past-month sales is a daily snapshot
+_TTL_FULFILL   = 43_200   # 12 h — fulfillment type changes slowly
+_TTL_DEALS     = 3_600    # 1  h — deal history is more volatile
+_TTL_COMPLIANCE = 604_800 # 7  d — compliance rules are essentially static
+_TTL_REVIEWS   = 14_400   # 4  h — new reviews arrive slowly
+_TTL_AD        = 7_200    # 2  h — ad traffic ratios update a few times per day
+
+
+def _l2_key(ctx: WorkflowContext, *parts) -> str:
+    tid = ctx.tenant_id or "default"
+    sid = ctx.config.get("store_id", "US")
+    return ":".join(str(p) for p in (tid, sid) + parts)
+
+
+def _l2_get(ctx: WorkflowContext, ttl: int, *parts):
+    return _data_cache.get(_L2_DOMAIN, _l2_key(ctx, *parts), ttl_seconds=ttl)
+
+
+def _l2_set(ctx: WorkflowContext, value, *parts) -> None:
+    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value)
 
 
 # ---------------------------------------------------------------------------
@@ -97,27 +125,32 @@ async def _enrich_via_profitability_api(item: dict, ctx: WorkflowContext) -> dic
     Fetches weight, dimensions, BSR, and price in a single request.
     Includes unit conversion (lb to grams) for filtering.
     """
-    from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
-    extractor = ProfitabilitySearchExtractor()
     asin = item.get("asin")
     if not asin:
         return {}
-    
+
+    cached = _l2_get(ctx, _TTL_PRODUCT, "profitability", asin)
+    if cached is not None:
+        return cached
+
+    from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
+    extractor = ProfitabilitySearchExtractor()
+
     # Searching for an ASIN usually returns the exact product match
     results = await extractor.search_products(asin, page_offset=1)
     if not results:
         return {}
-    
+
     p = results[0]
     weight_lb = p.get("weight") or 0.0
     # Convert lb to grams for workflow_defaults.yaml alignment (1 lb ≈ 453.59g)
     weight_grams = round(weight_lb * 453.59, 2)
 
-    return {
+    result = {
         "title": p.get("title", item.get("title")),
         "price": p.get("price", item.get("price")),
         "weight_lb": weight_lb,
-        "weight": weight_grams, # Used for filtering
+        "weight": weight_grams,
         "dimensions": {
             "length": p.get("length"),
             "width": p.get("width"),
@@ -131,45 +164,65 @@ async def _enrich_via_profitability_api(item: dict, ctx: WorkflowContext) -> dic
         "brand": p.get("brandName"),
         "fee_category": p.get("feeCategoryString")
     }
+    _l2_set(ctx, result, "profitability", asin)
+    return result
 
 
 async def _enrich_past_month_sales(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch past month sales and calculate daily average."""
+    asin = item["asin"].strip().upper()
+
+    cached = _l2_get(ctx, _TTL_SALES, "past_month_sales", asin)
+    if cached is not None:
+        return cached
+
     from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
     extractor = PastMonthSalesExtractor()
-    asin = item["asin"].strip().upper()
     batch = await extractor.get_batch_past_month_sales([asin])
     past_sales = batch.get(asin) or 0
-    return {
+    result = {
         "past_month_sales": past_sales,
-        "daily_sales": round(past_sales / 30.0, 2) # Used for filtering
+        "daily_sales": round(past_sales / 30.0, 2)
     }
+    _l2_set(ctx, result, "past_month_sales", asin)
+    return result
 
 
 async def _enrich_fulfillment(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch fulfillment info (FBA/FBM)."""
+    asin = item["asin"]
+    cached = _l2_get(ctx, _TTL_FULFILL, "fulfillment", asin)
+    if cached is not None:
+        return cached
+
     from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
     extractor = FulfillmentExtractor()
-    result = await extractor.get_fulfillment_info(item["asin"])
-    return {"fulfilled_by": result.get("FulfilledBy")}
+    raw = await extractor.get_fulfillment_info(asin)
+    result = {"fulfilled_by": raw.get("FulfilledBy")}
+    _l2_set(ctx, result, "fulfillment", asin)
+    return result
 
 
 async def _enrich_deal_history(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch off-Amazon deal history, using product title for keyword search."""
-    from src.mcp.servers.market.deals.client import DealHistoryClient
-    
     asin = item.get("asin")
+    cached = _l2_get(ctx, _TTL_DEALS, "deal_history", asin)
+    if cached is not None:
+        return cached
+
     title = item.get("title", "")
     brand = item.get("brand", "")
-    
     keyword = brand
     if title:
         title_parts = title.replace(brand, "").strip().split()
         keyword = f"{brand} {' '.join(title_parts[:3])}".strip()
 
+    from src.mcp.servers.market.deals.client import DealHistoryClient
     client = DealHistoryClient()
     deals = await client.get_deal_history(asin=asin, keyword=keyword)
-    return {"deal_history": deals}
+    result = {"deal_history": deals}
+    _l2_set(ctx, result, "deal_history", asin)
+    return result
 
 
 async def _enrich_compliance(item: dict, ctx: WorkflowContext) -> dict:
@@ -199,6 +252,11 @@ async def _enrich_compliance(item: dict, ctx: WorkflowContext) -> dict:
 
     # Representative keyword: prefer category, fall back to first 4 words of title
     keyword = category if category else " ".join(title.split()[:4])
+    kw_hash = _hl.md5(keyword.lower().encode()).hexdigest()[:12]
+    cached = _l2_get(ctx, _TTL_COMPLIANCE, "compliance", kw_hash)
+    if cached is not None:
+        return cached
+
     if not keyword:
         return {
             "compliance_status": "pass",
@@ -304,14 +362,16 @@ async def _enrich_compliance(item: dict, ctx: WorkflowContext) -> dict:
     else:
         epa_status = "not_required"
 
-    return {
+    result = {
         "compliance_status":       compliance_status,
         "compliance_flags":        flags,
         "epa_status":              epa_status,
         "amazon_restricted":       amazon_restricted,
         "cpsc_recalled":           cpsc_recalled,
-        "required_certifications": list(dict.fromkeys(required_certifications)),  # dedup, preserve order
+        "required_certifications": list(dict.fromkeys(required_certifications)),
     }
+    _l2_set(ctx, result, "compliance", kw_hash)
+    return result
 
 
 async def _enrich_reviews(item: dict, ctx: WorkflowContext) -> dict:
@@ -320,13 +380,20 @@ async def _enrich_reviews(item: dict, ctx: WorkflowContext) -> dict:
     Uses CommentsExtractor (AJAX + HTML fallback). Capped at 2 pages (~20 reviews)
     to stay cost-efficient while providing enough signal for ReviewSummarizer.
     """
-    from src.mcp.servers.amazon.extractors.comments import CommentsExtractor
     asin = item.get("asin")
     if not asin:
         return {}
+
+    cached = _l2_get(ctx, _TTL_REVIEWS, "reviews", asin)
+    if cached is not None:
+        return cached
+
+    from src.mcp.servers.amazon.extractors.comments import CommentsExtractor
     extractor = CommentsExtractor()
     reviews = await extractor.get_all_comments(asin, max_pages=2)
-    return {"reviews": reviews}
+    result = {"reviews": reviews}
+    _l2_set(ctx, result, "reviews", asin)
+    return result
 
 
 async def _summarize_reviews(items: list, ctx: WorkflowContext) -> list:
@@ -381,23 +448,26 @@ async def _enrich_ad_metrics_xiyou(item: dict, ctx: WorkflowContext) -> dict:
     asin = item.get("asin")
     if not asin or not ctx.mcp:
         return {}
-        
+
+    cached = _l2_get(ctx, _TTL_AD, "ad_traffic", asin)
+    if cached is not None:
+        return cached
+
     try:
+        import json
         resp = await ctx.mcp.call_tool_json("xiyou_get_traffic_scores", {
             "asins": [asin],
             "country": "US"
         })
         if isinstance(resp, list) and len(resp) > 0:
-            import json
             data = json.loads(resp[0].get("text", "{}"))
             if data.get("success") and data.get("data"):
-                # Ratio is like 0.45 (45%)
-                ratio = data["data"][0].get("advertisingTrafficScoreRatio", 0.0)
-                growth = data["data"][0].get("totalTrafficScoreGrowthRate", 0.0)
-                return {
-                    "ad_traffic_ratio": ratio,
-                    "traffic_growth_7d": growth
+                result = {
+                    "ad_traffic_ratio": data["data"][0].get("advertisingTrafficScoreRatio", 0.0),
+                    "traffic_growth_7d": data["data"][0].get("totalTrafficScoreGrowthRate", 0.0),
                 }
+                _l2_set(ctx, result, "ad_traffic", asin)
+                return result
     except Exception as e:
         logger.error(f"Failed to fetch Xiyou traffic scores for {asin}: {e}")
     return {}
