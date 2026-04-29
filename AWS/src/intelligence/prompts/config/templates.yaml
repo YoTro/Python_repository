@@ -4,7 +4,28 @@ standard_report:
     1. Executive Verdict: High-level verdict (2-3 sentences).
     2. Data Sources & Methodology: Cite tools and sample sizes.
     3. Reporting Period: The reporting period for the data.
-    4. Data Breakdown & Metrics Definition: Present key metrics in tables.
+    4. Data Breakdown & Metrics Definition: Present key metrics in a table.
+       STRICT TABLE RULES — violations will break downstream rendering:
+       - Each cell MUST be a short scalar (number, percentage, brief label, or ≤ 10-word phrase).
+       - NEVER paste raw JSON, arrays, review texts, or multi-sentence blobs into a cell.
+       - If a metric has multiple values (e.g. top-3 keywords), summarise as "kw1, kw2, kw3".
+       - Maximum cell width: 80 characters. Truncate with "…" if needed.
+       - Do NOT repeat data already cited in the Executive Verdict.
+
+       ✅ CORRECT example:
+       | Metric             | Value          | Definition                          |
+       |--------------------|----------------|-------------------------------------|
+       | Sentiment Score    | 0.82           | Avg polarity across scraped reviews |
+       | Monthly Sales Est. | 4,000 units    | Sellersprite snapshot (2-month lag) |
+       | Review Velocity    | 9.66 / month   | New reviews per 30-day period       |
+       | Top Pros           | effective, natural, easy to use | Most-cited positive themes |
+       | Top Cons           | weak outdoors, short duration   | Most-cited negative themes |
+
+       ❌ WRONG example (never do this):
+       | Metric  | Value                                                                 |
+       |---------|-----------------------------------------------------------------------|
+       | Reviews | {"reviews": [{"text": "Great product...", "rating": 5, "date": ...}]} |
+       | Pros    | The product works well in indoor settings and users appreciate the natural ingredients. Many customers mentioned that it is easy to apply and does not leave residue. Some also noted... |
     5. Strategic Insights: Apply a framework from the Analysis Frameworks section.
     6. Risk/Opportunity Assessment: Provide direct, actionable advice.
     7. Actionable Prioritization: Recommendations MUST be tiered (e.g., [P0] Immediate Action, [P1] Medium-term Strategy).

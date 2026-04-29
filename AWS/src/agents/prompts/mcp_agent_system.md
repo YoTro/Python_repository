@@ -75,6 +75,10 @@ $output_standard
 1. **Role Alignment**: Write from the perspective of the defined role.
 2. **Formatting**: Use Markdown headers, bold text for emphasis, and tables for numerical data.
 3. **Anti-Fluff**: Do not use filler phrases like "I hope this helps." Get straight to the data and strategy.
+4. **No Raw Data Dumps**: NEVER paste raw JSON, full review texts, or tool response blobs into your Final Answer.
+   Summarise findings in plain language. Tables must contain only short scalars (≤ 80 chars per cell).
+5. **Length Budget**: Your Final Answer must fit within ~4,000 words. If you have more to say, call `export_md`
+   first with the full content, then write a concise summary as your Final Answer referencing the attachment.
 
 # Completion
 

@@ -92,23 +92,34 @@ class GeminiProvider(BaseLLMProvider):
         except Exception:
             return len(prompt) // 4
 
-    async def generate_text(self, prompt: str, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
-        await self._check_context_limit(prompt, system_message)
-        try:
-            # Filter out internal metadata from kwargs
-            filtered_kwargs = self._filter_kwargs(kwargs)
+    _MAX_CONTINUATIONS = 4  # max continuation rounds when response is truncated
 
-            # Extract and handle temperature (default to 0.2)
-            temp = filtered_kwargs.pop("temperature", 0.2)
+    @staticmethod
+    def _is_truncated(response) -> bool:
+        candidate = (getattr(response, "candidates", None) or [None])[0]
+        finish_reason = getattr(candidate, "finish_reason", None)
+        return bool(finish_reason and str(finish_reason) in (
+            "FinishReason.MAX_TOKENS", "MAX_TOKENS", "2"
+        ))
 
-            config = types.GenerateContentConfig(
+    def _make_config(self, system_message, temp):
+        if system_message:
+            return types.GenerateContentConfig(
                 system_instruction=system_message,
                 temperature=temp,
                 max_output_tokens=self._DEFAULT_MAX_TOKENS,
-            ) if system_message else types.GenerateContentConfig(
-                temperature=temp,
-                max_output_tokens=self._DEFAULT_MAX_TOKENS,
             )
+        return types.GenerateContentConfig(
+            temperature=temp,
+            max_output_tokens=self._DEFAULT_MAX_TOKENS,
+        )
+
+    async def generate_text(self, prompt: str, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
+        await self._check_context_limit(prompt, system_message)
+        try:
+            filtered_kwargs = self._filter_kwargs(kwargs)
+            temp = filtered_kwargs.pop("temperature", 0.2)
+            config = self._make_config(system_message, temp)
 
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
@@ -118,29 +129,60 @@ class GeminiProvider(BaseLLMProvider):
                 **filtered_kwargs
             )
 
-            # Detect truncation
-            candidate = (getattr(response, "candidates", None) or [None])[0]
-            finish_reason = getattr(candidate, "finish_reason", None)
-            if finish_reason and str(finish_reason) in ("FinishReason.MAX_TOKENS", "MAX_TOKENS", "2"):
-                logger.warning(
-                    f"Gemini response truncated at max_output_tokens={self._DEFAULT_MAX_TOKENS}. "
-                    f"Set MAX_LLM_OUTPUT_TOKENS env var to increase the limit."
-                )
-
             usage = getattr(response, "usage_metadata", None)
-            input_tokens = usage.prompt_token_count if usage else await self.count_tokens(prompt, system_message)
-            output_tokens = usage.candidates_token_count if usage else 0
+            input_tokens   = (usage.prompt_token_count      or 0) if usage else await self.count_tokens(prompt, system_message)
+            output_tokens  = (usage.candidates_token_count  or 0) if usage else 0
+            thought_tokens = getattr(usage, "thought_token_count",        0) or 0
+            cached_tokens  = getattr(usage, "cached_content_token_count", 0) or 0
+            full_text = response.text
 
-            # Extract advanced usage stats for precise billing
-            thought_tokens = getattr(usage, "thought_token_count", 0) or 0
-            cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
+            # ── Continuation loop ────────────────────────────────────────────
+            # When Gemini hits its per-call output ceiling, ask it to continue
+            # from where it left off.  We build a minimal multi-turn conversation
+            # (user turn = original prompt + all prior continuations; model turn =
+            # last chunk) so the model has context but we don't balloon the prompt.
+            for cont in range(self._MAX_CONTINUATIONS):
+                if not self._is_truncated(response):
+                    break
+                logger.warning(
+                    f"Gemini response truncated at max_output_tokens={self._DEFAULT_MAX_TOKENS} "
+                    f"(continuation {cont + 1}/{self._MAX_CONTINUATIONS})…"
+                )
+                continuation_contents = [
+                    types.Content(role="user",  parts=[types.Part(text=prompt)]),
+                    types.Content(role="model", parts=[types.Part(text=full_text)]),
+                    types.Content(role="user",  parts=[types.Part(
+                        text="Your previous response was cut off. Continue EXACTLY from where you stopped, "
+                             "without repeating any prior content."
+                    )]),
+                ]
+                response = await asyncio.to_thread(
+                    self.client.models.generate_content,
+                    model=self.model_name,
+                    contents=continuation_contents,
+                    config=config,
+                    **filtered_kwargs
+                )
+                cont_usage = getattr(response, "usage_metadata", None)
+                if cont_usage:
+                    input_tokens  += cont_usage.prompt_token_count      or 0
+                    output_tokens += cont_usage.candidates_token_count  or 0
+                    thought_tokens += getattr(cont_usage, "thought_token_count",        0) or 0
+                    cached_tokens  += getattr(cont_usage, "cached_content_token_count", 0) or 0
+                full_text += response.text
+            else:
+                if self._is_truncated(response):
+                    logger.error(
+                        f"Gemini response still truncated after {self._MAX_CONTINUATIONS} continuations. "
+                        "Consider splitting the request."
+                    )
 
             return self.create_response(
-                text=response.text,
+                text=full_text,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 thought_tokens=thought_tokens,
-                cached_tokens=cached_tokens
+                cached_tokens=cached_tokens,
             )
         except Exception as e:
             logger.error(f"Gemini text generation failed: {e}")
