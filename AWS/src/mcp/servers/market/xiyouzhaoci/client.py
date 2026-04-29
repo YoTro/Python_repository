@@ -153,9 +153,13 @@ class XiyouZhaociAPI:
         """Initiate WeChat QR code login."""
         return self.auth.get_wechat_qr()
 
-    def check_qr_login_status(self) -> dict:
-        """Check the status of a pending QR code login."""
-        res = self.auth.check_wechat_login()
+    def check_qr_login_status(self, ticket: str = None) -> dict:
+        """Check the status of a pending QR code login.
+
+        `ticket` — when supplied (from the card button value) the state file is
+        bypassed entirely, so verification works even if the file was lost or expired.
+        """
+        res = self.auth.check_wechat_login(ticket=ticket)
         # If login is successful, refresh the client's own token
         if res.get("status") == "SUCCESS":
             self.auth_token = self._load_token()

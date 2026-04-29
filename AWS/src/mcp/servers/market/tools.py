@@ -239,7 +239,8 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
                 },
                 "context": {
                     "tenant_id": tenant_id,
-                    "job_id": ContextPropagator.get("job_id")
+                    "job_id": ContextPropagator.get("job_id"),
+                    "ticket": qr_data.get("ticket"),  # embedded for state-file-free verification
                 },
                 "fallback_text": f"Please scan this QR code to login to Xiyouzhaoci (valid for 120s): {qr_data['url']}. Reply 'I have scanned' when done."
             }

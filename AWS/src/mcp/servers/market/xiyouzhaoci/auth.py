@@ -94,46 +94,57 @@ class XiyouZhaociAuth:
             logger.error(f"Error fetching WeChat QR: {e}")
             return {"error": str(e)}
 
-    def check_wechat_login(self) -> dict:
+    def check_wechat_login(self, ticket: str = None) -> dict:
         """
-        Step 2: Check scan status using the persisted ticket.
+        Step 2: Check scan status.
+
+        Priority:
+          1. `ticket` argument — passed directly from the card button value,
+             so verification works even when the state file was never written
+             or has already expired and been deleted.
+          2. State file — fallback for callers that don't supply a ticket.
         """
-        if not os.path.exists(self.state_file):
-            return {"status": "ERROR", "msg": "No pending login task found for this tenant."}
+        if ticket:
+            # Ticket supplied directly — skip state file entirely
+            logger.info(f"[{self.tenant_id}] check_wechat_login: using ticket from payload")
+        else:
+            if not os.path.exists(self.state_file):
+                return {"status": "ERROR", "msg": "No pending login task found for this tenant."}
 
-        try:
-            with open(self.state_file, 'r', encoding='utf-8') as f:
-                state = json.load(f)
-        except Exception as e:
-            return {"status": "ERROR", "msg": f"Failed to read auth state: {e}"}
+            try:
+                with open(self.state_file, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+            except Exception as e:
+                return {"status": "ERROR", "msg": f"Failed to read auth state: {e}"}
 
-        # Check 120s expiry (with 5s buffer)
-        elapsed = time.time() - state.get("created_at", 0)
-        if elapsed > 115:
-            if os.path.exists(self.state_file):
-                os.remove(self.state_file)
-            return {"status": "EXPIRED", "msg": "QR code has expired. Please request a new one."}
+            elapsed = time.time() - state.get("created_at", 0)
+            if elapsed > 115:
+                if os.path.exists(self.state_file):
+                    os.remove(self.state_file)
+                return {"status": "EXPIRED", "msg": "QR code has expired. Please request a new one."}
+
+            ticket = state["ticket"]
 
         url = f"{self.base_url}/v2/system/login/wechatChannel/scanStatus"
-        payload = {"ticket": state["ticket"]}
-        
-        logger.info(f"[{self.tenant_id}] Checking scan status for ticket: {state['ticket'][:10]}...")
+        payload = {"ticket": ticket}
+
+        logger.info(f"[{self.tenant_id}] Checking scan status for ticket: {ticket[:10]}...")
         try:
             response = self.session.post(url, headers=self.common_headers, json=payload)
             data = response.json()
-            
+
             # The API returns the token directly or in a 'data' field upon success
             token = data.get("token") or data.get("data", {}).get("token")
-            
+
             if token:
                 logger.info(f"[{self.tenant_id}] WeChat login successful")
                 self._save_token(token)
                 if os.path.exists(self.state_file):
                     os.remove(self.state_file)
                 return {"status": "SUCCESS", "token": token, "msg": "Login successful."}
-            
+
             # Still waiting
-            return {"status": "WAITING", "msg": "Still waiting for scan or confirmation...", "elapsed": int(elapsed)}
+            return {"status": "WAITING", "msg": "Still waiting for scan or confirmation..."}
             
         except Exception as e:
             logger.error(f"Error checking scan status: {e}")

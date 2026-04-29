@@ -44,7 +44,9 @@ async def handle_xiyou_verification(payload: Dict[str, Any]) -> Dict[str, Any]:
     logger.info(f"Interaction: Verifying Xiyou login for tenant={tenant_id}, job={job_id}")
 
     api = XiyouZhaociAPI(tenant_id=tenant_id)
-    result = await asyncio.to_thread(api.check_qr_login_status)
+    # ticket is embedded in the card button value; use it to bypass state file
+    ticket = payload.get("ticket")
+    result = await asyncio.to_thread(api.check_qr_login_status, ticket)
     status = result.get("status")
 
     if status == "SUCCESS":

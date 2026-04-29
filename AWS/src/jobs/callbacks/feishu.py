@@ -308,6 +308,7 @@ class FeishuCallback(JobCallback):
                                 "job_id": context.get("job_id"),
                                 "chat_id": self.chat_id,
                                 "bot_name": self.bot_name,
+                                "ticket": context.get("ticket"),  # fallback if state file missing
                             }
                         }
                     ]
