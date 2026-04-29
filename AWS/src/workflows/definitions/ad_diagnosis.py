@@ -384,6 +384,71 @@ async def _enrich_inventory(item: Dict, ctx: WorkflowContext) -> Dict:
         return {"inventory_records": [], "total_available": 0, "inventory_risk": False}
 
 
+async def _enrich_order_metrics(item: Dict, ctx: WorkflowContext) -> Dict:
+    """
+    Fetch total units ordered via SP-API getOrderMetrics for this ASIN.
+
+    Runs AFTER _enrich_inventory so total_available is already in item.
+    Uses real (organic + ad) unit sales to compute daily_sales and can_sell_days —
+    replacing the ad-orders-only fallback in _enrich_performance.
+
+    TTL: 4h — order data refreshes approximately once per day but we re-check
+    frequently in case of intraday corrections.
+    """
+    from src.mcp.servers.amazon.sp_api.client import SPAPIClient
+    asin = item.get("asin")
+    if not asin:
+        return {}
+
+    days = ctx.config.get("days", 30)
+    cached = _l2_get(ctx, 14400, "order_metrics", asin, days)  # 4h TTL
+    if cached is not None:
+        return cached
+
+    try:
+        tz       = _store_tz(ctx)
+        today    = datetime.now(tz=tz).date()
+        end_dt   = today - timedelta(days=1)
+        start_dt = today - timedelta(days=days)
+
+        client  = SPAPIClient(store_id=ctx.config.get("store_id"))
+        metrics = await client.get_order_metrics(
+            asin=asin,
+            start_date=start_dt.isoformat(),
+            end_date=end_dt.isoformat(),
+            granularity="Total",
+        )
+
+        total_units = sum((m.get("unitCount") or 0) for m in metrics)
+        if total_units <= 0:
+            result: Dict = {}
+        else:
+            daily_sales     = round(total_units / days, 2)
+            total_available = item.get("total_available") or 0
+            result = {
+                "daily_sales":        daily_sales,
+                "daily_sales_source": "order_metrics",
+                "total_units_ordered": total_units,
+            }
+            if total_available > 0:
+                can_sell_days = round(total_available / daily_sales)
+                result["can_sell_days"]   = can_sell_days
+                result["inventory_risk"]  = (
+                    can_sell_days < ctx.config.get("inventory_risk_days", 30)
+                )
+                logger.info(
+                    f"[order_metrics] {asin}: units={total_units}/{days}d "
+                    f"→ daily_sales={daily_sales}, can_sell_days={can_sell_days}"
+                )
+
+        _l2_set(ctx, result, "order_metrics", asin, days)
+        return result
+
+    except Exception as e:
+        logger.warning(f"Order metrics fetch failed for {asin}: {e}")
+        return {}
+
+
 async def _enrich_campaigns(item: Dict, ctx: WorkflowContext) -> Dict:
     """
     Match account campaigns to this ASIN by name convention (ASIN substring match).
@@ -466,18 +531,28 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
             and budget_exhaustion_pct > budget_pct_threshold
         ),
     }
-    if item.get("can_sell_days") is None and total_orders > 0:
+    # Last-resort can_sell_days backfill: only if neither inventory (daily_sales
+    # supplied by caller) nor order_metrics (preferred) set can_sell_days already.
+    if item.get("can_sell_days") is None and item.get("daily_sales_source") != "order_metrics" and total_orders > 0:
+        # Ad orders are only a fraction of total sales; this is a LOWER BOUND.
+        # Do NOT use for inventory risk decisions — flag clearly for the LLM.
         daily_sales_ad = total_orders / days
         total_available = item.get("total_available") or 0
         if total_available > 0:
             can_sell_days = round(total_available / daily_sales_ad)
-            result["daily_sales"]   = round(daily_sales_ad, 2)
-            result["can_sell_days"] = can_sell_days
+            result["daily_sales"]        = round(daily_sales_ad, 2)
+            result["daily_sales_source"] = "ad_orders_only"
+            result["can_sell_days"]      = can_sell_days
+            result["can_sell_days_note"] = (
+                "lower_bound — derived from ad-attributed orders only; "
+                "true daily sales (including organic) will be higher, "
+                "so actual can_sell_days is likely LARGER than shown"
+            )
             result["inventory_risk"] = can_sell_days < ctx.config.get("inventory_risk_days", 30)
             logger.info(
                 f"[backfill can_sell_days] {item.get('asin')}: "
-                f"ad_orders={total_orders}/{days}d → daily_sales≈{daily_sales_ad:.1f}, "
-                f"available={total_available}, can_sell_days={can_sell_days}"
+                f"ad_orders={total_orders}/{days}d → daily_sales_ad≈{daily_sales_ad:.1f} "
+                f"(lower bound), available={total_available}, can_sell_days≈{can_sell_days}"
             )
     return result
 
@@ -662,6 +737,12 @@ async def _enrich_change_history(item: Dict, ctx: WorkflowContext) -> Dict:
 
         # Noise filter: IN_BUDGET is auto-generated (not a human action); tiny tweaks are low-signal
         change_type = ev.get("changeType", "")
+
+        # CREATED events record the initial state at campaign/keyword creation —
+        # they are not actionable changes and add noise to attribution analysis.
+        if change_type == "CREATED":
+            continue
+
         old_val = ev.get("previousValue")
         new_val = ev.get("newValue")
         is_low_weight = change_type == "IN_BUDGET"  # always low_weight — Amazon auto-event
@@ -1072,18 +1153,23 @@ async def _enrich_competitor_prices(item: Dict, ctx: WorkflowContext) -> Dict:
         all_dates = sorted({d for prices in comp_price_by_asin.values() for d in prices})
         competitor_price_summary: Dict[str, Dict] = {}
         for date in all_dates:
-            day_prices = sorted(
-                v for a in comp_price_by_asin for v in [comp_price_by_asin[a].get(date)] if v
+            day_entries = sorted(
+                (comp_price_by_asin[a][date], a)
+                for a in comp_price_by_asin
+                if comp_price_by_asin[a].get(date) is not None
             )
-            if not day_prices:
+            if not day_entries:
                 continue
-            n      = len(day_prices)
-            median = day_prices[n // 2] if n % 2 else (day_prices[n//2-1] + day_prices[n//2]) / 2
+            day_prices   = [p for p, _ in day_entries]
+            day_asins    = [a for _, a in day_entries]
+            n            = len(day_prices)
+            median       = day_prices[n // 2] if n % 2 else (day_prices[n//2-1] + day_prices[n//2]) / 2
             competitor_price_summary[date] = {
-                "min":    round(min(day_prices), 2),
-                "max":    round(max(day_prices), 2),
-                "median": round(median, 2),
-                "count":  n,
+                "min":               round(min(day_prices), 2),
+                "max":               round(max(day_prices), 2),
+                "median":            round(median, 2),
+                "count":             n,
+                "contributor_asins": day_asins[:3],  # up to 3 for easy lookup
             }
 
         logger.info(
@@ -1092,6 +1178,7 @@ async def _enrich_competitor_prices(item: Dict, ctx: WorkflowContext) -> Dict:
         )
         return {
             "competitor_asins":         competitor_asins,
+            "top_competitor_asins":     competitor_asins[:3],
             "competitor_price_by_asin": comp_price_by_asin,
             "competitor_price_summary": competitor_price_summary,
         }
@@ -1332,23 +1419,37 @@ def _run_causal_analysis(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 # LLM pre-enrichment (summary injection only — no field stripping)
 # ---------------------------------------------------------------------------
 
-def _build_item_summary(item: Dict) -> Dict:
+def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     """
     Pre-compute a flat highlights dict from a fully enriched item.
     Python-side extraction: 100% accurate, zero LLM token cost.
     Mirrors the highlights dict in the live test's _print_result.
     """
+    from datetime import date as _date
+
     rank_series: Dict = item.get("natural_rank_series") or {}
     market_trends: Dict = item.get("market_trends") or {}
     attributions: List = item.get("change_attributions") or []
+    campaigns: List = item.get("campaigns") or []
+    days = ctx.config.get("days", 30)
+    today = _date.today()
+    data_end_date   = (today - timedelta(days=1)).isoformat()
+    data_start_date = (today - timedelta(days=days)).isoformat()
+    active_campaign_count = sum(1 for c in campaigns if c.get("state") == "ENABLED")
+    paused_campaign_count = sum(1 for c in campaigns if c.get("state") == "PAUSED")
     return {
         "asin":                      item.get("asin"),
         "title":                     item.get("title"),
         "brand":                     item.get("brand"),
+        "lookback_days":             days,
+        "data_start_date":           data_start_date,
+        "data_end_date":             data_end_date,
         "total_available":           item.get("total_available"),
         "can_sell_days":             item.get("can_sell_days"),
         "inventory_risk":            item.get("inventory_risk"),
-        "campaign_count":            len(item.get("campaigns", [])),
+        "campaign_count":            len(campaigns),
+        "active_campaign_count":     active_campaign_count,
+        "paused_campaign_count":     paused_campaign_count,
         "total_daily_budget":        item.get("total_daily_budget"),
         "bidding_strategies":        item.get("bidding_strategies"),
         "total_spend":               item.get("total_spend"),
@@ -1386,7 +1487,7 @@ def _prepare_for_llm(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     import json as _json
     for item in items:
         item["_summary_json"] = _json.dumps(
-            _build_item_summary(item), ensure_ascii=False, default=str
+            _build_item_summary(item, ctx), ensure_ascii=False, default=str
         )
     return items
 
@@ -1455,6 +1556,16 @@ def build_ad_diagnosis(config: dict) -> Workflow:
             extractor_fn=_enrich_inventory,
             parallel=True,
             concurrency=5,
+        ),
+        # Order metrics: fetch real (organic + ad) unit sales via SP-API getOrderMetrics.
+        # Runs after fetch_inventory so total_available is already set, allowing
+        # can_sell_days to be computed accurately here rather than relying on the
+        # ad-orders-only fallback in _enrich_performance.
+        EnrichStep(
+            name="fetch_order_metrics",
+            extractor_fn=_enrich_order_metrics,
+            parallel=True,
+            concurrency=3,
         ),
         # Covariate time series: daily price/promotion/rating from Xiyouzhaoci.
         # Runs in Stage 1 (independent of campaign data) so the series is ready
@@ -1600,33 +1711,52 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "Column definitions:\n"
                 "- **Field**: exact key name from the JSON below.\n"
                 "- **Value**: exact value (keep null as `—`).\n"
-                "- **Source / How derived**: one short phrase explaining origin. "
-                "Use the legend below; if a key is not listed, infer from context.\n\n"
+                "- **Source / How derived**: one short phrase from the legend below. "
+                "⚠️ Do NOT write 'Pre-computed highlights', 'summary', or any generic phrase — "
+                "every row must have a *specific* source (e.g. 'SP-API Catalog', "
+                "'FBA Inventory API', 'Ads API spCampaigns report', etc.).\n\n"
                 "Legend (Field → derivation):\n"
                 "  title / brand / size / bullet_point_count → SP-API Catalog\n"
-                "  total_available / total_inbound → SP-API FBA Inventory (unit count)\n"
+                "  lookback_days → days config (default 30); period covered: data_start_date → data_end_date\n"
+                "  data_start_date / data_end_date → reporting window used for all time-series fields "
+                "(today − lookback_days → yesterday; use these when describing 'past N days')\n"
+                "  total_available / total_inbound → SP-API FBA Inventory (unit count, point-in-time)\n"
+                "  daily_sales / daily_sales_source → "
+                "daily_sales = total_units ÷ lookback_days; source priority: "
+                "(1) caller-supplied, (2) order_metrics = SP-API getOrderMetrics (all channels), "
+                "(3) ad_orders_only = spCampaigns orders ÷ days (lower bound; organic excluded)\n"
                 "  can_sell_days → total_available ÷ daily_sales "
-                "(daily_sales from ad orders ÷ days if not supplied by caller; null = no sales data)\n"
+                "(null if daily_sales unavailable; when daily_sales_source=ad_orders_only, "
+                "true can_sell_days is LARGER because organic sales are excluded)\n"
                 "  inventory_risk → can_sell_days < inventory_risk_days config (default 30 d)\n"
                 "  campaign_count → count of campaigns whose name contains the ASIN\n"
-                "  total_daily_budget → sum of ENABLED campaign daily budgets (Ads API)\n"
+                "  active_campaign_count → campaigns with state=ENABLED\n"
+                "  paused_campaign_count → campaigns with state=PAUSED\n"
+                "  total_daily_budget → sum of ENABLED campaign daily budgets (Ads API, current config)\n"
                 "  bidding_strategies → distinct strategies across matched campaigns\n"
                 "  total_spend / total_sales / total_orders / total_clicks → "
-                "spCampaigns performance report, summed over matched campaigns × lookback days\n"
-                "  account_acos → total_spend ÷ total_sales × 100\n"
-                "  budget_exhaustion_pct → total_spend ÷ (total_daily_budget × days)\n"
+                "spCampaigns performance report, summed over matched campaigns, "
+                "period: data_start_date → data_end_date\n"
+                "  account_acos → total_spend ÷ total_sales × 100 "
+                "(data_start_date → data_end_date)\n"
+                "  budget_exhaustion_pct → total_spend ÷ (total_daily_budget × lookback_days) "
+                "(data_start_date → data_end_date)\n"
                 "  budget_likely_exhausted → budget_exhaustion_pct > 90% threshold\n"
                 "  keyword_count / avg_bid / min_bid / max_bid / match_type_dist → "
-                "Ads API keyword list for matched campaigns\n"
-                "  kw_performance_count → rows in spSearchTerm report with ≥ min_clicks_for_cvr clicks\n"
+                "Ads API keyword list for matched campaigns (current config, not time-series)\n"
+                "  kw_performance_count → rows in spSearchTerm report with ≥ min_clicks_for_cvr clicks "
+                "(data_start_date → data_end_date)\n"
                 "  lp_summary / lp_top_allocations / lp_zero_keywords / lp_maxed_keywords → "
-                "OR-Tools LP (maximise orders s.t. daily_budget; headroom_factor × daily_clicks cap)\n"
+                "OR-Tools LP (maximise orders s.t. daily_budget; headroom_factor × daily_clicks cap; "
+                "based on data_start_date → data_end_date keyword performance)\n"
                 "  ad_traffic_ratio / organic_traffic_ratio / traffic_growth_7d → "
-                "Xiyouzhaoci traffic score API\n"
+                "Xiyouzhaoci traffic score API (latest available snapshot)\n"
                 "  rank_tracked_keywords / rank_series_days → "
-                "Xiyouzhaoci daily organic rank trends (days with rank data for top keyword)\n"
+                "Xiyouzhaoci daily organic rank trends; rank_series_days = days with rank data "
+                "within data_start_date → data_end_date for the top tracked keyword\n"
                 "  market_trends_keywords → keywords with SFR weekly trend data (Xiyouzhaoci)\n"
-                "  change_attributions_count → change events that passed noise filter (Ads API history)\n"
+                "  change_attributions_count → change events that passed noise filter (Ads API history, "
+                "data_start_date → data_end_date)\n"
                 "  causal_consensus_sample → consensus label of first change_attribution entry "
                 "(ITS + CausalImpact + DML agreement: Strong / Moderate / Weak / Confounded / Skipped)\n\n"
                 "```json\n{_summary_json}\n```\n\n"
@@ -1731,6 +1861,13 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "   - More than half of change_attribution entries have skipped=True "
                 "for all three causal models\n"
                 "   - post_window.days < 5 for the majority of attributions\n"
+                "7. Paused campaigns: when paused_campaign_count > 0, do NOT recommend bid or budget "
+                "changes for those campaigns — such changes have no effect until the campaign is "
+                "re-enabled. For each action targeting a paused campaign either (a) recommend "
+                "re-enabling it first (with explicit justification: what will improve if re-enabled?), "
+                "or (b) recommend restructuring / archiving it. If all campaigns are paused "
+                "(active_campaign_count == 0), the #1 priority action must address the pause decision "
+                "before any other optimisation.\n"
                 "Begin the report now."
             ),
             compute_target=ComputeTarget.CLOUD_LLM,

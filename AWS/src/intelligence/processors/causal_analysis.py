@@ -444,6 +444,11 @@ def _causal_impact_analyze(
     except ImportError:
         return {"skipped": True, "reason": "causalimpact not installed"}
 
+    # pandas >= 2.1 renamed DataFrame.applymap → DataFrame.map;
+    # the causalimpact library still calls the old name internally.
+    if not hasattr(pd.DataFrame, "applymap"):
+        pd.DataFrame.applymap = pd.DataFrame.map  # type: ignore[attr-defined]
+
     try:
         n  = len(series)
         df = pd.DataFrame({"y": series})

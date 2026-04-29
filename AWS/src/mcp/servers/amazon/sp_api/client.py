@@ -223,6 +223,38 @@ class SPAPIClient:
 
         return json.loads(raw.decode("utf-8"))
 
+    # ── Order Metrics ─────────────────────────────────────────────────────
+
+    async def get_order_metrics(
+        self,
+        asin: str,
+        start_date: str,
+        end_date: str,
+        granularity: str = "Total",
+    ) -> List[Dict[str, Any]]:
+        """
+        Sales Order Metrics API v1 — getOrderMetrics.
+
+        Returns unit/order counts for a single ASIN over [start_date, end_date].
+        Each element contains: unitCount, orderItemCount, orderCount,
+        averageUnitPrice, totalSales.
+
+        granularity options: Total | Day | Week | Month
+        """
+        # The interval must be an ISO-8601 time interval.  Use store-midnight
+        # boundaries in UTC so the full day range is always included.
+        interval = f"{start_date}T00:00:00Z/{end_date}T23:59:59Z"
+        params: Dict[str, Any] = {
+            "marketplaceIds": self.auth.marketplace_id,
+            "interval":       interval,
+            "granularity":    granularity,
+            "asin":           asin,
+        }
+        data = await asyncio.to_thread(
+            self._get, "/sales/v1/orderMetrics", params
+        )
+        return data.get("payload", [])
+
     # ── Catalog ────────────────────────────────────────────────────────────
 
     async def get_catalog_item(self, asin: str) -> Dict[str, Any]:
