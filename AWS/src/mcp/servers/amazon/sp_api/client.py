@@ -231,6 +231,7 @@ class SPAPIClient:
         start_date: str,
         end_date: str,
         granularity: str = "Total",
+        granularity_timezone: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Sales Order Metrics API v1 — getOrderMetrics.
@@ -239,17 +240,25 @@ class SPAPIClient:
         Each element contains: unitCount, orderItemCount, orderCount,
         averageUnitPrice, totalSales.
 
-        granularity options: Total | Day | Week | Month
+        granularity: Hour | Day | Week | Month | Year | Total
+          - "Total" aggregates the entire interval into one record (default).
+          - "Day" / "Week" etc. require granularity_timezone so day boundaries
+            align with the store's local calendar (e.g. "America/Los_Angeles").
+
+        Interval format: two ISO-8601 datetimes separated by "--" (double hyphen).
+        The end boundary is EXCLUSIVE — we add 1 day so end_date is fully included.
         """
-        # The interval must be an ISO-8601 time interval.  Use store-midnight
-        # boundaries in UTC so the full day range is always included.
-        interval = f"{start_date}T00:00:00Z/{end_date}T23:59:59Z"
+        from datetime import date as _date, timedelta as _td
+        _end_excl = (_date.fromisoformat(end_date) + _td(days=1)).isoformat()
+        interval  = f"{start_date}T00:00:00Z--{_end_excl}T00:00:00Z"
         params: Dict[str, Any] = {
             "marketplaceIds": self.auth.marketplace_id,
             "interval":       interval,
             "granularity":    granularity,
             "asin":           asin,
         }
+        if granularity_timezone:
+            params["granularityTimeZone"] = granularity_timezone
         data = await asyncio.to_thread(
             self._get, "/sales/v1/orderMetrics", params
         )

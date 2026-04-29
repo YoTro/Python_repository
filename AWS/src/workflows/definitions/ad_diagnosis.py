@@ -417,6 +417,7 @@ async def _enrich_order_metrics(item: Dict, ctx: WorkflowContext) -> Dict:
             start_date=start_dt.isoformat(),
             end_date=end_dt.isoformat(),
             granularity="Total",
+            granularity_timezone=ctx.config.get("timezone", "America/Los_Angeles"),
         )
 
         total_units = sum((m.get("unitCount") or 0) for m in metrics)

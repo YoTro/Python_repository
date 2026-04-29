@@ -177,8 +177,10 @@ class TestGetOrderMetrics(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured_params["asin"], "B0TEST1234")
         self.assertEqual(captured_params["granularity"], "Total")
+        # separator must be "--" (double hyphen), end date is exclusive (+1 day)
+        self.assertIn("--", captured_params["interval"])
         self.assertIn("2026-03-30T00:00:00Z", captured_params["interval"])
-        self.assertIn("2026-04-28T23:59:59Z", captured_params["interval"])
+        self.assertIn("2026-04-29T00:00:00Z", captured_params["interval"])  # 04-28 +1 day
         self.assertIn("marketplaceIds", captured_params)
 
     async def test_empty_payload_returns_empty_list(self):
