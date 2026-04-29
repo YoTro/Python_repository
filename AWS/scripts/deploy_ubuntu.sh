@@ -93,6 +93,60 @@ if ! check_step "dirs_created"; then
     mark_step "dirs_created"
 fi
 
+# 4b. Create .env template if not present
+if [ ! -f ".env" ]; then
+    echo "📝 Creating .env template — fill in values before starting the app..."
+    cat > .env << 'EOF'
+# ── LLM Providers ──────────────────────────────────────────────────────
+DEFAULT_LLM_PROVIDER=gemini
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPSEEK_API_KEY=
+LOCAL_MODEL_PATH=models/llm/qwen2.5-3b-instruct-q4_k_m.gguf
+MAX_LLM_OUTPUT_TOKENS=
+
+# ── Amazon Ads API ──────────────────────────────────────────────────────
+AMAZON_ADS_DEFAULT_STORE=US
+AMAZON_ADS_CLIENT_ID=
+AMAZON_ADS_CLIENT_SECRET=
+AMAZON_ADS_REFRESH_TOKEN_US=
+AMAZON_ADS_PROFILE_ID_US=
+AMAZON_ADS_FALLBACK_ASIN_US=
+
+# ── Amazon SP-API / LWA ─────────────────────────────────────────────────
+AMAZON_LWA_CLIENT_ID=
+AMAZON_LWA_CLIENT_SECRET=
+AMAZON_SP_API_REFRESH_TOKEN_US=
+
+# ── Feishu / Lark — amazon_bot ──────────────────────────────────────────
+FEISHU_AMAZON_BOT_APP_ID=
+FEISHU_AMAZON_BOT_APP_SECRET=
+FEISHU_AMAZON_BOT_USER_ACCESS_TOKEN=
+FEISHU_AMAZON_BOT_WEBHOOK_URL=
+
+# ── Feishu / Lark — test_bot ────────────────────────────────────────────
+FEISHU_TEST_BOT_APP_ID=
+FEISHU_TEST_BOT_APP_SECRET=
+FEISHU_TEST_BOT_USER_ACCESS_TOKEN=
+FEISHU_TEST_BOT_WEBHOOK_URL=
+
+# ── Third-party Market Data ─────────────────────────────────────────────
+SELLERSPRITE_EMAIL=
+SELLERSPRITE_PASSWORD=
+XIYOUZHAOCI_PHONE=
+LINGXING_ACCOUNT=
+LINGXING_PASSWORD=
+
+# ── Infrastructure ──────────────────────────────────────────────────────
+REDIS_URL=redis://localhost:6379
+SERVER_IP=
+SERVER_USER=
+EOF
+    echo "⚠️  .env created — edit it and fill in all required values before running the app."
+else
+    echo "⏭️  .env already exists, skipping template creation."
+fi
+
 # 5. Download Model
 if [ ! -f "models/llm/$MODEL_NAME" ]; then
     echo "🤖 Downloading Qwen 3B Model..."
@@ -122,24 +176,14 @@ source .venv311/bin/activate
 echo "🔍 Detecting CUDA for llama-cpp-python..."
 CUDA_VERSION=""
 CUDA_RUNTIME_OK=false
+FORCE_SOURCE_BUILD=false
 
 if command -v nvidia-smi &> /dev/null; then
-    # Prefer nvcc (actual toolkit version) over nvidia-smi (driver max version).
-    # nvcc gives e.g. "release 11.5" → "115"; nvidia-smi gives major only → "12" → "121" (wrong minor).
-    if command -v nvcc &> /dev/null; then
-        CUDA_VERSION=$(nvcc --version | grep "release" | sed 's/.*release \([0-9]*\)\.\([0-9]*\).*/\1\2/')
-    else
-        # Fall back to major version from nvidia-smi; assume minor=1 (common on fresh installs)
-        CUDA_VERSION=$(nvidia-smi | grep "CUDA Version" | awk '{print $9}' | awk -F. '{printf "%s%s", $1, $2}')
-    fi
-    echo "⚡ CUDA toolkit detected (wheel suffix: cu$CUDA_VERSION) — runtime is required"
-
-    # Stage b: already in ldconfig
+    # ── Runtime check: libcudart.so must exist for any GPU build ────────
     if ldconfig -p 2>/dev/null | grep -q "libcudart.so"; then
         CUDA_RUNTIME_OK=true
         echo "✅ libcudart.so found in ldconfig cache"
     else
-        # Stage c: search known CUDA paths
         CUDART_PATH=$(find /usr/local/cuda* /usr/lib/x86_64-linux-gnu 2>/dev/null \
                       -name "libcudart.so*" 2>/dev/null | head -1)
         if [ -n "$CUDART_PATH" ]; then
@@ -151,8 +195,7 @@ if command -v nvidia-smi &> /dev/null; then
             sudo ldconfig
             CUDA_RUNTIME_OK=true
         else
-            # Stage d: GPU present but runtime missing — must install
-            echo "📦 libcudart.so not found — installing nvidia-cuda-toolkit (required for GPU)..."
+            echo "📦 libcudart.so not found — installing nvidia-cuda-toolkit..."
             sudo apt install -y nvidia-cuda-toolkit
             sudo ldconfig
             if ldconfig -p 2>/dev/null | grep -q "libcudart.so"; then
@@ -164,30 +207,45 @@ if command -v nvidia-smi &> /dev/null; then
             fi
         fi
     fi
+
+    # ── Version: nvcc is the only authoritative source ──────────────────
+    # nvidia-smi reports the driver's *maximum supported* CUDA version, not
+    # the installed toolkit version — using it caused wrong wheel selection
+    # (e.g. cu115 host installing a cu12x wheel).  If nvcc is absent the
+    # toolkit is incomplete and its version cannot be trusted; compile from
+    # source instead so CMake links against the actual libcudart.so.
+    if command -v nvcc &> /dev/null; then
+        CUDA_VERSION=$(nvcc --version | grep "release" | sed 's/.*release \([0-9]*\)\.\([0-9]*\).*/\1\2/')
+        echo "⚡ nvcc reports CUDA $CUDA_VERSION (wheel suffix: cu$CUDA_VERSION)"
+    else
+        echo "⚠️  nvcc not found — toolkit version unknown; will compile from source"
+        FORCE_SOURCE_BUILD=true
+    fi
 else
     echo "💻 No GPU detected — using CPU build"
 fi
 
 pip install --upgrade pip
 
-if [ -n "$CUDA_VERSION" ] && [ "$CUDA_RUNTIME_OK" = true ]; then
-    # CUDA_VERSION is major+minor digits, e.g. "115" or "121"
-    WHL_INDEX="cu${CUDA_VERSION}"
-    WHL_URL="https://abetlen.github.io/llama-cpp-python/whl/$WHL_INDEX"
-
-    # Check whether a pre-built wheel index exists for this CUDA version.
-    # CUDA 12.x wheels are published; CUDA 11.x wheels are NOT (index returns 404).
-    HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$WHL_URL/" 2>/dev/null || echo "000")
-
-    if [ "$HTTP_STATUS" = "200" ]; then
-        echo "⚙️ Installing llama-cpp-python from pre-built wheel (CUDA $CUDA_VERSION)..."
-        pip install llama-cpp-python --extra-index-url "$WHL_URL"
-    else
-        # No pre-built wheel for this CUDA version — compile from source.
-        # Required for CUDA 11.x (cu115, cu118, etc.) which have no published wheels.
-        echo "⚙️ No pre-built wheel for cu$CUDA_VERSION — compiling llama-cpp-python from source..."
+if [ "$CUDA_RUNTIME_OK" = true ]; then
+    if [ "$FORCE_SOURCE_BUILD" = true ]; then
+        # nvcc absent: version unknown, compile against the libcudart.so that is present
+        echo "⚙️ Compiling llama-cpp-python from source (nvcc unavailable, version unknown)..."
         pip install cmake ninja
         CMAKE_ARGS="-DGGML_CUDA=ON" FORCE_CMAKE=1 pip install llama-cpp-python --no-binary llama-cpp-python
+    else
+        WHL_INDEX="cu${CUDA_VERSION}"
+        WHL_URL="https://abetlen.github.io/llama-cpp-python/whl/$WHL_INDEX"
+        HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$WHL_URL/" 2>/dev/null || echo "000")
+        if [ "$HTTP_STATUS" = "200" ]; then
+            echo "⚙️ Installing llama-cpp-python from pre-built wheel (CUDA $CUDA_VERSION)..."
+            pip install llama-cpp-python --extra-index-url "$WHL_URL"
+        else
+            # No pre-built wheel for this CUDA version (e.g. cu115, cu118)
+            echo "⚙️ No pre-built wheel for cu$CUDA_VERSION — compiling from source..."
+            pip install cmake ninja
+            CMAKE_ARGS="-DGGML_CUDA=ON" FORCE_CMAKE=1 pip install llama-cpp-python --no-binary llama-cpp-python
+        fi
     fi
 else
     echo "⚙️ Installing llama-cpp-python (CPU only)..."
