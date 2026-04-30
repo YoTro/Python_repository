@@ -12,8 +12,9 @@ import json
 import asyncio
 import functools
 import logging
+import time
 from datetime import datetime
-from typing import Set
+from typing import Optional, Set
 
 
 def _to_thread(func, *args, **kwargs):
@@ -31,6 +32,9 @@ _FEISHU_ERRORS = (OSError, TimeoutError, ConnectionError, json.JSONDecodeError, 
 
 _CIRCUIT_OPEN_THRESHOLD = 3     # consecutive failures before opening circuit
 _CIRCUIT_COOLDOWN_STEPS = 5     # steps to skip before retrying
+
+_HEARTBEAT_INTERVAL = 10        # seconds between heartbeat card updates
+_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
 class FeishuCallback(JobCallback):
@@ -69,6 +73,11 @@ class FeishuCallback(JobCallback):
         self._consecutive_failures = 0
         self._cooldown_remaining = 0
 
+        # Heartbeat state
+        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._heartbeat_base_text: str = ""
+        self._heartbeat_start: float = 0.0
+
     @property
     def feishu(self):
         if self._feishu is None:
@@ -100,6 +109,32 @@ class FeishuCallback(JobCallback):
             return True
         return False
 
+    # ── Heartbeat ────────────────────────────────────────────────────────
+
+    def _cancel_heartbeat(self) -> None:
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+        self._heartbeat_task = None
+
+    async def _heartbeat_loop(self) -> None:
+        """Periodically update the progress card while a step is running."""
+        frame_idx = 0
+        try:
+            while True:
+                await asyncio.sleep(_HEARTBEAT_INTERVAL)
+                if self._is_circuit_open():
+                    continue
+                elapsed = int(time.monotonic() - self._heartbeat_start)
+                spinner = _SPINNER_FRAMES[frame_idx % len(_SPINNER_FRAMES)]
+                frame_idx += 1
+                heartbeat_text = (
+                    f"{self._heartbeat_base_text}\n"
+                    f"{spinner} 正在执行中… 已等待 {elapsed}s"
+                )
+                asyncio.create_task(self._send_progress(heartbeat_text))
+        except asyncio.CancelledError:
+            pass
+
     # ── Progress (fire-and-forget, non-blocking) ─────────────────────────
 
     async def on_progress(
@@ -108,7 +143,7 @@ class FeishuCallback(JobCallback):
         if self._tracker.total_steps != total_steps:
             self._tracker.total_steps = total_steps
 
-        self._tracker.record_step()
+        self._tracker.record_step(step_name)
 
         if self._is_circuit_open():
             return
@@ -122,7 +157,13 @@ class FeishuCallback(JobCallback):
 
         eta = self._tracker.get_dynamic_eta()
         if eta is not None:
-            text += f"\n⏳ 动态预计剩余: {eta}秒"
+            text += f"\n⏳ {eta}"
+
+        # Cancel previous heartbeat and start a fresh one for this step
+        self._cancel_heartbeat()
+        self._heartbeat_base_text = text
+        self._heartbeat_start = time.monotonic()
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         # Fire-and-forget: do not block the workflow on Feishu I/O
         asyncio.create_task(self._send_progress(text))
@@ -320,6 +361,7 @@ class FeishuCallback(JobCallback):
             logger.info(f"Feishu send_raw_card response: {send_res}")
 
     async def on_complete(self, result) -> None:
+        self._cancel_heartbeat()
         try:
             import os
             items = result.final_items if hasattr(result, "final_items") else []
@@ -476,6 +518,7 @@ class FeishuCallback(JobCallback):
                 pass
 
     async def on_error(self, error: Exception, job_id: str = None) -> None:
+        self._cancel_heartbeat()
         lines = [f"❌ Workflow failed: {error}"]
         if job_id:
             lines.append(f"Job ID: `{job_id}`")
