@@ -6,6 +6,7 @@ DrissionPage
 aiohttp
 python-dotenv
 pydantic
+matplotlib
 
 # AI & Intelligence
 google-genai
@@ -23,7 +24,7 @@ google-api-core
 scikit-learn
 numpy
 pandas
-pycausalimpact
+causalimpact
 boto3
 markdown
 

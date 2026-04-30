@@ -853,50 +853,125 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     """
     ProcessStep (pure Python): run LP budget optimisation for each item.
 
-    Inputs per item (set by previous steps):
-      keyword_performance  list of per-keyword aggregated metrics
-      total_daily_budget   float — campaign budget cap
+    LP formulation (OR-Tools GLOP) — full constraint set:
+      Maximise  Σ clicks_i × pessimistic_cvr_i
 
-    LP formulation (via AdBudgetOptimizer / OR-Tools GLOP):
-      Maximise  Σ clicks_i × cvr_i          (= expected orders)
-      Subject to Σ clicks_i × avg_cpc_i ≤ daily_budget
-                 0 ≤ clicks_i ≤ max_daily_clicks_i
+      C1  Global budget:       Σ clicks_i × eff_cpc_i ≤ total_budget
+      C2  Per-campaign caps:   Σ_{i∈c} clicks_i × eff_cpc_i ≤ budget_c  ∀c
+      C3  Target ACOS:         Σ clicks_i × (eff_cpc_i − tacos × pess_cvr_i × price) ≤ 0
+      C4  Inventory cap:       Σ clicks_i × pess_cvr_i ≤ max_daily_orders
+      C5  Click bounds:        min_daily_clicks_i ≤ clicks_i ≤ max_daily_clicks_i
 
-    max_daily_clicks_i = daily_clicks × headroom_factor (default 3×)
-    — allows the solver to explore expanding high-CVR keywords.
+      eff_cpc_i  = avg_cpc_i × bidding_strategy_multiplier × placement_multiplier
+      pess_cvr_i = cvr_i × √(clicks_i / (clicks_i + 30))   [shrinkage towards 0 for low-sample kws]
 
     Adds to each item:
-      lp_summary          overall budget efficiency metrics
-      lp_top_allocations  top keywords by LP-assigned clicks (increase budget here)
+      lp_summary          budget efficiency metrics
+      lp_top_allocations  top keywords by LP-assigned clicks
       lp_zero_keywords    keywords LP dropped to 0 (pause candidates)
-      lp_maxed_keywords   keywords hitting the ceiling (raise bid / budget)
-      lp_actual_orders    estimated orders at current spend (for comparison)
+      lp_maxed_keywords   keywords hitting the ceiling (raise bid candidates)
+      campaign_actions    per-campaign actionable recommendations
     """
+    import math
     from src.intelligence.processors.optimizer_ad_budget import AdBudgetOptimizer
 
-    headroom = ctx.config.get("lp_headroom_factor", 3.0)
-    optimizer = AdBudgetOptimizer()
+    headroom     = ctx.config.get("lp_headroom_factor", 3.0)
+    target_acos  = ctx.config.get("target_acos")          # e.g. 0.35; None → constraint skipped
+    days         = ctx.config.get("days", 30)
+    brand_kws    = set(ctx.config.get("brand_keywords", []))  # kw texts that must stay active
+    optimizer    = AdBudgetOptimizer()
+
+    # Raw per-record keyword performance (needed for per-campaign campaign_id lookup)
+    raw_kw_perf: List[Dict] = ctx.cache.get(_KEY_KW_PERFORMANCE, [])
 
     for item in items:
+        campaigns      = item.get("campaigns") or []
         kw_perf        = item.get("keyword_performance", [])
         daily_budget   = item.get("total_daily_budget", 0) or 0
+        campaign_ids   = set(item.get("campaign_ids", []))
 
         if not kw_perf or daily_budget <= 0:
             item["lp_summary"] = {"skipped": True, "reason": "no keyword data or zero budget"}
             continue
 
-        # Build LP input — one row per (keyword, match_type) with enough data
-        lp_input = []
+        # ── Per-campaign metadata ─────────────────────────────────────────
+        camp_meta: Dict[str, Dict] = {
+            str(c["campaign_id"]): c for c in campaigns if c.get("campaign_id")
+        }
+        campaign_budgets: Dict[str, float] = {
+            cid: float(c.get("daily_budget") or 0)
+            for cid, c in camp_meta.items()
+            if c.get("daily_budget")
+        }
+
+        # ── Account-level placement CPC multiplier ────────────────────────
+        # Weighted avg of (1 + modifier/100) per placement, using spend share.
+        placement_perf: Dict  = item.get("placement_performance") or {}
+        placement_mods: Dict  = item.get("placement_configured_pcts") or {}
+        total_pl_spend = sum(v.get("spend", 0) for v in placement_perf.values()) or 1.0
+        placement_multiplier = 0.0
+        for pl_key, pl_data in placement_perf.items():
+            share    = pl_data.get("spend", 0) / total_pl_spend
+            modifier = placement_mods.get(pl_key, 0) / 100.0  # e.g. 50 → 0.50
+            placement_multiplier += share * (1.0 + modifier)
+        if placement_multiplier < 0.5:
+            placement_multiplier = 1.0  # fallback if no placement data
+
+        # ── Keyword → campaign_id map (from raw records) ──────────────────
+        # keyword_performance aggregates across campaigns; recover per-campaign_id
+        # for C2 by taking the campaign with the most clicks for each (kw, match_type).
+        kw_to_campaign: Dict[tuple, str] = {}
+        kw_clicks_by_camp: Dict[tuple, Dict[str, int]] = {}
+        for r in raw_kw_perf:
+            cid = str(r.get("campaign_id", ""))
+            if cid not in campaign_ids:
+                continue
+            key = (r.get("keyword_text", ""), r.get("match_type", ""))
+            kw_clicks_by_camp.setdefault(key, {})
+            kw_clicks_by_camp[key][cid] = (
+                kw_clicks_by_camp[key].get(cid, 0) + int(r.get("clicks", 0) or 0)
+            )
+        for key, camp_clicks in kw_clicks_by_camp.items():
+            kw_to_campaign[key] = max(camp_clicks, key=camp_clicks.get)
+
+        # ── ASP for ACOS constraint ───────────────────────────────────────
+        total_orders = item.get("total_orders") or 0
+        total_sales  = item.get("total_sales")  or 0
+        avg_price    = round(total_sales / total_orders, 2) if total_orders > 0 else None
+
+        # ── Inventory order cap ───────────────────────────────────────────
+        can_sell_days   = item.get("can_sell_days")
+        total_available = item.get("total_available") or 0
+        max_daily_orders = None
+        if can_sell_days and can_sell_days > 0 and total_available > 0:
+            max_daily_orders = round(total_available / can_sell_days, 2)
+
+        # ── Build LP input ────────────────────────────────────────────────
+        lp_input          = []
         actual_daily_orders = 0.0
         for kw in kw_perf:
             if not kw.get("avg_cpc") or not kw.get("cvr"):
                 continue
-            max_daily = max(round(kw["daily_clicks"] * headroom, 1), 1.0)
+            kw_text    = kw["keyword_text"]
+            match_type = kw["match_type"]
+            key        = (kw_text, match_type)
+            cid        = kw_to_campaign.get(key, "")
+            strategy   = camp_meta.get(cid, {}).get("bidding_strategy", "")
+            is_brand   = kw_text.lower() in {b.lower() for b in brand_kws}
+
+            max_daily  = max(round(kw["daily_clicks"] * headroom, 1), 1.0)
+            min_daily  = round(kw["daily_clicks"] * 0.3, 1) if is_brand else 0.0
+
             lp_input.append({
-                "name":              f"{kw['keyword_text']}|{kw['match_type']}",
-                "avg_cpc":           kw["avg_cpc"],
-                "estimated_cvr":     kw["cvr"],
-                "max_daily_clicks":  max_daily,
+                "name":               f"{kw_text}|{match_type}",
+                "avg_cpc":            kw["avg_cpc"],
+                "estimated_cvr":      kw["cvr"],
+                "sample_clicks":      kw.get("total_clicks", 0),
+                "max_daily_clicks":   max_daily,
+                "min_daily_clicks":   min_daily,
+                "campaign_id":        cid,
+                "bidding_strategy":   strategy,
+                "placement_multiplier": placement_multiplier,
             })
             actual_daily_orders += kw["daily_clicks"] * kw["cvr"]
 
@@ -904,31 +979,120 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             item["lp_summary"] = {"skipped": True, "reason": "all keywords filtered (insufficient clicks)"}
             continue
 
-        result = optimizer.optimize(lp_input, total_budget=daily_budget)
+        result = optimizer.optimize(
+            keywords         = lp_input,
+            total_budget     = daily_budget,
+            campaign_budgets = campaign_budgets or None,
+            target_acos      = target_acos,
+            avg_price        = avg_price,
+            max_daily_orders = max_daily_orders,
+        )
 
         if result.get("status") != "OPTIMAL":
             item["lp_summary"] = {"skipped": True, "reason": result.get("message")}
             continue
 
-        summary  = result["summary"]
-        alloc    = result["allocation"]
+        summary    = result["summary"]
+        alloc      = result["allocation"]
+        camp_spend = result.get("camp_spend", {})
         alloc_names = {a["keyword"] for a in alloc}
+        kw_map      = {lp["name"]: lp for lp in lp_input}
 
-        # Keywords LP assigned 0 clicks → pause candidates
-        zero_kws = [
-            kw["keyword_text"] for kw in kw_perf
-            if f"{kw['keyword_text']}|{kw['match_type']}" not in alloc_names
-            and kw.get("avg_cpc")
-        ]
+        # ── Zero / maxed keyword classification ───────────────────────────
+        _seen_zero: set = set()
+        zero_kws = []
+        for kw in kw_perf:
+            composed = f"{kw['keyword_text']}|{kw['match_type']}"
+            if composed not in alloc_names and kw.get("avg_cpc") and composed not in _seen_zero:
+                _seen_zero.add(composed)
+                zero_kws.append(f"{kw['keyword_text']} ({kw['match_type']})")
 
-        # Keywords at LP ceiling → raise bid / increase budget candidates
+        _seen_maxed: set = set()
         maxed_kws = []
-        kw_map = {lp["name"]: lp for lp in lp_input}
         for a in alloc:
             cap = kw_map.get(a["keyword"], {}).get("max_daily_clicks", 0)
-            if cap and a["optimized_clicks"] >= cap * 0.95:
-                maxed_kws.append(a["keyword"].split("|")[0])
+            if cap and a["optimized_clicks"] >= cap * 0.95 and a["keyword"] not in _seen_maxed:
+                _seen_maxed.add(a["keyword"])
+                parts = a["keyword"].split("|")
+                maxed_kws.append(f"{parts[0]} ({parts[1]})" if len(parts) > 1 else parts[0])
 
+        # ── Campaign actions ──────────────────────────────────────────────
+        # Per-campaign spend from performance data (actual, not LP)
+        camp_actual_spend: Dict[str, float] = {}
+        for r in (item.get("performance_records") or []):
+            cid = str(r.get("campaign_id", ""))
+            camp_actual_spend[cid] = (
+                camp_actual_spend.get(cid, 0.0) + float(r.get("spend", 0) or 0)
+            )
+
+        campaign_actions = []
+        for cid, meta in camp_meta.items():
+            camp_budget  = float(meta.get("daily_budget") or 0)
+            lp_spend     = camp_spend.get(cid, 0.0)
+            actual_spend = camp_actual_spend.get(cid, 0.0) / days  # daily avg
+
+            if camp_budget <= 0:
+                continue
+
+            budget_util = round(actual_spend / camp_budget, 3) if camp_budget > 0 else None
+            # LP wants more than current budget allows → binding constraint
+            lp_saturated = lp_spend >= camp_budget * 0.90
+
+            # Campaign ACOS from performance_records
+            camp_perf = [
+                r for r in (item.get("performance_records") or [])
+                if str(r.get("campaign_id")) == cid
+            ]
+            camp_sales  = sum(float(r.get("sales", 0) or 0) for r in camp_perf)
+            camp_spend_ = sum(float(r.get("spend", 0) or 0) for r in camp_perf)
+            camp_acos   = round(camp_spend_ / camp_sales * 100, 1) if camp_sales > 0 else None
+
+            # Determine action
+            target_acos_pct = (target_acos or 0.35) * 100
+            if lp_spend < camp_budget * 0.10:
+                action, priority = "pause_candidate", "P1"
+                rationale = f"LP allocates only ${lp_spend:.0f}/day (< 10% of ${camp_budget:.0f} budget) — keywords inefficient"
+            elif lp_saturated and (camp_acos is None or camp_acos <= target_acos_pct):
+                suggested = round(min(lp_spend * 1.15, camp_budget * 1.5), 0)
+                action, priority = "increase_budget", "P0"
+                rationale = (
+                    f"LP saturates budget (needs ${lp_spend:.0f}/day vs ${camp_budget:.0f} cap); "
+                    f"ACOS {camp_acos}% ≤ target {target_acos_pct:.0f}% — safe to scale"
+                )
+            elif camp_acos and camp_acos > target_acos_pct * 1.3:
+                action, priority = "decrease_budget", "P0"
+                suggested = round(camp_budget * 0.75, 0)
+                rationale = f"ACOS {camp_acos}% exceeds 130% of target {target_acos_pct:.0f}% — cut budget to reduce losses"
+            elif camp_acos and target_acos_pct < camp_acos <= target_acos_pct * 1.3:
+                action, priority = "review_bids", "P1"
+                rationale = f"ACOS {camp_acos}% above target — lower bids on high-ACOS keywords before scaling"
+            else:
+                action, priority = "maintain", "P2"
+                rationale = f"Budget util {budget_util:.0%}, ACOS {camp_acos}% — within healthy range"
+
+            entry: Dict = {
+                "campaign_id":     cid,
+                "campaign_name":   meta.get("name", ""),
+                "bidding_strategy": meta.get("bidding_strategy", ""),
+                "current_budget":  camp_budget,
+                "lp_optimal_spend": round(lp_spend, 2),
+                "actual_daily_spend": round(actual_spend, 2),
+                "budget_util":     budget_util,
+                "campaign_acos":   camp_acos,
+                "action":          action,
+                "priority":        priority,
+                "rationale":       rationale,
+            }
+            if action == "increase_budget":
+                entry["suggested_budget"] = suggested
+            elif action == "decrease_budget":
+                entry["suggested_budget"] = suggested
+
+            campaign_actions.append(entry)
+
+        campaign_actions.sort(key=lambda x: ("P0", "P1", "P2").index(x["priority"]))
+
+        # ── Write results ─────────────────────────────────────────────────
         optimal_orders = summary["total_expected_orders"]
         item["lp_summary"] = {
             "daily_budget":           daily_budget,
@@ -937,12 +1101,14 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             "actual_daily_orders":    round(actual_daily_orders, 2),
             "order_gap":              round(optimal_orders - actual_daily_orders, 2),
             "avg_effective_cpc":      summary["avg_effective_cpc"],
+            "placement_multiplier":   round(placement_multiplier, 3),
+            "target_acos_applied":    target_acos,
+            "inventory_cap_applied":  max_daily_orders,
             "keywords_in_lp":         len(lp_input),
             "keywords_allocated":     len(alloc),
             "keywords_zeroed":        len(zero_kws),
             "keywords_maxed":         len(maxed_kws),
         }
-        # Split "keyword_text|MATCH_TYPE" back into separate fields for readability
         item["lp_top_allocations"] = [
             {
                 **a,
@@ -951,8 +1117,9 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             }
             for a in alloc[:10]
         ]
-        item["lp_zero_keywords"]   = zero_kws[:20] # pause candidates
-        item["lp_maxed_keywords"]  = maxed_kws[:10]# raise-bid candidates
+        item["lp_zero_keywords"]  = zero_kws[:20]
+        item["lp_maxed_keywords"] = maxed_kws[:10]
+        item["campaign_actions"]  = campaign_actions
 
     return items
 
@@ -1886,6 +2053,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "lp_top_allocations":        (item.get("lp_top_allocations") or [])[:3],
         "lp_zero_keywords":          (item.get("lp_zero_keywords") or [])[:5],
         "lp_maxed_keywords":         (item.get("lp_maxed_keywords") or [])[:5],
+        "campaign_actions":          (item.get("campaign_actions") or [])[:5],
         "ad_traffic_ratio":          item.get("ad_traffic_ratio"),
         "organic_traffic_ratio":     item.get("organic_traffic_ratio"),
         "rank_tracked_keywords":     item.get("rank_tracked_keywords"),
@@ -2196,8 +2364,13 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "  kw_performance_count → rows in spSearchTerm report with ≥ min_clicks_for_cvr clicks "
                 "(data_start_date → data_end_date)\n"
                 "  lp_summary / lp_top_allocations / lp_zero_keywords / lp_maxed_keywords → "
-                "OR-Tools LP (maximise orders s.t. daily_budget; headroom_factor × daily_clicks cap; "
-                "based on data_start_date → data_end_date keyword performance)\n"
+                "OR-Tools LP (maximise orders; constraints: C1 global budget, C2 per-campaign budget caps, "
+                "C3 target ACOS linearised, C4 inventory order cap, C5 click floor/ceiling; "
+                "eff_cpc = avg_cpc × bidding_strategy_multiplier × placement_multiplier; "
+                "pessimistic CVR shrinkage applied for low-sample keywords)\n"
+                "  campaign_actions → derived from LP camp_spend vs actual campaign budgets; "
+                "action ∈ {increase_budget, decrease_budget, review_bids, pause_candidate, maintain}; "
+                "priority ∈ {P0, P1, P2}\n"
                 "  ad_traffic_ratio / organic_traffic_ratio / traffic_growth_7d → "
                 "Xiyouzhaoci traffic score API (latest available snapshot)\n"
                 "  rank_tracked_keywords / rank_series_days → "
