@@ -2133,18 +2133,20 @@ def _export_report(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
         filename = f"ad_diagnosis_{asin}_{date_str}.md"
         file_path = os.path.join(report_dir, filename)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(text)
-        item["report_file_path"] = file_path
-        # Short preview for the card — keeps on_complete from writing a second
-        # temp file when it sees len(text) > 8000 in the card branch.
         chart_note = f"，含 {len(chart_urls)} 张诊断图表" if chart_urls else ""
+        # Set response before file write so it's always available even if write fails.
         item["response"] = (
             text[:400].rstrip()
             + f"\n\n…（完整报告已保存为 `{filename}`{chart_note}，正在发送为附件）"
         )
-        logger.info(f"[export_report] {asin}: {len(text)} chars, "
-                    f"{len(chart_urls)} charts → {file_path}")
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(text)
+            item["report_file_path"] = file_path
+            logger.info(f"[export_report] {asin}: {len(text)} chars, "
+                        f"{len(chart_urls)} charts → {file_path}")
+        except OSError as e:
+            logger.error(f"[export_report] {asin}: failed to write report file: {e}")
     return items
 
 

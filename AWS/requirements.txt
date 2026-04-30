@@ -27,6 +27,7 @@ pandas
 causalimpact
 boto3
 markdown
+netcdf4
 
 # Encryption
 cryptography

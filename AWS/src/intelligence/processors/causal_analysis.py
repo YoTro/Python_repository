@@ -447,15 +447,27 @@ def _causal_impact_analyze(
         return {"skipped": True, "reason": "insufficient pre-period for BSTS"}
 
     try:
-        from causalimpact import CausalImpact
         import pandas as pd
+        from causalimpact.misc import standardize as _ci_std
     except ImportError:
         return {"skipped": True, "reason": "causalimpact not installed"}
 
-    # pandas >= 2.1 renamed DataFrame.applymap → DataFrame.map;
-    # the causalimpact library still calls the old name internally.
+    # ── pandas compatibility patches (applied before CausalImpact is imported) ──
+    # Patch 1: pandas ≥ 2.1 renamed DataFrame.applymap → DataFrame.map;
+    #          causalimpact calls the old name inside _format_input_data.
     if not hasattr(pd.DataFrame, "applymap"):
         pd.DataFrame.applymap = pd.DataFrame.map  # type: ignore[attr-defined]
+
+    # Patch 2: causalimpact 0.1.1 uses mu[0] / sig[0] (label-based) in
+    #          _standardize_pre_post_data; pandas ≥ 2.0 requires .iloc[0].
+    from causalimpact.main import CausalImpact as _CI
+    def _patched_standardize(self: "_CI") -> None:
+        self.normed_pre_data, (mu, sig) = _ci_std(self.pre_data)
+        self.normed_post_data = (self.post_data - mu) / sig
+        self.mu_sig = (mu.iloc[0], sig.iloc[0])
+    _CI._standardize_pre_post_data = _patched_standardize  # type: ignore[method-assign]
+
+    from causalimpact import CausalImpact
 
     try:
         n  = len(series)
@@ -463,43 +475,25 @@ def _causal_impact_analyze(
         for i in range(covariate_matrix.shape[1]):
             df[f"x{i}"] = covariate_matrix[:, i]
 
-        ci      = CausalImpact(df, [0, intervention_idx - 1], [intervention_idx, n - 1])
-        summary = ci.summary_data
+        ci = CausalImpact(df, [0, intervention_idx - 1], [intervention_idx, n - 1])
 
-        avg = {}
-        if hasattr(summary, "get"):
-            avg = summary.get("average", {})
-        if not avg and hasattr(summary, "loc"):
+        # summary_data is a DataFrame:
+        #   index   = effect metrics (abs_effect, rel_effect, abs_effect_lower, ...)
+        #   columns = ['average', 'cumulative']
+        sd = ci.summary_data
+        def _loc(row: str):
             try:
-                avg = summary.loc["average"].to_dict()
-            except Exception:
-                pass
-
-        point_effect = avg.get("abs_effect") or avg.get("AbsEffect")
-        rel_effect   = avg.get("rel_effect") or avg.get("RelEffect")
-        p_value      = avg.get("p") or avg.get("Prob")
-
-        # Extract 95% posterior credible interval (field names vary by causalimpact version)
-        ci_lo = ci_hi = None
-        try:
-            _lo = (avg.get("abs_effect_lower") or avg.get("AbsEffect.lower")
-                   or avg.get("lower") or avg.get("lower_bound"))
-            _hi = (avg.get("abs_effect_upper") or avg.get("AbsEffect.upper")
-                   or avg.get("upper") or avg.get("upper_bound"))
-            if _lo is not None:
-                ci_lo = round(float(_lo), 4)
-            if _hi is not None:
-                ci_hi = round(float(_hi), 4)
-        except Exception:
-            pass
+                return float(sd.loc[row, "average"])
+            except (KeyError, TypeError):
+                return None
 
         return {
             "skipped":         False,
-            "point_effect":    round(float(point_effect), 4) if point_effect is not None else None,
-            "relative_effect": round(float(rel_effect),   4) if rel_effect   is not None else None,
-            "p_value":         round(float(p_value),      4) if p_value      is not None else None,
-            "ci_lo":           ci_lo,
-            "ci_hi":           ci_hi,
+            "point_effect":    _loc("abs_effect"),
+            "relative_effect": _loc("rel_effect"),
+            "p_value":         round(float(ci.p_value), 4) if ci.p_value is not None else None,
+            "ci_lo":           _loc("abs_effect_lower"),
+            "ci_hi":           _loc("abs_effect_upper"),
         }
     except Exception as e:
         logger.warning(f"CausalImpact failed: {e}")

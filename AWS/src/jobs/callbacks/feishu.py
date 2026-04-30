@@ -397,9 +397,11 @@ class FeishuCallback(JobCallback):
                     for key in ("response", "ad_diagnosis_llm", "result", "output"):
                         if key in item and item[key]:
                             text = item[key] if isinstance(item[key], str) else json.dumps(item[key], ensure_ascii=False)
+                            logger.info(f"on_complete: using item['{key}'] ({len(text)} chars) for card text")
                             break
                     else:
                         text = json.dumps(item, ensure_ascii=False, indent=2)
+                        logger.info(f"on_complete: no text key found, using full item JSON ({len(text)} chars)")
 
                 from src.intelligence.parsers.markdown_cleaner import OutputParser
                 text = OutputParser.clean_for_feishu(text)
@@ -418,7 +420,7 @@ class FeishuCallback(JobCallback):
                             tmp_path = tmp.name
                         upload_res = await asyncio.to_thread(
                             self.feishu.upload_file, tmp_path,
-                            "stream", f"report{suffix}"
+                            f"report{suffix}", "stream"
                         )
                         _os.unlink(tmp_path)
                         if upload_res.get("success"):
