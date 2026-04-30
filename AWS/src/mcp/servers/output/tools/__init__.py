@@ -10,6 +10,7 @@ from .create_doc import handle_create_doc, tools as doc_tools
 from .export_csv import handle_export_csv, tools as csv_tools
 from .export_json import handle_export_json, tools as json_tools
 from .export_md import handle_export_md, tools as md_tools
+from .export_html import handle_export_html, tools as html_tools
 
 logger = logging.getLogger("mcp-output-aggregator")
 
@@ -31,6 +32,8 @@ async def handle_output_tool(name: str, arguments: dict) -> list[TextContent]:
             return await handle_export_json(name, arguments)
         elif "export_md" in name:
             return await handle_export_md(name, arguments)
+        elif "export_html" in name:
+            return await handle_export_html(name, arguments)
         else:
             return [TextContent(type="text", text=f"Output domain could not route tool: {name}")]
     except Exception as e:
@@ -39,7 +42,7 @@ async def handle_output_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps({"success": False, "error": str(e)}))]
 
 # Aggregate and Register all tools
-all_output_tools = bitable_tools + messaging_tools + doc_tools + csv_tools + json_tools + md_tools
+all_output_tools = bitable_tools + messaging_tools + doc_tools + csv_tools + json_tools + md_tools + html_tools
 
 _OUTPUT_RETURNS = {
     "list_feishu_bitable_records": "list of Bitable records",
@@ -56,7 +59,8 @@ _OUTPUT_RETURNS = {
     "create_feishu_doc": "new document URL",
     "export_csv": "local CSV file path",
     "export_json": "local JSON file path",
-    "export_md": "local Markdown file path",
+    "export_md":   "local Markdown file path",
+    "export_html": "local HTML file path",
 }
 
 for tool in all_output_tools:

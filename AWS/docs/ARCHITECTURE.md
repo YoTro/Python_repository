@@ -216,9 +216,26 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   |                    |  | (Local JSON lookup)|  | (Direct IM attach) |    |
 |   | calc_profit        |  | restriction_check  |  | populate_bitable   |    |
 |   | calc_fba_fee       |  | epa_check          |  | send_local_file    |    |
-|   | (+ category bench) |  | patent_risk_calc   |  | send_url_file      |    |
-|   |                    |  |                    |  | send_data_file     |    |
+|   | (+ category bench) |  | patent_risk_calc   |  | export_md          |    |
+|   |                    |  |                    |  | export_html (→ R2) |    |
+|   |                    |  |                    |  | export_csv  (→ R2) |    |
 |   +--------------------+  +--------------------+  +--------------------+    |
+|                                                                              |
+|   ── src/core/storage/  (Strategy Pattern — swappable per .env) ──────────  |
+|                                                                              |
+|   StorageBackend (ABC)                                                       |
+|     upload(key, bytes, content_type) → public_https_url                     |
+|     upload_file(key, path) → public_https_url                               |
+|     delete(key)                                                              |
+|                                                                              |
+|   +──────────────────────+──────────────────────────────────────────────+   |
+|   | S3CompatibleBackend  | R2 / AWS S3 / MinIO — same boto3 client,    |   |
+|   |                      | only endpoint_url changes                    |   |
+|   +──────────────────────+──────────────────────────────────────────────+   |
+|   | LocalHTTPBackend     | VPS dir + nginx/caddy; no cloud dependency   |   |
+|   +──────────────────────+──────────────────────────────────────────────+   |
+|                                                                              |
+|   Switching backend: set STORAGE_BACKEND env var; zero code changes.        |
                                |
                                v
 +==============================================================================+
@@ -543,7 +560,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 
 
 ================================================================================
-                    EXTENSION RULES  (5-Dimensional Orthogonal)
+                    EXTENSION RULES  (6-Dimensional Orthogonal)
 ================================================================================
 
   New Entry Point    EntryPoint adapter  +  Gateway register     Zero change elsewhere
@@ -551,8 +568,11 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
   New Data Source    New MCP Server  +  Tool Registry register   Zero business change
   New Output Format  Callback subclass  +  CallbackFactory reg   Zero change elsewhere
   Switch Model       Intelligence Router providers register       Zero business change
+  Switch Storage     Set STORAGE_BACKEND env var                 Zero code change
+                     (s3_compatible → R2/S3/MinIO; local_http → VPS nginx)
+                     Add backend: subclass StorageBackend, 1-line factory entry
 
-  Result: Five extension dimensions are orthogonal; changing one leaves others intact
+  Result: Six extension dimensions are orthogonal; changing one leaves others intact
 
 
 ================================================================================

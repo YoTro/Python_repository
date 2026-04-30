@@ -152,11 +152,24 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 ## 5. Directory Mapping (Summary)
 
 *   `src/core/`: Kernel, Models, Telemetry, and shared Utils (Proxy, Cookies, Context).
+    *   `src/core/storage/`: **Storage abstraction layer** (Strategy Pattern). Swap backends via `STORAGE_BACKEND` env var — no code changes.
+        *   `S3CompatibleBackend` — Cloudflare R2 / AWS S3 / MinIO (same boto3 client, different endpoint)
+        *   `LocalHTTPBackend` — VPS local directory served by nginx/caddy
+        *   Usage: `from src.core.storage import get_storage_backend; url = storage.upload(key, bytes, mime)`
 *   `src/entry/`: Entry adapters (CLI, Feishu, etc.).
 *   `src/gateway/`: Auth, Rate Limiting, and Unified Dispatching.
 *   `src/jobs/`: Job management, Checkpoints, and Callbacks.
 *   `src/mcp/servers/`: Microservices providing specific tools.
+    *   `src/mcp/servers/output/tools/export_html.py` — Converts markdown/HTML to styled HTML file; optionally uploads images via storage backend.
+    *   `src/mcp/servers/output/tools/export_csv.py` — Exports records to CSV; uploads via storage backend (falls back to local file if unconfigured).
 *   `src/registry/`: The central hub for Tool, Resource, and Prompt discovery.
 *   `src/intelligence/`: LLM Providers, Routing, and AI Processors.
 *   `src/workflows/`: Sequential, deterministic engine.
 *   `src/agents/`: Autonomous, LLM-driven reasoning.
+
+## 6. Adding a New Storage Backend
+
+1. Subclass `StorageBackend` in `src/core/storage/your_backend.py` — implement `upload`, `upload_file`, `delete`.
+2. Add a branch in `src/core/storage/__init__.py` `get_storage_backend()`.
+3. Set `STORAGE_BACKEND=your_backend` in `.env`.
+4. No changes to `export_html`, `export_csv`, or any caller.

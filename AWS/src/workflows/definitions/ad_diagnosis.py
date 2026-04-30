@@ -40,10 +40,19 @@ Config keys (with defaults):
 """
 
 import asyncio
+import io
 import logging
-from datetime import datetime, timedelta
+import math
+from datetime import datetime, timedelta, date as _date_cls
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
+
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.patches import Patch
 
 from src.workflows.registry import WorkflowRegistry
 from src.workflows.engine import Workflow, WorkflowContext
@@ -479,6 +488,17 @@ async def _enrich_campaigns(item: Dict, ctx: WorkflowContext) -> Dict:
     }
 
 
+def _wilson_ci(k: int, n: int, z: float = 1.96):
+    """Wilson score 95% CI for a binomial proportion (k successes in n trials)."""
+    if n <= 0 or k < 0:
+        return None, None
+    p = k / n
+    denom  = 1.0 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return max(0.0, center - margin), min(1.0, center + margin)
+
+
 async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
     """Filter performance report records to this ASIN's campaigns."""
     campaign_ids = set(item.get("campaign_ids", []))
@@ -497,6 +517,23 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
     total_orders = sum(r.get("orders", 0) or 0 for r in matched)
     total_clicks = sum(r.get("clicks", 0) or 0 for r in matched)
     account_acos = round(total_spend / total_sales * 100, 2) if total_sales > 0 else None
+
+    # Statistical sufficiency
+    if total_orders >= 100:  orders_reliability = "high"
+    elif total_orders >= 30: orders_reliability = "medium"
+    else:                    orders_reliability = "low"
+
+    # CVR 95% Wilson CI → propagate to ACOS CI
+    cvr_point = round(total_orders / total_clicks, 6) if total_clicks > 0 else None
+    _cvr_lo, _cvr_hi = _wilson_ci(total_orders, total_clicks)
+    acos_ci_lo = acos_ci_hi = None
+    if account_acos and cvr_point and _cvr_hi and _cvr_lo:
+        frac = account_acos / 100  # ACOS as fraction: spend/sales
+        # Higher CVR → more orders → lower ACOS (inverse relationship)
+        if _cvr_hi > 0:
+            acos_ci_lo = round(frac * cvr_point / _cvr_hi * 100, 2)
+        if _cvr_lo > 0:
+            acos_ci_hi = round(frac * cvr_point / _cvr_lo * 100, 2)
 
     # Flag campaigns exceeding ACOS thresholds
     warn_thresh = ctx.config.get("acos_warn_threshold", 0.30) * 100
@@ -525,6 +562,12 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
         "total_orders":           total_orders,
         "total_clicks":           total_clicks,
         "account_acos":           account_acos,
+        "orders_reliability":     orders_reliability,
+        "cvr_point":              cvr_point,
+        "cvr_ci_lo":              round(_cvr_lo, 6) if _cvr_lo is not None else None,
+        "cvr_ci_hi":              round(_cvr_hi, 6) if _cvr_hi is not None else None,
+        "acos_ci_lo":             acos_ci_lo,
+        "acos_ci_hi":             acos_ci_hi,
         "high_acos_campaigns":    high_acos_campaigns,
         "budget_exhaustion_pct":  budget_exhaustion_pct,
         "budget_likely_exhausted": (
@@ -899,7 +942,15 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             "keywords_zeroed":        len(zero_kws),
             "keywords_maxed":         len(maxed_kws),
         }
-        item["lp_top_allocations"] = alloc[:10]    # top 10 by clicks
+        # Split "keyword_text|MATCH_TYPE" back into separate fields for readability
+        item["lp_top_allocations"] = [
+            {
+                **a,
+                "keyword":    a["keyword"].split("|")[0],
+                "match_type": a["keyword"].split("|")[1] if "|" in a["keyword"] else "",
+            }
+            for a in alloc[:10]
+        ]
         item["lp_zero_keywords"]   = zero_kws[:20] # pause candidates
         item["lp_maxed_keywords"]  = maxed_kws[:10]# raise-bid candidates
 
@@ -1417,6 +1468,374 @@ def _run_causal_analysis(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
 
 # ---------------------------------------------------------------------------
+# Chart generation
+# ---------------------------------------------------------------------------
+
+_CHART_PALETTE = {
+    "blue":       "#2563EB",
+    "orange":     "#F59E0B",
+    "red":        "#EF4444",
+    "green":      "#10B981",
+    "purple":     "#8B5CF6",
+    "grey":       "#9CA3AF",
+    "light_blue": "#BFDBFE",
+    "light_red":  "#FEE2E2",
+    "bg":         "#F9FAFB",
+}
+_C = _CHART_PALETTE  # shorthand
+
+
+def _fig_to_png(fig: plt.Figure) -> bytes:
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def _chart_upload(png: bytes, key: str) -> Optional[str]:
+    try:
+        from src.core.storage import get_storage_backend
+        return get_storage_backend().upload(key, png, "image/png")
+    except Exception as e:
+        logger.warning(f"[charts] upload failed for {key}: {e}")
+        return None
+
+
+def _chart_daily_trend(item: Dict, daily_perf: List[Dict]) -> Optional[bytes]:
+    if not daily_perf:
+        return None
+    by_date: Dict[str, Dict] = {}
+    for r in daily_perf:
+        d = r.get("date") or r.get("report_date", "")
+        if not d:
+            continue
+        slot = by_date.setdefault(d, {"spend": 0.0, "orders": 0, "sales": 0.0})
+        slot["spend"]  += float(r.get("spend",  0) or 0)
+        slot["orders"] += int(r.get("orders", 0) or 0)
+        slot["sales"]  += float(r.get("sales",  0) or 0)
+    dates = sorted(by_date)
+    if len(dates) < 3:
+        return None
+    dt_objs = [_date_cls.fromisoformat(d) for d in dates]
+    spends  = [by_date[d]["spend"]  for d in dates]
+    orders  = [by_date[d]["orders"] for d in dates]
+    sales   = [by_date[d]["sales"]  for d in dates]
+    acos    = [round(spends[i] / sales[i] * 100, 1) if sales[i] > 0 else None
+               for i in range(len(dates))]
+    change_dates = {a["changed_at"] for a in (item.get("change_attributions") or [])
+                    if a.get("changed_at")}
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True,
+                                   facecolor=_C["bg"])
+    ax1.set_facecolor(_C["bg"]); ax2.set_facecolor(_C["bg"])
+
+    bar_w = max(0.6, 0.8 * (dt_objs[-1] - dt_objs[0]).days / len(dt_objs))
+    ax1.bar(dt_objs, spends, width=bar_w, color=_C["light_blue"], label="Spend ($)", zorder=2)
+    ax1r = ax1.twinx()
+    ax1r.plot(dt_objs, orders, color=_C["blue"], lw=1.8, marker="o", markersize=3,
+              label="Orders", zorder=3)
+    ax1r.set_ylabel("Orders", color=_C["blue"], fontsize=9)
+    ax1r.tick_params(axis="y", labelcolor=_C["blue"])
+    ax1.set_ylabel("Spend ($)", fontsize=9)
+    ax1.legend(loc="upper left", fontsize=8); ax1r.legend(loc="upper right", fontsize=8)
+    ax1.set_title(f"{item.get('asin','?')} — Daily Performance", fontsize=11, pad=6)
+    for cd in change_dates:
+        try:
+            ax1.axvline(_date_cls.fromisoformat(cd), color=_C["orange"],
+                        lw=1.2, linestyle="--", alpha=0.8, zorder=4)
+        except Exception:
+            pass
+
+    acos_valid = [(dt_objs[i], acos[i]) for i in range(len(acos)) if acos[i] is not None]
+    if acos_valid:
+        ax2_dates, ax2_vals = zip(*acos_valid)
+        ax2.plot(ax2_dates, ax2_vals, color=_C["purple"], lw=1.8, marker="o",
+                 markersize=3, label="ACOS (%)")
+        warn = item.get("acos_warn_threshold", 0.30)
+        warn_pct = warn * 100 if warn < 2 else warn
+        ax2.axhline(warn_pct, color=_C["red"], lw=1, linestyle=":", alpha=0.7,
+                    label=f"Warn {warn_pct:.0f}%")
+        ci_lo, ci_hi = item.get("acos_ci_lo"), item.get("acos_ci_hi")
+        if ci_lo and ci_hi:
+            ax2.fill_between(ax2_dates, ci_lo, ci_hi, alpha=0.15,
+                             color=_C["purple"], label="ACOS 95% CI")
+        ax2.set_ylabel("ACOS (%)", fontsize=9)
+        ax2.legend(loc="upper left", fontsize=8)
+    for cd in change_dates:
+        try:
+            ax2.axvline(_date_cls.fromisoformat(cd), color=_C["orange"],
+                        lw=1.2, linestyle="--", alpha=0.8)
+        except Exception:
+            pass
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+    ax2.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+    fig.autofmt_xdate(rotation=30)
+    fig.tight_layout()
+    return _fig_to_png(fig)
+
+
+def _chart_its_causal(item: Dict, daily_perf: List[Dict]) -> Optional[bytes]:
+    attributions = item.get("change_attributions") or []
+    if not attributions or not daily_perf:
+        return None
+    attr = next((a for a in attributions if not (a.get("its") or {}).get("skipped")), None)
+    if not attr:
+        return None
+    change_date_str = attr.get("changed_at", "")
+    if not change_date_str:
+        return None
+
+    col = {"orders": "orders", "spend": "spend", "clicks": "clicks"}.get(
+        item.get("causal_metric", "orders"), "orders")
+    by_date: Dict[str, float] = {}
+    for r in daily_perf:
+        d = r.get("date") or r.get("report_date", "")
+        if d:
+            by_date[d] = by_date.get(d, 0.0) + float(r.get(col, 0) or 0)
+
+    dates = sorted(by_date)
+    if len(dates) < 5:
+        return None
+    try:
+        t0 = dates.index(change_date_str)
+    except ValueError:
+        cd = _date_cls.fromisoformat(change_date_str)
+        t0 = min(range(len(dates)),
+                 key=lambda i: abs((_date_cls.fromisoformat(dates[i]) - cd).days))
+    if t0 < 3 or t0 >= len(dates) - 1:
+        return None
+
+    y       = np.array([by_date[d] for d in dates], dtype=float)
+    dt_objs = [_date_cls.fromisoformat(d) for d in dates]
+    A       = np.column_stack([np.ones(t0), np.arange(t0)])
+    try:
+        beta, _, _, _ = np.linalg.lstsq(A, y[:t0], rcond=None)
+    except Exception:
+        return None
+    fitted = beta[0] + beta[1] * np.arange(len(dates))
+
+    its          = attr.get("its") or {}
+    level_shift  = its.get("level_shift", 0)
+    ls_ci_lo     = its.get("level_shift_ci_lo")
+    ls_ci_hi     = its.get("level_shift_ci_hi")
+
+    fig, ax = plt.subplots(figsize=(10, 4.5), facecolor=_C["bg"])
+    ax.set_facecolor(_C["bg"])
+    ax.scatter(dt_objs, y, color=_C["grey"], s=20, zorder=3, label="Actual")
+    ax.plot(dt_objs[:t0], fitted[:t0], color=_C["blue"], lw=1.8, label="Pre-trend (fitted)")
+    ax.plot(dt_objs[t0:], fitted[t0:], color=_C["blue"], lw=1.5, linestyle="--",
+            alpha=0.6, label="Counterfactual")
+    ax.plot(dt_objs[t0:], y[t0:], color=_C["orange"], lw=1.8, label="Post-change actual")
+    ax.fill_between(dt_objs[t0:], fitted[t0:], y[t0:], alpha=0.18,
+                    color=_C["green"], label="Estimated effect")
+    ax.axvline(dt_objs[t0], color=_C["red"], lw=1.5, alpha=0.8, zorder=4)
+    ylim = ax.get_ylim()
+    ax.text(dt_objs[t0], ylim[1] * 0.95,
+            f"  {attr.get('change_type','change')}", color=_C["red"], fontsize=8, va="top")
+    ci_str = (f"\n95% CI [{ls_ci_lo:+.2f}, {ls_ci_hi:+.2f}]"
+              if ls_ci_lo is not None and ls_ci_hi is not None else "")
+    metric_lbl = (item.get("causal_metric") or "orders").capitalize()
+    ax.set_title(f"{item.get('asin','?')} — ITS Causal Fit  "
+                 f"(level_shift={level_shift:+.2f}{ci_str})", fontsize=10, pad=6)
+    ax.set_ylabel(metric_lbl, fontsize=9)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+    ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+    fig.autofmt_xdate(rotation=30)
+    ax.legend(fontsize=8, loc="upper left")
+    fig.tight_layout()
+    return _fig_to_png(fig)
+
+
+def _chart_kw_quadrant(item: Dict) -> Optional[bytes]:
+    kw_perf = item.get("keyword_performance") or []
+    if not kw_perf:
+        return None
+    valid = [i for i in range(len(kw_perf))
+             if kw_perf[i].get("acos") is not None and kw_perf[i].get("total_orders") is not None]
+    if not valid:
+        return None
+    acos_v   = np.array([kw_perf[i]["acos"]                    for i in valid], dtype=float)
+    orders_v = np.array([kw_perf[i]["total_orders"]            for i in valid], dtype=float)
+    spend_v  = np.array([kw_perf[i].get("total_spend") or 0   for i in valid], dtype=float)
+    labels_v = [kw_perf[i].get("keyword", "")                 for i in valid]
+
+    acos_thresh  = (item.get("acos_warn_threshold") or 0.30) * 100
+    orders_mid   = float(np.median(orders_v))
+    bubble_sizes = np.clip(spend_v / (spend_v.max() + 1e-9) * 600, 20, 600)
+    colors = [
+        _C["green"]  if a <= acos_thresh and o >= orders_mid else
+        _C["red"]    if a >  acos_thresh and o <  orders_mid else
+        _C["blue"]   if a <= acos_thresh else _C["orange"]
+        for a, o in zip(acos_v, orders_v)
+    ]
+
+    fig, ax = plt.subplots(figsize=(10, 4.5), facecolor=_C["bg"])
+    ax.set_facecolor(_C["bg"])
+    ax.scatter(orders_v, acos_v, s=bubble_sizes, c=colors, alpha=0.75,
+               edgecolors="white", lw=0.5, zorder=3)
+    ax.axhline(acos_thresh, color=_C["red"],  lw=1, linestyle="--", alpha=0.6,
+               label=f"ACOS warn {acos_thresh:.0f}%")
+    ax.axvline(orders_mid,  color=_C["grey"], lw=1, linestyle="--", alpha=0.6,
+               label=f"Median orders {orders_mid:.0f}")
+    for i in np.argsort(spend_v)[-5:]:
+        ax.annotate(labels_v[i][:20], (orders_v[i], acos_v[i]),
+                    fontsize=7, xytext=(4, 4), textcoords="offset points", alpha=0.85)
+    ax.legend(handles=[
+        Patch(color=_C["green"],  label="Efficient + High volume"),
+        Patch(color=_C["blue"],   label="Efficient + Low volume"),
+        Patch(color=_C["orange"], label="Inefficient + High volume"),
+        Patch(color=_C["red"],    label="Inefficient + Low volume"),
+    ], fontsize=7, loc="upper right")
+    ax.set_xlabel("Orders", fontsize=9)
+    ax.set_ylabel("ACOS (%)", fontsize=9)
+    ax.set_title(f"{item.get('asin','?')} — Keyword ACOS × Orders  "
+                 f"(bubble = spend, n={len(valid)})", fontsize=10, pad=6)
+    fig.tight_layout()
+    return _fig_to_png(fig)
+
+
+def _chart_placement_bar(item: Dict) -> Optional[bytes]:
+    placement  = item.get("placement_performance") or {}
+    configured = item.get("placement_configured_pcts") or {}
+    keys = [k for k in placement if placement[k].get("acos") is not None]
+    if not keys:
+        return None
+    label_map = {
+        "PLACEMENT_TOP_OF_SEARCH":  "Top of Search",
+        "PLACEMENT_REST_OF_SEARCH": "Rest of Search",
+        "PLACEMENT_PRODUCT_PAGE":   "Product Page",
+    }
+    display  = [label_map.get(k, k)               for k in keys]
+    act_acos = [placement[k]["acos"]               for k in keys]
+    cfg_pct  = [configured.get(k) or 0            for k in keys]
+    spend_sh = [placement[k].get("spend_share", 0) for k in keys]
+    x = np.arange(len(keys)); w = 0.35
+
+    fig, ax = plt.subplots(figsize=(10, 4.0), facecolor=_C["bg"])
+    ax.set_facecolor(_C["bg"])
+    bars1 = ax.bar(x - w/2, act_acos, w, color=_C["blue"],   alpha=0.85, label="Actual ACOS (%)")
+    bars2 = ax.bar(x + w/2, cfg_pct,  w, color=_C["orange"], alpha=0.85, label="Configured Bid Adj. (%)")
+    warn_pct = (item.get("acos_warn_threshold") or 0.30) * 100
+    ax.axhline(warn_pct, color=_C["red"], lw=1, linestyle=":", alpha=0.7,
+               label=f"ACOS warn {warn_pct:.0f}%")
+    for bar, sh in zip(bars1, spend_sh):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                f"{sh:.0f}%", ha="center", va="bottom", fontsize=8, color=_C["blue"])
+    ax.set_xticks(x); ax.set_xticklabels(display, fontsize=9)
+    ax.set_ylabel("Percent (%)", fontsize=9)
+    ax.set_title(f"{item.get('asin','?')} — Placement Performance  (spend share labeled)",
+                 fontsize=10, pad=6)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return _fig_to_png(fig)
+
+
+def _chart_inventory_burndown(item: Dict) -> Optional[bytes]:
+    total     = item.get("total_available")
+    daily     = item.get("daily_sales")
+    risk_days = 30
+    if not total or not daily or daily <= 0:
+        return None
+    can_sell = int(total / daily)
+    x = np.arange(0, can_sell + 1)
+    y = total - daily * x
+
+    fig, ax = plt.subplots(figsize=(10, 3.8), facecolor=_C["bg"])
+    ax.set_facecolor(_C["bg"])
+    ax.plot(x, y, color=_C["blue"], lw=2, label="Remaining inventory")
+    ax.axhline(0, color=_C["red"], lw=1, alpha=0.5)
+    risk_end = min(risk_days, can_sell)
+    ax.axvspan(0, risk_end, color=_C["light_red"], alpha=0.35,
+               label=f"Risk zone (<{risk_days}d)")
+    ax.axvline(can_sell, color=_C["red"], lw=1.5, linestyle="--", alpha=0.8)
+    stockout_date = _date_cls.today() + timedelta(days=can_sell)
+    ax.text(can_sell, total * 0.05, f"  Stockout\n  {stockout_date.isoformat()}",
+            color=_C["red"], fontsize=8, va="bottom")
+    ax.fill_between(x, y, 0, alpha=0.08, color=_C["blue"])
+    risk_flag = "⚠️ " if item.get("inventory_risk") else ""
+    ax.set_xlabel("Days from today", fontsize=9)
+    ax.set_ylabel("Units available", fontsize=9)
+    ax.set_title(f"{item.get('asin','?')} — {risk_flag}Inventory Burn-down  "
+                 f"({total:,} units / {daily:.1f}/day → {can_sell}d)", fontsize=10, pad=6)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return _fig_to_png(fig)
+
+
+def _chart_comp_price_box(item: Dict) -> Optional[bytes]:
+    price_by_asin: Dict = item.get("competitor_price_by_asin") or {}
+    if not price_by_asin:
+        return None
+    asin_prices = {a: [v for v in prices.values() if v is not None]
+                   for a, prices in price_by_asin.items()}
+    asin_prices = {a: v for a, v in asin_prices.items() if len(v) >= 2}
+    if not asin_prices:
+        return None
+    sorted_asins = sorted(asin_prices, key=lambda a: float(np.median(asin_prices[a])))
+    data         = [asin_prices[a]   for a in sorted_asins]
+    short_labels = [a[-6:]           for a in sorted_asins]
+    own_price    = item.get("price") or item.get("sale_price")
+
+    fig, ax = plt.subplots(figsize=(10, 4.5), facecolor=_C["bg"])
+    ax.set_facecolor(_C["bg"])
+    ax.boxplot(data, labels=short_labels, patch_artist=True,
+               boxprops=dict(facecolor=_C["light_blue"], color=_C["blue"]),
+               medianprops=dict(color=_C["blue"], lw=2),
+               whiskerprops=dict(color=_C["grey"]),
+               capprops=dict(color=_C["grey"]),
+               flierprops=dict(marker="o", color=_C["grey"], alpha=0.4, markersize=4))
+    if own_price:
+        ax.axhline(float(own_price), color=_C["red"], lw=1.8, linestyle="--",
+                   label=f"Own price ${own_price:.2f}")
+        ax.legend(fontsize=8)
+    ax.set_xlabel("Competitor ASIN (last 6 chars)", fontsize=9)
+    ax.set_ylabel("Price ($)", fontsize=9)
+    ax.set_title(f"{item.get('asin','?')} — Competitor Price Distribution  "
+                 f"(n={len(sorted_asins)} competitors)", fontsize=10, pad=6)
+    fig.tight_layout()
+    return _fig_to_png(fig)
+
+
+def _generate_charts(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
+    """Generate 6 diagnostic PNG charts per ASIN, upload to storage, store URLs in item['chart_urls']."""
+    import datetime as _dt
+    date_str = _dt.date.today().isoformat()
+
+    for item in items:
+        asin       = (item.get("asin") or "unknown").upper()
+        daily_perf = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
+
+        generators = [
+            ("daily_trend",        lambda: _chart_daily_trend(item, daily_perf)),
+            ("its_causal",         lambda: _chart_its_causal(item, daily_perf)),
+            ("kw_quadrant",        lambda: _chart_kw_quadrant(item)),
+            ("placement_bar",      lambda: _chart_placement_bar(item)),
+            ("inventory_burndown", lambda: _chart_inventory_burndown(item)),
+            ("comp_price_box",     lambda: _chart_comp_price_box(item)),
+        ]
+
+        chart_urls: Dict[str, str] = {}
+        for name, fn in generators:
+            try:
+                png = fn()
+                if png is None:
+                    logger.debug(f"[charts] {asin}/{name}: skipped (no data)")
+                    continue
+                url = _chart_upload(png, f"reports/ad_diagnosis/{asin}/{date_str}/{name}.png")
+                if url:
+                    chart_urls[name] = url
+                    logger.info(f"[charts] {asin}/{name} → {url}")
+            except Exception as e:
+                logger.warning(f"[charts] {asin}/{name} failed: {e}", exc_info=True)
+
+        item["chart_urls"] = chart_urls
+        logger.info(f"[charts] {asin}: {len(chart_urls)}/6 charts uploaded")
+
+    return items
+
+
+# ---------------------------------------------------------------------------
 # LLM pre-enrichment (summary injection only — no field stripping)
 # ---------------------------------------------------------------------------
 
@@ -1472,8 +1891,16 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "rank_tracked_keywords":     item.get("rank_tracked_keywords"),
         "rank_series_days":          len(next(iter(rank_series.values()), {})),
         "market_trends_keywords":    list(market_trends.keys()),
-        "change_attributions_count": len(attributions),
-        "causal_consensus_sample":   attributions[0].get("consensus") if attributions else None,
+        "change_attributions_count":  len(attributions),
+        "causal_consensus_sample":    attributions[0].get("consensus") if attributions else None,
+        # Statistical sufficiency & ACOS CI
+        "orders_reliability":         item.get("orders_reliability"),
+        "acos_ci_lo":                 item.get("acos_ci_lo"),
+        "acos_ci_hi":                 item.get("acos_ci_hi"),
+        # Directional backtest calibration
+        "backtest_hit_rate":          item.get("backtest_hit_rate"),
+        "backtest_strong_hit_rate":   item.get("backtest_strong_hit_rate"),
+        "backtest_total":             item.get("backtest_total"),
     }
 
 
@@ -1512,11 +1939,30 @@ def _export_report(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     os.makedirs(report_dir, exist_ok=True)
     date_str = _dt.date.today().isoformat()
 
+    _CHART_LABELS = {
+        "daily_trend":        "Daily Performance Trend",
+        "its_causal":         "ITS Causal Fit",
+        "kw_quadrant":        "Keyword ACOS × Orders",
+        "placement_bar":      "Placement Performance",
+        "inventory_burndown": "Inventory Burn-down",
+        "comp_price_box":     "Competitor Price Distribution",
+    }
+
     for item in items:
         text = item.get("ad_diagnosis_llm") or ""
         if not text:
             continue
         asin = (item.get("asin") or "unknown").upper()
+
+        # Append chart image links to markdown
+        chart_urls: dict = item.get("chart_urls") or {}
+        if chart_urls:
+            lines = ["\n\n---\n\n## 📊 Diagnostic Charts\n"]
+            for name, url in chart_urls.items():
+                label = _CHART_LABELS.get(name, name)
+                lines.append(f"### {label}\n![]({url})\n")
+            text = text + "".join(lines)
+
         filename = f"ad_diagnosis_{asin}_{date_str}.md"
         file_path = os.path.join(report_dir, filename)
         with open(file_path, "w", encoding="utf-8") as f:
@@ -1524,11 +1970,13 @@ def _export_report(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         item["report_file_path"] = file_path
         # Short preview for the card — keeps on_complete from writing a second
         # temp file when it sees len(text) > 8000 in the card branch.
+        chart_note = f"，含 {len(chart_urls)} 张诊断图表" if chart_urls else ""
         item["response"] = (
             text[:400].rstrip()
-            + f"\n\n…（完整报告已保存为 `{filename}`，正在发送为附件）"
+            + f"\n\n…（完整报告已保存为 `{filename}`{chart_note}，正在发送为附件）"
         )
-        logger.info(f"[export_report] {asin}: {len(text)} chars → {file_path}")
+        logger.info(f"[export_report] {asin}: {len(text)} chars, "
+                    f"{len(chart_urls)} charts → {file_path}")
     return items
 
 
@@ -1759,7 +2207,14 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "  change_attributions_count → change events that passed noise filter (Ads API history, "
                 "data_start_date → data_end_date)\n"
                 "  causal_consensus_sample → consensus label of first change_attribution entry "
-                "(ITS + CausalImpact + DML agreement: Strong / Moderate / Weak / Confounded / Skipped)\n\n"
+                "(ITS + CausalImpact + DML agreement: Strong / Moderate / Weak / Confounded / Skipped)\n"
+                "  orders_reliability → statistical sufficiency of orders sample: "
+                "high (≥100 orders), medium (30–99), low (<30)\n"
+                "  acos_ci_lo / acos_ci_hi → 95% ACOS confidence interval (Wilson method on CVR "
+                "propagated to ACOS via ACOS = spend/sales; see Methodology section)\n"
+                "  backtest_hit_rate → % of evaluated change events where model-predicted direction "
+                "matched observed post-window KPI direction (within-sample calibration)\n"
+                "  backtest_strong_hit_rate → same but restricted to 'Strong evidence' events only\n\n"
                 "```json\n{_summary_json}\n```\n\n"
                 "> **Evidence Summary**: 1-2 sentences citing the single most critical metric "
                 "visible in the snapshot above "
@@ -1804,10 +2259,14 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "For each change_attribution entry cited above:\n"
                 "- **Consensus**: Strong / Moderate / Weak / Confounded / Skipped "
                 "(read from the `consensus` field directly)\n"
-                "- **ITS**: level_shift=$val, p=$p_val (significant if p < 0.10)\n"
-                "- **Causal Impact**: point_effect=$val (actual − counterfactual)\n"
-                "- **DML**: theta=$val (residualised effect after removing price/rank/SFR/competitor "
-                "confounders; reliable only if r_squared ≥ 0)\n"
+                "- **ITS** *(Linden 2015)*: level_shift=$val [95% CI: level_shift_ci_lo – level_shift_ci_hi], "
+                "p=$p_val (significant if p < 0.10)\n"
+                "- **CausalImpact** *(Brodersen et al. 2015)*: point_effect=$val "
+                "[95% credible interval: ci_lo – ci_hi] (actual − BSTS counterfactual)\n"
+                "- **DML** *(Chernozhukov et al. 2018)*: theta=$val "
+                "[95% CI: theta_ci_lo – theta_ci_hi] (sandwich-SE; reliable only if r_squared ≥ 0)\n"
+                "- **Historical calibration**: backtest_hit_rate=$val% "
+                "(model direction vs observed post-window direction for this ASIN)\n"
                 "- **Note**: Use 'causally demonstrated' only when consensus = 'Strong evidence' "
                 "(all 3 models agree). Use 'suggested' or 'estimated' otherwise.\n"
                 "  When had_promotion=True or price_delta_window is large negative: "
@@ -1840,6 +2299,24 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "if it applies globally\n"
                 "- **Monitoring Recommendation**: Which 1-2 metrics to track weekly\n\n"
 
+                "### Statistical Methodology\n\n"
+                "| Method | Citation | Role in this report |\n"
+                "| --- | --- | --- |\n"
+                "| ITS | Linden (2015), *Stata J.* 15(2):480–500 | "
+                "Piecewise OLS: y=α+β·t+γ·D+δ·(t−T₀)·D+ε; γ=level_shift (immediate step); "
+                "95% CI from OLS t-distribution SE |\n"
+                "| CausalImpact | Brodersen et al. (2015), *Ann. Appl. Stat.* 9(1):247–274 | "
+                "BSTS counterfactual; point_effect=actual−predicted; 95% posterior credible interval |\n"
+                "| DML | Chernozhukov et al. (2018), *Econometrics J.* 21(1):C1–C68 | "
+                "Frisch–Waugh–Lovell with RF residualisation; θ=clean causal effect; "
+                "95% CI from heteroscedasticity-robust sandwich SE |\n"
+                "| LP | Dantzig (1963), *Linear Programming & Extensions* / OR-Tools | "
+                "max Σorders_i·x_i s.t. Σx_i≤daily_budget, x_i≤headroom·clicks_i·bid_i |\n"
+                "| ACOS CI | Wilson (1927), *JASA* 22:209–212 | "
+                "95% CI on CVR (Wilson score) propagated: ACOS_CI = ACOS_point × CVR_point / CVR_CI |\n\n"
+                "*All CIs at 95% (α=0.05). Significance threshold: p<0.10 (ITS/DML, one-sided) "
+                "given limited post-period samples typical in weekly ad cadence.*\n\n"
+
                 # ── Credibility & actionability rules ────────────────────────
                 "==== MANDATORY RULES (violations degrade report quality) ====\n\n"
                 "1. Every claim must be accompanied by a direct data reference "
@@ -1869,12 +2346,26 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "or (b) recommend restructuring / archiving it. If all campaigns are paused "
                 "(active_campaign_count == 0), the #1 priority action must address the pause decision "
                 "before any other optimisation.\n"
+                "8. Statistical sufficiency: when orders_reliability = 'low' (<30 orders total), "
+                "mark ACOS and CVR estimates as 'statistically preliminary — results may shift "
+                "significantly with more data' and display the ACOS 95% CI "
+                "(acos_ci_lo%–acos_ci_hi%) alongside the point estimate in the Snapshot table. "
+                "When orders_reliability = 'medium' (30–99 orders), add a note that "
+                "conclusions should be validated over a longer window before committing "
+                "to large bid or budget changes (risk of regression-to-the-mean).\n"
                 "Begin the report now."
             ),
             compute_target=ComputeTarget.CLOUD_LLM,
         ),
 
-        # ── Stage 8: write report to .md and set report_file_path ────────────
+        # ── Stage 8a: generate & upload charts (requires enriched item data) ──
+        ProcessStep(
+            name="generate_charts",
+            fn=_generate_charts,
+            compute_target=ComputeTarget.PURE_PYTHON,
+        ),
+
+        # ── Stage 8b: write report to .md and set report_file_path ───────────
         # FeishuCallback.on_complete picks up report_file_path and sends it as
         # a file attachment. item["response"] is set to a short preview so the
         # card branch shows a summary without creating a duplicate attachment.

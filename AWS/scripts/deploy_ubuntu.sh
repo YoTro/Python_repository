@@ -141,6 +141,38 @@ LINGXING_PASSWORD=
 REDIS_URL=redis://localhost:6379
 SERVER_IP=
 SERVER_USER=
+
+# ── Object Storage (export_html / export_csv image/file upload) ─────────
+# Backend choices: s3_compatible (R2 / S3 / MinIO)  |  local_http (VPS nginx)
+STORAGE_BACKEND=s3_compatible
+
+# --- Cloudflare R2 (recommended) ---
+CLOUDFLARE_R2_ACCOUNT_ID=          # from R2 dashboard; endpoint auto-built from this
+STORAGE_ACCESS_KEY_ID=             # R2 API token → Access Key ID
+STORAGE_SECRET_ACCESS_KEY=         # R2 API token → Secret Access Key
+STORAGE_BUCKET_NAME=               # your R2 bucket name
+STORAGE_PUBLIC_URL=                # e.g. https://pub-<hash>.r2.dev or custom domain
+STORAGE_REGION=auto
+
+# --- AWS S3 (omit CLOUDFLARE_R2_ACCOUNT_ID, set region) ---
+# STORAGE_ACCESS_KEY_ID=
+# STORAGE_SECRET_ACCESS_KEY=
+# STORAGE_BUCKET_NAME=
+# STORAGE_PUBLIC_URL=https://<bucket>.s3.<region>.amazonaws.com
+# STORAGE_REGION=us-east-1
+
+# --- MinIO / self-hosted S3 (set explicit endpoint) ---
+# STORAGE_ENDPOINT_URL=https://minio.yourdomain.com
+# STORAGE_ACCESS_KEY_ID=
+# STORAGE_SECRET_ACCESS_KEY=
+# STORAGE_BUCKET_NAME=
+# STORAGE_PUBLIC_URL=https://files.yourdomain.com
+# STORAGE_REGION=auto
+
+# --- VPS local directory + nginx (no cloud dependency) ---
+# STORAGE_BACKEND=local_http
+# STORAGE_LOCAL_DIR=/var/www/files
+# STORAGE_PUBLIC_URL=https://files.yourdomain.com
 EOF
     echo "⚠️  .env created — edit it and fill in all required values before running the app."
 else

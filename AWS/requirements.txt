@@ -24,6 +24,8 @@ scikit-learn
 numpy
 pandas
 pycausalimpact
+boto3
+markdown
 
 # Encryption
 cryptography

@@ -78,3 +78,4 @@ output/*.csv
 output/*.json
 tests/*.csv
 tests/test_input.csv
+src/core/telemetry/step_history.json

@@ -412,15 +412,23 @@ def _its_analyze(series: np.ndarray, intervention_idx: int) -> Dict[str, Any]:
         except np.linalg.LinAlgError:
             p = [1.0] * 4
 
+    # 95% CI on level_shift using t-distribution critical value
+    z_t = float(_stats.t.ppf(0.975, max(dof, 1)))
+    ls_se = float(se[2])
+    level_shift_ci_lo = round(float(beta[2]) - z_t * ls_se, 4)
+    level_shift_ci_hi = round(float(beta[2]) + z_t * ls_se, 4)
+
     return {
-        "skipped":      False,
-        "level_shift":  round(float(beta[2]), 4),
-        "slope_change": round(float(beta[3]), 4),
-        "p_level":      round(float(p[2]), 4),
-        "p_slope":      round(float(p[3]), 4),
-        "r_squared":    round(r2, 4),
-        "pre_mean":     round(float(series[:intervention_idx].mean()), 4),
-        "post_mean":    round(float(series[intervention_idx:].mean()), 4),
+        "skipped":           False,
+        "level_shift":       round(float(beta[2]), 4),
+        "level_shift_ci_lo": level_shift_ci_lo,
+        "level_shift_ci_hi": level_shift_ci_hi,
+        "slope_change":      round(float(beta[3]), 4),
+        "p_level":           round(float(p[2]), 4),
+        "p_slope":           round(float(p[3]), 4),
+        "r_squared":         round(r2, 4),
+        "pre_mean":          round(float(series[:intervention_idx].mean()), 4),
+        "post_mean":         round(float(series[intervention_idx:].mean()), 4),
     }
 
 
@@ -471,11 +479,27 @@ def _causal_impact_analyze(
         rel_effect   = avg.get("rel_effect") or avg.get("RelEffect")
         p_value      = avg.get("p") or avg.get("Prob")
 
+        # Extract 95% posterior credible interval (field names vary by causalimpact version)
+        ci_lo = ci_hi = None
+        try:
+            _lo = (avg.get("abs_effect_lower") or avg.get("AbsEffect.lower")
+                   or avg.get("lower") or avg.get("lower_bound"))
+            _hi = (avg.get("abs_effect_upper") or avg.get("AbsEffect.upper")
+                   or avg.get("upper") or avg.get("upper_bound"))
+            if _lo is not None:
+                ci_lo = round(float(_lo), 4)
+            if _hi is not None:
+                ci_hi = round(float(_hi), 4)
+        except Exception:
+            pass
+
         return {
             "skipped":         False,
             "point_effect":    round(float(point_effect), 4) if point_effect is not None else None,
             "relative_effect": round(float(rel_effect),   4) if rel_effect   is not None else None,
             "p_value":         round(float(p_value),      4) if p_value      is not None else None,
+            "ci_lo":           ci_lo,
+            "ci_hi":           ci_hi,
         }
     except Exception as e:
         logger.warning(f"CausalImpact failed: {e}")
@@ -551,12 +575,71 @@ def _dml_analyze(
     if r2 < 0:
         return {"skipped": True, "reason": f"poor model fit (R²={round(r2, 4)} < 0); theta unreliable"}
 
+    # 95% CI using normal approximation (sandwich SE is asymptotically normal)
+    theta_ci_lo = round(theta - 1.96 * se, 6)
+    theta_ci_hi = round(theta + 1.96 * se, 6)
+
     return {
-        "skipped":   False,
-        "theta":     round(theta, 6),
-        "se":        round(se, 6),
-        "p_value":   round(p_val, 4),
-        "r_squared": round(r2, 4),
+        "skipped":      False,
+        "theta":        round(theta, 6),
+        "se":           round(se, 6),
+        "theta_ci_lo":  theta_ci_lo,
+        "theta_ci_hi":  theta_ci_hi,
+        "p_value":      round(p_val, 4),
+        "r_squared":    round(r2, 4),
+    }
+
+
+# ── Within-sample directional backtest ───────────────────────────────────────
+
+def _compute_backtest_stats(attributions: List[Dict]) -> Dict[str, Any]:
+    """
+    Directional calibration check: does the causal model's predicted sign match
+    the observed post-window KPI direction?
+
+    This is a within-sample test — both model and observation use the same
+    historical data — so it measures internal consistency, not out-of-sample
+    forecast accuracy.  Use it to flag when models are systematically mis-signed.
+    """
+    total = hits = strong = strong_hits = 0
+    for attr in attributions:
+        its = attr.get("its") or {}
+        dml = attr.get("dml") or {}
+        ci  = attr.get("causal_impact") or {}
+        if its.get("skipped") and dml.get("skipped") and ci.get("skipped"):
+            continue
+
+        delta = attr.get("delta_orders") or 0
+        if delta == 0:
+            continue  # no directional signal to test against
+
+        observed_pos = delta > 0
+
+        effects: List[float] = []
+        if not its.get("skipped") and its.get("level_shift") is not None:
+            effects.append(float(its["level_shift"]))
+        if not dml.get("skipped") and dml.get("theta") is not None:
+            effects.append(float(dml["theta"]))
+        if not ci.get("skipped") and ci.get("point_effect") is not None:
+            effects.append(float(ci["point_effect"]))
+
+        if not effects:
+            continue
+
+        predicted_pos = (sum(effects) / len(effects)) > 0
+        hit = predicted_pos == observed_pos
+        total += 1
+        hits  += hit
+
+        if "Strong evidence" in (attr.get("consensus") or ""):
+            strong += 1
+            strong_hits += hit
+
+    return {
+        "backtest_total":          total,
+        "backtest_hit_rate":       round(hits / total, 3) if total > 0 else None,
+        "backtest_strong_n":       strong,
+        "backtest_strong_hit_rate": round(strong_hits / strong, 3) if strong > 0 else None,
     }
 
 
@@ -747,4 +830,5 @@ def run_causal_analysis(
         f"{len(attributions)} change events analysed "
         f"({n_asin_lvl} used ASIN-level KPI fallback)"
     )
-    return {"change_attributions": attributions}
+    backtest = _compute_backtest_stats(attributions)
+    return {"change_attributions": attributions, **backtest}

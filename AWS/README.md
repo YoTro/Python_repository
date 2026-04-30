@@ -56,24 +56,34 @@ It employs a **Hybrid Intelligence** model:
 
    ```dotenv
    # ── LLM Providers ──────────────────────────────────────────
-   GEMINI_API_KEY=your_gemini_api_key_here
-   ANTHROPIC_API_KEY=your_anthropic_api_key_here   # Required only when using Claude
-
-   # Default provider: "gemini" | "claude"
    DEFAULT_LLM_PROVIDER=gemini
+   GEMINI_API_KEY=
+   ANTHROPIC_API_KEY=
+   DEEPSEEK_API_KEY=
+   LOCAL_MODEL_PATH=models/llm/qwen2.5-3b-instruct-q4_k_m.gguf
+   MAX_LLM_OUTPUT_TOKENS=
 
-   # Path to local GGUF model file (optional, for offline mode)
-   LOCAL_MODEL_PATH=models/llm/your_model.gguf
+   # ── Amazon Ads API ─────────────────────────────────────────
+   AMAZON_ADS_DEFAULT_STORE=US
+   AMAZON_ADS_CLIENT_ID=
+   AMAZON_ADS_CLIENT_SECRET=
+   AMAZON_ADS_REFRESH_TOKEN_US=
+   AMAZON_ADS_PROFILE_ID_US=
+   AMAZON_ADS_FALLBACK_ASIN_US=
+
+   # ── Amazon SP-API / LWA ────────────────────────────────────
+   AMAZON_LWA_CLIENT_ID=
+   AMAZON_LWA_CLIENT_SECRET=
+   AMAZON_SP_API_REFRESH_TOKEN_US=
 
    # ── Feishu / Lark Bots ─────────────────────────────────────
    # Naming rule: FEISHU_{BOT_NAME_UPPER}_{FIELD}
-   # Add as many bots as needed by following the same pattern.
 
    # amazon_bot (primary bot)
    FEISHU_AMAZON_BOT_APP_ID=
    FEISHU_AMAZON_BOT_APP_SECRET=
-   FEISHU_AMAZON_BOT_USER_ACCESS_TOKEN=   # Optional: for user-level Bitable access
-   FEISHU_AMAZON_BOT_WEBHOOK_URL=         # Optional: for incoming webhook messages
+   FEISHU_AMAZON_BOT_USER_ACCESS_TOKEN=
+   FEISHU_AMAZON_BOT_WEBHOOK_URL=
 
    # test_bot (secondary / staging bot)
    FEISHU_TEST_BOT_APP_ID=
@@ -81,38 +91,76 @@ It employs a **Hybrid Intelligence** model:
    FEISHU_TEST_BOT_USER_ACCESS_TOKEN=
    FEISHU_TEST_BOT_WEBHOOK_URL=
 
-   # ── Third-party Services ───────────────────────────────────
+   # ── Third-party Market Data ────────────────────────────────
    SELLERSPRITE_EMAIL=
    SELLERSPRITE_PASSWORD=
-   XIYOU_PHONE=
-
-   # ── Amazon Advertising API (LWA) ───────────────────────────
-   AMAZON_ADS_CLIENT_ID=
-   AMAZON_ADS_CLIENT_SECRET=
-   AMAZON_ADS_DEFAULT_STORE=US
-   # Multiple stores supported: AMAZON_ADS_REFRESH_TOKEN_{STORE}, AMAZON_ADS_PROFILE_ID_{STORE}
-   AMAZON_ADS_REFRESH_TOKEN_US=
-   AMAZON_ADS_PROFILE_ID_US=
+   XIYOUZHAOCI_PHONE=
+   LINGXING_ACCOUNT=
+   LINGXING_PASSWORD=
 
    # ── Infrastructure ─────────────────────────────────────────
-   # Omit to use local JSON-file cache; set to enable Redis backend
    REDIS_URL=redis://localhost:6379
+   SERVER_IP=
+   SERVER_USER=
+
+   # ── Object Storage ─────────────────────────────────────────
+   # Backend: s3_compatible (R2 / S3 / MinIO)  |  local_http (VPS nginx)
+   STORAGE_BACKEND=s3_compatible
+
+   # Cloudflare R2 (recommended)
+   CLOUDFLARE_R2_ACCOUNT_ID=     # endpoint auto-built from this
+   STORAGE_ACCESS_KEY_ID=
+   STORAGE_SECRET_ACCESS_KEY=
+   STORAGE_BUCKET_NAME=
+   STORAGE_PUBLIC_URL=           # e.g. https://your-domain.com or https://pub-<hash>.r2.dev
+   STORAGE_REGION=auto
+
+   # AWS S3 (omit CLOUDFLARE_R2_ACCOUNT_ID, set real region)
+   # STORAGE_REGION=us-east-1
+
+   # MinIO / self-hosted (set explicit endpoint)
+   # STORAGE_ENDPOINT_URL=https://minio.yourdomain.com
+
+   # VPS local directory + nginx
+   # STORAGE_BACKEND=local_http
+   # STORAGE_LOCAL_DIR=/var/www/files
    ```
 
    | Variable | Required | Description |
    |---|---|---|
    | `GEMINI_API_KEY` | When using Gemini | Google AI Studio API key |
    | `ANTHROPIC_API_KEY` | When using Claude | Anthropic Console API key |
+   | `DEEPSEEK_API_KEY` | When using DeepSeek | DeepSeek API key |
    | `DEFAULT_LLM_PROVIDER` | No (default: `gemini`) | Active LLM backend |
    | `LOCAL_MODEL_PATH` | No | Path to GGUF model for offline inference |
-   | `FEISHU_*_APP_ID` | For Feishu bot | Lark Open Platform App ID |
-   | `FEISHU_*_APP_SECRET` | For Feishu bot | Lark Open Platform App Secret |
-   | `FEISHU_*_USER_ACCESS_TOKEN` | No | User-level token for Bitable write access |
-   | `FEISHU_*_WEBHOOK_URL` | No | Incoming webhook URL for the bot |
+   | `MAX_LLM_OUTPUT_TOKENS` | No | Cap on LLM response length |
    | `AMAZON_ADS_CLIENT_ID` | For Ads API | Login with Amazon Client ID |
    | `AMAZON_ADS_CLIENT_SECRET` | For Ads API | Login with Amazon Client Secret |
    | `AMAZON_ADS_REFRESH_TOKEN_*` | For Ads API | OAuth2 Refresh Token per store |
    | `AMAZON_ADS_PROFILE_ID_*` | For Ads API | Advertising Profile ID per store |
+   | `AMAZON_ADS_FALLBACK_ASIN_US` | No | ASIN used for test/fallback metric calls |
+   | `AMAZON_LWA_CLIENT_ID` | For SP-API | LWA Client ID |
+   | `AMAZON_LWA_CLIENT_SECRET` | For SP-API | LWA Client Secret |
+   | `AMAZON_SP_API_REFRESH_TOKEN_US` | For SP-API | SP-API OAuth2 Refresh Token |
+   | `FEISHU_*_APP_ID` | For Feishu bot | Lark Open Platform App ID |
+   | `FEISHU_*_APP_SECRET` | For Feishu bot | Lark Open Platform App Secret |
+   | `FEISHU_*_USER_ACCESS_TOKEN` | No | User-level token for Bitable write access |
+   | `FEISHU_*_WEBHOOK_URL` | No | Incoming webhook URL for the bot |
+   | `SELLERSPRITE_EMAIL` | For SellerSprite | Account email |
+   | `XIYOUZHAOCI_PHONE` | For Xiyouzhaoci | Account phone number |
+   | `LINGXING_ACCOUNT` | For Lingxing | Account username |
+   | `REDIS_URL` | No | Enables Redis backend in `DataCache` |
+   | `SERVER_IP` | No | VPS IP shown in SSH tunnel hints |
+   | `SERVER_USER` | No | VPS username shown in SSH tunnel hints |
+   | `STORAGE_BACKEND` | No (default: `s3_compatible`) | Storage driver: `s3_compatible` or `local_http` |
+   | `CLOUDFLARE_R2_ACCOUNT_ID` | For R2 | R2 account ID; auto-builds endpoint URL |
+   | `STORAGE_ACCESS_KEY_ID` | For S3/R2/MinIO | S3-compatible access key |
+   | `STORAGE_SECRET_ACCESS_KEY` | For S3/R2/MinIO | S3-compatible secret key |
+   | `STORAGE_BUCKET_NAME` | For S3/R2/MinIO | Target bucket name |
+   | `STORAGE_PUBLIC_URL` | For S3/R2/MinIO | Base URL for public file access |
+   | `STORAGE_REGION` | No (default: `auto`) | Region (`auto` for R2/MinIO, real region for S3) |
+   | `STORAGE_ENDPOINT_URL` | For MinIO/Backblaze | Explicit S3-compatible endpoint override |
+   | `STORAGE_LOCAL_DIR` | For `local_http` | Local directory to write files |
 
 ---
 
