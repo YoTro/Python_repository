@@ -140,6 +140,7 @@ def _align_covariates(
         ])
 
     mat = np.array(raw, dtype=float)   # None → NaN
+    mat[np.isinf(mat)] = np.nan        # inf treated as missing before fill
 
     # Forward-fill then backward-fill; remaining NaN → 0
     for col in range(mat.shape[1]):
@@ -471,9 +472,11 @@ def _causal_impact_analyze(
 
     try:
         n  = len(series)
+        # Guard: replace any residual inf in covariates with 0 (should not reach here after _align_covariates fix)
+        cov = np.where(np.isfinite(covariate_matrix), covariate_matrix, 0.0)
         df = pd.DataFrame({"y": series})
-        for i in range(covariate_matrix.shape[1]):
-            df[f"x{i}"] = covariate_matrix[:, i]
+        for i in range(cov.shape[1]):
+            df[f"x{i}"] = cov[:, i]
 
         ci = CausalImpact(df, [0, intervention_idx - 1], [intervention_idx, n - 1])
 
@@ -666,9 +669,9 @@ def _build_consensus(its: Dict, ci: Dict, dml: Dict, attr: Dict) -> str:
     if n_ran == 0:
         return "Insufficient data for causal analysis."
 
-    dominant       = "positive" if votes["positive"] >= votes["negative"] else "negative"
-    direction_lbl  = "increase" if dominant == "positive" else "decrease"
-    change_type    = attr.get("change_type", "change")
+    dominant      = "positive" if votes["positive"] >= votes["negative"] else "negative"
+    direction_lbl = "increase" if dominant == "positive" else "decrease"
+    change_type   = attr.get("change_type", "change")
 
     note = ""
     if attr.get("had_promotion"):
@@ -678,6 +681,35 @@ def _build_consensus(its: Dict, ci: Dict, dml: Dict, attr: Dict) -> str:
 
     if n_sig == 0:
         return f"No significant causal effect detected for {change_type}{note}."
+
+    # Cross-check causal model direction against observed window direction.
+    # Causal models estimate effect vs counterfactual trend; window attribution
+    # compares pre-mean vs post-mean.  These legitimately differ when the
+    # pre-period has a strong trend (model extrapolates the trend forward and
+    # calls the actual outcome an "increase" relative to the trend, while
+    # the simple pre/post average shows a drop).  Flag the conflict explicitly
+    # rather than reporting contradictory "Strong evidence" labels.
+    observed_dir  = attr.get("direction", "neutral")   # "improved" | "worsened" | "neutral"
+    delta_orders  = attr.get("delta_orders", 0) or 0
+    # metric_vec is always orders: positive model effect ↔ improved
+    model_improved = dominant == "positive"
+    obs_improved   = observed_dir == "improved"
+    obs_worsened   = observed_dir == "worsened"
+    conflict = (
+        n_sig > 0 and observed_dir != "neutral" and
+        ((model_improved and obs_worsened) or (not model_improved and obs_improved))
+    )
+
+    if conflict:
+        return (
+            f"Conflicting model consensus ({n_sig}/{total} models significant): "
+            f"causal models estimate {direction_lbl} vs counterfactual trend, "
+            f"but observed window shows {observed_dir} "
+            f"(delta_orders={delta_orders:+.2f}). "
+            f"Pre-period trend likely extrapolated downward — "
+            f"treat causal direction as unreliable; use window delta for priority{note}."
+        )
+
     if n_sig == n_ran == total:
         return (
             f"Strong evidence ({n_sig}/{total} models agree): "
