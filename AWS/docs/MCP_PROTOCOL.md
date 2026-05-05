@@ -202,6 +202,30 @@ This allows the Agent to simply say "calculate profit" without re-stating the AS
 *   **`tiktok_fetch_data` (L1)**: Scrapes raw TikTok data (tag metadata, trending videos, and comments) for a product. Data is stored in the internal `DataCache`.
 *   **`tiktok_calculate_virality` (L2)**: Processes cached TikTok data to compute the Promotional Strength Index (PSI), organic leverage, and purchase intent analysis.
 
+### ERP Integration (L1.5 — Strategy Pattern)
+
+Tools in `src/mcp/servers/erp/` provide real-time inventory and order data from external ERP systems. All three tools accept an optional `provider` argument (default: `"lingxing"`) to select the active ERP backend.
+
+*   **`erp_inventory`**: Query real-time inventory for a SKU from the configured ERP system.
+    *   **Arguments**: `sku` (required), `provider` (optional, default `lingxing`)
+    *   **Returns**: `{sku, available_qty, total_qty, pending_orders, warehouse_location, last_updated}`
+
+*   **`erp_purchase_orders`**: Query inbound purchase orders (replenishment shipments) from the ERP.
+    *   **Arguments**: `sku` (optional filter), `status` (optional filter), `provider` (optional)
+    *   **Returns**: List of orders with `{status, qty, eta}`
+
+*   **`erp_sales_orders`**: Query recent sales orders for a SKU from the ERP.
+    *   **Arguments**: `sku` (optional filter), `days` (lookback window, default 30), `provider` (optional)
+    *   **Returns**: List of orders with `{qty, date}`
+
+**Adding a new ERP provider** (zero changes to existing code):
+1. Subclass `ERPClient` (ABC) in a new subpackage, e.g. `src/mcp/servers/erp/eccang/`.
+2. Call `register_provider("eccang", EccangClient)` in the subpackage `__init__.py`.
+3. Import the subpackage in `src/mcp/servers/erp/__init__.py`.
+4. Pass `provider="eccang"` in any `erp_*` tool call.
+
+Currently registered providers: `lingxing` (领星ERP).
+
 ### Compliance核查 (L2)
 *   **`check_amazon_restriction`**: Keyword-based lookup in local Amazon restricted products database.
 *   **`check_epa`**: Checks if product keywords trigger EPA FIFRA pesticide device regulations.

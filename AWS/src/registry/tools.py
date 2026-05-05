@@ -89,7 +89,7 @@ tool_registry = ToolRegistry()
 from src.mcp.servers.amazon import tools as amazon
 from src.mcp.servers.output import tools as feishu
 from src.mcp.servers.market import tools as market
-from src.mcp.servers.lingxing import tools as lingxing
+from src.mcp.servers.erp import tools as erp
 from src.mcp.servers.finance import tools as finance
 from src.mcp.servers.compliance import tools as compliance
 from src.mcp.servers.social import tools as social

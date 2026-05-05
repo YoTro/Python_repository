@@ -37,6 +37,8 @@ Config keys (with defaults):
                                          covariate_series extends to match this window for ITS alignment
   enable_causal_analysis  bool  True     run ITS / CausalImpact / DML on change events
   causal_metric           str   "orders" metric to model: orders | acos | clicks | spend
+  stock_gate_days         int   21       min effective stock days before spend-up actions are P0/P1
+  inbound_lead_days       int   30       assumed transit days for inbound_shipped (30=sea, 10=domestic US)
 """
 
 import asyncio
@@ -45,6 +47,8 @@ import hashlib
 import io
 import logging
 import math
+import os
+import re
 from datetime import datetime, timedelta, date as _date_cls
 from zoneinfo import ZoneInfo
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -61,7 +65,10 @@ from src.workflows.engine import Workflow, WorkflowContext
 from src.workflows.steps.enrich import EnrichStep
 from src.workflows.steps.process import ProcessStep
 from src.workflows.steps.base import ComputeTarget
-from src.intelligence.processors.causal_analysis import ATTR_PRE_START, ATTR_POST_END
+from src.intelligence.processors.causal_analysis import (
+    ATTR_PRE_START, ATTR_POST_END,
+    YOY_OFFSET_DAYS, TRAILING_START,
+)
 from src.core.data_cache import data_cache as _data_cache
 
 logger = logging.getLogger(__name__)
@@ -75,6 +82,8 @@ _KEY_DAILY_PERF       = "ad_diag:daily_performance"
 _KEY_CHANGE_HISTORY   = "ad_diag:change_history"
 _KEY_PLACEMENT        = "ad_diag:placement"
 _KEY_COVARIATES       = "ad_diag:covariates"
+_KEY_YOY_PERF         = "ad_diag:yoy_perf"        # ERP YoY post-window (364d back)
+_KEY_TRAILING_EXT     = "ad_diag:trailing_ext"     # ERP trailing 3M extension
 
 # ── L2 cache helpers (DataCache-backed, multi-tenant safe) ──────────────────
 # Key format: {tenant_id}:{store_id}:{part...}
@@ -86,9 +95,10 @@ _KEY_COVARIATES       = "ad_diag:covariates"
 # L1 (ctx.cache) is always checked first — L2 is only hit on job start / resume.
 
 _L2_DOMAIN = "ad_diag"
-_TTL_STATIC = 3600   # campaigns, keywords — account config, stable within a session
+_TTL_STATIC = 3600    # campaigns, keywords — account config, stable within a session
 _TTL_PERF   = 14400   # performance reports — fetched once per day range
-_TTL_CHANGE = 1800   # change history — more volatile, shorter TTL
+_TTL_CHANGE = 1800    # change history — more volatile, shorter TTL
+_TTL_YOY    = 86400   # YoY / trailing-ext ERP data — historical, rarely changes
 
 
 def _l2_key(ctx: WorkflowContext, *parts) -> str:
@@ -361,8 +371,11 @@ async def _enrich_inventory(item: Dict, ctx: WorkflowContext) -> Dict:
         matched = [r for r in records if r.get("asin") == asin] if not sku else records
         if not matched:
             return {"inventory_records": [], "total_available": 0}
-        total_available = sum(r.get("available_quantity", 0) for r in matched)
-        total_inbound   = sum(r.get("inbound_quantity", 0)   for r in matched)
+        total_available    = sum(r.get("available_quantity", 0)  for r in matched)
+        inbound_receiving  = sum(r.get("inbound_receiving",  0)  for r in matched)
+        inbound_shipped    = sum(r.get("inbound_shipped",    0)  for r in matched)
+        inbound_working    = sum(r.get("inbound_working",    0)  for r in matched)
+        total_inbound      = inbound_receiving + inbound_shipped  # confirmed in-transit only
         # Estimate can-sell days using item daily sales if provided
         daily_sales = item.get("daily_sales") or 0
         can_sell_days = (
@@ -371,6 +384,9 @@ async def _enrich_inventory(item: Dict, ctx: WorkflowContext) -> Dict:
         return {
             "inventory_records":  matched,
             "total_available":    total_available,
+            "inbound_receiving":  inbound_receiving,
+            "inbound_shipped":    inbound_shipped,
+            "inbound_working":    inbound_working,
             "total_inbound":      total_inbound,
             "can_sell_days":      can_sell_days,
             "inventory_risk":     (
@@ -619,9 +635,9 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
             result["daily_sales_source"] = "ad_orders_only"
             result["can_sell_days"]      = can_sell_days
             result["can_sell_days_note"] = (
-                "lower_bound — derived from ad-attributed orders only; "
-                "true daily sales (including organic) will be higher, "
-                "so actual can_sell_days is likely LARGER than shown"
+                "upper_bound — derived from ad-attributed orders only (organic excluded); "
+                "true daily unit consumption (ad + organic) is higher, "
+                "so actual stockout will occur SOONER than can_sell_days suggests"
             )
             result["inventory_risk"] = can_sell_days < ctx.config.get("inventory_risk_days", 30)
             logger.info(
@@ -904,6 +920,27 @@ def _build_kw_to_campaign_map(raw_kw_perf: List[Dict], campaign_ids: set) -> Dic
     return {key: max(cc, key=cc.get) for key, cc in kw_clicks_by_camp.items()}
 
 
+def _p90_headroom(daily_perf: List[Dict], fallback: float) -> float:
+    """
+    Derive a data-driven click-ceiling multiplier from ASIN-level daily_perf.
+
+    p90_ratio = p90(daily_clicks) / mean(daily_clicks) — measures how far
+    the 90th-percentile day sits above the average.  Multiplied by 1.5 to give
+    the LP room to model aggressive-bid scenarios beyond the historical peak.
+
+    Capped at fallback (default 3.0) to prevent outlier-driven over-allocation.
+    Requires ≥7 days of data; falls back to `fallback` otherwise.
+    """
+    clicks = [float(d.get("clicks") or 0) for d in daily_perf if d.get("clicks")]
+    if len(clicks) < 7:
+        return fallback
+    avg = sum(clicks) / len(clicks)
+    if avg <= 0:
+        return fallback
+    p90 = sorted(clicks)[int(len(clicks) * 0.9)]
+    return min(round(p90 / avg * 1.5, 2), fallback)
+
+
 def _build_lp_input(
     kw_perf: List[Dict],
     kw_to_campaign: Dict[tuple, str],
@@ -911,9 +948,10 @@ def _build_lp_input(
     brand_kws: set,
     headroom: float,
     placement_multiplier: float,
-) -> Tuple[List[Dict], float]:
+    daily_perf: Optional[List[Dict]] = None,
+) -> List[Dict]:
+    click_headroom = _p90_headroom(daily_perf or [], headroom)
     lp_input: List[Dict] = []
-    actual_daily_orders  = 0.0
     for kw in kw_perf:
         if not kw.get("avg_cpc") or not kw.get("cvr"):
             continue
@@ -922,7 +960,7 @@ def _build_lp_input(
         cid        = kw_to_campaign.get((kw_text, match_type), "")
         strategy   = camp_meta.get(cid, {}).get("bidding_strategy", "")
         is_brand   = kw_text.lower() in {b.lower() for b in brand_kws}
-        max_daily  = max(round(kw["daily_clicks"] * headroom, 1), 1.0)
+        max_daily  = max(round(kw["daily_clicks"] * click_headroom, 1), 1.0)
         min_daily  = round(kw["daily_clicks"] * 0.3, 1) if is_brand else 0.0
         lp_input.append({
             "name":                f"{kw_text}|{match_type}",
@@ -935,8 +973,7 @@ def _build_lp_input(
             "bidding_strategy":    strategy,
             "placement_multiplier": placement_multiplier,
         })
-        actual_daily_orders += kw["daily_clicks"] * kw["cvr"]
-    return lp_input, actual_daily_orders
+    return lp_input
 
 
 def _classify_lp_keywords(
@@ -974,12 +1011,18 @@ def _build_lp_kw_id_map(ctx: WorkflowContext, campaign_ids: set) -> Dict[tuple, 
     return kw_id_map
 
 
+_CAMP_SPEND_UP = {"increase_budget", "enable_and_increase_budget", "enable_and_review_bids"}
+
+
 def _build_campaign_actions(
     camp_meta: Dict[str, Dict],
     camp_spend: Dict[str, float],
     performance_records: List[Dict],
     days: int,
     target_acos: Optional[float],
+    inv_gate: Optional[Dict] = None,
+    order_gap: float = 0.0,
+    spend_ceiling_bound: bool = False,
 ) -> List[Dict]:
     camp_actual_spend: Dict[str, float] = {}
     for r in performance_records:
@@ -1017,12 +1060,35 @@ def _build_campaign_actions(
             if is_paused:
                 action, priority = "archive_candidate", "P2"
                 rationale = f"Campaign is PAUSED and LP allocates only ${lp_spend:.0f}/day — consider archiving"
+            elif camp_acos is not None and camp_acos <= target_acos_pct:
+                # LP has no click data for this campaign's keywords (filtered out),
+                # but historical ACOS is efficient — do not pause, flag for bid review.
+                action, priority = "review_bids", "P1"
+                rationale = (
+                    f"LP allocates only ${lp_spend:.0f}/day (keywords lack click data for LP model), "
+                    f"but campaign ACOS {camp_acos}% ≤ target {target_acos_pct:.0f}% — "
+                    f"review bids to improve data coverage before pausing"
+                )
             else:
                 action, priority = "pause_candidate", "P1"
                 rationale = f"LP allocates only ${lp_spend:.0f}/day (< 10% of ${camp_budget:.0f} budget) — keywords inefficient"
         elif lp_saturated and (camp_acos is None or camp_acos <= target_acos_pct):
             suggested = round(min(lp_spend * 1.15, camp_budget * 1.5), 0)
-            if is_paused:
+            # When order_gap < 0 the LP optimum is worse than status quo —
+            # budget is not the binding constraint; scaling spend won't improve orders.
+            # spend_ceiling_bound=True means click ceilings are the real cap, not budget.
+            # In both cases, downgrade to review_bids instead of increase_budget.
+            if order_gap < 0 or spend_ceiling_bound:
+                action, priority = "review_bids", "P1"
+                reason = "click ceilings are the binding constraint" if spend_ceiling_bound else f"order_gap={order_gap:+.2f} (LP cannot outperform current allocation)"
+                rationale = (
+                    f"LP saturates budget cap (${lp_spend:.0f}/day vs ${camp_budget:.0f}), "
+                    f"but {reason} — raise bids or expand keywords before increasing budget"
+                )
+                if is_paused:
+                    action = "enable_and_review_bids"
+                    rationale = f"Campaign is PAUSED; {rationale}"
+            elif is_paused:
                 action, priority = "enable_and_increase_budget", "P0"
                 rationale = (
                     f"Campaign is PAUSED; LP saturates budget (needs ${lp_spend:.0f}/day vs ${camp_budget:.0f} cap); "
@@ -1044,6 +1110,27 @@ def _build_campaign_actions(
         else:
             action, priority = "maintain", "P2"
             rationale = f"Budget util {budget_util:.0%}, ACOS {camp_acos}% — within healthy range"
+
+        # Inventory gate: downgrade spend-increasing actions when effective stock < threshold
+        prerequisite: Optional[Dict] = None
+        if inv_gate and action in _CAMP_SPEND_UP:
+            eff = inv_gate["effective_stock_days"]
+            gate = inv_gate["stock_gate_days"]
+            if eff is not None and eff < gate:
+                priority = "P2"
+                prerequisite = {
+                    "condition":            f"effective_stock_days >= {gate}",
+                    "effective_stock_days": eff,
+                    "can_sell_days":        inv_gate["can_sell_days"],
+                    "inbound_receiving":    inv_gate["inbound_receiving"],
+                    "inbound_shipped":      inv_gate["inbound_shipped"],
+                    "inbound_lead_days":    inv_gate["inbound_lead_days"],
+                    "note": (
+                        f"Current stock ~{inv_gate['can_sell_days']}d + confirmed inbound = {eff}d effective. "
+                        f"Increasing spend now risks stockout before restock arrives. "
+                        f"Activate after stock reaches {gate}+ days."
+                    ),
+                }
 
         _order_delta = None
         _spend_delta = None
@@ -1077,6 +1164,8 @@ def _build_campaign_actions(
         }
         if suggested is not None:
             entry["suggested_budget"] = suggested
+        if prerequisite is not None:
+            entry["prerequisite"] = prerequisite
         actions.append(entry)
 
     actions.sort(key=lambda x: ("P0", "P1", "P2").index(x["priority"]))
@@ -1090,6 +1179,8 @@ def _build_keyword_actions(
     brand_kws: set,
     headroom: float,
     avg_price: Optional[float],
+    inv_gate: Optional[Dict] = None,
+    paused_campaign_ids: Optional[set] = None,
 ) -> List[Dict]:
     alloc_map: Dict[str, Dict] = {a["keyword"]: a for a in alloc}
     actions: List[Dict] = []
@@ -1113,7 +1204,8 @@ def _build_keyword_actions(
         )
 
         if a is None:
-            if not is_brand:
+            camp_is_paused = paused_campaign_ids and str(cid) in paused_campaign_ids
+            if not is_brand and not camp_is_paused:
                 cur_clicks = lp_kw["max_daily_clicks"] / headroom
                 actions.append({
                     "action":               "pause_keyword",
@@ -1140,9 +1232,29 @@ def _build_keyword_actions(
 
             if at_ceiling:
                 order_per_10pct_bid = round(opt_clicks * 0.10 * raw_cvr, 2)
-                actions.append({
+                kw_priority = "P1"
+                kw_prerequisite: Optional[Dict] = None
+                if inv_gate:
+                    eff  = inv_gate["effective_stock_days"]
+                    gate = inv_gate["stock_gate_days"]
+                    if eff is not None and eff < gate:
+                        kw_priority = "P2"
+                        kw_prerequisite = {
+                            "condition":            f"effective_stock_days >= {gate}",
+                            "effective_stock_days": eff,
+                            "can_sell_days":        inv_gate["can_sell_days"],
+                            "inbound_receiving":    inv_gate["inbound_receiving"],
+                            "inbound_shipped":      inv_gate["inbound_shipped"],
+                            "inbound_lead_days":    inv_gate["inbound_lead_days"],
+                            "note": (
+                                f"Current stock ~{inv_gate['can_sell_days']}d + confirmed inbound = {eff}d effective. "
+                                f"Raising bids accelerates spend and risks stockout. "
+                                f"Activate after stock reaches {gate}+ days."
+                            ),
+                        }
+                kw_entry: Dict = {
                     "action":                               "increase_bid",
-                    "priority":                             "P1",
+                    "priority":                             kw_priority,
                     "keyword_text":                         kw_text,
                     "match_type":                           match_type,
                     "campaign_id":                          cid,
@@ -1155,7 +1267,10 @@ def _build_keyword_actions(
                         f"LP maxed click ceiling ({opt_clicks:.0f} clicks/day, ACOS {kw_acos_pct}%); "
                         f"+10% bid ≈ +{order_per_10pct_bid} orders/day (linear impression elasticity assumed)"
                     ),
-                })
+                }
+                if kw_prerequisite:
+                    kw_entry["prerequisite"] = kw_prerequisite
+                actions.append(kw_entry)
             elif cur_clicks > 0 and opt_clicks < cur_clicks * 0.4:
                 delta_clicks = opt_clicks - cur_clicks
                 actions.append({
@@ -1191,8 +1306,11 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
       C1  Global budget:       Σ clicks_i × eff_cpc_i ≤ total_budget
       C2  Per-campaign caps:   Σ_{i∈c} clicks_i × eff_cpc_i ≤ budget_c  ∀c
       C3  Target ACOS:         Σ clicks_i × (eff_cpc_i − tacos × pess_cvr_i × price) ≤ 0
-      C4  Inventory cap:       Σ clicks_i × pess_cvr_i ≤ max_daily_orders
-      C5  Click bounds:        min_daily_clicks_i ≤ clicks_i ≤ max_daily_clicks_i
+      C4  Click bounds:        min_daily_clicks_i ≤ clicks_i ≤ max_daily_clicks_i
+
+      Note: inventory is NOT a LP constraint — replenishment timing is too unstable
+      to model as a hard bound. Instead, lp_summary.recommended_stock_units shows
+      how many units are needed to safely execute the LP plan.
 
       eff_cpc_i  = avg_cpc_i × bidding_strategy_multiplier × placement_multiplier
       pess_cvr_i = cvr_i × √(clicks_i / (clicks_i + 30))
@@ -1235,30 +1353,31 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         placement_multiplier = _compute_placement_multiplier(placement_perf, placement_mods)
         kw_to_campaign       = _build_kw_to_campaign_map(raw_kw_perf, campaign_ids)
 
-        total_orders     = item.get("total_orders") or 0
-        total_sales      = item.get("total_sales")  or 0
-        avg_price        = round(total_sales / total_orders, 2) if total_orders > 0 else None
-        can_sell_days    = item.get("can_sell_days")
-        total_available  = item.get("total_available") or 0
-        max_daily_orders = (
-            round(total_available / can_sell_days, 2)
-            if can_sell_days and can_sell_days > 0 and total_available > 0 else None
-        )
+        total_orders    = item.get("total_orders") or 0
+        total_sales     = item.get("total_sales")  or 0
+        avg_price       = round(total_sales / total_orders, 2) if total_orders > 0 else None
+        can_sell_days   = item.get("can_sell_days")
+        total_available = item.get("total_available") or 0
 
-        lp_input, actual_daily_orders = _build_lp_input(
-            kw_perf, kw_to_campaign, camp_meta, brand_kws, headroom, placement_multiplier
+        asin       = (item.get("asin") or "").upper()
+        asin_daily = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
+        lp_input = _build_lp_input(
+            kw_perf, kw_to_campaign, camp_meta, brand_kws, headroom, placement_multiplier,
+            daily_perf=asin_daily,
         )
+        actual_daily_ad_orders = round(total_orders / days, 2)
         if not lp_input:
             item["lp_summary"] = {"skipped": True, "reason": "all keywords filtered (insufficient clicks)"}
             continue
 
+        # Inventory is NOT a LP constraint — replenishment timing is unstable.
+        # Instead, we compute a recommended stock level after optimisation.
         result = optimizer.optimize(
             keywords         = lp_input,
             total_budget     = daily_budget,
             campaign_budgets = campaign_budgets or None,
             target_acos      = target_acos,
             avg_price        = avg_price,
-            max_daily_orders = max_daily_orders,
         )
         if result.get("status") != "OPTIMAL":
             item["lp_summary"] = {"skipped": True, "reason": result.get("message")}
@@ -1279,27 +1398,85 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         zero_kws, maxed_kws = _classify_lp_keywords(kw_perf, alloc, kw_map)
         kw_id_map           = _build_lp_kw_id_map(ctx, campaign_ids)
 
-        campaign_actions = _build_campaign_actions(
-            camp_meta, camp_spend, item.get("performance_records") or [], days, target_acos
+        # ── Inventory gate ────────────────────────────────────────────────
+        stock_gate_days   = ctx.config.get("stock_gate_days", 21)
+        inbound_lead_days = ctx.config.get("inbound_lead_days", 30)
+        daily_sales_val   = item.get("daily_sales") or 0
+        inbound_receiving = item.get("inbound_receiving") or 0
+        inbound_shipped   = item.get("inbound_shipped") or 0
+        effective_stock_days: Optional[int] = None
+        if can_sell_days and daily_sales_val > 0:
+            # inbound_shipped only "catches" the stockout if it arrives before current stock runs out
+            catchable = inbound_shipped if inbound_lead_days < can_sell_days else 0
+            eff_units = total_available + inbound_receiving + catchable
+            effective_stock_days = round(eff_units / daily_sales_val)
+        inv_gate: Optional[Dict] = (
+            {
+                "stock_gate_days":    stock_gate_days,
+                "effective_stock_days": effective_stock_days,
+                "can_sell_days":      can_sell_days,
+                "inbound_receiving":  inbound_receiving,
+                "inbound_shipped":    inbound_shipped,
+                "inbound_lead_days":  inbound_lead_days,
+            }
+            if effective_stock_days is not None else None
         )
+
+        order_gap = lp_raw_orders - actual_daily_ad_orders
+        campaign_actions = _build_campaign_actions(
+            camp_meta, camp_spend, item.get("performance_records") or [], days, target_acos,
+            inv_gate=inv_gate,
+            order_gap=order_gap,
+            spend_ceiling_bound=spend_ceiling_bound,
+        )
+        paused_cids = {str(cid) for cid, meta in camp_meta.items()
+                       if (meta.get("state") or "").upper() == "PAUSED"}
         keyword_actions = _build_keyword_actions(
-            lp_input, alloc, kw_id_map, brand_kws, headroom, avg_price
+            lp_input, alloc, kw_id_map, brand_kws, headroom, avg_price,
+            inv_gate=inv_gate,
+            paused_campaign_ids=paused_cids,
         )
 
         placement_data_unknown = set(placement_perf.keys()) <= {"UNKNOWN", ""}
+
+        # ── Stock recommendation (replaces LP inventory cap) ──────────────
+        # Use total daily consumption (ad + organic) when available via order_metrics;
+        # fall back to ad-orders-only (underestimates consumption → optimistic).
+        daily_consumption     = item.get("daily_sales") or actual_daily_ad_orders
+        daily_consumption_src = item.get("daily_sales_source") or "ad_orders_only"
+        # LP adds lp_raw_orders ad orders/day on top of organic baseline
+        organic_daily  = max(0.0, daily_consumption - actual_daily_ad_orders)
+        lp_total_daily = organic_daily + lp_raw_orders
+        recommended_stock = round(lp_total_daily * stock_gate_days)
+        # Inbound inventory offsets the procurement need:
+        #   receiving = at FC, available 1-2 days (certain)
+        #   shipped   = in transit from seller (10-30d ETA depending on route)
+        #   working   = NOT counted — plan only, not yet handed to carrier
+        inbound_recv    = item.get("inbound_receiving") or 0
+        inbound_ship    = item.get("inbound_shipped") or 0
+        inbound_work    = item.get("inbound_working") or 0
+        confirmed_inbound = inbound_recv + inbound_ship
+        stock_shortfall = max(0, recommended_stock - total_available - confirmed_inbound)
+
         item["lp_summary"] = {
             "daily_budget":                  daily_budget,
             "lp_optimal_spend":              lp_spend_total,
             "lp_optimal_orders_pessimistic": summary["total_expected_orders"],
             "lp_optimal_orders_raw":         lp_raw_orders,
-            "actual_daily_orders":           round(actual_daily_orders, 2),
-            "order_gap":                     round(lp_raw_orders - actual_daily_orders, 2),
+            "actual_daily_ad_orders":        round(actual_daily_ad_orders, 2),
+            "order_gap":                     round(order_gap, 2),
             "spend_ceiling_bound":           spend_ceiling_bound,
+            "click_headroom":               _p90_headroom(asin_daily, headroom),
             "avg_effective_cpc":             summary["avg_effective_cpc"],
             "placement_multiplier":          round(placement_multiplier, 3),
             "placement_data_unknown":        placement_data_unknown,
             "target_acos_applied":           target_acos,
-            "inventory_cap_applied":         max_daily_orders,
+            # Stock recommendation: units needed to safely execute LP plan for stock_gate_days
+            "recommended_stock_units":       recommended_stock,
+            "stock_shortfall":               stock_shortfall,
+            "stock_gate_days":               stock_gate_days,
+            "daily_consumption":             round(lp_total_daily, 2),
+            "daily_consumption_source":      daily_consumption_src,
             "keywords_in_lp":               len(lp_input),
             "keywords_allocated":           len(alloc),
             "keywords_zeroed":              len(zero_kws),
@@ -1808,23 +1985,153 @@ async def _enrich_keyword_signals(item: Dict, ctx: WorkflowContext) -> Dict:
 
 
 # ---------------------------------------------------------------------------
+# ── ERP backtest baseline helpers ────────────────────────────────────────────
+
+def _yoy_date_range(ctx: WorkflowContext) -> Tuple[str, str]:
+    """
+    Date range covering all YoY post-windows for change events in the analysis
+    window.  Shifted exactly YOY_OFFSET_DAYS (364 days = 52 weeks) back so the
+    same day-of-week is preserved.
+    """
+    days  = ctx.config.get("days", 30)
+    today = _date_cls.today()
+    # Post-windows of events from [today-days, today-0] land in YoY space at:
+    #   [today - days - YOY_OFFSET_DAYS + ATTR_POST_START,
+    #    today - 1    - YOY_OFFSET_DAYS + ATTR_POST_END  ]
+    # Add a 5-day buffer on each side for safety.
+    end   = today - timedelta(days=YOY_OFFSET_DAYS - abs(ATTR_POST_END) - 1 - 5)
+    start = today - timedelta(days=YOY_OFFSET_DAYS + days + 5)
+    return str(start), str(end)
+
+
+def _trailing_ext_date_range(ctx: WorkflowContext) -> Tuple[str, str]:
+    """
+    Date range for the trailing ~3M extension window that fills the gap between
+    daily_perf (covers ~49 days) and the full [anchor-97, anchor-11] baseline.
+
+    Overlaps daily_perf by a few days on the right — asin_date_index (Ads API)
+    takes priority for overlapping dates inside _normalized_delta_orders.
+    """
+    days     = ctx.config.get("days", 30)
+    today    = _date_cls.today()
+    # daily_perf starts at approximately today - (days + |ATTR_PRE_START| + |ATTR_POST_END| + 2)
+    dp_start_offset = days + abs(ATTR_PRE_START) + abs(ATTR_POST_END) + 2
+    ext_end   = today - timedelta(days=dp_start_offset - 3)   # 3-day overlap
+    ext_start = today - timedelta(days=days + abs(TRAILING_START) + 10)
+    return str(ext_start), str(ext_end)
+
+
+def _normalise_erp_daily(resp: Dict) -> Dict[str, Dict]:
+    """Convert ERP ad report response → {date_str: {orders, spend, clicks}}."""
+    result: Dict[str, Dict] = {}
+    for row in resp.get("data", []):
+        d = row.get("date_day")
+        if not d:
+            continue   # aggregate row (date_day=null)
+        if d not in result:
+            result[d] = {"orders": 0.0, "spend": 0.0, "clicks": 0.0}
+        result[d]["orders"] += float(row.get("orders") or 0)
+        result[d]["spend"]  += float(row.get("spends")  or 0)   # ERP field name
+        result[d]["clicks"] += float(row.get("clicks")  or 0)
+    return result
+
+
+def _fetch_erp_baseline_sync(
+    ctx: WorkflowContext,
+    asin: str,
+    l1_key: str,
+    l2_parts: Tuple,
+    date_range: Tuple[str, str],
+    label: str,
+) -> Dict[str, Dict]:
+    """
+    Generic sync fetcher for ERP backtest baselines (YoY / trailing-ext).
+    Checks L1 ctx.cache → L2 DataCache → live ERP call.  Non-fatal on error.
+    """
+    if l1_key in ctx.cache:
+        return ctx.cache[l1_key]
+
+    hit = _l2_get(ctx, _TTL_YOY, *l2_parts)
+    if hit is not None:
+        ctx.cache[l1_key] = hit
+        return hit
+
+    store_id   = ctx.config.get("store_id", "US")
+    profile_id = os.getenv(f"AMAZON_ADS_PROFILE_ID_{store_id}", "")
+    if not profile_id:
+        logger.warning(f"[{label}] No AMAZON_ADS_PROFILE_ID_{store_id} — skipping ERP fetch")
+        return {}
+
+    start_date, end_date = date_range
+    try:
+        from src.mcp.servers.erp.lingxing.client import LingxingClient
+        client = LingxingClient()
+        resp   = client.get_sp_campaign_ad_report(
+            profile_id=profile_id,
+            report_date=f"{start_date} - {end_date}",
+            asin=[asin],
+            is_daily=1,
+            length=500,
+            fetch_all=True,
+        )
+        result = _normalise_erp_daily(resp)
+        logger.info(f"[{label}] {asin}: {len(result)} days ({start_date} → {end_date})")
+    except Exception as e:
+        logger.warning(f"[{label}] ERP fetch failed for {asin}: {e}")
+        result = {}
+
+    ctx.cache[l1_key] = result
+    _l2_set(ctx, result, *l2_parts)
+    return result
+
+
+def _fetch_yoy_sync(ctx: WorkflowContext, asin: str) -> Dict[str, Dict]:
+    date_range = _yoy_date_range(ctx)
+    return _fetch_erp_baseline_sync(
+        ctx, asin,
+        l1_key   = f"{_KEY_YOY_PERF}:{asin}",
+        l2_parts = ("yoy_daily_perf", asin, date_range[0], date_range[1]),
+        date_range = date_range,
+        label    = "yoy_perf",
+    )
+
+
+def _fetch_trailing_ext_sync(ctx: WorkflowContext, asin: str) -> Dict[str, Dict]:
+    date_range = _trailing_ext_date_range(ctx)
+    return _fetch_erp_baseline_sync(
+        ctx, asin,
+        l1_key   = f"{_KEY_TRAILING_EXT}:{asin}",
+        l2_parts = ("trailing_ext_perf", asin, date_range[0], date_range[1]),
+        date_range = date_range,
+        label    = "trailing_ext",
+    )
+
+
 # Causal analysis wrapper (delegates to intelligence/processors/causal_analysis)
 # ---------------------------------------------------------------------------
 
 def _run_causal_analysis(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     """
     ProcessStep wrapper: runs the full attribution + causal pipeline
-    (window comparison, ITS, CausalImpact, DML) for each item.
+    (window attribution, ITS, CausalImpact, DML) for each item.
 
-    Passes daily_perf from cache so the processor can build the campaign-level
-    daily performance index without depending on workflow internals.
+    Backtest baseline priority:
+      P1 YoY (364d back, ERP)  → P2 trailing 3M (ERP extension) → P3 pre-window fallback
+    Both ERP fetches are sync (curl_cffi), L1+L2 cached, non-fatal on error.
     """
     from src.intelligence.processors.causal_analysis import run_causal_analysis
     for item in items:
         try:
-            asin       = item.get("asin", "").upper()
-            daily_perf = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
-            result = run_causal_analysis(item, ctx.config, daily_perf=daily_perf)
+            asin               = item.get("asin", "").upper()
+            daily_perf         = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
+            yoy_date_index     = _fetch_yoy_sync(ctx, asin)
+            trailing_ext_index = _fetch_trailing_ext_sync(ctx, asin)
+            result = run_causal_analysis(
+                item, ctx.config,
+                daily_perf         = daily_perf,
+                yoy_date_index     = yoy_date_index     or None,
+                trailing_ext_index = trailing_ext_index or None,
+            )
             item.update(result)
         except Exception as e:
             logger.warning(f"[causal_analysis] Failed for {item.get('asin', '?')}: {e}")
@@ -1851,10 +2158,12 @@ _C = _CHART_PALETTE  # shorthand
 
 def _fig_to_png(fig: plt.Figure) -> bytes:
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight",
-                facecolor=fig.get_facecolor())
-    plt.close(fig)
-    return buf.getvalue()
+    try:
+        fig.savefig(buf, format="png", dpi=130, bbox_inches="tight",
+                    facecolor=fig.get_facecolor())
+        return buf.getvalue()
+    finally:
+        plt.close(fig)
 
 
 def _chart_lp_waterfall(item: Dict) -> Optional[bytes]:
@@ -2239,40 +2548,56 @@ def _chart_comp_price_box(item: Dict) -> Optional[bytes]:
 def _generate_charts(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     """Generate diagnostic PNG charts per ASIN, upload to storage, store URLs in item['chart_urls']."""
     import datetime as _dt
-    date_str = _dt.date.today().isoformat()
+    from concurrent.futures import ThreadPoolExecutor, Future
+    from typing import Tuple as _Tuple
+
+    date_str    = _dt.date.today().isoformat()
+    max_workers = ctx.config.get("chart_workers", 8)
+
+    def _run_one(asin: str, name: str, fn, upload_key: str) -> Optional[str]:
+        try:
+            png = fn()
+            if png is None:
+                logger.debug(f"[charts] {asin}/{name}: skipped (no data)")
+                return None
+            url = _chart_upload(png, upload_key)
+            if url:
+                logger.info(f"[charts] {asin}/{name} → {url}")
+            return url or None
+        except Exception as e:
+            logger.warning(f"[charts] {asin}/{name} failed: {e}", exc_info=True)
+            return None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        submitted: list[_Tuple[int, str, Future]] = []
+        for item in items:
+            asin       = (item.get("asin") or "unknown").upper()
+            daily_perf = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
+            generators = [
+                ("daily_trend",        lambda _i=item, _p=daily_perf: _chart_daily_trend(_i, _p)),
+                ("its_causal",         lambda _i=item, _p=daily_perf: _chart_its_causal(_i, _p)),
+                ("kw_quadrant",        lambda _i=item: _chart_kw_quadrant(_i)),
+                ("placement_bar",      lambda _i=item: _chart_placement_bar(_i)),
+                ("inventory_burndown", lambda _i=item: _chart_inventory_burndown(_i)),
+                ("comp_price_box",     lambda _i=item: _chart_comp_price_box(_i)),
+                ("lp_waterfall",       lambda _i=item: _chart_lp_waterfall(_i)),
+                ("rank_trend",         lambda _i=item: _chart_rank_trend(_i)),
+            ]
+            for name, fn in generators:
+                key = f"reports/ad_diagnosis/{asin}/{date_str}/{name}.png"
+                submitted.append((id(item), name, pool.submit(_run_one, asin, name, fn, key)))
+
+        urls_by_item: Dict[int, Dict[str, str]] = {id(i): {} for i in items}
+        for item_id, name, future in submitted:
+            url = future.result()
+            if url:
+                urls_by_item[item_id][name] = url
 
     for item in items:
-        asin       = (item.get("asin") or "unknown").upper()
-        daily_perf = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
-
-        # Use explicit closures to avoid the late-binding lambda trap
-        generators = [
-            ("daily_trend",        lambda _i=item, _p=daily_perf: _chart_daily_trend(_i, _p)),
-            ("its_causal",         lambda _i=item, _p=daily_perf: _chart_its_causal(_i, _p)),
-            ("kw_quadrant",        lambda _i=item: _chart_kw_quadrant(_i)),
-            ("placement_bar",      lambda _i=item: _chart_placement_bar(_i)),
-            ("inventory_burndown", lambda _i=item: _chart_inventory_burndown(_i)),
-            ("comp_price_box",     lambda _i=item: _chart_comp_price_box(_i)),
-            ("lp_waterfall",       lambda _i=item: _chart_lp_waterfall(_i)),
-            ("rank_trend",         lambda _i=item: _chart_rank_trend(_i)),
-        ]
-
-        chart_urls: Dict[str, str] = {}
-        for name, fn in generators:
-            try:
-                png = fn()
-                if png is None:
-                    logger.debug(f"[charts] {asin}/{name}: skipped (no data)")
-                    continue
-                url = _chart_upload(png, f"reports/ad_diagnosis/{asin}/{date_str}/{name}.png")
-                if url:
-                    chart_urls[name] = url
-                    logger.info(f"[charts] {asin}/{name} → {url}")
-            except Exception as e:
-                logger.warning(f"[charts] {asin}/{name} failed: {e}", exc_info=True)
-
-        item["chart_urls"] = chart_urls
-        logger.info(f"[charts] {asin}: {len(chart_urls)}/{len(generators)} charts uploaded")
+        urls = urls_by_item[id(item)]
+        item["chart_urls"] = urls
+        asin = (item.get("asin") or "unknown").upper()
+        logger.info(f"[charts] {asin}: {len(urls)}/8 charts uploaded")
 
     return items
 
@@ -2307,6 +2632,10 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "data_start_date":           data_start_date,
         "data_end_date":             data_end_date,
         "total_available":           item.get("total_available"),
+        "inbound_receiving":         item.get("inbound_receiving"),
+        "inbound_shipped":           item.get("inbound_shipped"),
+        "inbound_working":           item.get("inbound_working"),
+        "total_inbound":             item.get("total_inbound"),
         "can_sell_days":             item.get("can_sell_days"),
         "inventory_risk":            item.get("inventory_risk"),
         "campaign_count":            len(campaigns),
@@ -2351,7 +2680,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         #   "low"    1–69% — directional accuracy near-random; downgrade all labels
         #   "none"   0% or no backtest — completely unvalidated
         "causal_reliability": (
-            "high" if (item.get("backtest_hit_rate") or 0) >= 70
+            "high" if (item.get("backtest_hit_rate") or 0) >= 0.70
             else "low"  if (item.get("backtest_hit_rate") or 0) > 0
             else "none"
         ),
@@ -2374,16 +2703,19 @@ def _prepare_for_llm(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     return items
 
 
-_CHART_META: Dict[str, Dict] = {
-    "daily_trend":        {"label": "Daily Performance Trend",       "keywords": ["performance", "trend", "daily", "表现", "趋势", "overview", "概览", "summary", "摘要"]},
-    "its_causal":         {"label": "ITS Causal Analysis",           "keywords": ["causal", "attribution", "change", "归因", "变更", "impact", "causalimpact", "分析"]},
-    "kw_quadrant":        {"label": "Keyword ACOS × Orders",         "keywords": ["keyword", "关键词", "kw", "bid", "竞价"]},
-    "placement_bar":      {"label": "Placement Performance",         "keywords": ["placement", "位置", "广告位"]},
-    "inventory_burndown": {"label": "Inventory Burn-down",           "keywords": ["inventor", "库存", "stockout", "stock"]},
-    "comp_price_box":     {"label": "Competitor Price Distribution", "keywords": ["compet", "price", "竞品", "价格", "market", "竞争"]},
-    "lp_waterfall":       {"label": "LP Budget Allocation",          "keywords": ["budget", "allocation", "lp", "预算", "优化", "recommend", "建议", "action", "行动"]},
-    "rank_trend":         {"label": "Organic Rank Trend",            "keywords": ["rank", "organic", "自然", "排名", "flywheel", "飞轮"]},
+_CHART_META: Dict[str, str] = {
+    "daily_trend":        "Daily Performance Trend",
+    "its_causal":         "ITS Causal Analysis",
+    "kw_quadrant":        "Keyword ACOS × Orders",
+    "placement_bar":      "Placement Performance",
+    "inventory_burndown": "Inventory Burn-down",
+    "comp_price_box":     "Competitor Price Distribution",
+    "lp_waterfall":       "LP Budget Allocation",
+    "rank_trend":         "Organic Rank Trend",
 }
+
+# Matches [CHART:chart_name] anywhere in the text (LLM-inserted placeholder)
+_CHART_PLACEHOLDER_RE = re.compile(r'\[CHART:(\w+)\]')
 
 
 def _chart_interpretation(item: Dict, name: str) -> str:
@@ -2402,11 +2734,17 @@ def _chart_interpretation(item: Dict, name: str) -> str:
     if name == "its_causal":
         attrs = item.get("change_attributions") or []
         if attrs:
-            top   = attrs[0]
-            ls    = (top.get("its") or {}).get("level_shift")
-            ls_s  = f"{ls:+.2f}" if ls is not None else "N/A"
+            top = attrs[0]
+            its = top.get("its") or {}
+            ci  = top.get("causal_impact") or {}
+            if not its.get("skipped") and its.get("level_shift") is not None:
+                ls_s = f"ITS level shift {its['level_shift']:+.2f} orders/day"
+            elif not ci.get("skipped") and ci.get("point_effect") is not None:
+                ls_s = f"CausalImpact point effect {ci['point_effect']:+.2f} orders/day (ITS skipped)"
+            else:
+                ls_s = "causal models skipped (insufficient data)"
             return (f"Top event: {top.get('change_type','?')} ({top.get('changed_at','?')}) "
-                    f"→ ITS level shift {ls_s} orders/day. Shaded area = estimated causal effect.")
+                    f"→ {ls_s}. Shaded area = estimated causal effect.")
         return "No attributable change event in this window."
 
     if name == "kw_quadrant":
@@ -2429,11 +2767,31 @@ def _chart_interpretation(item: Dict, name: str) -> str:
         return "Compare actual ACOS (blue) vs configured bid adjustment (orange) per placement."
 
     if name == "inventory_burndown":
-        can_sell = item.get("can_sell_days") or 0
-        risk     = item.get("inventory_risk", False)
+        can_sell   = item.get("can_sell_days") or 0
+        risk       = item.get("inventory_risk", False)
+        inb_recv   = item.get("inbound_receiving") or 0
+        inb_ship   = item.get("inbound_shipped") or 0
+        inb_work   = item.get("inbound_working") or 0
+        inb_parts  = []
+        if inb_recv: inb_parts.append(f"{inb_recv} units receiving (1-2d)")
+        if inb_ship: inb_parts.append(f"{inb_ship} units shipped (10-30d ETA)")
+        if inb_work: inb_parts.append(f"{inb_work} units planned (not yet shipped)")
+        inb_note   = f" Inbound: {', '.join(inb_parts)}." if inb_parts else ""
+        lp  = item.get("lp_summary") or {}
+        rec = lp.get("recommended_stock_units")
+        gap = lp.get("stock_shortfall") or 0
+        rec_note = (
+            f" LP plan requires {rec} units ({lp.get('stock_gate_days',21)}d buffer); "
+            f"shortfall {gap} units — procure before activating gated actions."
+            if rec and gap > 0 else
+            f" LP plan requires {rec} units — current stock sufficient." if rec else ""
+        )
         if risk:
-            return f"⚠ Stockout in ~{can_sell:.0f} days — avoid budget increases to prevent stranded spend at stockout."
-        return f"Inventory covers ~{can_sell:.0f} days — sufficient runway for current scaling plans."
+            return (
+                f"⚠ Current stock ~{can_sell:.0f} days — budget/bid increases are gated until "
+                f"effective stock ≥ 21 days.{inb_note}{rec_note}"
+            )
+        return f"Inventory covers ~{can_sell:.0f} days — sufficient runway for current scaling plans.{inb_note}{rec_note}"
 
     if name == "comp_price_box":
         own_price  = item.get("price") or item.get("sale_price")
@@ -2453,8 +2811,9 @@ def _chart_interpretation(item: Dict, name: str) -> str:
             return (f"LP is ceiling-bound (spend ${lp.get('lp_optimal_spend',0):.0f} "
                     f"vs budget ${lp.get('daily_budget',0):.0f}) — "
                     f"expand keyword coverage to unlock remaining budget.")
-        return (f"LP order gap {gap:+.1f}/day — rebalancing spend across campaigns "
-                f"can gain {abs(gap):.1f} orders/day. Blue bar = LP target; grey = budget cap.")
+        return (f"Ad order gap {gap:+.1f}/day (LP-projected vs actual ad-attributed orders) — "
+                f"rebalancing spend could gain {abs(gap):.1f} ad orders/day. "
+                f"Blue bar = LP target; grey = budget cap. Organic orders not included.")
 
     if name == "rank_trend":
         n = len(item.get("natural_rank_series") or {})
@@ -2477,14 +2836,11 @@ def _export_report(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     text as a second attachment.
     """
     import os
-    import re
     import datetime as _dt
 
     report_dir = os.path.abspath("data/reports")
     os.makedirs(report_dir, exist_ok=True)
     date_str = _dt.date.today().isoformat()
-
-    _heading_re = re.compile(r'^(#{1,3}\s+.+)$', re.MULTILINE)
 
     for item in items:
         text = item.get("ad_diagnosis_llm") or ""
@@ -2494,44 +2850,30 @@ def _export_report(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
         chart_urls: dict = item.get("chart_urls") or {}
         if chart_urls:
-            # Build per-chart interpretation strings
             interps = {name: _chart_interpretation(item, name) for name in chart_urls}
+            placed: set = set()
 
-            # Try to inject each chart right after its matching section heading.
-            # Falls back to an appended section for charts that find no match.
-            headings = [(m.start(), m.end(), m.group(1).lower())
-                        for m in _heading_re.finditer(text)]
-            injected: set = set()
-
-            for name, url in list(chart_urls.items()):
-                keywords = _CHART_META.get(name, {}).get("keywords", [])
-                label    = _CHART_META.get(name, {}).get("label", name)
-                interp   = interps.get(name, "")
-                img_block = (
-                    f"\n\n> *{interp}*\n\n![{label}]({url})\n"
-                    if interp else f"\n\n![{label}]({url})\n"
+            def _replace(m, _urls=chart_urls, _interps=interps, _placed=placed):
+                name = m.group(1)
+                url = _urls.get(name)
+                if not url:
+                    return ""  # chart not generated; strip placeholder
+                label  = _CHART_META.get(name, name)
+                interp = _interps.get(name, "")
+                _placed.add(name)
+                return (
+                    f"\n> *{interp}*\n\n![{label}]({url})\n"
+                    if interp else f"\n![{label}]({url})\n"
                 )
-                for i, (hstart, hend, htitle) in enumerate(headings):
-                    if any(kw in htitle for kw in keywords):
-                        # Insert at the start of the section content (after heading line)
-                        insert_pos = hend + 1
-                        text = text[:insert_pos] + img_block + text[insert_pos:]
-                        shift = len(img_block)
-                        headings = [
-                            (s + shift if s >= insert_pos else s,
-                             e + shift if e >= insert_pos else e,
-                             t)
-                            for s, e, t in headings
-                        ]
-                        injected.add(name)
-                        break
 
-            # Append charts that had no matching section
-            remaining = {n: u for n, u in chart_urls.items() if n not in injected}
+            text = _CHART_PLACEHOLDER_RE.sub(_replace, text)
+
+            # Append chart URLs that had no placeholder in the LLM output
+            remaining = {n: u for n, u in chart_urls.items() if n not in placed}
             if remaining:
                 lines = ["\n\n---\n\n## 📊 Diagnostic Charts\n\n"]
                 for name, url in remaining.items():
-                    label  = _CHART_META.get(name, {}).get("label", name)
+                    label  = _CHART_META.get(name, name)
                     interp = interps.get(name, "")
                     lines.append(f"### {label}\n\n")
                     if interp:
@@ -2747,14 +3089,34 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "  lookback_days → days config (default 30); period covered: data_start_date → data_end_date\n"
                 "  data_start_date / data_end_date → reporting window used for all time-series fields "
                 "(today − lookback_days → yesterday; use these when describing 'past N days')\n"
-                "  total_available / total_inbound → SP-API FBA Inventory (unit count, point-in-time)\n"
+                "  total_available → fulfillable FBA units (point-in-time)\n"
+                "  inbound_receiving / inbound_shipped / inbound_working → FBA inbound tiers: "
+                "receiving=at FC being checked in (1-2d, certain); "
+                "shipped=in transit from seller (10-30d depending on sea/domestic); "
+                "working=shipment plan created, not yet shipped (uncertain ETA — do NOT count as arriving soon)\n"
+                "  total_inbound = inbound_receiving + inbound_shipped (confirmed in-transit only)\n"
+                "  effective_stock_days (in campaign_actions/keyword_actions prerequisite) = "
+                "(total_available + inbound_receiving + catchable_shipped) / daily_sales; "
+                "catchable_shipped = inbound_shipped only when inbound_lead_days < can_sell_days\n"
+                "  prerequisite field on actions → inventory gate triggered: action downgraded to P2 "
+                "because effective_stock_days < stock_gate_days (default 21). "
+                "When reporting these actions, state the prerequisite condition clearly and recommend "
+                "the seller confirm inbound ETA before activating.\n"
                 "  daily_sales / daily_sales_source → "
-                "daily_sales = total_units ÷ lookback_days; source priority: "
-                "(1) caller-supplied, (2) order_metrics = SP-API getOrderMetrics (all channels), "
-                "(3) ad_orders_only = spCampaigns orders ÷ days (lower bound; organic excluded)\n"
+                "daily_sales = total units sold ÷ lookback_days (ALL channels: ad-attributed + organic). "
+                "Source priority: "
+                "(1) caller-supplied, "
+                "(2) order_metrics = SP-API getOrderMetrics (ad + organic, most accurate), "
+                "(3) ad_orders_only = spCampaigns ad-attributed orders ÷ days only — "
+                "organic orders excluded, so daily_sales is a LOWER BOUND on true consumption velocity. "
+                "When reporting inventory runway, always state the source. "
+                "When daily_sales_source=ad_orders_only, warn that true stockout will occur SOONER "
+                "than can_sell_days indicates (organic sales consume inventory too).\n"
                 "  can_sell_days → total_available ÷ daily_sales "
-                "(null if daily_sales unavailable; when daily_sales_source=ad_orders_only, "
-                "true can_sell_days is LARGER because organic sales are excluded)\n"
+                "(null if daily_sales unavailable; "
+                "when daily_sales_source=ad_orders_only: this is an UPPER BOUND — "
+                "actual stockout is sooner because organic orders are excluded from the denominator; "
+                "can_sell_days_note field contains a human-readable caveat)\n"
                 "  inventory_risk → can_sell_days < inventory_risk_days config (default 30 d)\n"
                 "  campaign_count → count of campaigns whose name contains the ASIN\n"
                 "  campaign_match_strategy → how campaigns were matched to this ASIN: "
@@ -2765,8 +3127,11 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "  total_daily_budget → sum of ENABLED campaign daily budgets (Ads API, current config)\n"
                 "  bidding_strategies → distinct strategies across matched campaigns\n"
                 "  total_spend / total_sales / total_orders / total_clicks → "
-                "spCampaigns performance report, summed over matched campaigns, "
-                "period: data_start_date → data_end_date\n"
+                "spCampaigns ad-attributed performance (ad orders only, organic excluded), "
+                "summed over matched campaigns, period: data_start_date → data_end_date. "
+                "NOTE: total_orders here is AD-ATTRIBUTED orders only. "
+                "True total unit sales (ad + organic) = daily_sales × lookback_days "
+                "when daily_sales_source=order_metrics.\n"
                 "  account_acos → total_spend ÷ total_sales × 100 "
                 "(data_start_date → data_end_date)\n"
                 "  budget_exhaustion_pct → total_spend ÷ (total_daily_budget × lookback_days) "
@@ -2777,21 +3142,38 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "  kw_performance_count → rows in spSearchTerm report with ≥ min_clicks_for_cvr clicks "
                 "(data_start_date → data_end_date)\n"
                 "  lp_summary / lp_top_allocations / lp_zero_keywords / lp_maxed_keywords → "
-                "OR-Tools LP (maximise orders; constraints: C1 global budget, C2 per-campaign budget caps, "
-                "C3 target ACOS linearised, C4 inventory order cap, C5 click floor/ceiling; "
+                "OR-Tools LP (maximise ad orders; constraints: C1 global budget, C2 per-campaign budget caps, "
+                "C3 target ACOS linearised, C4 click floor/ceiling; "
+                "inventory is NOT a LP constraint — replenishment timing is too unstable to model as a hard bound; "
                 "eff_cpc = avg_cpc × bidding_strategy_multiplier × placement_multiplier; "
                 "pessimistic CVR shrinkage applied for low-sample keywords). "
-                "lp_optimal_orders_pessimistic uses shrunk CVR (may be < actual_daily_orders — expected). "
-                "lp_optimal_orders_raw uses the same raw CVR as actual_daily_orders; order_gap = raw_lp − actual "
-                "(positive = LP gains orders by reallocation; negative = click ceilings prevent LP from matching "
-                "current performance — NOT evidence the current strategy is optimal). "
-                "spend_ceiling_bound=true means click ceilings (C5) are the binding constraint, NOT the budget "
+                "lp_optimal_orders_pessimistic uses shrunk CVR (may be < actual_daily_ad_orders — expected). "
+                "lp_optimal_orders_raw uses the same raw CVR as actual_daily_ad_orders. "
+                "actual_daily_ad_orders = spCampaigns ad-attributed orders ÷ days (AD ORDERS ONLY — "
+                "organic orders not included; true daily total consumption is higher). "
+                "order_gap = lp_optimal_orders_raw − actual_daily_ad_orders "
+                "(positive = LP reallocates budget to gain more ad orders; "
+                "negative = click ceilings prevent LP from matching current ad performance — "
+                "NOT evidence the current strategy is better than LP). "
+                "spend_ceiling_bound=true means click ceilings (C4) are the binding constraint, NOT the budget "
                 "(lp_optimal_spend < 60% of daily_budget); in this case: "
                 "(a) lp_zero/maxed keyword signals remain valid as ROI signals; "
                 "(b) order_gap is ceiling-limited, not budget-limited — the primary recommendation is "
                 "expand keyword coverage or raise bids (not increase budget). "
                 "placement_data_unknown=true means all spend was reported under 'UNKNOWN' placement — "
-                "do NOT make placement-specific recommendations in this case.\n"
+                "do NOT make placement-specific recommendations in this case. "
+                "recommended_stock_units = (organic_daily + lp_optimal_orders_raw) × stock_gate_days — "
+                "total units required to safely execute the LP plan for stock_gate_days (default 21d) without stockout risk; "
+                "daily_consumption = organic daily orders + lp_optimal_orders_raw (total units consumed per day if LP is executed); "
+                "daily_consumption_source: 'order_metrics' = ad+organic (accurate), 'ad_orders_only' = underestimate (organic excluded — real shortfall is larger); "
+                "inbound_receiving / inbound_shipped / inbound_working / total_inbound are top-level snapshot fields (not inside lp_summary); "
+                "confirmed_inbound = inbound_receiving + inbound_shipped (units already in transit, offset against shortfall); "
+                "inbound_working = shipment plan not yet shipped — NOT counted in confirmed_inbound (arrival timing unknown); "
+                "stock_shortfall = max(0, recommended_stock_units − total_available − confirmed_inbound) — "
+                "net units still to procure after accounting for current stock and confirmed inbound; "
+                "when stock_shortfall > 0: lead with inventory procurement recommendation before bid/budget actions; "
+                "when reporting: state the full breakdown — current stock X units + inbound_receiving Y units (1-2d) + inbound_shipped Z units (ETA varies) = coverage; "
+                "if inbound_working > 0, note it separately as 'planned but not shipped — confirm dispatch urgently'.\n"
                 "  campaign_actions → derived from LP camp_spend vs actual campaign budgets; "
                 "campaign_state field present; action ∈ {{increase_budget, decrease_budget, review_bids, "
                 "pause_candidate, archive_candidate, enable_and_increase_budget, enable_and_review_bids, maintain}}; "
@@ -2815,17 +3197,25 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "  change_attributions_count → change events that passed noise filter (Ads API history, "
                 "data_start_date → data_end_date)\n"
                 "  causal_consensus_sample → consensus label of first change_attribution entry "
-                "(ITS + CausalImpact + DML agreement: Strong / Moderate / Weak / Confounded / Skipped)\n"
+                "(ITS + CausalImpact + DML agreement for THAT SPECIFIC EVENT: "
+                "Strong / Moderate / Weak / Confounded / Conflicting / Skipped). "
+                "This is PER-EVENT model agreement — entirely separate from causal_reliability:\n"
+                "    causal_reliability = historical calibration quality (how accurate the model has been ACROSS PAST EVENTS)\n"
+                "    causal_consensus_sample = whether the 3 models agree ON THIS SPECIFIC EVENT\n"
+                "  These two can contradict: high causal_reliability + Conflicting consensus is valid and means "
+                "'the model is generally well-calibrated, but the 3 models disagree on this particular event — "
+                "treat this event's causal direction as uncertain'. "
+                "Do NOT use causal_reliability='high' to override a Conflicting/Weak consensus on a specific event.\n"
                 "  orders_reliability → statistical sufficiency of orders sample: "
                 "high (≥100 orders), medium (30–99), low (<30)\n"
                 "  acos_ci_lo / acos_ci_hi → 95% ACOS confidence interval (Wilson method on CVR "
                 "propagated to ACOS via ACOS = spend/sales; see Methodology section)\n"
-                "  backtest_hit_rate → % of evaluated change events where model-predicted direction "
-                "matched observed post-window KPI direction (within-sample calibration); "
-                "threshold: <70% = near-random (causal_reliability='low'/'none'), ≥70% = reliable ('high')\n"
+                "  backtest_hit_rate → stored as 0–1 fraction (e.g. 0.85 = 85%, 1.0 = 100%); "
+                "fraction of evaluated change events where model-predicted direction matched observed post-window KPI direction; "
+                "threshold: <0.70 = near-random (causal_reliability='low'/'none'), ≥0.70 = reliable ('high')\n"
                 "  backtest_strong_hit_rate → same but restricted to 'Strong evidence' events only\n"
-                "  causal_reliability → pre-computed tier: 'high' (≥70%), 'low' (1–69%), 'none' (0%/missing); "
-                "use this field (not the raw %) to apply Rule 4 label-downgrade logic\n\n"
+                "  causal_reliability → pre-computed tier: 'high' (≥0.70), 'low' (0–0.69), 'none' (null/missing); "
+                "use this field (not the raw fraction) to apply Rule 4 label-downgrade logic\n\n"
                 "```json\n{_summary_json}\n```\n\n"
                 "> **Evidence Summary**: 1-2 sentences citing the single most critical metric "
                 "visible in the snapshot above "
@@ -2868,16 +3258,22 @@ def build_ad_diagnosis(config: dict) -> Workflow:
 
                 "### Causal Confidence Assessment\n\n"
                 "For each change_attribution entry cited above:\n"
-                "- **Consensus**: Strong / Moderate / Weak / Confounded / Skipped "
-                "(read from the `consensus` field directly)\n"
-                "- **ITS** *(Linden 2015)*: level_shift=$val [95% CI: level_shift_ci_lo – level_shift_ci_hi], "
+                "- **Consensus**: Strong / Moderate / Weak / Confounded / Conflicting / Skipped "
+                "(read from the `consensus` field directly — this is per-event model agreement, "
+                "independent of causal_reliability; "
+                "causal_reliability='high' means the model is historically well-calibrated, "
+                "but a Conflicting consensus still means THIS event's direction is uncertain — "
+                "do NOT use causal_reliability to override a Conflicting/Weak consensus)\n"
+                "- **ITS** *(Linden 2015)*: if its.skipped=True write 'Skipped (reason: $reason)'; "
+                "otherwise level_shift=$val [95% CI: level_shift_ci_lo – level_shift_ci_hi], "
                 "p=$p_val (significant if p < 0.10)\n"
-                "- **CausalImpact** *(Brodersen et al. 2015)*: point_effect=$val "
-                "[95% credible interval: ci_lo – ci_hi] (actual − BSTS counterfactual)\n"
-                "- **DML** *(Chernozhukov et al. 2018)*: theta=$val "
-                "[95% CI: theta_ci_lo – theta_ci_hi] (sandwich-SE; reliable only if r_squared ≥ 0)\n"
-                "- **Historical calibration**: backtest_hit_rate=$val% "
-                "(model direction vs observed post-window direction for this ASIN)\n"
+                "- **CausalImpact** *(Brodersen et al. 2015)*: if causal_impact.skipped=True write 'Skipped (reason: $reason)'; "
+                "otherwise point_effect=$val [95% credible interval: ci_lo – ci_hi] (actual − BSTS counterfactual)\n"
+                "- **DML** *(Chernozhukov et al. 2018)*: if dml.skipped=True write 'Skipped (reason: $reason)'; "
+                "otherwise theta=$val [95% CI: theta_ci_lo – theta_ci_hi] (sandwich-SE; reliable only if r_squared ≥ 0)\n"
+                "- **Historical calibration**: backtest_hit_rate=$val "
+                "(stored as 0–1 fraction; display as percentage, e.g. 1.0 → '100%'; "
+                "model direction vs observed post-window direction for this ASIN)\n"
                 "- **Note**: Use 'causally demonstrated' only when consensus = 'Strong evidence' "
                 "(all 3 models agree). Use 'suggested' or 'estimated' otherwise.\n"
                 "  When had_promotion=True or price_delta_window is large negative: "
@@ -2943,9 +3339,19 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "(e.g., 'assuming CVR and CTR remain stable; linear impression-share elasticity assumed'). "
                 "Mark increase_bid order estimates as approximate: "
                 "'~+N orders/day per +10% bid (impression elasticity unvalidated)'.\n"
-                "4. Uncertainty labelling — mandatory rules based on causal_reliability:\n"
-                "   causal_reliability='high' (backtest_hit_rate ≥70%): "
-                "may use 'demonstrated'/'causally linked' only when consensus='Strong evidence'.\n"
+                "4. Uncertainty labelling — two independent dimensions, BOTH must pass:\n"
+                "   Dimension A — causal_reliability (historical calibration, ASIN-level):\n"
+                "   causal_reliability='high' (backtest_hit_rate ≥0.70): model is well-calibrated historically.\n"
+                "   causal_reliability='low'/'none': model is poorly calibrated — downgrade all labels regardless of consensus.\n"
+                "   Dimension B — consensus (per-event model agreement):\n"
+                "   consensus='Strong evidence': all 3 models agree on direction for THIS event.\n"
+                "   consensus='Conflicting': models disagree on THIS event — direction is uncertain for this event "
+                "EVEN IF causal_reliability='high'. Do NOT cite causal_reliability to override a Conflicting consensus.\n"
+                "   COMBINED RULE: use 'demonstrated'/'causally linked' ONLY when "
+                "causal_reliability='high' AND consensus='Strong evidence' — both conditions required.\n"
+                "   When reporting both fields together, always explain the distinction: "
+                "'backtest_hit_rate=X% reflects historical model accuracy across N past events; "
+                "the consensus for this specific event is Y — [interpret Y independently]'.\n"
                 "   causal_reliability='low' (backtest_hit_rate 1–69%): "
                 "directional accuracy is near-random — DO NOT use 'demonstrated'/'causally linked'; "
                 "downgrade ALL consensus labels by one level (Strong→Moderate, Moderate→Weak, Weak→Inconclusive); "
@@ -2979,9 +3385,10 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "'Campaign matching used name-substring fallback — some campaigns may be misattributed. "
                 "Verify campaign_ids and treat campaign-level metrics with caution.' "
                 "Do NOT make high-confidence campaign-level recommendations under name_substring matching.\n"
-                "   - causal_reliability != 'high' (i.e. backtest_hit_rate < 70%): write "
-                "'Causal model directional accuracy $val% (threshold 70%) — change_attribution "
+                "   - causal_reliability != 'high' (i.e. backtest_hit_rate < 0.70): write "
+                "'Causal model directional accuracy $pct% (threshold 70%) — change_attribution "
                 "evidence is near-random; all consensus labels downgraded one tier. "
+                "($pct = backtest_hit_rate × 100, e.g. 0.65 → 65%.) "
                 "LP budget recommendations remain valid (independent of causal models).' "
                 "This caveat is MANDATORY when causal_reliability is 'low' or 'none'.\n"
                 "   - placement_performance is missing or empty\n"
@@ -3003,6 +3410,20 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "When orders_reliability = 'medium' (30–99 orders), add a note that "
                 "conclusions should be validated over a longer window before committing "
                 "to large bid or budget changes (risk of regression-to-the-mean).\n"
+                "9. **Chart placeholders**: Diagnostic charts will be injected after the "
+                "report is generated. Place each marker at the most relevant position inside "
+                "the matching section. Do NOT write URLs or image syntax — just the marker "
+                "text. Omit a marker if that data is unavailable "
+                "(e.g. no change events → omit `[CHART:its_causal]`).\n"
+                "   Available markers:\n"
+                "   - `[CHART:daily_trend]` — daily orders/ACOS time series; place in Quick Metrics Snapshot or Overview\n"
+                "   - `[CHART:its_causal]` — ITS/CausalImpact causal chart; place in Causal Confidence Assessment\n"
+                "   - `[CHART:kw_quadrant]` — keyword ACOS × orders quadrant; place in Diagnostic Findings / Keywords\n"
+                "   - `[CHART:placement_bar]` — placement ACOS vs bid adjustment; place in Diagnostic Findings / Placement\n"
+                "   - `[CHART:inventory_burndown]` — inventory burn-down; place in Diagnostic Findings / Inventory\n"
+                "   - `[CHART:comp_price_box]` — competitor price distribution; place in Diagnostic Findings / Organic & Market\n"
+                "   - `[CHART:lp_waterfall]` — LP budget waterfall; place in Diagnostic Findings / LP Budget Optimisation\n"
+                "   - `[CHART:rank_trend]` — organic rank trend; place in Diagnostic Findings / Organic & Market\n\n"
                 "Begin the report now."
             ),
             compute_target=ComputeTarget.CLOUD_LLM,

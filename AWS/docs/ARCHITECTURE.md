@@ -165,7 +165,8 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   check_epa       FILTER     compliance-server EPA requirement status        |
 |   populate_bitable OUTPUT    output-server     created record ID (robust)    |
 |   send_local_file  OUTPUT    output-server     Feishu attachment confirmation|
-|   ...  (54 tools total across 7 domain servers)                              |
+|   erp_inventory   DATA       erp-server        real-time inventory for SKU   |
+|   ...  (57 tools total across 8 domain servers)                              |
 |                                                                              |
 |   [Single-User] Memory dict, no filtering                                    |
 |   [Ext Point #4] Per-tenant tool visibility control                          |
@@ -209,6 +210,27 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                         |     REDIS_URL env var set.       |                |
 |                         +──────────────────────────────────+                |
 |                                    |                                         |
+|   ── L1.5: ERP Integration (Strategy Pattern — swappable provider) ────────  |
+|                                                                              |
+|   +--------------------------------------------------------------------+    |
+|   |   erp-server   (src/mcp/servers/erp/)                             |    |
+|   |                                                                    |    |
+|   |   ERPClient (ABC)  ←─ Strategy Pattern                            |    |
+|   |     get_inventory(sku)      → real-time stock levels              |    |
+|   |     get_purchase_orders(sku, status)  → inbound PO list           |    |
+|   |     get_sales_orders(sku, days)  → recent order list              |    |
+|   |                                                                    |    |
+|   |   Providers (register_provider / get_erp_client registry):        |    |
+|   |   ┌──────────────────┐                                            |    |
+|   |   │ LingxingClient   │  领星ERP — AES-ECB auth, token auto-      |    |
+|   |   │ (lingxing/)      │  refresh; set LINGXING_ACCOUNT /           |    |
+|   |   │                  │  LINGXING_PASSWORD env vars                |    |
+|   |   └──────────────────┘                                            |    |
+|   |   Add ERP: subpackage + register_provider("name", MyClient)       |    |
+|   |                                                                    |    |
+|   |   MCP tools: erp_inventory · erp_purchase_orders · erp_sales_orders    |
+|   +--------------------------------------------------------------------+    |
+|                                                                              |
 |   ── L2: Calculation / Compliance (Consume Cache, No L1 calls) ──────────── |
 |                                                                              |
 |   +--------------------+  +--------------------+  +--------------------+    |
@@ -571,8 +593,10 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
   Switch Storage     Set STORAGE_BACKEND env var                 Zero code change
                      (s3_compatible → R2/S3/MinIO; local_http → VPS nginx)
                      Add backend: subclass StorageBackend, 1-line factory entry
+  New ERP Provider   Subclass ERPClient  +  register_provider()  Zero change elsewhere
+                     (e.g. ECCANG, Mabang, Saihe — one subpackage each)
 
-  Result: Six extension dimensions are orthogonal; changing one leaves others intact
+  Result: Seven extension dimensions are orthogonal; changing one leaves others intact
 
 
 ================================================================================

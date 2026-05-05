@@ -39,6 +39,7 @@ Entry point:
 
 import logging
 import math
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
@@ -52,6 +53,13 @@ ATTR_PRE_START  = -9
 ATTR_PRE_END    = -2
 ATTR_POST_START = +2
 ATTR_POST_END   = +9
+
+# ── Baseline normalisation constants ───────────────────────────────────────────
+YOY_OFFSET_DAYS   = 364   # 52 full weeks — preserves day-of-week pattern
+YOY_MIN_DAYS      = 5     # min overlapping YoY days required to trust the baseline
+TRAILING_START    = -97   # trailing ~3M window start (relative to anchor)
+TRAILING_END      = -11   # trailing window end — gap before pre-window (-9)
+TRAILING_MIN_DAYS = 14    # min days of trailing data required
 
 # ── Minimum observations ────────────────────────────────────────────────────────
 _ITS_MIN_PRE  = 7    # pre-period rows for reliable ITS
@@ -237,10 +245,62 @@ def _classify_direction(delta: float, metric: str, pre_val: float) -> str:
     return "neutral"
 
 
+def _normalized_delta_orders(
+    asin_date_index: Dict[str, Dict],
+    anchor: datetime,
+    post_avg: float,
+    pre_avg: float,
+    yoy_date_index: Optional[Dict[str, Dict]] = None,
+    trailing_ext_index: Optional[Dict[str, Dict]] = None,
+) -> Tuple[float, str]:
+    """
+    Compute post_avg relative to the best available seasonal baseline.
+
+    Priority:
+      P1 YoY          — same post-window 364 days ago (52 weeks, same weekday).
+                        Requires ≥ YOY_MIN_DAYS of data in yoy_date_index.
+      P2 Trailing 3M  — mean of [anchor-97, anchor-11] combining asin_date_index
+                        (Ads API) and trailing_ext_index (ERP extension).
+                        Requires ≥ TRAILING_MIN_DAYS of data.
+      P3 Pre-window   — current [anchor-9, anchor-2] fallback (within-sample).
+
+    Returns (normalized_delta, source_label).
+    """
+    # P1: YoY
+    if yoy_date_index:
+        yoy_anchor = anchor - timedelta(days=YOY_OFFSET_DAYS)
+        yoy_vals = [
+            float(yoy_date_index[d]["orders"])
+            for i in range(ATTR_POST_START, ATTR_POST_END + 1)
+            if (d := (yoy_anchor + timedelta(days=i)).strftime("%Y-%m-%d")) in yoy_date_index
+        ]
+        if len(yoy_vals) >= YOY_MIN_DAYS:
+            return round(post_avg - sum(yoy_vals) / len(yoy_vals), 3), "yoy"
+
+    # P2: trailing 3M — Ads API takes priority for overlapping dates
+    merged: Dict[str, Dict] = {}
+    if trailing_ext_index:
+        merged.update(trailing_ext_index)
+    merged.update(asin_date_index)
+
+    trailing_vals = [
+        float(merged[d]["orders"])
+        for i in range(TRAILING_START, TRAILING_END + 1)
+        if (d := (anchor + timedelta(days=i)).strftime("%Y-%m-%d")) in merged
+    ]
+    if len(trailing_vals) >= TRAILING_MIN_DAYS:
+        return round(post_avg - sum(trailing_vals) / len(trailing_vals), 3), "trailing_3m"
+
+    # P3: pre-window fallback
+    return round(post_avg - pre_avg, 3), "pre_window"
+
+
 def _build_attributions(
     item: Dict,
     daily_perf: List[Dict],
     tz: ZoneInfo,
+    yoy_date_index: Optional[Dict[str, Dict]] = None,
+    trailing_ext_index: Optional[Dict[str, Dict]] = None,
 ) -> List[Dict]:
     """
     Stage 1: for each change event, compute before/after window KPIs and
@@ -302,6 +362,12 @@ def _build_attributions(
         delta_orders = round(post["orders"] - pre["orders"], 2)
         delta_clicks = round(post["clicks"] - pre["clicks"], 2)
 
+        delta_orders_normalized, baseline_source = _normalized_delta_orders(
+            asin_date_index, anchor, post["orders"], pre["orders"],
+            yoy_date_index=yoy_date_index,
+            trailing_ext_index=trailing_ext_index,
+        )
+
         direction = _classify_direction(delta_orders, "orders", pre["orders"])
         if direction == "neutral" and delta_acos is not None:
             direction = _classify_direction(delta_acos, "acos", pre_acos or 0)
@@ -351,6 +417,8 @@ def _build_attributions(
             "post_window":             post,
             "delta_acos":              delta_acos,
             "delta_orders":            delta_orders,
+            "delta_orders_normalized": delta_orders_normalized,
+            "delta_baseline_source":   baseline_source,
             "delta_clicks":            delta_clicks,
             "direction":               direction,
             "covariates_at_change":    cov,
@@ -472,13 +540,27 @@ def _causal_impact_analyze(
 
     try:
         n  = len(series)
-        # Guard: replace any residual inf in covariates with 0 (should not reach here after _align_covariates fix)
+        # Sanitise covariates: replace inf/nan → 0
         cov = np.where(np.isfinite(covariate_matrix), covariate_matrix, 0.0)
+
+        # Drop zero-variance columns in the pre-period.
+        # _align_covariates fills entirely-missing columns with 0, giving std=0.
+        # _patched_standardize then divides by sig=0 → produces inf in exog.
+        pre_std = cov[:intervention_idx].std(axis=0)
+        active  = np.where(pre_std > 0)[0]
+        cov     = cov[:, active] if len(active) > 0 else np.empty((n, 0))
+
         df = pd.DataFrame({"y": series})
-        for i in range(cov.shape[1]):
+        for i, col_idx in enumerate(active):
             df[f"x{i}"] = cov[:, i]
 
-        ci = CausalImpact(df, [0, intervention_idx - 1], [intervention_idx, n - 1])
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            # causalimpact passes kwargs (nseasons, standardize, alpha) that
+            # newer statsmodels versions do not accept; suppress until the
+            # library is updated.
+            _warnings.filterwarnings("ignore", category=FutureWarning, module="statsmodels")
+            ci = CausalImpact(df, [0, intervention_idx - 1], [intervention_idx, n - 1])
 
         # summary_data is a DataFrame:
         #   index   = effect metrics (abs_effect, rel_effect, abs_effect_lower, ...)
@@ -594,11 +676,13 @@ def _compute_backtest_stats(attributions: List[Dict]) -> Dict[str, Any]:
     Directional calibration check: does the causal model's predicted sign match
     the observed post-window KPI direction?
 
-    This is a within-sample test — both model and observation use the same
-    historical data — so it measures internal consistency, not out-of-sample
-    forecast accuracy.  Use it to flag when models are systematically mis-signed.
+    Observed direction uses delta_orders_normalized when available (YoY or trailing
+    3M baseline), falling back to delta_orders (within-sample pre-window).
+    backtest_baseline_dist records how many events used each baseline source.
     """
     total = hits = strong = strong_hits = 0
+    baseline_counter: Counter = Counter()
+
     for attr in attributions:
         its = attr.get("its") or {}
         dml = attr.get("dml") or {}
@@ -606,10 +690,12 @@ def _compute_backtest_stats(attributions: List[Dict]) -> Dict[str, Any]:
         if its.get("skipped") and dml.get("skipped") and ci.get("skipped"):
             continue
 
-        delta = attr.get("delta_orders") or 0
+        norm  = attr.get("delta_orders_normalized")
+        delta = norm if norm is not None else (attr.get("delta_orders") or 0)
         if delta == 0:
-            continue  # no directional signal to test against
+            continue
 
+        baseline_counter[attr.get("delta_baseline_source", "pre_window")] += 1
         observed_pos = delta > 0
 
         effects: List[float] = []
@@ -633,10 +719,11 @@ def _compute_backtest_stats(attributions: List[Dict]) -> Dict[str, Any]:
             strong_hits += hit
 
     return {
-        "backtest_total":          total,
-        "backtest_hit_rate":       round(hits / total, 3) if total > 0 else None,
-        "backtest_strong_n":       strong,
+        "backtest_total":           total,
+        "backtest_hit_rate":        round(hits / total, 3) if total > 0 else None,
+        "backtest_strong_n":        strong,
         "backtest_strong_hit_rate": round(strong_hits / strong, 3) if strong > 0 else None,
+        "backtest_baseline_dist":   dict(baseline_counter),
     }
 
 
@@ -727,6 +814,8 @@ def run_causal_analysis(
     item: Dict,
     config: Dict,
     daily_perf: Optional[List[Dict]] = None,
+    yoy_date_index: Optional[Dict[str, Dict]] = None,
+    trailing_ext_index: Optional[Dict[str, Dict]] = None,
 ) -> Dict[str, Any]:
     """
     Run the full attribution + causal pipeline for one ASIN item.
@@ -740,10 +829,14 @@ def run_causal_analysis(
     ITS/CI/DML results are embedded directly in each change_attribution entry.
 
     Args:
-        item:        enriched item dict (covariate_series, change_events, etc.)
-        config:      workflow config dict (timezone, causal_metric, days, ...)
-        daily_perf:  list of daily campaign performance records
-                     [{campaign_id, date, spend, orders, clicks, sales}, ...]
+        item:               enriched item dict (covariate_series, change_events, etc.)
+        config:             workflow config dict (timezone, causal_metric, days, ...)
+        daily_perf:         list of daily campaign performance records
+                            [{campaign_id, date, spend, orders, clicks, sales}, ...]
+        yoy_date_index:     {date_str: {orders, spend, clicks}} for same period last year
+                            (364 days back). Used as P1 baseline in backtest normalisation.
+        trailing_ext_index: {date_str: {orders, spend, clicks}} extending daily_perf
+                            backwards to cover trailing ~3M. Used as P2 baseline.
 
     Returns:
         {"change_attributions": [...]}, or {} if insufficient input data.
@@ -756,7 +849,11 @@ def run_causal_analysis(
     tz = ZoneInfo(config.get("timezone", "America/Los_Angeles"))
 
     # ── Stage 1: window attribution ──────────────────────────────────────────
-    attributions = _build_attributions(item, daily_perf or [], tz)
+    attributions = _build_attributions(
+        item, daily_perf or [], tz,
+        yoy_date_index=yoy_date_index or None,
+        trailing_ext_index=trailing_ext_index or None,
+    )
     if not attributions:
         return {"change_attributions": []}
 

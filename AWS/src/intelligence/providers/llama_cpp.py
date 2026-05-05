@@ -103,7 +103,7 @@ class LlamaCppProvider(BaseLLMProvider):
         
         # Prepare default parameters for self.llm
         llm_kwargs = {
-            "max_tokens": 1024,
+            "max_tokens": 4096,
             "stop": ["<|im_end|>", "<|im_start|>"],
             "echo": False
         }

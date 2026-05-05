@@ -104,6 +104,31 @@ Simulates a complete request starting from the entry points through the API Gate
     PYTHONPATH=. venv311/bin/pytest tests/test_feishu_full_flow.py -s
     ```
 
+### I. Ad Diagnosis: Inventory Gate & Quick Metrics Snapshot Tests
+
+These scripts run against live Redis data and do not require mocking. Set `REDIS_URL` in `.env` before running.
+
+**`tests/test_inventory_gate.py`** — Validates the inventory gate logic end-to-end:
+*   Loads campaign, kw_perf, daily_perf, inventory data from Redis.
+*   Runs two scenarios: sea freight (`inbound_lead_days=30`, gate triggers) and domestic US (`inbound_lead_days=10`, gate clears).
+*   Asserts that spend-up actions (`increase_budget`, `enable_and_increase_budget`, `enable_and_review_bids`) are downgraded to `P2` and carry a `prerequisite` block when effective stock is below `stock_gate_days`.
+*   Expected results: sea freight → `effective_stock_days ≈ 12` → actions gated; domestic → `effective_stock_days ≈ 27` → 0 actions gated.
+
+```bash
+PYTHONPATH=. python3 tests/test_inventory_gate.py
+```
+
+**`tests/test_summary_snapshot.py`** — Validates the Quick Metrics Snapshot output:
+*   Loads real Redis data (campaigns, kw_perf, daily_perf, keywords from `aws:cache:ad_diag:*`).
+*   Resolves `avg_bid` from the Ads API keywords cache (`aws:cache:ad_diag:default:US:keywords:*`), filtered to campaigns for the test ASIN.
+*   Injects synthetic inventory (12-day stock scenario) to exercise the inventory gate display.
+*   Calls `_build_item_summary` with a mock `WorkflowContext` and prints the full snapshot JSON.
+*   Key assertions: `avg_bid` is non-null (sourced from Ads API, not spSearchTerm report), `keyword_count` matches the filtered keyword set, `match_type_dist` totals to 100%.
+
+```bash
+PYTHONPATH=. python3 tests/test_summary_snapshot.py
+```
+
 ## 4. Writing New Tests
 
 When adding new capabilities, follow these standards:

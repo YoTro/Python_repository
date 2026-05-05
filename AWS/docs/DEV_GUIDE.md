@@ -78,6 +78,39 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 3.  **Registry**: Call `tool_registry.register_tool(tool, handler, category="DATA", returns="...")` in the domain's `tools.py`.
 4.  **Discovery**: Ensure the domain's `tools.py` is imported in `src/registry/tools.py`.
 
+**C. Adding a New ERP Provider (Strategy Pattern)**
+
+The ERP layer (`src/mcp/servers/erp/`) uses a provider registry so new ERP systems can be added without modifying existing code.
+
+1.  **Create a subpackage**: `src/mcp/servers/erp/<name>/` with `__init__.py` and `client.py`.
+2.  **Implement `ERPClient`**:
+    ```python
+    from ..base import ERPClient
+    class MyERPClient(ERPClient):
+        def get_inventory(self, sku): ...
+        def get_purchase_orders(self, sku=None, status=None, **kwargs): ...
+        def get_sales_orders(self, sku=None, days=30, **kwargs): ...
+    ```
+3.  **Register**: In your `__init__.py`:
+    ```python
+    from .client import MyERPClient
+    from ..registry import register_provider
+    register_provider("myerp", MyERPClient)
+    ```
+4.  **Auto-load**: Import your subpackage in `src/mcp/servers/erp/__init__.py`:
+    ```python
+    from . import myerp  # triggers register_provider
+    ```
+5.  **Use**: Pass `provider="myerp"` to any `erp_*` MCP tool call. The `get_erp_client("myerp")` registry instantiates `MyERPClient` on demand.
+
+Config keys for the Lingxing provider:
+
+| Key | Default | Description |
+|---|---|---|
+| `LINGXING_ACCOUNT` | — | Lingxing ERP login account (env var) |
+| `LINGXING_PASSWORD` | — | Lingxing ERP login password (env var) |
+| Token persisted at | `config/lingxing_token.json` | Auto-refreshed on 401 |
+
 ### Layer 5: Intelligence Routing & Prompt Management (`src/intelligence/`)
 *Cost-aware LLM Dispatching & Centralized Knowledge.*
 
@@ -160,6 +193,10 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 *   `src/gateway/`: Auth, Rate Limiting, and Unified Dispatching.
 *   `src/jobs/`: Job management, Checkpoints, and Callbacks.
 *   `src/mcp/servers/`: Microservices providing specific tools.
+    *   `src/mcp/servers/erp/` — ERP integration layer (Strategy Pattern). Providers: `lingxing/`. Add new ERPs as sibling subpackages.
+        *   `base.py` — `ERPClient` ABC defining the three required methods.
+        *   `registry.py` — `register_provider` / `get_erp_client` registry.
+        *   `tools.py` — MCP tools `erp_inventory`, `erp_purchase_orders`, `erp_sales_orders`.
     *   `src/mcp/servers/output/tools/export_html.py` — Converts markdown/HTML to styled HTML file; optionally uploads images via storage backend.
     *   `src/mcp/servers/output/tools/export_csv.py` — Exports records to CSV; uploads via storage backend (falls back to local file if unconfigured).
 *   `src/registry/`: The central hub for Tool, Resource, and Prompt discovery.

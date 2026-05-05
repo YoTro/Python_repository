@@ -304,8 +304,16 @@ def _parse_inventory_summary(s: Dict) -> Dict[str, Any]:
         "total_quantity": s.get("totalQuantity", 0),
         "available_quantity": fulfillable,
         "total_available": fulfillable,
-        "reserved_quantity": reserved.get("totalReservedQuantity", 0) if isinstance(reserved, dict) else reserved,
-        "inbound_quantity": inbound_receiving + inbound_shipped + inbound_working,
+        "reserved_quantity":  reserved.get("totalReservedQuantity", 0) if isinstance(reserved, dict) else reserved,
+        # Split inbound tiers — reliability differs significantly:
+        #   receiving  : already at FC, available in 1-2 days (certain)
+        #   shipped    : in transit from seller, ETA 10-30 days (certain but timing varies)
+        #   working    : shipment plan only, not yet handed to carrier (uncertain ETA)
+        "inbound_receiving": inbound_receiving,
+        "inbound_shipped":   inbound_shipped,
+        "inbound_working":   inbound_working,
+        # inbound_quantity = confirmed in-transit only (receiving + shipped); working excluded
+        "inbound_quantity":  inbound_receiving + inbound_shipped,
         "last_updated": s.get("lastUpdatedTime"),
     }
 

@@ -178,6 +178,14 @@ The following analysis functionalities have been migrated from CLI tasks to the 
     | `estimated_cvr` | `float` | Estimated conversion rate (e.g. `0.05` = 5 %) |
     | `max_daily_clicks` | `int` | Traffic ceiling for this keyword |
 
+    **LP constraints** (C1–C4):
+    - C1: Global daily budget
+    - C2: Per-campaign budget caps
+    - C3: Target ACOS ceiling
+    - C4: Click bounds per keyword (`min_daily_clicks ≤ clicks ≤ max_daily_clicks`)
+
+    > **Note**: Inventory is NOT a LP constraint. Replenishment timing is too unstable to model as a hard bound. Instead, the optimizer outputs advisory `recommended_stock_units` and `stock_shortfall` fields (see `lp_summary` schema below). Spend-increasing actions are downgraded to P2 via the inventory gate when effective stock is below `stock_gate_days`.
+
     **Call signature**: `AdBudgetOptimizer().optimize(keywords: List[dict], total_budget: float, min_clicks_per_kw: int = 0)`
 
     **Output** (status `OPTIMAL`):
@@ -197,6 +205,72 @@ The following analysis functionalities have been migrated from CLI tasks to the 
     }
     ```
     Returns `{"status": "FAILED", ...}` when no feasible solution exists (e.g. budget too low for `min_clicks_per_kw`).
+
+### Ad Diagnosis: `lp_summary` Schema
+
+The `lp_summary` field on each item after `_optimize_budget` contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `daily_budget` | `float` | Configured daily ad budget (USD) |
+| `lp_optimal_spend` | `float` | LP-optimal spend across all keywords (USD) |
+| `lp_optimal_orders_pessimistic` | `float` | Orders after Wilson CI discount (lower bound) |
+| `lp_optimal_orders_raw` | `float` | LP raw projected ad-attributed orders |
+| `actual_daily_ad_orders` | `float` | Actual ad-attributed orders/day (`total_orders / days`); **ad-only**, organic excluded |
+| `order_gap` | `float` | `lp_raw - actual_daily_ad_orders`; positive = LP sees upside |
+| `avg_effective_cpc` | `float` | Weighted average CPC across LP allocation |
+| `target_acos_applied` | `float` | ACOS target used in LP (from config) |
+| `recommended_stock_units` | `int` | Units needed for `stock_gate_days` of sales at LP velocity (`lp_total_daily × stock_gate_days`) |
+| `stock_shortfall` | `int` | `max(0, recommended - total_available - confirmed_inbound)`; 0 = stock is sufficient |
+| `stock_gate_days` | `int` | Gate threshold (default 21); effective stock must exceed this for P0/P1 spend-up actions |
+| `daily_consumption` | `float` | Total projected daily unit consumption (LP ad orders + organic) |
+| `daily_consumption_source` | `str` | `"order_metrics"` (accurate) or `"ad_orders_only"` (underestimate — no organic data) |
+| `inbound_receiving` | `int` | Units at FC receiving dock (certain, ~1-2d until available) |
+| `inbound_shipped` | `int` | Units in transit (10-30d; counted in `confirmed_inbound`) |
+| `inbound_working` | `int` | Units in replenishment plan only (NOT counted in confirmed_inbound) |
+| `confirmed_inbound` | `int` | `inbound_receiving + inbound_shipped` (excluded: working) |
+| `keywords_in_lp` | `int` | Number of keywords included in LP (must have avg_cpc and cvr) |
+
+### Ad Diagnosis: Inventory Gate Config
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `stock_gate_days` | `int` | `21` | Min effective stock days before spend-up actions are P0/P1; below this → P2 + `prerequisite` |
+| `inbound_lead_days` | `int` | `30` | Assumed transit days for in-transit stock; `30` = sea freight, `10` = domestic US |
+
+**Effective stock days formula**:
+```
+catchable_shipped = inbound_shipped  if  inbound_lead_days < can_sell_days  else  0
+effective_stock_days = (total_available + inbound_receiving + catchable_shipped) / daily_sales
+```
+
+When `effective_stock_days < stock_gate_days`, spend-increasing campaign/keyword actions (`increase_budget`, `enable_and_increase_budget`, `enable_and_review_bids`) are downgraded to `priority: P2` and include a `prerequisite` field:
+
+```json
+{
+  "action": "increase_budget",
+  "priority": "P2",
+  "prerequisite": {
+    "condition": "effective_stock_days >= 21",
+    "effective_stock_days": 12,
+    "can_sell_days": 10,
+    "inbound_receiving": 0,
+    "inbound_shipped": 500,
+    "inbound_lead_days": 30,
+    "note": "Current stock ~10d + confirmed inbound = 12d effective. Replenish before increasing ad spend."
+  }
+}
+```
+
+### Ad Diagnosis: `can_sell_days` Interpretation
+
+| Field | Description |
+|---|---|
+| `can_sell_days` | Days of stock at **ad-attributed order rate only** (`total_available / daily_ad_orders`) |
+| `can_sell_days_note` | `"upper_bound"` when `daily_sales_source == "ad_orders_only"` — actual stockout occurs **sooner** because organic orders also consume inventory |
+| `daily_sales_source` | `"order_metrics"` = total orders from SP-API (accurate); `"ad_orders_only"` = only ad-attributed orders (underestimates consumption) |
+
+When `daily_sales_source == "ad_orders_only"`, treat `can_sell_days` as an **upper bound**: the true stockout date is earlier.
 
 These processors can be called directly via the Intelligence Router or through Agent workflows.
 

@@ -22,6 +22,25 @@ This document outlines best practices for interacting with the LLMs integrated i
     *   Escape literal braces with `{{...}}` when they should appear verbatim in the prompt output.
 *   **`_summary_json` (ad_diagnosis only)**: The `prepare_for_llm` step (Stage 7a) computes a Python-exact highlights dict and injects it as `{_summary_json}`. Always use this for the Quick Metrics Snapshot table — never ask the LLM to re-derive these values from `{items_json}`, as computed fields (`rank_series_days`, `campaign_count`) require Python-side aggregation that the LLM cannot reliably reproduce.
 
+    Key field semantics in `_summary_json` / `lp_summary` for ad_diagnosis:
+
+    | Field | Scope | Note |
+    |---|---|---|
+    | `actual_daily_ad_orders` | **Ad-attributed only** | `total_ad_orders / days`; organic orders NOT included |
+    | `daily_sales` | **Ad + organic** (when available) | From SP-API order metrics; preferred for inventory math |
+    | `daily_sales_source` | Source flag | `"order_metrics"` = accurate; `"ad_orders_only"` = underestimates consumption |
+    | `can_sell_days` | Upper bound when source = ad_only | Actual stockout is **sooner** — organic also consumes inventory |
+    | `recommended_stock_units` | Advisory | LP-velocity-based reorder target; not a LP constraint |
+    | `stock_shortfall` | Advisory | Units to procure = `max(0, recommended - available - confirmed_inbound)` |
+    | `confirmed_inbound` | `receiving + shipped` | Working/planned inbound is **excluded** (too uncertain) |
+    | `inbound_receiving` | Certain (<2d) | At FC dock, counts toward effective stock |
+    | `inbound_shipped` | In transit (10-30d) | Counts only if `inbound_lead_days < can_sell_days` |
+    | `inbound_working` | Plan only | Never counted in stock math |
+
+    When the LLM generates the Quick Metrics Snapshot, it must note `daily_sales_source` and warn when `can_sell_days` is an upper bound. Procurement recommendations should cite `confirmed_inbound` and `stock_shortfall` explicitly.
+
+    **Inventory gate and `prerequisite` field**: When a campaign/keyword action has `priority: P2` and a `prerequisite` block, the LLM must surface the prerequisite condition to the user rather than simply recommending the spend increase. Example framing: *"This budget increase is gated: effective stock is only Xd (gate: 21d). Replenish first."*
+
 ## 2. Token Management & Cost Control
 
 *   **Cloud-Only Token Budget**: The `MCPAgent` tracks cumulative cloud token usage separately from local tokens. Only cloud API calls (Gemini, Claude, DeepSeek) count toward the budget (default: 50,000 tokens). Local model tokens are free and unlimited.

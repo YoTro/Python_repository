@@ -235,7 +235,29 @@ This guide provides solutions to common issues you might encounter while develop
     *   **Cause**: A non-`ad_diagnosis` workflow uses a `prompt_template` that references `{_summary_json}` or `{report_date}` without those values being present in the item or injected by `process.py`.
     *   **Solution**: `report_date` is injected automatically by `ProcessStep._run_llm()` for every workflow. `_summary_json` is specific to `ad_diagnosis` — only reference it in that workflow's prompt. For other workflows, use `{{_summary_json}}` (double-braced) if you need to show the literal text, or remove the reference.
 
-## 9. LLM Output Truncation Issues
+## 9. ERP Integration Issues
+
+*   **`LingxingClient: no valid token. Call auth.login() to authenticate.`**:
+    *   **Cause**: No cached token at `config/lingxing_token.json` and `LINGXING_ACCOUNT` / `LINGXING_PASSWORD` env vars are not set.
+    *   **Solution**: Set `LINGXING_ACCOUNT` and `LINGXING_PASSWORD` in `.env`. On first call `LingxingAuth.login()` will fetch a secret key, encrypt the password with AES-ECB, and save the token to `config/lingxing_token.json`. Subsequent calls load the cached token automatically.
+
+*   **ERP tool returns empty `{}` or `[]` unexpectedly**:
+    *   **Cause**: The Lingxing API returned a 401 or the token expired. The client attempts one automatic re-login on 401, but if credentials are missing the second request also fails silently.
+    *   **Solution**: Check logs for `"Token expired, re-authenticating..."` or `"Lingxing API request failed"`. Ensure `.env` credentials are correct. Delete `config/lingxing_token.json` to force a fresh login.
+
+*   **`ValueError: Unknown ERP provider 'xyz'. Available: ['lingxing']`**:
+    *   **Cause**: The `provider` argument passed to an `erp_*` MCP tool does not match any registered provider.
+    *   **Solution**: Confirm the provider subpackage is imported in `src/mcp/servers/erp/__init__.py` (import triggers `register_provider`). Available providers are listed in the error message.
+
+*   **Ad Diagnosis: `stock_shortfall > 0` but no gated actions appear**:
+    *   **Cause**: `stock_shortfall` is an advisory field and does not gate actions. Actions are gated only when `effective_stock_days < stock_gate_days`. If effective stock (available + receiving + catchable shipped) is above the gate threshold, no actions are downgraded even if shortfall is positive.
+    *   **Solution**: Check `lp_summary.effective_stock_days` vs `lp_summary.stock_gate_days` in the item output. To tighten the gate, increase `stock_gate_days` in the workflow config (default 21).
+
+*   **Sea freight inbound shows `catchable_shipped = 0` unexpectedly**:
+    *   **Cause**: `inbound_lead_days` (default 30) is ≥ `can_sell_days`, so the shipped stock is not expected to arrive before stockout — it is excluded from effective stock.
+    *   **Solution**: This is correct behavior for sea freight. Switch `inbound_lead_days=10` if the shipment is domestic US. The gated `prerequisite.note` field explains the catchability logic to the end user.
+
+## 10. LLM Output Truncation Issues
 
 *   **Feishu attachment file contains an incomplete / mid-sentence report**:
     *   **Cause**: The LLM hit its `max_output_tokens` ceiling before finishing the report. The 8 000-character Feishu card limit is irrelevant here — files always receive the full LLM output; truncation comes from the LLM itself.
