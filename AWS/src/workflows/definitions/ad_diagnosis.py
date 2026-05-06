@@ -1023,11 +1023,16 @@ def _build_campaign_actions(
     inv_gate: Optional[Dict] = None,
     order_gap: float = 0.0,
     spend_ceiling_bound: bool = False,
+    budget_binding: bool = False,
+    lp_scoped_cids: Optional[set] = None,
 ) -> List[Dict]:
     camp_actual_spend: Dict[str, float] = {}
     for r in performance_records:
         cid = str(r.get("campaign_id", ""))
         camp_actual_spend[cid] = camp_actual_spend.get(cid, 0.0) + float(r.get("spend", 0) or 0)
+
+    # Campaigns that contributed keyword data to the LP; auto/PT campaigns won't appear here.
+    _lp_scoped = lp_scoped_cids or set()
 
     actions: List[Dict] = []
     for cid, meta in camp_meta.items():
@@ -1042,6 +1047,7 @@ def _build_campaign_actions(
 
         budget_util  = round(actual_spend / camp_budget, 3)
         lp_saturated = lp_spend >= camp_budget * 0.90
+        in_lp_scope  = bool(_lp_scoped) and (cid in _lp_scoped)
 
         camp_perf         = [r for r in performance_records if str(r.get("campaign_id")) == cid]
         camp_sales        = sum(float(r.get("sales", 0) or 0) for r in camp_perf)
@@ -1053,7 +1059,54 @@ def _build_campaign_actions(
 
         target_acos_pct = (target_acos or 0.35) * 100
         suggested = None
-        if is_paused and lp_spend >= camp_budget * 0.10:
+
+        # ── Auto / Product-Targeting campaigns: LP allocates $0 (not in scope) ──
+        # Applying LP-allocation thresholds to these campaigns produces false
+        # pause/archive recommendations.  Evaluate them on ACOS alone.
+        if not in_lp_scope and camp_spend_total > 0:
+            if camp_acos is None:
+                # Spending but zero orders → conversion failure
+                action, priority = "pause_candidate", "P1"
+                rationale = (
+                    f"No conversions in period (spend ${camp_spend_total:.0f} total, 0 orders) — "
+                    f"add negative targets or pause (auto/PT, outside LP scope)"
+                )
+            elif camp_acos > target_acos_pct * 1.3:
+                suggested = round(camp_budget * 0.75, 0)
+                action, priority = "decrease_budget", "P0"
+                rationale = (
+                    f"ACOS {camp_acos}% > 130% of target {target_acos_pct:.0f}% — "
+                    f"reduce budget and add negative keywords/targets (auto/PT, outside LP scope)"
+                )
+            elif camp_acos > target_acos_pct:
+                action, priority = "review_bids", "P1"
+                rationale = (
+                    f"ACOS {camp_acos}% above target {target_acos_pct:.0f}% — "
+                    f"lower bids or add negatives (auto/PT, outside LP scope)"
+                )
+            elif budget_util >= 0.9:
+                suggested = round(camp_budget * 1.2, 0)
+                action, priority = "increase_budget", "P0"
+                rationale = (
+                    f"ACOS {camp_acos}% ≤ target, budget util {budget_util:.0%} — "
+                    f"safe to scale (auto/PT, outside LP scope)"
+                )
+            else:
+                action, priority = "maintain", "P2"
+                rationale = (
+                    f"ACOS {camp_acos}% ≤ target, {budget_util:.0%} utilisation — "
+                    f"healthy (auto/PT, outside LP scope)"
+                )
+            if is_paused:
+                if action == "increase_budget":
+                    action = "enable_and_increase_budget"
+                elif action in ("maintain", "review_bids"):
+                    action = "enable_and_review_bids"
+        elif not in_lp_scope:
+            # No spend at all: inactive campaign outside LP scope — low priority
+            action, priority = "maintain", "P2"
+            rationale = "No spend recorded in period (auto/PT, outside LP scope)"
+        elif is_paused and lp_spend >= camp_budget * 0.10:
             action, priority = "enable_and_review_bids", "P1"
             rationale = f"Campaign is PAUSED; LP projects ${lp_spend:.0f}/day potential — evaluate re-enabling after bid review"
         elif lp_spend < camp_budget * 0.10:
@@ -1074,13 +1127,17 @@ def _build_campaign_actions(
                 rationale = f"LP allocates only ${lp_spend:.0f}/day (< 10% of ${camp_budget:.0f} budget) — keywords inefficient"
         elif lp_saturated and (camp_acos is None or camp_acos <= target_acos_pct):
             suggested = round(min(lp_spend * 1.15, camp_budget * 1.5), 0)
-            # When order_gap < 0 the LP optimum is worse than status quo —
-            # budget is not the binding constraint; scaling spend won't improve orders.
-            # spend_ceiling_bound=True means click ceilings are the real cap, not budget.
-            # In both cases, downgrade to review_bids instead of increase_budget.
-            if order_gap < 0 or spend_ceiling_bound:
+            # spend_ceiling_bound=True: click ceilings are the real cap — raise bids/expand keywords.
+            # order_gap < 0 with budget NOT binding: LP truly underperforms — review bids first.
+            # order_gap < 0 with budget binding: pessimistic CVR artifact — Wilson shrinkage causes
+            #   LP's estimated orders < actual historical when budget is exhausted, NOT because the
+            #   current allocation outperforms LP.  Allow increase_budget when ACOS is healthy.
+            if spend_ceiling_bound or (order_gap < 0 and not budget_binding):
                 action, priority = "review_bids", "P1"
-                reason = "click ceilings are the binding constraint" if spend_ceiling_bound else f"order_gap={order_gap:+.2f} (LP cannot outperform current allocation)"
+                if spend_ceiling_bound:
+                    reason = "click ceilings are the binding constraint"
+                else:
+                    reason = f"order_gap={order_gap:+.2f} (LP cannot outperform current allocation)"
                 rationale = (
                     f"LP saturates budget cap (${lp_spend:.0f}/day vs ${camp_budget:.0f}), "
                     f"but {reason} — raise bids or expand keywords before increasing budget"
@@ -1365,10 +1422,44 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             kw_perf, kw_to_campaign, camp_meta, brand_kws, headroom, placement_multiplier,
             daily_perf=asin_daily,
         )
-        actual_daily_ad_orders = round(total_orders / days, 2)
         if not lp_input:
             item["lp_summary"] = {"skipped": True, "reason": "all keywords filtered (insufficient clicks)"}
             continue
+
+        # ── CVR deflation: correct for cross-keyword attribution overlap ──────
+        # item["total_orders"] = spAdvertisedProduct groupBy=advertiser (ASIN-level,
+        #   deduplicated within the ASIN — one purchase counted once across campaigns).
+        # sum(kw["total_orders"]) = keyword-level report (the same purchase can be
+        #   claimed by BROAD, AUTO, and PT simultaneously within the attribution window).
+        # Their ratio directly measures the within-LP double-counting factor.
+        kw_attributed_orders = sum(k.get("total_orders", 0) for k in kw_perf)
+        cvr_deflation = (
+            min(1.0, total_orders / kw_attributed_orders)
+            if kw_attributed_orders > 0 and total_orders > 0
+            else 1.0
+        )
+        if cvr_deflation < 1.0:
+            for kw in lp_input:
+                kw["estimated_cvr"] *= cvr_deflation
+            logger.debug(
+                f"[lp] {asin}: cvr_deflation={cvr_deflation:.3f} "
+                f"(asin_orders={total_orders}, kw_orders={kw_attributed_orders})"
+            )
+
+        # ── order_gap baseline: use keyword-level scope (same as LP) ────────
+        # total_orders comes from spCampaigns (campaign-level), which includes
+        # auto / product-targeting campaigns whose orders are NOT part of the LP
+        # input (kw_perf only covers manual keyword targeting).  Using the
+        # campaign-level total as the baseline makes order_gap systematically
+        # negative by ~auto_pt_daily_orders, and incorrectly downgrades budget
+        # recommendations to "review_bids" in _build_campaign_actions.
+        #
+        # Fix: compare LP output against keyword-attributed orders only.
+        # The auto/PT contribution is surfaced separately as auto_pt_daily_orders
+        # so the LLM can still reason about the full picture.
+        kw_scope_orders       = kw_attributed_orders          # spSearchTerm, keyword scope
+        actual_daily_ad_orders = round(kw_scope_orders / days, 2)
+        auto_pt_daily_orders   = round((total_orders - kw_scope_orders) / days, 2)
 
         # Inventory is NOT a LP constraint — replenishment timing is unstable.
         # Instead, we compute a recommended stock level after optimisation.
@@ -1395,6 +1486,10 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
         lp_spend_total      = summary["actual_spend"]
         spend_ceiling_bound = lp_spend_total < daily_budget * 0.6
+        budget_binding      = lp_spend_total >= daily_budget * 0.85
+        # Campaign IDs that contributed at least one keyword to the LP model.
+        # Auto / product-targeting campaigns never appear here.
+        lp_scoped_cids      = {str(kw.get("campaign_id", "")) for kw in lp_input if kw.get("campaign_id")}
         zero_kws, maxed_kws = _classify_lp_keywords(kw_perf, alloc, kw_map)
         kw_id_map           = _build_lp_kw_id_map(ctx, campaign_ids)
 
@@ -1428,6 +1523,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             inv_gate=inv_gate,
             order_gap=order_gap,
             spend_ceiling_bound=spend_ceiling_bound,
+            budget_binding=budget_binding,
+            lp_scoped_cids=lp_scoped_cids,
         )
         paused_cids = {str(cid) for cid, meta in camp_meta.items()
                        if (meta.get("state") or "").upper() == "PAUSED"}
@@ -1464,8 +1561,10 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             "lp_optimal_orders_pessimistic": summary["total_expected_orders"],
             "lp_optimal_orders_raw":         lp_raw_orders,
             "actual_daily_ad_orders":        round(actual_daily_ad_orders, 2),
+            "auto_pt_daily_orders":          round(auto_pt_daily_orders, 2),
             "order_gap":                     round(order_gap, 2),
             "spend_ceiling_bound":           spend_ceiling_bound,
+            "budget_binding":                budget_binding,
             "click_headroom":               _p90_headroom(asin_daily, headroom),
             "avg_effective_cpc":             summary["avg_effective_cpc"],
             "placement_multiplier":          round(placement_multiplier, 3),
@@ -1481,6 +1580,10 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             "keywords_allocated":           len(alloc),
             "keywords_zeroed":              len(zero_kws),
             "keywords_maxed":               len(maxed_kws),
+            # Attribution deflation: ratio of ASIN-level to keyword-level attributed orders.
+            # < 1.0 means cross-keyword / cross-match-type overlap was corrected.
+            "cvr_deflation":                round(cvr_deflation, 3),
+            "cvr_deflation_source":         "asin_vs_keyword_orders",
         }
         item["lp_top_allocations"] = [
             {
@@ -3153,13 +3256,19 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "organic orders not included; true daily total consumption is higher). "
                 "order_gap = lp_optimal_orders_raw − actual_daily_ad_orders "
                 "(positive = LP reallocates budget to gain more ad orders; "
-                "negative = click ceilings prevent LP from matching current ad performance — "
-                "NOT evidence the current strategy is better than LP). "
+                "negative — two distinct causes: "
+                "(1) spend_ceiling_bound=true: click ceilings prevent the LP from using the full budget — "
+                "order_gap is ceiling-limited, primary action is expand keywords / raise bids; "
+                "(2) budget_binding=true (lp_optimal_spend ≥ 85% of daily_budget): budget is exhausted and "
+                "Wilson CVR shrinkage causes LP's estimated orders to fall below actual historical — "
+                "this is an artifact of pessimistic estimation, NOT evidence the current allocation beats LP; "
+                "campaign_actions already corrects for this by allowing increase_budget when ACOS is healthy). "
                 "spend_ceiling_bound=true means click ceilings (C4) are the binding constraint, NOT the budget "
                 "(lp_optimal_spend < 60% of daily_budget); in this case: "
                 "(a) lp_zero/maxed keyword signals remain valid as ROI signals; "
-                "(b) order_gap is ceiling-limited, not budget-limited — the primary recommendation is "
-                "expand keyword coverage or raise bids (not increase budget). "
+                "(b) primary recommendation is expand keyword coverage or raise bids (not increase budget). "
+                "budget_binding=true means the global budget cap is fully consumed; "
+                "a negative order_gap when budget_binding=true is expected and should NOT be flagged as a caveat. "
                 "placement_data_unknown=true means all spend was reported under 'UNKNOWN' placement — "
                 "do NOT make placement-specific recommendations in this case. "
                 "recommended_stock_units = (organic_daily + lp_optimal_orders_raw) × stock_gate_days — "
@@ -3174,8 +3283,17 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "when stock_shortfall > 0: lead with inventory procurement recommendation before bid/budget actions; "
                 "when reporting: state the full breakdown — current stock X units + inbound_receiving Y units (1-2d) + inbound_shipped Z units (ETA varies) = coverage; "
                 "if inbound_working > 0, note it separately as 'planned but not shipped — confirm dispatch urgently'.\n"
-                "  campaign_actions → derived from LP camp_spend vs actual campaign budgets; "
-                "campaign_state field present; action ∈ {{increase_budget, decrease_budget, review_bids, "
+                "  campaign_actions → two evaluation paths based on LP scope:\n"
+                "    (a) LP-scoped campaigns (manual keyword targeting with click data): "
+                "action derived from LP camp_spend vs actual campaign budget; "
+                "rationale will NOT contain 'outside LP scope'.\n"
+                "    (b) Non-LP-scope campaigns (auto-targeting, product-targeting, or manual with zero click data): "
+                "action derived from ACOS only — high ACOS → decrease_budget/review_bids, "
+                "healthy ACOS + saturated → increase_budget, otherwise maintain; "
+                "rationale will contain '(auto/PT, outside LP scope)'; "
+                "for high-ACOS auto campaigns recommend adding NEGATIVE keywords/targets, NOT lowering keyword bids; "
+                "for high-ACOS PT campaigns recommend removing or negating underperforming targets.\n"
+                "  campaign_state field present; action ∈ {{increase_budget, decrease_budget, review_bids, "
                 "pause_candidate, archive_candidate, enable_and_increase_budget, enable_and_review_bids, maintain}}; "
                 "priority ∈ {{P0, P1, P2}}; actions prefixed enable_and_* mean campaign is PAUSED — "
                 "re-enable BEFORE any budget/bid change\n"
@@ -3370,13 +3488,19 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "rewrite the conclusion to reflect partial or unclear attribution.\n"
                 "6. Append a **Caveats & Data Quality** subsection at the end of each ASIN "
                 "report if ANY of the following are true:\n"
-                "   - lp_summary.spend_ceiling_bound == true OR lp_summary.order_gap < 0: write "
+                "   - lp_summary.spend_ceiling_bound == true: write "
                 "'LP click-ceiling bound (LP spend $X / budget $Y; order_gap=$Z): "
-                "LP cannot outperform current allocation because click ceilings prevent reallocation — "
+                "LP cannot use the full budget because click ceilings cap reallocation — "
                 "order_gap is negative due to ceiling constraints on LP variables, NOT because "
                 "the current strategy is optimal. Priority action: expand keyword coverage or raise bids.' "
                 "Do NOT cite a negative order_gap as evidence that the current strategy is better than LP; "
                 "do NOT recommend increasing the budget when spend_ceiling_bound=true.\n"
+                "   - lp_summary.order_gap < 0 AND lp_summary.budget_binding == false AND lp_summary.spend_ceiling_bound == false: write "
+                "'LP order estimate below actual (order_gap=$Z, no binding constraint identified): "
+                "possible CVR data gap or keyword mix mismatch — review bid strategy before scaling budget.'\n"
+                "   - lp_summary.budget_binding == true AND lp_summary.order_gap < 0: "
+                "this is expected (pessimistic CVR shrinkage under-estimates vs actual when budget is fully consumed); "
+                "do NOT write a caveat for this case — campaign_actions already reflects the correct recommendation.\n"
                 "   - lp_summary.placement_data_unknown == true: "
                 "do NOT recommend TOS/PP placement modifiers — "
                 "write 'Placement data unavailable (all traffic reported as UNKNOWN)' "
