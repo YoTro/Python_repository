@@ -1102,6 +1102,12 @@ def _build_campaign_actions(
                     action = "enable_and_increase_budget"
                 elif action in ("maintain", "review_bids"):
                     action = "enable_and_review_bids"
+                elif action in ("decrease_budget", "pause_candidate"):
+                    # Campaign is already PAUSED — decreasing budget or pausing again
+                    # has no effect. Convert to maintain so no spend-reducing action
+                    # is surfaced for an already-stopped campaign.
+                    action, priority = "maintain", "P2"
+                    rationale = f"Already PAUSED — {rationale}. No further action while paused."
         elif not in_lp_scope:
             # No spend at all: inactive campaign outside LP scope — low priority
             action, priority = "maintain", "P2"
@@ -1158,12 +1164,28 @@ def _build_campaign_actions(
                     f"ACOS {camp_acos}% ≤ target {target_acos_pct:.0f}% — safe to scale"
                 )
         elif camp_acos and camp_acos > target_acos_pct * 1.3:
-            suggested = round(camp_budget * 0.75, 0)
-            action, priority = "decrease_budget", "P0"
-            rationale = f"ACOS {camp_acos}% exceeds 130% of target {target_acos_pct:.0f}% — cut budget to reduce losses"
+            if is_paused:
+                # Already paused — high historical ACOS is why it was paused.
+                # No budget action is actionable until the campaign is re-enabled.
+                action, priority = "maintain", "P2"
+                rationale = (
+                    f"Already PAUSED (historical ACOS {camp_acos}% exceeds 130% of target "
+                    f"{target_acos_pct:.0f}%) — review bids/negatives before re-enabling"
+                )
+            else:
+                suggested = round(camp_budget * 0.75, 0)
+                action, priority = "decrease_budget", "P0"
+                rationale = f"ACOS {camp_acos}% exceeds 130% of target {target_acos_pct:.0f}% — cut budget to reduce losses"
         elif camp_acos and target_acos_pct < camp_acos <= target_acos_pct * 1.3:
-            action, priority = "review_bids", "P1"
-            rationale = f"ACOS {camp_acos}% above target — lower bids on high-ACOS keywords before scaling"
+            if is_paused:
+                action, priority = "maintain", "P2"
+                rationale = (
+                    f"Already PAUSED (historical ACOS {camp_acos}% above target "
+                    f"{target_acos_pct:.0f}%) — evaluate bids before re-enabling"
+                )
+            else:
+                action, priority = "review_bids", "P1"
+                rationale = f"ACOS {camp_acos}% above target — lower bids on high-ACOS keywords before scaling"
         else:
             action, priority = "maintain", "P2"
             rationale = f"Budget util {budget_util:.0%}, ACOS {camp_acos}% — within healthy range"
@@ -1238,6 +1260,7 @@ def _build_keyword_actions(
     avg_price: Optional[float],
     inv_gate: Optional[Dict] = None,
     paused_campaign_ids: Optional[set] = None,
+    spend_ceiling_bound: bool = False,
 ) -> List[Dict]:
     alloc_map: Dict[str, Dict] = {a["keyword"]: a for a in alloc}
     actions: List[Dict] = []
@@ -1330,24 +1353,47 @@ def _build_keyword_actions(
                 actions.append(kw_entry)
             elif cur_clicks > 0 and opt_clicks < cur_clicks * 0.4:
                 delta_clicks = opt_clicks - cur_clicks
-                actions.append({
-                    "action":               "decrease_bid",
-                    "priority":             "P2",
-                    "keyword_text":         kw_text,
-                    "match_type":           match_type,
-                    "campaign_id":          cid,
-                    "keyword_id":           kw_id,
-                    "current_bid":          cur_bid,
-                    "keyword_acos_pct":     kw_acos_pct,
-                    "expected_order_delta": round(delta_clicks * raw_cvr, 2),
-                    "expected_spend_delta": round(delta_clicks * avg_cpc, 2),
-                    "rationale": (
-                        f"LP suggests {opt_clicks:.0f} clicks/day vs current ~{cur_clicks:.0f} "
-                        f"(ACOS {kw_acos_pct}%) — reduce bid; "
-                        f"est. {round(delta_clicks * raw_cvr, 2):+.2f} orders/day, "
-                        f"{round(delta_clicks * avg_cpc, 2):+.2f} $/day spend"
-                    ),
-                })
+                if spend_ceiling_bound:
+                    # When LP is globally ceiling-bound, cutting this keyword's bid saves
+                    # budget that cannot be reallocated to ceiling-bound keywords, AND will
+                    # lower the click ceiling in future runs. Monitor rather than cut.
+                    actions.append({
+                        "action":               "review_bids",
+                        "priority":             "P2",
+                        "keyword_text":         kw_text,
+                        "match_type":           match_type,
+                        "campaign_id":          cid,
+                        "keyword_id":           kw_id,
+                        "current_bid":          cur_bid,
+                        "keyword_acos_pct":     kw_acos_pct,
+                        "expected_order_delta": round(delta_clicks * raw_cvr, 2),
+                        "expected_spend_delta": round(delta_clicks * avg_cpc, 2),
+                        "rationale": (
+                            f"LP suggests {opt_clicks:.0f} clicks/day vs current ~{cur_clicks:.0f} "
+                            f"(ACOS {kw_acos_pct}%), but account is ceiling-bound: "
+                            f"freed budget cannot reach ceiling-constrained keywords — "
+                            f"monitor for efficiency; do NOT cut bids until coverage is expanded"
+                        ),
+                    })
+                else:
+                    actions.append({
+                        "action":               "decrease_bid",
+                        "priority":             "P2",
+                        "keyword_text":         kw_text,
+                        "match_type":           match_type,
+                        "campaign_id":          cid,
+                        "keyword_id":           kw_id,
+                        "current_bid":          cur_bid,
+                        "keyword_acos_pct":     kw_acos_pct,
+                        "expected_order_delta": round(delta_clicks * raw_cvr, 2),
+                        "expected_spend_delta": round(delta_clicks * avg_cpc, 2),
+                        "rationale": (
+                            f"LP suggests {opt_clicks:.0f} clicks/day vs current ~{cur_clicks:.0f} "
+                            f"(ACOS {kw_acos_pct}%) — reduce bid; "
+                            f"est. {round(delta_clicks * raw_cvr, 2):+.2f} orders/day, "
+                            f"{round(delta_clicks * avg_cpc, 2):+.2f} $/day spend"
+                        ),
+                    })
 
     actions.sort(key=lambda x: ("P0", "P1", "P2").index(x["priority"]))
     return actions
@@ -1461,6 +1507,37 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             item["lp_summary"] = {"skipped": True, "reason": "all keywords filtered (insufficient clicks)"}
             continue
 
+        # ── LP-scope budget: use only LP-scope campaign budgets as global cap ──
+        # Non-LP campaigns (auto/PT) consume their own separate campaign budgets.
+        # Giving LP the total account budget ($239) inflates the constraint beyond
+        # what LP-scope campaigns can actually spend; per-campaign Constraint 2
+        # becomes the real binding cap anyway.  Using LP-scope budget makes the
+        # global constraint match the actual LP operating budget and prevents the
+        # LLM from summing lp_optimal_spend + non_lp_scope_daily_spend against
+        # the total account budget (which would always look contradictory).
+        lp_scope_cids_pre = {str(kw.get("campaign_id", "")) for kw in lp_input if kw.get("campaign_id")}
+        lp_scope_campaign_budget_raw = sum(
+            float(camp_meta[cid].get("daily_budget") or 0)
+            for cid in lp_scope_cids_pre
+            if cid in camp_meta and (camp_meta[cid].get("state") or "").upper() == "ENABLED"
+        )
+        # Reconcile LP-scope budget against LP-scope historical spend (same logic
+        # as the account-level reconciliation above).
+        lp_scope_hist_spend_total = sum(
+            float(r.get("spend", 0) or 0)
+            for r in perf_records_all
+            if str(r.get("campaign_id", "")) in lp_scope_cids_pre
+        )
+        lp_scope_hist_daily = round(lp_scope_hist_spend_total / days, 2) if days > 0 else 0.0
+        if lp_scope_campaign_budget_raw > 0:
+            lp_scope_budget_ratio = round(lp_scope_hist_daily / lp_scope_campaign_budget_raw, 3)
+            if lp_scope_budget_ratio > 1 + _AMAZON_PACING_MAX:
+                lp_budget = round(lp_scope_hist_daily * 0.90, 2)
+            else:
+                lp_budget = lp_scope_campaign_budget_raw
+        else:
+            lp_budget = lp_scope_hist_daily * 0.90 if lp_scope_hist_daily > 0 else daily_budget
+
         # ── CVR deflation: correct for cross-keyword attribution overlap ──────
         # item["total_orders"] = spAdvertisedProduct groupBy=advertiser (ASIN-level,
         #   deduplicated within the ASIN — one purchase counted once across campaigns).
@@ -1503,7 +1580,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         # Instead, we compute a recommended stock level after optimisation.
         result = optimizer.optimize(
             keywords         = lp_input,
-            total_budget     = daily_budget,
+            total_budget     = lp_budget,
             campaign_budgets = campaign_budgets or None,
             target_acos      = target_acos,
             avg_price        = avg_price,
@@ -1523,11 +1600,18 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         )
 
         lp_spend_total      = summary["actual_spend"]
-        spend_ceiling_bound = lp_spend_total < daily_budget * 0.6
-        budget_binding      = lp_spend_total >= daily_budget * 0.85
+        spend_ceiling_bound = lp_spend_total < lp_budget * 0.6
+        budget_binding      = lp_spend_total >= lp_budget * 0.85
         # Campaign IDs that contributed at least one keyword to the LP model.
         # Auto / product-targeting campaigns never appear here.
         lp_scoped_cids      = {str(kw.get("campaign_id", "")) for kw in lp_input if kw.get("campaign_id")}
+        # Historical spend split: LP-scope keywords vs non-LP (auto/PT + untracked keywords).
+        # Explains the gap between lp_optimal_spend and historical_daily_spend to the LLM.
+        lp_scope_hist_spend = round(
+            sum(float(r.get("spend", 0) or 0) for r in perf_records_all
+                if str(r.get("campaign_id", "")) in lp_scoped_cids) / days, 2
+        ) if days > 0 else 0.0
+        non_lp_scope_hist_spend = round(max(0.0, historical_daily_spend - lp_scope_hist_spend), 2)
         zero_kws, maxed_kws = _classify_lp_keywords(kw_perf, alloc, kw_map)
         kw_id_map           = _build_lp_kw_id_map(ctx, campaign_ids)
 
@@ -1570,6 +1654,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             lp_input, alloc, kw_id_map, brand_kws, headroom, avg_price,
             inv_gate=inv_gate,
             paused_campaign_ids=paused_cids,
+            spend_ceiling_bound=spend_ceiling_bound,
         )
 
         placement_data_unknown = set(placement_perf.keys()) <= {"UNKNOWN", ""}
@@ -1594,7 +1679,13 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         stock_shortfall = max(0, recommended_stock - total_available - confirmed_inbound)
 
         item["lp_summary"] = {
-            "daily_budget":                  daily_budget,
+            # lp_scope_campaign_daily_budget: sum of LP-scope campaign budgets only.
+            # This is the actual global constraint given to the LP optimizer.
+            # Non-LP campaigns (auto/PT) draw from their OWN separate budgets —
+            # lp_optimal_spend and non_lp_scope_daily_spend must NOT be summed
+            # against each other or against total_account_daily_budget.
+            "lp_scope_campaign_daily_budget": lp_budget,
+            "total_account_daily_budget":     daily_budget,
             "lp_optimal_spend":              lp_spend_total,
             "lp_optimal_orders_pessimistic": summary["total_expected_orders"],
             "lp_optimal_orders_raw":         lp_raw_orders,
@@ -1626,6 +1717,11 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             "historical_daily_spend":       historical_daily_spend,
             "budget_overage_ratio":         budget_overage_ratio,
             "budget_source":                budget_source,
+            # LP scope vs non-LP spend split:
+            # lp_optimal_spend covers only lp_scope keywords; non_lp_scope_daily_spend
+            # explains why total_historical_daily_spend >> lp_optimal_spend.
+            "lp_scope_daily_spend":         lp_scope_hist_spend,
+            "non_lp_scope_daily_spend":     non_lp_scope_hist_spend,
         }
         item["lp_top_allocations"] = [
             {
@@ -2751,6 +2847,25 @@ def _generate_charts(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 # LLM pre-enrichment (summary injection only — no field stripping)
 # ---------------------------------------------------------------------------
 
+def _causal_reliability_tier(
+    backtest_hit_rate: Optional[float],
+    events_significant_pct: Optional[float],
+) -> str:
+    """
+    AND-gate: 'high' requires BOTH historical calibration (hit_rate ≥0.70)
+    AND at least one event being statistically significant in this run.
+    Downgrade to 'low' if either condition fails; 'none' if no data at all.
+    """
+    has_calibration  = (backtest_hit_rate or 0) >= 0.70
+    has_significance = (events_significant_pct is not None) and events_significant_pct > 0
+
+    if has_calibration and has_significance:
+        return "high"
+    if (backtest_hit_rate or 0) > 0 or has_significance:
+        return "low"
+    return "none"
+
+
 def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     """
     Pre-compute a flat highlights dict from a fully enriched item.
@@ -2811,6 +2926,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "rank_series_days":          len(next(iter(rank_series.values()), {})),
         "market_trends_keywords":    list(market_trends.keys()),
         "change_attributions_count":  len(attributions),
+        "attribution_suspect_count":  sum(1 for a in attributions if a.get("attribution_suspect")),
         "causal_consensus_sample":    attributions[0].get("consensus") if attributions else None,
         # Statistical sufficiency & ACOS CI
         "orders_reliability":         item.get("orders_reliability"),
@@ -2820,14 +2936,17 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "backtest_hit_rate":          item.get("backtest_hit_rate"),
         "backtest_strong_hit_rate":   item.get("backtest_strong_hit_rate"),
         "backtest_total":             item.get("backtest_total"),
-        # Pre-computed reliability tier so LLM does not need to interpret raw %:
-        #   "high"   ≥70%  — causal labels trustworthy, may use 'demonstrated'
-        #   "low"    1–69% — directional accuracy near-random; downgrade all labels
-        #   "none"   0% or no backtest — completely unvalidated
-        "causal_reliability": (
-            "high" if (item.get("backtest_hit_rate") or 0) >= 0.70
-            else "low"  if (item.get("backtest_hit_rate") or 0) > 0
-            else "none"
+        # Per-event statistical significance (pre-computed by causal_analysis)
+        "events_significant_count":   item.get("events_significant_count"),
+        "events_significant_pct":     item.get("events_significant_pct"),
+        # Pre-computed reliability tier — AND-gate of historical calibration AND
+        # current-run event significance so LLM cannot overclaim on insignificant results:
+        #   "high"   backtest_hit_rate ≥0.70 AND ≥1 event statistically significant
+        #   "low"    any calibration data OR some significant events, but not both conditions
+        #   "none"   no backtest data and no significant events
+        "causal_reliability": _causal_reliability_tier(
+            backtest_hit_rate     = item.get("backtest_hit_rate"),
+            events_significant_pct = item.get("events_significant_pct"),
         ),
     }
 
@@ -3305,15 +3424,29 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "Wilson CVR shrinkage causes LP's estimated orders to fall below actual historical — "
                 "this is an artifact of pessimistic estimation, NOT evidence the current allocation beats LP; "
                 "campaign_actions already corrects for this by allowing increase_budget when ACOS is healthy). "
-                "daily_budget = LP budget constraint (may differ from total_daily_budget snapshot — see budget_source). "
-                "budget_source: 'campaign_snapshot' = sum of currently-ENABLED campaign budgets (may understate if campaigns "
-                "were paused or budgets cut mid-period); 'historical_avg_spend' = historical_daily_spend × 0.90 used instead "
+                "CRITICAL — LP budget split (read carefully before writing the Budget section):\n"
+                "  lp_scope_campaign_daily_budget = sum of LP-scope campaign daily budgets — the actual global "
+                "constraint given to LP. LP cannot spend more than this.\n"
+                "  total_account_daily_budget = sum of ALL enabled campaign daily budgets (LP-scope + non-LP-scope).\n"
+                "  lp_scope_daily_spend = historical daily spend for LP-scope campaigns (what they actually spent).\n"
+                "  non_lp_scope_daily_spend = historical daily spend for non-LP campaigns (auto/PT + untracked keywords).\n"
+                "  lp_optimal_spend = what LP recommends spending across LP-scope keywords.\n"
+                "FORBIDDEN: do NOT add lp_optimal_spend + non_lp_scope_daily_spend and compare to "
+                "total_account_daily_budget — these come from SEPARATE campaign budget pools and adding them "
+                "produces a meaningless number that is always larger than the account budget. "
+                "The correct comparisons are:\n"
+                "  lp_optimal_spend vs lp_scope_campaign_daily_budget (is LP using its allocated budget?)\n"
+                "  lp_scope_daily_spend vs lp_scope_campaign_daily_budget (did LP-scope campaigns historically hit cap?)\n"
+                "  non_lp_scope_daily_spend vs (total_account_daily_budget − lp_scope_campaign_daily_budget) "
+                "(did non-LP campaigns hit their budget cap?)\n"
+                "budget_source: 'campaign_snapshot' = current campaign budget snapshot; "
+                "'historical_avg_spend' = historical_daily_spend × 0.90 used instead "
                 "because discrepancy exceeded Amazon's 25% daily pacing allowance (structural budget change detected). "
                 "budget_overage_ratio = historical_daily_spend ÷ campaign_snapshot_budget: "
                 "ratio ≤ 1.25 is normal Amazon pacing (campaigns regularly hit cap → Amazon allows up to 25% daily overage); "
                 "ratio > 1.25 indicates campaigns ran at higher budgets during the period (budget was cut recently). "
                 "When budget_overage_ratio is 1.20–1.25 and budget_source='campaign_snapshot': "
-                "actual achievable spend ≈ daily_budget × budget_overage_ratio — "
+                "actual achievable spend ≈ total_account_daily_budget × budget_overage_ratio — "
                 "mention this in the report as 'Amazon budget pacing: account consistently hits cap, "
                 "actual spend runs ~X% above set budget'; this is NOT a data error. "
                 "Do NOT flag budget_overage_ratio ≤ 1.25 as a discrepancy or data quality issue. "
@@ -3386,8 +3519,13 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "fraction of evaluated change events where model-predicted direction matched observed post-window KPI direction; "
                 "threshold: <0.70 = near-random (causal_reliability='low'/'none'), ≥0.70 = reliable ('high')\n"
                 "  backtest_strong_hit_rate → same but restricted to 'Strong evidence' events only\n"
-                "  causal_reliability → pre-computed tier: 'high' (≥0.70), 'low' (0–0.69), 'none' (null/missing); "
-                "use this field (not the raw fraction) to apply Rule 4 label-downgrade logic\n\n"
+                "  events_significant_count / events_significant_pct → how many change events in THIS run "
+                "had at least one model produce a statistically significant result (p<0.05 + CI not crossing zero). "
+                "events_significant_pct=0.0 means ALL events were insignificant in this run.\n"
+                "  causal_reliability → pre-computed AND-gate tier: 'high' requires BOTH backtest_hit_rate ≥0.70 "
+                "AND events_significant_pct > 0; 'low' if either condition fails but some data exists; "
+                "'none' if no calibration or significance data. "
+                "Use this field (not the raw fraction) to apply Rule 4 label-downgrade logic\n\n"
                 "```json\n{_summary_json}\n```\n\n"
                 "> **Evidence Summary**: 1-2 sentences citing the single most critical metric "
                 "visible in the snapshot above "
@@ -3512,9 +3650,10 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "Mark increase_bid order estimates as approximate: "
                 "'~+N orders/day per +10% bid (impression elasticity unvalidated)'.\n"
                 "4. Uncertainty labelling — two independent dimensions, BOTH must pass:\n"
-                "   Dimension A — causal_reliability (historical calibration, ASIN-level):\n"
-                "   causal_reliability='high' (backtest_hit_rate ≥0.70): model is well-calibrated historically.\n"
-                "   causal_reliability='low'/'none': model is poorly calibrated — downgrade all labels regardless of consensus.\n"
+                "   Dimension A — causal_reliability (pre-computed AND-gate, ASIN-level):\n"
+                "   causal_reliability='high': backtest_hit_rate ≥0.70 AND ≥1 event statistically significant "
+                "(p<0.05, CI not crossing zero) in this run — model is both historically calibrated AND currently significant.\n"
+                "   causal_reliability='low'/'none': at least one gate failed — downgrade all labels regardless of consensus.\n"
                 "   Dimension B — consensus (per-event model agreement):\n"
                 "   consensus='Strong evidence': all 3 models agree on direction for THIS event.\n"
                 "   consensus='Conflicting': models disagree on THIS event — direction is uncertain for this event "
@@ -3543,12 +3682,20 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "6. Append a **Caveats & Data Quality** subsection at the end of each ASIN "
                 "report if ANY of the following are true:\n"
                 "   - lp_summary.spend_ceiling_bound == true: write "
-                "'LP click-ceiling bound (LP spend $X / budget $Y; order_gap=$Z): "
-                "LP cannot use the full budget because click ceilings cap reallocation — "
-                "order_gap is negative due to ceiling constraints on LP variables, NOT because "
-                "the current strategy is optimal. Priority action: expand keyword coverage or raise bids.' "
-                "Do NOT cite a negative order_gap as evidence that the current strategy is better than LP; "
-                "do NOT recommend increasing the budget when spend_ceiling_bound=true.\n"
+                "'LP click-ceiling bound: LP optimal spend $lp_optimal_spend vs LP-scope campaign budget "
+                "$lp_scope_campaign_daily_budget (LP-scope historical spend $lp_scope_daily_spend/day). "
+                "Click ceilings on LP-scope keywords are exhausted — LP cannot allocate the full budget. "
+                "Non-LP campaigns (auto/PT) run on their own separate budgets ($non_lp_scope_daily_spend/day). "
+                "Priority action: expand keyword coverage or raise bids on ceiling-constrained keywords.' "
+                "CRITICAL RULES when spend_ceiling_bound=true:\n"
+                "  (a) Do NOT cite a negative order_gap as evidence the current strategy is optimal.\n"
+                "  (b) Do NOT recommend increasing the budget — more budget does NOT help ceiling-bound keywords.\n"
+                "  (c) Do NOT recommend decrease_bid for any keyword — cutting bids lowers future click ceilings "
+                "and freed budget cannot reach ceiling-constrained keywords. "
+                "keyword_actions with action='review_bids' under ceiling-bound means MONITOR, not cut.\n"
+                "  (d) Do NOT suggest that lp_optimal_spend ($X) vs historical_daily_spend ($Y) "
+                "means campaigns are under-spending — the gap is explained by non-LP scope spend "
+                "(lp_summary.non_lp_scope_daily_spend).\n"
                 "   - lp_summary.order_gap < 0 AND lp_summary.budget_binding == false AND lp_summary.spend_ceiling_bound == false: write "
                 "'LP order estimate below actual (order_gap=$Z, no binding constraint identified): "
                 "possible CVR data gap or keyword mix mismatch — review bid strategy before scaling budget.'\n"
@@ -3563,24 +3710,41 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "'Campaign matching used name-substring fallback — some campaigns may be misattributed. "
                 "Verify campaign_ids and treat campaign-level metrics with caution.' "
                 "Do NOT make high-confidence campaign-level recommendations under name_substring matching.\n"
-                "   - causal_reliability != 'high' (i.e. backtest_hit_rate < 0.70): write "
+                "   - causal_reliability != 'high': write the appropriate caveat below "
+                "(causal_reliability is pre-computed — use it directly; do NOT re-derive from raw fractions):\n"
+                "     causal_reliability='low' because backtest_hit_rate < 0.70: "
                 "'Causal model directional accuracy $pct% (threshold 70%) — change_attribution "
                 "evidence is near-random; all consensus labels downgraded one tier. "
                 "($pct = backtest_hit_rate × 100, e.g. 0.65 → 65%.) "
-                "LP budget recommendations remain valid (independent of causal models).' "
+                "LP budget recommendations remain valid (independent of causal models).'\n"
+                "     causal_reliability='low' because events_significant_pct == 0: "
+                "'No change event in this run produced a statistically significant causal estimate "
+                "(p≥0.05 or CI crosses zero across all models). "
+                "Causal labels are descriptive only — do not use them to justify P0 actions.'\n"
+                "     causal_reliability='none': "
+                "'Causal analysis has no calibration data and no significant results — "
+                "all change_attribution evidence is unvalidated; treat as exploratory.'\n"
                 "This caveat is MANDATORY when causal_reliability is 'low' or 'none'.\n"
+                "   - Any change_attribution entry has attribution_suspect == true: write "
+                "'Attribution outlier: [event_date] [change_type] delta_orders=$X exceeds 1.5× pre-window mean "
+                "($pre_mean/day) on ASIN-level KPI fallback — seasonal or account-wide trend may dominate; "
+                "treat delta magnitude as an upper bound only.' "
+                "Do NOT use the raw delta_orders value as a factual order loss — qualify it as an estimate.\n"
                 "   - placement_performance is missing or empty\n"
                 "   - keyword_count < 10\n"
                 "   - More than half of change_attribution entries have skipped=True "
                 "for all three causal models\n"
                 "   - post_window.days < 5 for the majority of attributions\n"
-                "7. Paused campaigns: when paused_campaign_count > 0, do NOT recommend bid or budget "
+                "7. Paused campaigns: when campaign_state='PAUSED', do NOT recommend bid or budget "
                 "changes for those campaigns — such changes have no effect until the campaign is "
-                "re-enabled. For each action targeting a paused campaign either (a) recommend "
-                "re-enabling it first (with explicit justification: what will improve if re-enabled?), "
-                "or (b) recommend restructuring / archiving it. If all campaigns are paused "
-                "(active_campaign_count == 0), the #1 priority action must address the pause decision "
-                "before any other optimisation.\n"
+                "re-enabled. CRITICAL: if a campaign_action entry has campaign_state='PAUSED' AND "
+                "action='decrease_budget' or 'pause_candidate', treat this as a data artefact — "
+                "DO NOT surface it as an action item. The campaign is already paused; any historical "
+                "ACOS figure is moot until the campaign is re-enabled. "
+                "For paused campaigns, only surface an action if it explicitly says "
+                "'enable_and_review_bids', 'enable_and_increase_budget', or 'archive_candidate'. "
+                "If all campaigns are paused (active_campaign_count == 0), the #1 priority action "
+                "must address the pause decision before any other optimisation.\n"
                 "8. Statistical sufficiency: when orders_reliability = 'low' (<30 orders total), "
                 "mark ACOS and CVR estimates as 'statistically preliminary — results may shift "
                 "significantly with more data' and display the ACOS 95% CI "

@@ -372,6 +372,20 @@ def _build_attributions(
         if direction == "neutral" and delta_acos is not None:
             direction = _classify_direction(delta_acos, "acos", pre_acos or 0)
 
+        # Flag when ASIN-level KPI fallback produces a delta larger than 1.5× the
+        # pre-window mean — likely dominated by seasonal trends, not the change itself.
+        pre_orders_mean = pre["orders"]
+        attribution_suspect = (
+            kpi_level == "asin"
+            and pre_orders_mean > 0
+            and abs(delta_orders) > pre_orders_mean * 1.5
+        )
+        attribution_suspect_reason = (
+            f"ASIN-level KPI fallback: |Δorders|={abs(delta_orders):.1f} > 1.5× "
+            f"pre-window mean ({pre_orders_mean:.1f}/day); "
+            f"seasonal or account-wide trend likely dominates the change effect"
+        ) if attribution_suspect else None
+
         change_date = anchor.strftime("%Y-%m-%d")
         cov         = cov_series.get(change_date, {})
 
@@ -422,9 +436,11 @@ def _build_attributions(
             "delta_clicks":            delta_clicks,
             "direction":               direction,
             "covariates_at_change":    cov,
-            "had_promotion":           bool(cov.get("promotion_flag", False)),
-            "price_delta_window":      price_delta,
-            "price_gap_to_comp_median": price_gap,
+            "had_promotion":              bool(cov.get("promotion_flag", False)),
+            "price_delta_window":         price_delta,
+            "price_gap_to_comp_median":   price_gap,
+            "attribution_suspect":        attribution_suspect,
+            "attribution_suspect_reason": attribution_suspect_reason,
         })
 
     # Sort: priority desc, then impact magnitude desc
@@ -940,18 +956,63 @@ def run_causal_analysis(
 
         consensus = _build_consensus(its, ci, dml, attr)
 
+        # ── Per-event significance flags ──────────────────────────────────
+        # ITS: p_level < 0.05 AND 95% CI does not cross zero
+        its_sig = (
+            not its.get("skipped")
+            and (its.get("p_level") or 1.0) < 0.05
+            and (its.get("level_shift_ci_lo", 0) or 0) * (its.get("level_shift_ci_hi", 0) or 0) > 0
+        )
+        # CausalImpact: p_value < 0.05 (skip ITS-fallback rows — same p reused)
+        ci_sig = (
+            not ci.get("skipped")
+            and ci.get("source") != "its_fallback"
+            and (ci.get("p_value") or 1.0) < 0.05
+        )
+        # DML: p_value < 0.05 AND theta CI does not cross zero
+        dml_sig = (
+            not dml.get("skipped")
+            and (dml.get("p_value") or 1.0) < 0.05
+            and (dml.get("theta_ci_lo", 0) or 0) * (dml.get("theta_ci_hi", 0) or 0) > 0
+        )
+
         attr.update({
-            "its":           its,
-            "causal_impact": ci,
-            "dml":           dml,
-            "consensus":     consensus,
+            "its":              its,
+            "causal_impact":    ci,
+            "dml":              dml,
+            "consensus":        consensus,
+            "its_significant":  its_sig,
+            "ci_significant":   ci_sig,
+            "dml_significant":  dml_sig,
+            "event_significant": its_sig or ci_sig or dml_sig,
         })
 
     n_asin_lvl = sum(1 for a in attributions if a.get("kpi_level") == "asin")
+
+    # ── Item-level significance aggregate ─────────────────────────────────────
+    # Only count events where at least one causal model actually ran.
+    runnable = [
+        a for a in attributions
+        if not (
+            a.get("its", {}).get("skipped", True)
+            and a.get("causal_impact", {}).get("skipped", True)
+            and a.get("dml", {}).get("skipped", True)
+        )
+    ]
+    n_significant = sum(1 for a in runnable if a.get("event_significant"))
+    events_significant_count = n_significant
+    events_significant_pct   = round(n_significant / len(runnable), 3) if runnable else None
+
     logger.info(
         f"[causal_analysis] {item.get('asin', '?')}: "
         f"{len(attributions)} change events analysed "
-        f"({n_asin_lvl} used ASIN-level KPI fallback)"
+        f"({n_asin_lvl} ASIN-level fallback); "
+        f"significant={n_significant}/{len(runnable)}"
     )
     backtest = _compute_backtest_stats(attributions)
-    return {"change_attributions": attributions, **backtest}
+    return {
+        "change_attributions":      attributions,
+        "events_significant_count": events_significant_count,
+        "events_significant_pct":   events_significant_pct,
+        **backtest,
+    }
