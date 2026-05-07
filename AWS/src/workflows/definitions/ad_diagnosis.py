@@ -1392,6 +1392,41 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         daily_budget = item.get("total_daily_budget", 0) or 0
         campaign_ids = set(item.get("campaign_ids", []))
 
+        # ── Reconcile budget snapshot vs historical spend ─────────────────
+        # total_daily_budget = ENABLED campaigns only (current snapshot).
+        # During the period, campaigns may have been PAUSED or had budgets
+        # changed, so historical spend can exceed the snapshot.
+        # Amazon also allows up to 25% daily budget overage for traffic spikes.
+        #
+        # Strategy:
+        #   discrepancy ≤ 25% → Amazon pacing; keep snapshot, expose ratio.
+        #   discrepancy > 25% → structural (budget changed / campaigns paused);
+        #                        use historical_daily_spend × 0.90 as LP budget.
+        perf_records_all = item.get("performance_records") or []
+        historical_spend_total = sum(
+            float(r.get("spend", 0) or 0)
+            for r in perf_records_all
+            if str(r.get("campaign_id")) in campaign_ids
+        )
+        historical_daily_spend = round(historical_spend_total / days, 2) if days > 0 else 0.0
+        # Amazon's pacing ceiling: campaigns can overspend by up to this factor per day
+        _AMAZON_PACING_MAX = 0.25
+        if daily_budget > 0:
+            budget_overage_ratio = round(historical_daily_spend / daily_budget, 3)
+            if budget_overage_ratio > 1 + _AMAZON_PACING_MAX:
+                # Structural mismatch: budget snapshot understates real capacity
+                daily_budget = round(historical_daily_spend * 0.90, 2)
+                budget_source = "historical_avg_spend"
+            else:
+                budget_source = "campaign_snapshot"
+        else:
+            budget_overage_ratio = None
+            budget_source = "campaign_snapshot"
+            # Fall back: if current snapshot is 0 but account was actually spending, use history
+            if historical_daily_spend > 0:
+                daily_budget = round(historical_daily_spend * 0.90, 2)
+                budget_source = "historical_avg_spend"
+
         if not kw_perf or daily_budget <= 0:
             item["lp_summary"] = {"skipped": True, "reason": "no keyword data or zero budget"}
             continue
@@ -1459,7 +1494,10 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         # so the LLM can still reason about the full picture.
         kw_scope_orders       = kw_attributed_orders          # spSearchTerm, keyword scope
         actual_daily_ad_orders = round(kw_scope_orders / days, 2)
-        auto_pt_daily_orders   = round((total_orders - kw_scope_orders) / days, 2)
+        # auto_pt_daily_orders: orders from auto / product-targeting (not in LP scope).
+        # Clamped to ≥ 0: if kw_scope > total_orders it means keyword-level report
+        # double-counts across match types within the same purchase.
+        auto_pt_daily_orders   = max(0.0, round((total_orders - kw_scope_orders) / days, 2))
 
         # Inventory is NOT a LP constraint — replenishment timing is unstable.
         # Instead, we compute a recommended stock level after optimisation.
@@ -1584,6 +1622,10 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             # < 1.0 means cross-keyword / cross-match-type overlap was corrected.
             "cvr_deflation":                round(cvr_deflation, 3),
             "cvr_deflation_source":         "asin_vs_keyword_orders",
+            # Budget reconciliation
+            "historical_daily_spend":       historical_daily_spend,
+            "budget_overage_ratio":         budget_overage_ratio,
+            "budget_source":                budget_source,
         }
         item["lp_top_allocations"] = [
             {
@@ -3263,6 +3305,18 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "Wilson CVR shrinkage causes LP's estimated orders to fall below actual historical — "
                 "this is an artifact of pessimistic estimation, NOT evidence the current allocation beats LP; "
                 "campaign_actions already corrects for this by allowing increase_budget when ACOS is healthy). "
+                "daily_budget = LP budget constraint (may differ from total_daily_budget snapshot — see budget_source). "
+                "budget_source: 'campaign_snapshot' = sum of currently-ENABLED campaign budgets (may understate if campaigns "
+                "were paused or budgets cut mid-period); 'historical_avg_spend' = historical_daily_spend × 0.90 used instead "
+                "because discrepancy exceeded Amazon's 25% daily pacing allowance (structural budget change detected). "
+                "budget_overage_ratio = historical_daily_spend ÷ campaign_snapshot_budget: "
+                "ratio ≤ 1.25 is normal Amazon pacing (campaigns regularly hit cap → Amazon allows up to 25% daily overage); "
+                "ratio > 1.25 indicates campaigns ran at higher budgets during the period (budget was cut recently). "
+                "When budget_overage_ratio is 1.20–1.25 and budget_source='campaign_snapshot': "
+                "actual achievable spend ≈ daily_budget × budget_overage_ratio — "
+                "mention this in the report as 'Amazon budget pacing: account consistently hits cap, "
+                "actual spend runs ~X% above set budget'; this is NOT a data error. "
+                "Do NOT flag budget_overage_ratio ≤ 1.25 as a discrepancy or data quality issue. "
                 "spend_ceiling_bound=true means click ceilings (C4) are the binding constraint, NOT the budget "
                 "(lp_optimal_spend < 60% of daily_budget); in this case: "
                 "(a) lp_zero/maxed keyword signals remain valid as ROI signals; "
