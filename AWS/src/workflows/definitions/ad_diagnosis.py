@@ -1524,7 +1524,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 budget_source = "historical_avg_spend"
 
         if not kw_perf or daily_budget <= 0:
-            item["lp_summary"] = {"skipped": True, "reason": "no keyword data or zero budget"}
+            item["lp_summary"] = {"skipped": True, "reason": "no keyword data or zero budget",
+                                  "lp_scoped_cids": []}
             continue
 
         camp_meta: Dict[str, Dict] = {
@@ -1557,7 +1558,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             global_mu=global_mu,
         )
         if not lp_input:
-            item["lp_summary"] = {"skipped": True, "reason": "all keywords filtered (insufficient clicks)"}
+            item["lp_summary"] = {"skipped": True, "reason": "all keywords filtered (insufficient clicks)",
+                                  "lp_scoped_cids": sorted(lp_scope_cids_pre)}
             continue
 
         # ── LP-scope budget: use only LP-scope campaign budgets as global cap ──
@@ -1640,7 +1642,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             avg_price        = avg_price,
         )
         if result.get("status") != "OPTIMAL":
-            item["lp_summary"] = {"skipped": True, "reason": result.get("message")}
+            item["lp_summary"] = {"skipped": True, "reason": result.get("message"),
+                                  "lp_scoped_cids": sorted(lp_scope_cids_pre)}
             continue
 
         summary    = result["summary"]
@@ -1776,6 +1779,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             # explains why total_historical_daily_spend >> lp_optimal_spend.
             "lp_scope_daily_spend":         lp_scope_hist_spend,
             "non_lp_scope_daily_spend":     non_lp_scope_hist_spend,
+            # Campaign IDs in LP scope — used by _mine_auto_campaigns to derive auto/PT campaigns.
+            "lp_scoped_cids":               sorted(lp_scoped_cids),
         }
         item["lp_top_allocations"] = [
             {
@@ -2402,6 +2407,61 @@ def _fetch_trailing_ext_sync(ctx: WorkflowContext, asin: str) -> Dict[str, Dict]
     )
 
 
+# Auto campaign search-term mining
+# ---------------------------------------------------------------------------
+
+def _mine_auto_campaigns(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
+    """
+    ProcessStep: mine auto/PT campaign search terms for negative keyword candidates
+    and harvest-to-manual candidates using Empirical Bayes thresholds.
+
+    Reads raw spSearchTerm records from the L1 cache (_KEY_KW_PERFORMANCE),
+    filters to auto/PT campaign IDs (all campaign_ids minus lp_scoped_cids),
+    and writes item["auto_mining"] with negatives, harvest, beta_prior, summary.
+    """
+    from src.intelligence.processors.auto_mining import build_auto_mining_actions
+
+    raw_st_records: List[Dict] = ctx.cache.get(_KEY_KW_PERFORMANCE, [])
+    target_acos = ctx.config.get("target_acos", 0.35)
+    days        = ctx.config.get("days", 30)
+
+    for item in items:
+        campaign_ids  = {str(c) for c in (item.get("campaign_ids") or [])}
+        lp_scoped_cids = {str(c) for c in (item.get("lp_summary") or {}).get("lp_scoped_cids", [])}
+        auto_pt_cids  = campaign_ids - lp_scoped_cids
+
+        # Existing manual keywords for harvest deduplication
+        existing_manual = {
+            (kw.get("keyword_text") or "").strip().lower()
+            for kw in (item.get("keyword_performance") or [])
+            if kw.get("keyword_text")
+        }
+
+        total_orders = item.get("total_orders") or 0
+        total_sales  = item.get("total_sales")  or 0
+        avg_price    = round(total_sales / total_orders, 2) if total_orders > 0 else 0.0
+
+        # Filter raw records to this ASIN's campaigns (avoids passing full account data)
+        asin_records = [r for r in raw_st_records
+                        if str(r.get("campaign_id", "")) in campaign_ids]
+
+        item["auto_mining"] = build_auto_mining_actions(
+            search_term_records = asin_records,
+            auto_pt_cids        = auto_pt_cids,
+            existing_manual_kws = existing_manual,
+            avg_price           = avg_price,
+            target_acos         = target_acos,
+            days                = days,
+        )
+        logger.debug(
+            f"[auto_mining] {item.get('asin')}: "
+            f"{len(item['auto_mining'].get('negatives', []))} negatives, "
+            f"{len(item['auto_mining'].get('harvest', []))} harvest candidates"
+        )
+
+    return items
+
+
 # Causal analysis wrapper (delegates to intelligence/processors/causal_analysis)
 # ---------------------------------------------------------------------------
 
@@ -3002,6 +3062,11 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
             backtest_hit_rate     = item.get("backtest_hit_rate"),
             events_significant_pct = item.get("events_significant_pct"),
         ),
+        # Auto/PT campaign search-term mining results
+        "auto_mining_summary":  (item.get("auto_mining") or {}).get("summary"),
+        "auto_mining_beta_prior": (item.get("auto_mining") or {}).get("beta_prior"),
+        "auto_mining_negatives": (item.get("auto_mining") or {}).get("negatives", [])[:10],
+        "auto_mining_harvest":   (item.get("auto_mining") or {}).get("harvest", [])[:10],
     }
 
 
@@ -3325,6 +3390,16 @@ def build_ad_diagnosis(config: dict) -> Workflow:
             compute_target=ComputeTarget.PURE_PYTHON,
         ),
 
+        # ── Stage 5b2: auto campaign search-term mining ───────────────────────
+        # Depends on optimize_budget (needs lp_scoped_cids from lp_summary).
+        # Identifies negative keyword candidates and harvest-to-manual candidates
+        # from auto/PT campaign search terms using Empirical Bayes thresholds.
+        ProcessStep(
+            name="mine_auto_campaigns",
+            fn=_mine_auto_campaigns,
+            compute_target=ComputeTarget.PURE_PYTHON,
+        ),
+
         # ── Stage 5c: causal analysis (window attribution + ITS/CI/DML) ──────
         # Absorbs the old correlate_changes step: produces change_attributions
         # with ITS/CausalImpact/DML results embedded per event.
@@ -3392,12 +3467,18 @@ def build_ad_diagnosis(config: dict) -> Workflow:
 
                 "### Quick Metrics Snapshot\n\n"
                 "The block below is the authoritative pre-computed summary. "
-                "Render ALL fields as a three-column table (Field | Value | Source / How derived). "
+                "Render scalar fields as a three-column table (Field | Value | Source / How derived). "
                 "Use `null` as-is — do NOT substitute guesses. "
                 "Do NOT re-derive any value from the full JSON.\n\n"
+                "SKIP these fields from the table (they are dicts or lists-of-dicts — render them "
+                "only in their dedicated report sections, NOT here): "
+                "lp_summary, lp_top_allocations, campaign_actions, keyword_actions, "
+                "auto_mining_summary, auto_mining_beta_prior, auto_mining_negatives, auto_mining_harvest.\n\n"
                 "Column definitions:\n"
                 "- **Field**: exact key name from the JSON below.\n"
-                "- **Value**: exact value (keep null as `—`).\n"
+                "- **Value**: exact value (keep null as `—`). "
+                "For simple arrays (e.g. lp_zero_keywords, rank_tracked_keywords), show the array inline. "
+                "Never write 'object' — if a value cannot be shown as a scalar or simple array, skip the row.\n"
                 "- **Source / How derived**: one short phrase from the legend below. "
                 "⚠️ Do NOT write 'Pre-computed highlights', 'summary', or any generic phrase — "
                 "every row must have a *specific* source (e.g. 'SP-API Catalog', "
@@ -3547,6 +3628,29 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "increase_bid: estimated_order_uplift_per_10pct_bid, expected_spend_per_10pct_bid; "
                 "decrease_bid: expected_order_delta (negative), expected_spend_delta (negative = savings); "
                 "campaign_actions: expected_order_delta and expected_spend_delta quantify daily impact\n"
+                "  auto_mining_summary → aggregate stats for auto/PT search-term mining:\n"
+                "    auto_pt_cids_count: number of auto/PT campaigns analyzed\n"
+                "    terms_analyzed: total distinct search terms evaluated\n"
+                "    negative_count / harvest_count: candidates found\n"
+                "    total_wasted_spend / daily_wasted_spend: spend on zero-order terms (negative candidates)\n"
+                "    breakeven_spend: avg_price × target_acos — the max acceptable spend per order\n"
+                "    skipped: true if no auto/PT campaigns identified or no search term data\n"
+                "  auto_mining_beta_prior → Empirical Bayes Beta prior fitted from this ASIN's own search term CVR:\n"
+                "    alpha / beta: shape parameters; implied_cvr_pct = account-level CVR baseline\n"
+                "    n_terms_fitted: number of terms used to fit the prior (≥5 clicks each)\n"
+                "  auto_mining_negatives → negative keyword candidates (up to 10 shown; full list capped at 30):\n"
+                "    action: 'add_negative_keyword'\n"
+                "    priority: P0 (high confidence) or P1 (directional); gates: "
+                "Gate A (EB expected_orders ≥ 3.0 → P0, ≥ 1.5 → P1, AND orders=0), "
+                "Gate B (spend ≥ breakeven×1.5 → P0, ≥ breakeven×0.75 → P1, AND orders=0), "
+                "Gate C (effective CPO > 3× breakeven → P1, even with orders > 0)\n"
+                "    suggested_match: EXACT (single-word) or PHRASE (multi-word)\n"
+                "    keyword_text, campaign_id, clicks, orders, spend_total, daily_spend, expected_orders_eb, rationale\n"
+                "  auto_mining_harvest → search terms to promote from auto to manual (up to 10 shown; full list capped at 20):\n"
+                "    action: 'harvest_to_manual'\n"
+                "    priority: P0 (≥5 orders, efficient ACOS) or P1 (2-4 orders, efficient ACOS)\n"
+                "    suggested_match: EXACT; suggested_bid: target_acos × avg_price × Wilson CVR lower bound\n"
+                "    keyword_text, campaign_id, clicks, orders, spend_total, acos_pct, rationale\n"
                 "  ad_traffic_ratio / organic_traffic_ratio / traffic_growth_7d → "
                 "Xiyouzhaoci traffic score API (latest available snapshot)\n"
                 "  rank_tracked_keywords / rank_series_days → "
@@ -3806,7 +3910,21 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "When orders_reliability = 'medium' (30–99 orders), add a note that "
                 "conclusions should be validated over a longer window before committing "
                 "to large bid or budget changes (risk of regression-to-the-mean).\n"
-                "9. **Chart placeholders**: Diagnostic charts will be injected after the "
+                "9. **Auto/PT search-term mining** (auto_mining_negatives / auto_mining_harvest):\n"
+                "   - If auto_mining_summary.skipped == true: omit this section entirely.\n"
+                "   - If auto_mining_negatives is non-empty: add a sub-section 'Auto Campaign Negative Keywords'.\n"
+                "     List P0 candidates first, then P1. For each entry show: keyword_text, campaign_id, "
+                "suggested_match, spend_total ($), orders, and rationale. "
+                "P0 = high confidence (strong statistical or spend signal); P1 = directional (add to watch list). "
+                "State the daily_wasted_spend total upfront: 'Est. $X/day wasted on zero-order terms (Gate A/B).'\n"
+                "   - If auto_mining_harvest is non-empty: add a sub-section 'Search Terms Ready for Manual Harvest'.\n"
+                "     List P0 first, then P1. For each entry show: keyword_text, campaign_id, "
+                "suggested_match=EXACT, suggested_bid ($), orders, acos_pct (%), and rationale.\n"
+                "   - Do NOT surface auto_mining_beta_prior diagnostics in the report — "
+                "it is internal model metadata.\n"
+                "   - auto_mining candidates are independent of LP keyword_actions — "
+                "do NOT compare bids or budgets across the two sections.\n"
+                "10. **Chart placeholders**: Diagnostic charts will be injected after the "
                 "report is generated. Place each marker at the most relevant position inside "
                 "the matching section. Do NOT write URLs or image syntax — just the marker "
                 "text. Omit a marker if that data is unavailable "

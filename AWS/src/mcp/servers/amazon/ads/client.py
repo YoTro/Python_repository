@@ -396,12 +396,19 @@ class AmazonAdsClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        # spCampaignsPlacement is a virtual type: same reportTypeId as spCampaigns
-        # but grouped by campaign + campaignPlacement for per-placement breakdown.
+        # spCampaignsPlacement uses the same reportTypeId as spCampaigns.
+        # groupBy ["campaign", "campaignPlacement"] is documented by Amazon but
+        # CONFIRMED BROKEN in v3: the API splits rows ~3× per campaign yet never
+        # returns the campaignPlacement value in the payload (adding it to columns
+        # gives 400; leaving it only in groupBy silently omits it).  This produces
+        # 378 unlabelled rows for 128 campaigns — data split but impossible to
+        # attribute to a placement.  Fallback: use ["campaign"] for clean,
+        # deduplicated campaign-level data.  Per-placement performance is
+        # unavailable via v3; configured bid adjustments come from Campaign API.
         report_type_id = "spCampaigns" if report_type == "spCampaignsPlacement" else report_type
         group_by_map = {
             "spCampaigns":          ["campaign"],
-            "spCampaignsPlacement": ["campaign", "campaignPlacement"],
+            "spCampaignsPlacement": ["campaign"],
             "spSearchTerm":         ["searchTerm"],
             "spAdGroups":           ["adGroup"],
             "spAdvertisedProduct":  ["advertiser"],
