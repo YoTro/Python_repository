@@ -19,15 +19,34 @@ _STRATEGY_CPC_MULTIPLIER: Dict[str, float] = {
 }
 _DEFAULT_STRATEGY_MULTIPLIER = 1.20  # unknown strategy — moderate overhead
 
-# CVR shrinkage: Wilson-style confidence weight.
-# At CONFIDENCE_PRIOR clicks the effective CVR = raw_cvr × 1/√2 ≈ 71%.
-# This penalises low-sample keywords without zeroing them out.
-_CONFIDENCE_PRIOR = 30
+# CVR shrinkage: Beta-Binomial posterior shrinkage toward the match-type prior mean μ.
+# s = k / μ  — prior strength scales inversely with μ so high-priced (low-CVR) products
+# automatically require more data before the observed CVR is trusted.
+# k = 1.0 means "require ~1 expected conversion before trusting data over the prior."
+_K_CVR_PRIOR = 1.0   # expected-conversion threshold
+_S_MIN       = 5.0   # floor: prevents s from exploding when μ is tiny
+_S_MAX       = 500.0  # cap: prevents over-regularisation on very low-CVR products
 
 
-def _pessimistic_cvr(raw_cvr: float, total_clicks: int) -> float:
-    weight = math.sqrt(total_clicks / (total_clicks + _CONFIDENCE_PRIOR))
-    return raw_cvr * weight
+def _beta_cvr(
+    raw_cvr: float,
+    sample_clicks: int,
+    sample_orders: int,
+    prior_mu: float,
+    k: float = _K_CVR_PRIOR,
+) -> float:
+    """
+    Beta-Binomial shrinkage estimator.
+
+    pess_cvr = (μ·s + orders) / (s + clicks)   where s = k / μ
+
+    Behaviour:
+      clicks → 0  :  pess_cvr → μ          (fall back to prior, not to 0)
+      clicks → ∞  :  pess_cvr → raw_cvr    (trust observed data)
+    """
+    mu = prior_mu if prior_mu > 0 else (raw_cvr or 0.02)
+    s  = max(_S_MIN, min(k / mu, _S_MAX))
+    return (mu * s + sample_orders) / (s + sample_clicks)
 
 
 class AdBudgetOptimizer:
@@ -75,9 +94,11 @@ class AdBudgetOptimizer:
             name               str   "keyword_text|MATCH_TYPE"
             avg_cpc            float historical avg CPC
             estimated_cvr      float historical CVR (point estimate)
+            sample_clicks      int   total historical clicks
+            sample_orders      int   total historical attributed orders
+            prior_mu           float match-type-specific prior mean CVR (μ)
             max_daily_clicks   float click ceiling (headroom-adjusted)
             min_daily_clicks   float click floor (0 for most; >0 for brand/defense)
-            sample_clicks      int   total historical clicks (for CVR confidence)
             campaign_id        str   owning campaign id
             bidding_strategy   str   e.g. "Dynamic bids - up and down"
             placement_multiplier float account-level placement-weighted CPC factor
@@ -103,7 +124,9 @@ class AdBudgetOptimizer:
 
             raw_cvr  = kw.get("estimated_cvr", 0.0)
             clicks   = int(kw.get("sample_clicks", 0))
-            pess_cvr = _pessimistic_cvr(raw_cvr, clicks) if clicks > 0 else raw_cvr * 0.5
+            orders   = int(kw.get("sample_orders", 0))
+            prior_mu = float(kw.get("prior_mu") or raw_cvr or 0.02)
+            pess_cvr = _beta_cvr(raw_cvr, clicks, orders, prior_mu)
             pess_cvrs.append(pess_cvr)
 
         # ── Variables ─────────────────────────────────────────────────────

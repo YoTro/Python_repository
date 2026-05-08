@@ -24,8 +24,9 @@ class AmazonAdsClient:
         "FE": "https://advertising-api-fe.amazon.com"
     }
 
-    _REPORT_POLL_INTERVAL = 10  # seconds between status checks
-    _REPORT_POLL_MAX = 180      # max attempts → 30 min ceiling
+    _REPORT_POLL_INTERVAL = 10   # seconds between status checks
+    _REPORT_POLL_MAX      = 360  # max attempts → 60 min ceiling (large reports need > 30 min)
+    _REPORT_POLL_TIMEOUT  = 30   # per-request timeout for poll GET (seconds)
 
     def __init__(self, store_id: Optional[str] = None, region: str = "NA"):
         self.auth = AmazonAdsAuth(store_id)
@@ -494,14 +495,40 @@ class AmazonAdsClient:
 
     async def _poll_report(self, report_id: str) -> str:
         url = f"{self.base_url}/reporting/reports/{report_id}"
+        _net_errors = (
+            requests.exceptions.SSLError,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+        )
         for attempt in range(self._REPORT_POLL_MAX):
             headers = self._build_poll_headers()
-            resp = await asyncio.to_thread(requests.get, url, headers=headers)
+            try:
+                resp = await asyncio.to_thread(
+                    requests.get, url, headers=headers, timeout=self._REPORT_POLL_TIMEOUT
+                )
+            except _net_errors as net_err:
+                # Transient network error — log and continue polling without
+                # consuming a separate attempt slot so the ceiling isn't wasted.
+                logger.warning(
+                    f"Poll attempt {attempt + 1} for {report_id} hit network error "
+                    f"({type(net_err).__name__}), retrying after {self._REPORT_POLL_INTERVAL}s"
+                )
+                await asyncio.sleep(self._REPORT_POLL_INTERVAL)
+                continue
+
             if resp.status_code == 401:
                 logger.info(f"Poll got 401 on attempt {attempt + 1}, refreshing token and retrying")
                 self.auth._token_cache.pop(self.auth.store_id, None)
                 headers = self._build_poll_headers()
-                resp = await asyncio.to_thread(requests.get, url, headers=headers)
+                try:
+                    resp = await asyncio.to_thread(
+                        requests.get, url, headers=headers, timeout=self._REPORT_POLL_TIMEOUT
+                    )
+                except _net_errors as net_err:
+                    logger.warning(f"Token-refresh poll also failed: {net_err}, retrying")
+                    await asyncio.sleep(self._REPORT_POLL_INTERVAL)
+                    continue
+
             resp.raise_for_status()
             data = resp.json()
             status = data.get("status")

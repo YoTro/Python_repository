@@ -941,6 +941,47 @@ def _p90_headroom(daily_perf: List[Dict], fallback: float) -> float:
     return min(round(p90 / avg * 1.5, 2), fallback)
 
 
+_MIN_KWS_FOR_STRATUM = 3   # min keyword count for a match-type-specific μ
+_MIN_CLICKS_FOR_MU   = 20  # min clicks per keyword to include in μ calculation
+
+
+def _compute_cvr_prior(kw_perf: List[Dict]) -> Tuple[Dict[str, float], float]:
+    """
+    Compute click-weighted mean CVR (μ) per match type and globally.
+
+    Keywords below _MIN_CLICKS_FOR_MU are excluded — too noisy to anchor the prior.
+    Match types with fewer than _MIN_KWS_FOR_STRATUM qualifying keywords fall back
+    to the global μ so small keyword pools don't produce unstable per-stratum priors.
+
+    Returns (mu_by_match_type, global_mu).
+    """
+    from collections import defaultdict
+    buckets: Dict[str, List[Tuple[int, float]]] = defaultdict(list)
+    all_pairs: List[Tuple[int, float]] = []
+
+    for kw in kw_perf:
+        clicks = kw.get("total_clicks", 0)
+        cvr    = kw.get("cvr")
+        if not cvr or clicks < _MIN_CLICKS_FOR_MU:
+            continue
+        mt = (kw.get("match_type") or "UNKNOWN").upper()
+        pair = (clicks, cvr)
+        buckets[mt].append(pair)
+        all_pairs.append(pair)
+
+    def _wmean(pairs: List[Tuple[int, float]]) -> Optional[float]:
+        total_c = sum(c for c, _ in pairs)
+        return sum(c * v for c, v in pairs) / total_c if total_c > 0 else None
+
+    global_mu = _wmean(all_pairs) or 0.02
+
+    mu_by_match_type: Dict[str, float] = {}
+    for mt, pairs in buckets.items():
+        mu_by_match_type[mt] = _wmean(pairs) if len(pairs) >= _MIN_KWS_FOR_STRATUM else global_mu
+
+    return mu_by_match_type, global_mu
+
+
 def _build_lp_input(
     kw_perf: List[Dict],
     kw_to_campaign: Dict[tuple, str],
@@ -949,8 +990,11 @@ def _build_lp_input(
     headroom: float,
     placement_multiplier: float,
     daily_perf: Optional[List[Dict]] = None,
+    mu_by_match_type: Optional[Dict[str, float]] = None,
+    global_mu: float = 0.02,
 ) -> List[Dict]:
     click_headroom = _p90_headroom(daily_perf or [], headroom)
+    mu_map = mu_by_match_type or {}
     lp_input: List[Dict] = []
     for kw in kw_perf:
         if not kw.get("avg_cpc") or not kw.get("cvr"):
@@ -962,11 +1006,14 @@ def _build_lp_input(
         is_brand   = kw_text.lower() in {b.lower() for b in brand_kws}
         max_daily  = max(round(kw["daily_clicks"] * click_headroom, 1), 1.0)
         min_daily  = round(kw["daily_clicks"] * 0.3, 1) if is_brand else 0.0
+        prior_mu   = mu_map.get(match_type.upper(), global_mu)
         lp_input.append({
             "name":                f"{kw_text}|{match_type}",
             "avg_cpc":             kw["avg_cpc"],
             "estimated_cvr":       kw["cvr"],
             "sample_clicks":       kw.get("total_clicks", 0),
+            "sample_orders":       kw.get("total_orders", 0),
+            "prior_mu":            prior_mu,
             "max_daily_clicks":    max_daily,
             "min_daily_clicks":    min_daily,
             "campaign_id":         cid,
@@ -1416,7 +1463,10 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
       how many units are needed to safely execute the LP plan.
 
       eff_cpc_i  = avg_cpc_i × bidding_strategy_multiplier × placement_multiplier
-      pess_cvr_i = cvr_i × √(clicks_i / (clicks_i + 30))
+      pess_cvr_i = (μ_i·s_i + orders_i) / (s_i + clicks_i)   [Beta-Binomial shrinkage]
+      s_i = k / μ_i,   k = _K_CVR_PRIOR ≈ 1.0 expected conversion to trust data
+      μ_i = click-weighted mean CVR for this keyword's match type (falls back to
+            account-level mean when the match-type stratum has < 3 qualifying keywords)
 
     Adds to each item:
       lp_summary, lp_top_allocations, lp_zero_keywords, lp_maxed_keywords,
@@ -1499,9 +1549,12 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
         asin       = (item.get("asin") or "").upper()
         asin_daily = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
+        mu_by_mt, global_mu = _compute_cvr_prior(kw_perf)
         lp_input = _build_lp_input(
             kw_perf, kw_to_campaign, camp_meta, brand_kws, headroom, placement_multiplier,
             daily_perf=asin_daily,
+            mu_by_match_type=mu_by_mt,
+            global_mu=global_mu,
         )
         if not lp_input:
             item["lp_summary"] = {"skipped": True, "reason": "all keywords filtered (insufficient clicks)"}
@@ -1553,6 +1606,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         if cvr_deflation < 1.0:
             for kw in lp_input:
                 kw["estimated_cvr"] *= cvr_deflation
+                kw["prior_mu"]      *= cvr_deflation
             logger.debug(
                 f"[lp] {asin}: cvr_deflation={cvr_deflation:.3f} "
                 f"(asin_orders={total_orders}, kw_orders={kw_attributed_orders})"
