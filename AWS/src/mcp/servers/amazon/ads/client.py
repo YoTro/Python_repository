@@ -338,14 +338,15 @@ class AmazonAdsClient:
             ]
             type_filters = [{"field": "keywordType", "values": ["BROAD", "EXACT", "PHRASE"]}]
         elif report_type == "spCampaignsPlacement":
-            # Placement report reuses spCampaigns reportTypeId but groups by
-            # campaign + campaignPlacement to get per-placement breakdown.
+            # groupBy=["campaign","campaignPlacement"] + placementClassification column
+            # returns one row per (campaign × placement bucket).
             metrics = [
                 "impressions", "clicks", "cost", "spend",
                 "purchases7d", "sales7d",
                 "clickThroughRate", "costPerClick",
                 "campaignId", "campaignName",
                 "campaignBiddingStrategy", "campaignBudgetAmount",
+                "placementClassification",
             ]
         elif report_type == "spAdvertisedProduct":
             # SponsoredProductsAdvertisedProductDailyReport: per-ASIN daily.
@@ -397,18 +398,17 @@ class AmazonAdsClient:
             "Accept": "application/json",
         }
         # spCampaignsPlacement uses the same reportTypeId as spCampaigns.
-        # groupBy ["campaign", "campaignPlacement"] is documented by Amazon but
-        # CONFIRMED BROKEN in v3: the API splits rows ~3× per campaign yet never
-        # returns the campaignPlacement value in the payload (adding it to columns
-        # gives 400; leaving it only in groupBy silently omits it).  This produces
-        # 378 unlabelled rows for 128 campaigns — data split but impossible to
-        # attribute to a placement.  Fallback: use ["campaign"] for clean,
-        # deduplicated campaign-level data.  Per-placement performance is
-        # unavailable via v3; configured bid adjustments come from Campaign API.
+        # Confirmed working config: groupBy=["campaign","campaignPlacement"] +
+        # column "placementClassification" → returns 4 placement buckets per campaign:
+        #   "Top of Search on-Amazon", "Detail Page on-Amazon",
+        #   "Other on-Amazon", "Off Amazon"
+        # Note: "campaignPlacement" as a column is invalid (400); use
+        # "placementClassification" instead. The campaignPlacement field in the
+        # response payload is always null — placementClassification is the real key.
         report_type_id = "spCampaigns" if report_type == "spCampaignsPlacement" else report_type
         group_by_map = {
             "spCampaigns":          ["campaign"],
-            "spCampaignsPlacement": ["campaign"],
+            "spCampaignsPlacement": ["campaign", "campaignPlacement"],
             "spSearchTerm":         ["searchTerm"],
             "spAdGroups":           ["adGroup"],
             "spAdvertisedProduct":  ["advertiser"],
@@ -536,6 +536,14 @@ class AmazonAdsClient:
                     await asyncio.sleep(self._REPORT_POLL_INTERVAL)
                     continue
 
+            if resp.status_code in (500, 502, 503, 504):
+                logger.warning(
+                    f"Poll attempt {attempt + 1} for {report_id} got {resp.status_code}, "
+                    f"retrying after {self._REPORT_POLL_INTERVAL}s"
+                )
+                await asyncio.sleep(self._REPORT_POLL_INTERVAL)
+                continue
+
             resp.raise_for_status()
             data = resp.json()
             status = data.get("status")
@@ -631,7 +639,7 @@ class AmazonAdsClient:
             "sort":     {"direction": sort_direction.upper(), "key": "DATE"},
         }
 
-        @exponential_backoff(max_retries=5, base_delay=60.0, jitter=False) # history rate-limit is strict
+        @exponential_backoff(max_retries=5, base_delay=60.0, max_delay=300.0, jitter=False)  # /history rate-limit is strict; honours Retry-After
         async def _post_with_retry(body_dict: Dict) -> Dict:
             body_bytes = json.dumps(body_dict).encode("utf-8")
             resp = await asyncio.to_thread(
@@ -794,11 +802,11 @@ def _parse_report_record(r: Dict, report_type: str) -> Dict[str, Any]:
         })
     elif report_type == "spCampaignsPlacement":
         base.update({
-            "campaign_name":       r.get("campaignName"),
-            "placement":           r.get("campaignPlacement"),
-            "bidding_strategy":    r.get("campaignBiddingStrategy"),
-            "daily_budget":        r.get("campaignBudgetAmount"),
-            "cpc":                 r.get("costPerClick"),
+            "campaign_name":    r.get("campaignName"),
+            "placement":        r.get("placementClassification"),
+            "bidding_strategy": r.get("campaignBiddingStrategy"),
+            "daily_budget":     r.get("campaignBudgetAmount"),
+            "cpc":              r.get("costPerClick"),
         })
     elif report_type == "spAdvertisedProduct":
         base.update({

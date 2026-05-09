@@ -97,7 +97,7 @@ _KEY_TRAILING_EXT     = "ad_diag:trailing_ext"     # ERP trailing 3M extension
 _L2_DOMAIN = "ad_diag"
 _TTL_STATIC = 3600    # campaigns, keywords — account config, stable within a session
 _TTL_PERF   = 14400   # performance reports — fetched once per day range
-_TTL_CHANGE = 1800    # change history — more volatile, shorter TTL
+_TTL_CHANGE = 21600   # change history — historical data, 6h TTL to reduce /history API calls
 _TTL_YOY    = 86400   # YoY / trailing-ext ERP data — historical, rarely changes
 
 
