@@ -3194,8 +3194,18 @@ def _chart_interpretation(item: Dict, name: str) -> str:
             return (f"LP is ceiling-bound (spend ${lp.get('lp_optimal_spend',0):.0f} "
                     f"vs budget ${lp.get('daily_budget',0):.0f}) — "
                     f"expand keyword coverage to unlock remaining budget.")
-        return (f"Ad order gap {gap:+.1f}/day (LP-projected vs actual ad-attributed orders) — "
-                f"rebalancing spend could gain {abs(gap):.1f} ad orders/day. "
+        if gap >= 0:
+            return (f"Ad order gap +{gap:.1f}/day — rebalancing spend could gain {gap:.1f} ad orders/day. "
+                    f"Blue bar = LP target; grey = budget cap. Organic orders not included.")
+        binding = lp.get("budget_binding", False)
+        lp_raw  = lp.get("lp_optimal_orders_raw", 0)
+        actual  = lp.get("actual_daily_ad_orders", 0)
+        if binding:
+            return (f"Ad order gap {gap:+.1f}/day (LP-projected {lp_raw:.1f} vs actual {actual:.1f} orders/day). "
+                    f"Negative gap expected under budget constraint — pessimistic CVR shrinkage underestimates "
+                    f"vs historical when budget is fully consumed. Blue bar = LP target; grey = budget cap.")
+        return (f"Ad order gap {gap:+.1f}/day (LP-projected {lp_raw:.1f} vs actual {actual:.1f} orders/day) — "
+                f"LP order estimate below actual; review CVR data quality or keyword mix. "
                 f"Blue bar = LP target; grey = budget cap. Organic orders not included.")
 
     if name == "rank_trend":
@@ -3572,6 +3582,8 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "The correct comparisons are:\n"
                 "  lp_optimal_spend vs lp_scope_campaign_daily_budget (is LP using its allocated budget?)\n"
                 "  lp_scope_daily_spend vs lp_scope_campaign_daily_budget (did LP-scope campaigns historically hit cap?)\n"
+                "  NOTE: lp_scope_daily_spend > lp_scope_campaign_daily_budget by ≤25% is normal — Amazon's dynamic bidding "
+                "allows intra-day overspend and the Ads console averages across the month; do NOT flag this as a contradiction.\n"
                 "  non_lp_scope_daily_spend vs (total_account_daily_budget − lp_scope_campaign_daily_budget) "
                 "(did non-LP campaigns hit their budget cap?)\n"
                 "budget_source: 'campaign_snapshot' = current campaign budget snapshot; "
@@ -3595,7 +3607,9 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "do NOT make placement-specific recommendations in this case. "
                 "recommended_stock_units = (organic_daily + lp_optimal_orders_raw) × stock_gate_days — "
                 "total units required to safely execute the LP plan for stock_gate_days (default 21d) without stockout risk; "
-                "daily_consumption = organic daily orders + lp_optimal_orders_raw (total units consumed per day if LP is executed); "
+                "daily_consumption = organic daily orders + lp_optimal_orders_raw (LP-projected total consumption rate, NOT the same as the rate used for can_sell_days); "
+                "can_sell_days uses actual historical daily_sales (ad+organic) which is higher than lp_raw_orders alone — "
+                "so daily_consumption < actual consumption rate is EXPECTED and NOT a contradiction; "
                 "daily_consumption_source: 'order_metrics' = ad+organic (accurate), 'ad_orders_only' = underestimate (organic excluded — real shortfall is larger); "
                 "inbound_receiving / inbound_shipped / inbound_working / total_inbound are top-level snapshot fields (not inside lp_summary); "
                 "confirmed_inbound = inbound_receiving + inbound_shipped (units already in transit, offset against shortfall); "
@@ -3627,6 +3641,12 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "expected_spend_delta (spend/day saved, negative); "
                 "increase_bid: estimated_order_uplift_per_10pct_bid, expected_spend_per_10pct_bid; "
                 "decrease_bid: expected_order_delta (negative), expected_spend_delta (negative = savings); "
+                "NOTE on decrease_bid under inventory gate: when lp_summary.stock_gate_days > effective_stock_days "
+                "AND there are lp_maxed_keywords, a decrease_bid action on a healthy-ACOS keyword is a PREPARATORY "
+                "action — freed budget will automatically flow to maxed keywords once the inventory gate is cleared "
+                "(inbound_shipped ETA is logistics-dependent and may clear sooner than estimated). "
+                "Do NOT flag this as contradictory with the 'want more orders' goal; instead frame it as "
+                "'pre-positioning budget reallocation — takes effect when stock gate clears'; "
                 "campaign_actions: expected_order_delta and expected_spend_delta quantify daily impact\n"
                 "  auto_mining_summary → aggregate stats for auto/PT search-term mining:\n"
                 "    auto_pt_cids_count: number of auto/PT campaigns analyzed\n"
@@ -3902,7 +3922,15 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "For paused campaigns, only surface an action if it explicitly says "
                 "'enable_and_review_bids', 'enable_and_increase_budget', or 'archive_candidate'. "
                 "If all campaigns are paused (active_campaign_count == 0), the #1 priority action "
-                "must address the pause decision before any other optimisation.\n"
+                "must address the pause decision before any other optimisation. "
+                "CRITICAL — connect change_attribution to inv_gate: if change_attributions show that "
+                "pausing campaigns caused a drop in orders (delta_orders < 0, change_type='STATUS', "
+                "direction='ENABLED→PAUSED') AND campaign_actions contains 'enable_and_*' actions "
+                "that carry a prerequisite (inventory gate), explicitly state in the Change Attribution "
+                "section: 'Re-enabling these campaigns is currently blocked by the inventory prerequisite "
+                "(effective_stock_days={X} < stock_gate_days={Y}). Prioritise FBA replenishment to "
+                "unlock these campaigns.' Do NOT omit this linkage — it explains why the Top 5 actions "
+                "do not include a direct re-enable recommendation.\n"
                 "8. Statistical sufficiency: when orders_reliability = 'low' (<30 orders total), "
                 "mark ACOS and CVR estimates as 'statistically preliminary — results may shift "
                 "significantly with more data' and display the ACOS 95% CI "
