@@ -40,7 +40,7 @@ Entry point:
 import logging
 import math
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import date as _date_cls, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -195,12 +195,16 @@ def _window_avg(
     n           = len(records)
     total_spend = sum(r.get("spend", 0) or 0 for r in records)
     total_sales = sum(r.get("sales", 0) or 0 for r in records)
+    orders_vals = [r.get("orders", 0) or 0 for r in records]
+    orders_mean = sum(orders_vals) / n
+    orders_std  = math.sqrt(sum((v - orders_mean) ** 2 for v in orders_vals) / n) if n > 1 else 0.0
     return {
-        "spend":  round(total_spend / n, 2),
-        "orders": round(sum(r.get("orders", 0) or 0 for r in records) / n, 2),
-        "acos":   round(total_spend / total_sales * 100, 2) if total_sales > 0 else None,
-        "clicks": round(sum(r.get("clicks", 0) or 0 for r in records) / n, 2),
-        "days":   n,
+        "spend":      round(total_spend / n, 2),
+        "orders":     round(orders_mean, 2),
+        "orders_std": round(orders_std, 4),
+        "acos":       round(total_spend / total_sales * 100, 2) if total_sales > 0 else None,
+        "clicks":     round(sum(r.get("clicks", 0) or 0 for r in records) / n, 2),
+        "days":       n,
     }
 
 
@@ -226,12 +230,16 @@ def _window_avg_asin(
     n           = len(records)
     total_spend = sum(r.get("spend", 0) or 0 for r in records)
     total_sales = sum(r.get("sales", 0) or 0 for r in records)
+    orders_vals = [r.get("orders", 0) or 0 for r in records]
+    orders_mean = sum(orders_vals) / n
+    orders_std  = math.sqrt(sum((v - orders_mean) ** 2 for v in orders_vals) / n) if n > 1 else 0.0
     return {
-        "spend":  round(total_spend / n, 2),
-        "orders": round(sum(r.get("orders", 0) or 0 for r in records) / n, 2),
-        "acos":   round(total_spend / total_sales * 100, 2) if total_sales > 0 else None,
-        "clicks": round(sum(r.get("clicks", 0) or 0 for r in records) / n, 2),
-        "days":   n,
+        "spend":      round(total_spend / n, 2),
+        "orders":     round(orders_mean, 2),
+        "orders_std": round(orders_std, 4),
+        "acos":       round(total_spend / total_sales * 100, 2) if total_sales > 0 else None,
+        "clicks":     round(sum(r.get("clicks", 0) or 0 for r in records) / n, 2),
+        "days":       n,
     }
 
 
@@ -433,6 +441,7 @@ def _build_attributions(
             "delta_orders":            delta_orders,
             "delta_orders_normalized": delta_orders_normalized,
             "delta_baseline_source":   baseline_source,
+            "pre_orders_std":          pre.get("orders_std", 0.0),
             "delta_clicks":            delta_clicks,
             "direction":               direction,
             "covariates_at_change":    cov,
@@ -687,6 +696,9 @@ def _dml_analyze(
 
 # ── Within-sample directional backtest ───────────────────────────────────────
 
+_BACKTEST_SNR_MIN   = 1.0   # |delta| must be ≥ 1σ of pre-window to count as signal
+_BACKTEST_EFFECT_MIN = 1e-4  # avg model effect below this → direction is undefined
+
 def _compute_backtest_stats(attributions: List[Dict]) -> Dict[str, Any]:
     """
     Directional calibration check: does the causal model's predicted sign match
@@ -695,8 +707,19 @@ def _compute_backtest_stats(attributions: List[Dict]) -> Dict[str, Any]:
     Observed direction uses delta_orders_normalized when available (YoY or trailing
     3M baseline), falling back to delta_orders (within-sample pre-window).
     backtest_baseline_dist records how many events used each baseline source.
+
+    Quality gates (applied in order):
+      1. All models skipped          → exclude (no model output)
+      2. direction == "neutral"      → exclude (no reliable observed ground truth)
+      3. attribution_suspect         → exclude (ASIN-level fallback with outsized Δ)
+      4. compound or had_promotion   → exclude (confounded multi-cause events)
+      5a. incomplete_post_window     → exclude (post-window not yet fully elapsed)
+      5b. non_yoy_baseline           → exclude (trailing/pre_window ≠ CausalImpact frame)
+      6. SNR < _BACKTEST_SNR_MIN     → exclude (|delta| < 1σ pre-window noise floor)
+      7. |avg_effect| < ε            → exclude (model commits to no direction)
     """
     total = hits = strong = strong_hits = 0
+    skipped_reasons: Counter = Counter()
     baseline_counter: Counter = Counter()
 
     for attr in attributions:
@@ -704,15 +727,52 @@ def _compute_backtest_stats(attributions: List[Dict]) -> Dict[str, Any]:
         dml = attr.get("dml") or {}
         ci  = attr.get("causal_impact") or {}
         if its.get("skipped") and dml.get("skipped") and ci.get("skipped"):
+            skipped_reasons["all_models_skipped"] += 1
             continue
+
+        # Gate 2: observed direction must be non-neutral
+        if attr.get("direction", "neutral") == "neutral":
+            skipped_reasons["neutral_direction"] += 1
+            continue
+
+        # Gate 3: ASIN-level fallback with suspect Δ
+        if attr.get("attribution_suspect"):
+            skipped_reasons["attribution_suspect"] += 1
+            continue
+
+        # Gate 4: compound / promotion — confounded ground truth
+        if attr.get("compound") or attr.get("had_promotion"):
+            skipped_reasons["confounded"] += 1
+            continue
+
+        # Gate 5a: post-window must be fully closed (need at least ATTR_POST_END+1 days)
+        changed = attr.get("changed_at", "")
+        if changed:
+            try:
+                days_since = (_date_cls.today() - _date_cls.fromisoformat(str(changed)[:10])).days
+                if days_since < abs(ATTR_POST_END) + 1:
+                    skipped_reasons["incomplete_post_window"] += 1
+                    continue
+            except (ValueError, TypeError):
+                pass
 
         norm  = attr.get("delta_orders_normalized")
         delta = norm if norm is not None else (attr.get("delta_orders") or 0)
         if delta == 0:
+            skipped_reasons["delta_zero"] += 1
             continue
 
-        baseline_counter[attr.get("delta_baseline_source", "pre_window")] += 1
-        observed_pos = delta > 0
+        # Gate 5b: require YoY baseline — trailing/pre_window baselines use a different
+        # reference frame than CausalImpact's counterfactual, causing systematic sign mismatches
+        if attr.get("delta_baseline_source") != "yoy":
+            skipped_reasons["non_yoy_baseline"] += 1
+            continue
+
+        # Gate 5: SNR — |delta| must clear the pre-window noise floor
+        pre_std = attr.get("pre_orders_std") or 0.0
+        if pre_std > 0 and abs(delta) < _BACKTEST_SNR_MIN * pre_std:
+            skipped_reasons["low_snr"] += 1
+            continue
 
         effects: List[float] = []
         if not its.get("skipped") and its.get("level_shift") is not None:
@@ -723,9 +783,18 @@ def _compute_backtest_stats(attributions: List[Dict]) -> Dict[str, Any]:
             effects.append(float(ci["point_effect"]))
 
         if not effects:
+            skipped_reasons["no_effects"] += 1
             continue
 
-        predicted_pos = (sum(effects) / len(effects)) > 0
+        # Gate 6: model must commit to a direction
+        avg_effect = sum(effects) / len(effects)
+        if abs(avg_effect) < _BACKTEST_EFFECT_MIN:
+            skipped_reasons["near_zero_effect"] += 1
+            continue
+
+        baseline_counter[attr.get("delta_baseline_source", "pre_window")] += 1
+        observed_pos  = delta > 0
+        predicted_pos = avg_effect > 0
         hit = predicted_pos == observed_pos
         total += 1
         hits  += hit
@@ -734,12 +803,16 @@ def _compute_backtest_stats(attributions: List[Dict]) -> Dict[str, Any]:
             strong += 1
             strong_hits += hit
 
+    if skipped_reasons:
+        logger.debug(f"[backtest] skipped breakdown: {dict(skipped_reasons)}")
+
     return {
         "backtest_total":           total,
         "backtest_hit_rate":        round(hits / total, 3) if total > 0 else None,
         "backtest_strong_n":        strong,
         "backtest_strong_hit_rate": round(strong_hits / strong, 3) if strong > 0 else None,
         "backtest_baseline_dist":   dict(baseline_counter),
+        "backtest_skipped":         dict(skipped_reasons),
     }
 
 

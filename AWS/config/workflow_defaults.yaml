@@ -52,6 +52,29 @@ bsr_collection:
   max_pages: 2
   categories: []
 
+ad_diagnosis:
+  # ── Observation window ────────────────────────────────────────────────────
+  days: 30                      # lookback period for all SP reports
+
+  # ── ACOS thresholds ───────────────────────────────────────────────────────
+  target_acos: 0.30             # LP optimisation target; also used by campaign actions
+  acos_warn_threshold: 0.30     # yellow warning line in snapshot table
+  acos_crit_threshold: 0.50     # red critical line in snapshot table
+
+  # ── Budget / CVR ──────────────────────────────────────────────────────────
+  budget_exhaustion_pct: 0.90   # fraction of days budget consumed → "exhausted"
+  min_clicks_for_cvr: 5         # minimum clicks required to trust a CVR estimate
+  lp_headroom_factor: 3.0       # LP click ceiling = headroom × observed_clicks/day
+
+  # ── Inventory gates ───────────────────────────────────────────────────────
+  inventory_risk_days: 30       # can_sell_days < N → inventory_risk flag
+  stock_gate_days: 21           # effective_stock_days < N → downgrade scale-up actions to P2
+  inbound_lead_days: 30         # assumed FBA replenishment lead time (days)
+
+  # ── Xiyou / organic rank ──────────────────────────────────────────────────
+  enable_xiyou: true            # fetch keyword rank and market trend data
+  rank_lookback_months: 6       # months of rank history to fetch (max 24)
+
 category_monopoly_analysis:
   # Weights for the 9 dimensions (sum should be 1.0)
   weights:

@@ -2961,6 +2961,142 @@ def _generate_charts(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 # LLM pre-enrichment (summary injection only — no field stripping)
 # ---------------------------------------------------------------------------
 
+_SCALE_UP_ACTIONS   = frozenset({"increase_budget", "enable_and_increase_budget", "increase_bid"})
+_SCALE_DOWN_ACTIONS = frozenset({"decrease_budget", "pause_candidate", "archive_candidate",
+                                  "decrease_bid", "pause_keyword"})
+
+
+def _detect_action_conflicts(item: Dict) -> List[Dict]:
+    """
+    Scans change_attributions for past events where Strong/Moderate causal consensus
+    contradicts the direction implied by LP-derived campaign_actions or keyword_actions.
+    Only call this when causal_reliability='high' (caller responsibility).
+    """
+    attributions: List[Dict]     = item.get("change_attributions") or []
+    campaign_actions: List[Dict] = item.get("campaign_actions") or []
+    keyword_actions: List[Dict]  = item.get("keyword_actions") or []
+
+    if not attributions:
+        return []
+
+    def _strong(consensus: str) -> bool:
+        return consensus.startswith("Strong evidence") or consensus.startswith("Moderate evidence")
+
+    def _parse_float(v) -> Optional[float]:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _scale_up(old_v, new_v) -> Optional[bool]:
+        o, n = _parse_float(old_v), _parse_float(new_v)
+        if o is None or n is None:
+            return None
+        return n > o if n != o else None
+
+    clean_attrs = [
+        a for a in attributions
+        if not a.get("attribution_suspect")
+        and not a.get("compound")
+        and not a.get("had_promotion")
+        and _strong(a.get("consensus") or "")
+    ]
+
+    conflicts: List[Dict] = []
+
+    def _record(action_entry: Dict, scope: str, attr: Dict, summary: str) -> None:
+        conflicts.append({
+            "action_scope":          scope,
+            "action":                action_entry.get("action"),
+            "campaign_id":           str(action_entry.get("campaign_id") or ""),
+            "keyword_text":          action_entry.get("keyword_text"),
+            "conflict_event_date":   attr.get("changed_at"),
+            "conflict_change_type":  attr.get("change_type"),
+            "conflict_direction":    attr.get("direction"),
+            "conflict_consensus":    (attr.get("consensus") or "")[:80],
+            "conflict_delta_orders": (
+                attr.get("delta_orders_normalized") or attr.get("delta_orders")
+            ),
+            "conflict_summary":      summary,
+        })
+
+    for ca in campaign_actions:
+        action = ca.get("action") or ""
+        cid    = str(ca.get("campaign_id") or "")
+        attrs  = [a for a in clean_attrs if a.get("campaign_id") == cid]
+
+        if action in _SCALE_UP_ACTIONS:
+            for attr in attrs:
+                if attr.get("change_type") != "BUDGET":
+                    continue
+                if _scale_up(attr.get("old_value"), attr.get("new_value")) is True \
+                        and attr.get("direction") == "negative":
+                    d = attr.get("delta_orders_normalized") or attr.get("delta_orders")
+                    _record(ca, "campaign", attr,
+                            f"Budget increase on {attr['changed_at']} → orders declined "
+                            f"({'%.1f' % d if d is not None else 'N/A'}/day); "
+                            f"{(attr.get('consensus') or '')[:60]}")
+                    break
+
+        elif action in _SCALE_DOWN_ACTIONS:
+            for attr in attrs:
+                ct = attr.get("change_type") or ""
+                if ct not in ("BUDGET", "STATUS"):
+                    continue
+                is_down = (ct == "STATUS") or (_scale_up(attr.get("old_value"), attr.get("new_value")) is False)
+                if is_down and attr.get("direction") == "negative":
+                    d = attr.get("delta_orders_normalized") or attr.get("delta_orders")
+                    _record(ca, "campaign", attr,
+                            f"{ct} cut/pause on {attr['changed_at']} → orders declined "
+                            f"({'%.1f' % d if d is not None else 'N/A'}/day); "
+                            f"{(attr.get('consensus') or '')[:60]}")
+                    break
+
+    for ka in keyword_actions:
+        action  = ka.get("action") or ""
+        cid     = str(ka.get("campaign_id") or "")
+        kw_id   = str(ka.get("keyword_id") or "")
+        kw_text = (ka.get("keyword_text") or "").lower()
+
+        kw_attrs = [
+            a for a in clean_attrs
+            if a.get("campaign_id") == cid
+            and (
+                (a.get("entity_type") == "KEYWORD" and str(a.get("entity_id") or "") == kw_id)
+                or (a.get("keyword") or "").lower() == kw_text
+            )
+        ]
+
+        if action in _SCALE_UP_ACTIONS:
+            for attr in kw_attrs:
+                if attr.get("change_type") != "BID":
+                    continue
+                if _scale_up(attr.get("old_value"), attr.get("new_value")) is True \
+                        and attr.get("direction") == "negative":
+                    d = attr.get("delta_orders_normalized") or attr.get("delta_orders")
+                    _record(ka, "keyword", attr,
+                            f"Bid increase on {attr['changed_at']} → orders declined "
+                            f"({'%.1f' % d if d is not None else 'N/A'}/day); "
+                            f"{(attr.get('consensus') or '')[:60]}")
+                    break
+
+        elif action in _SCALE_DOWN_ACTIONS:
+            for attr in kw_attrs:
+                ct = attr.get("change_type") or ""
+                if ct not in ("BID", "STATUS"):
+                    continue
+                is_down = (ct == "STATUS") or (_scale_up(attr.get("old_value"), attr.get("new_value")) is False)
+                if is_down and attr.get("direction") == "negative":
+                    d = attr.get("delta_orders_normalized") or attr.get("delta_orders")
+                    _record(ka, "keyword", attr,
+                            f"Bid/status cut on {attr['changed_at']} → orders declined "
+                            f"({'%.1f' % d if d is not None else 'N/A'}/day); "
+                            f"{(attr.get('consensus') or '')[:60]}")
+                    break
+
+    return conflicts
+
+
 def _causal_reliability_tier(
     backtest_hit_rate: Optional[float],
     events_significant_pct: Optional[float],
@@ -3059,8 +3195,18 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         #   "low"    any calibration data OR some significant events, but not both conditions
         #   "none"   no backtest data and no significant events
         "causal_reliability": _causal_reliability_tier(
-            backtest_hit_rate     = item.get("backtest_hit_rate"),
+            backtest_hit_rate      = item.get("backtest_hit_rate"),
             events_significant_pct = item.get("events_significant_pct"),
+        ),
+        # LP-vs-causal conflicts: non-empty only when causal_reliability='high'.
+        # Each entry describes one LP action contradicted by Strong/Moderate causal evidence.
+        "action_conflicts": (
+            _detect_action_conflicts(item)
+            if _causal_reliability_tier(
+                backtest_hit_rate      = item.get("backtest_hit_rate"),
+                events_significant_pct = item.get("events_significant_pct"),
+            ) == "high"
+            else []
         ),
         # Auto/PT campaign search-term mining results
         "auto_mining_summary":  (item.get("auto_mining") or {}).get("summary"),
@@ -3107,10 +3253,11 @@ def _chart_interpretation(item: Dict, name: str) -> str:
     account_acos = item.get("account_acos")
 
     if name == "daily_trend":
-        exh   = item.get("budget_exhaustion_pct") or 0
+        exh    = item.get("budget_exhaustion_pct") or 0
+        exh_s  = f"{exh:.0%}"  # ratio → percent string (e.g. 1.0138 → "101%")
         acos_s = f"ACOS {account_acos:.0f}%" if account_acos else "ACOS N/A"
         above  = account_acos and account_acos > acos_warn
-        return (f"Budget exhausted {exh:.0f}% of days; {acos_s} — "
+        return (f"Budget utilisation {exh_s} of daily cap; {acos_s} — "
                 f"{'above' if above else 'at or below'} target {acos_warn:.0f}%. "
                 f"Orange dashed lines = change events.")
 
@@ -3618,7 +3765,12 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "net units still to procure after accounting for current stock and confirmed inbound; "
                 "when stock_shortfall > 0: lead with inventory procurement recommendation before bid/budget actions; "
                 "when reporting: state the full breakdown — current stock X units + inbound_receiving Y units (1-2d) + inbound_shipped Z units (ETA varies) = coverage; "
-                "if inbound_working > 0, note it separately as 'planned but not shipped — confirm dispatch urgently'.\n"
+                "if inbound_working > 0, note it separately as 'planned but not shipped — confirm dispatch urgently'; "
+                "CRITICAL — stock_shortfall=0 AND effective_stock_days < stock_gate_days can BOTH be true simultaneously and is NOT a contradiction: "
+                "stock_shortfall uses total confirmed pipeline (total_available + inbound_receiving + inbound_shipped) which may cover the 21-day target in aggregate; "
+                "effective_stock_days uses only near-term confirmed stock (total_available + inbound_receiving, 1-2d ETA) which may fall short of stock_gate_days; "
+                "when this coexists, write: 'Total pipeline sufficient (stock_shortfall=0), but near-term stock covers only {effective_stock_days}d — "
+                "the inventory gate will clear when inbound_shipped units arrive (ETA 10-30d).'\n"
                 "  campaign_actions → two evaluation paths based on LP scope:\n"
                 "    (a) LP-scoped campaigns (manual keyword targeting with click data): "
                 "action derived from LP camp_spend vs actual campaign budget; "
@@ -3641,6 +3793,15 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "expected_spend_delta (spend/day saved, negative); "
                 "increase_bid: estimated_order_uplift_per_10pct_bid, expected_spend_per_10pct_bid; "
                 "decrease_bid: expected_order_delta (negative), expected_spend_delta (negative = savings); "
+                "NOTE on decrease_bid when keyword_acos_pct < target_acos_pct: a decrease_bid on a keyword "
+                "whose ACOS looks healthy does NOT mean the keyword is underperforming. "
+                "LP maximises total orders under a budget constraint — it may allocate fewer clicks to a "
+                "low-ACOS keyword when higher-CVR keywords (even at higher ACOS) produce more orders per dollar. "
+                "The LP CVR estimate uses Beta-Binomial shrinkage, which can differ from raw observed ACOS. "
+                "When writing the rationale for such an action, always state: "
+                "'LP reallocates clicks to higher-CVR keywords; this keyword ACOS ($val%) is healthy but "
+                "other keywords generate more orders per dollar under the current budget constraint.' "
+                "Do NOT imply the keyword is inefficient based on ACOS alone — cite the LP's click allocation logic.\n"
                 "NOTE on decrease_bid under inventory gate: when lp_summary.stock_gate_days > effective_stock_days "
                 "AND there are lp_maxed_keywords, a decrease_bid action on a healthy-ACOS keyword is a PREPARATORY "
                 "action — freed budget will automatically flow to maxed keywords once the inventory gate is cleared "
@@ -3778,7 +3939,10 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 ">   *Evidence: placement_performance.TOS.acos=$val, spend_share=$val%*\n"
                 "> - **Expected impact**: [Quantified estimate] "
                 "*(assuming CVR and CTR remain stable)*\n"
-                "> - **Risks / caveats**: [What to monitor; set a time-box, e.g., 7 days]\n"
+                "> - **Risks / caveats**: [What to monitor; set a time-box, e.g., 7 days. "
+                "NEVER write 'None' — every action carries monitoring risk. "
+                "For pause_keyword or decrease_bid: always note search-term coverage gap risk and recommend a review window. "
+                "For increase_budget or increase_bid: always note ACOS drift risk and a time-box.]\n"
                 "> - **Reference change attribution**: [Cite a past change_attribution entry "
                 "if a similar action was taken; include the consensus confidence level. "
                 "If none exists, write 'No historical reference available.']\n\n"
@@ -3890,15 +4054,21 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "Do NOT make high-confidence campaign-level recommendations under name_substring matching.\n"
                 "   - causal_reliability != 'high': write the appropriate caveat below "
                 "(causal_reliability is pre-computed — use it directly; do NOT re-derive from raw fractions):\n"
-                "     causal_reliability='low' because backtest_hit_rate < 0.70: "
+                "     IMPORTANT: the two 'low' sub-conditions are MUTUALLY EXCLUSIVE — "
+                "apply exactly ONE based on which gate failed first:\n"
+                "     Sub-condition A — backtest_hit_rate < 0.70 (check this first): "
                 "'Causal model directional accuracy $pct% (threshold 70%) — change_attribution "
                 "evidence is near-random; all consensus labels downgraded one tier. "
                 "($pct = backtest_hit_rate × 100, e.g. 0.65 → 65%.) "
-                "LP budget recommendations remain valid (independent of causal models).'\n"
-                "     causal_reliability='low' because events_significant_pct == 0: "
+                "LP budget recommendations remain valid (independent of causal models).' "
+                "Apply ONLY when backtest_hit_rate is not None AND backtest_hit_rate < 0.70. "
+                "Do NOT apply this caveat alongside the 'no significant events' caveat.\n"
+                "     Sub-condition B — events_significant_pct == 0 (only when backtest_hit_rate IS None or 0): "
                 "'No change event in this run produced a statistically significant causal estimate "
                 "(p≥0.05 or CI crosses zero across all models). "
-                "Causal labels are descriptive only — do not use them to justify P0 actions.'\n"
+                "Causal labels are descriptive only — do not use them to justify P0 actions.' "
+                "Apply ONLY when events_significant_pct == 0 AND Sub-condition A does NOT apply. "
+                "If events_significant_count ≥ 1, do NOT write this caveat even if backtest_hit_rate is low.\n"
                 "     causal_reliability='none': "
                 "'Causal analysis has no calibration data and no significant results — "
                 "all change_attribution evidence is unvalidated; treat as exploratory.'\n"
@@ -3928,7 +4098,7 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "direction='ENABLED→PAUSED') AND campaign_actions contains 'enable_and_*' actions "
                 "that carry a prerequisite (inventory gate), explicitly state in the Change Attribution "
                 "section: 'Re-enabling these campaigns is currently blocked by the inventory prerequisite "
-                "(effective_stock_days={X} < stock_gate_days={Y}). Prioritise FBA replenishment to "
+                "(effective_stock_days={{X}} < stock_gate_days={{Y}}). Prioritise FBA replenishment to "
                 "unlock these campaigns.' Do NOT omit this linkage — it explains why the Top 5 actions "
                 "do not include a direct re-enable recommendation.\n"
                 "8. Statistical sufficiency: when orders_reliability = 'low' (<30 orders total), "
@@ -3952,7 +4122,21 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "it is internal model metadata.\n"
                 "   - auto_mining candidates are independent of LP keyword_actions — "
                 "do NOT compare bids or budgets across the two sections.\n"
-                "10. **Chart placeholders**: Diagnostic charts will be injected after the "
+                "10. **LP-vs-causal action conflicts** (action_conflicts field, only non-empty when "
+                "causal_reliability='high'):\n"
+                "   - If action_conflicts is empty: ignore this rule entirely.\n"
+                "   - If action_conflicts is non-empty: for each conflict entry, locate the matching "
+                "campaign_action or keyword_action in the Top 5 list.\n"
+                "     Demote its priority by one tier (P0→P1, P1→P2, P2→omit from Top 5).\n"
+                "     Under that action's 'Risks / caveats' add: "
+                "'⚠ Historical conflict ({conflict_change_type} on {conflict_event_date}): "
+                "a similar {action} event previously correlated with an order decline "
+                "({conflict_delta_orders}/day, {conflict_consensus}). "
+                "Validate this action against the historical pattern before executing.'\n"
+                "     Do NOT remove the action from the report — demotion + caveat is the correct response.\n"
+                "     Do NOT apply this rule when causal_reliability is 'low' or 'none' — "
+                "conflict detection is gated on reliable causal models.\n"
+                "11. **Chart placeholders**: Diagnostic charts will be injected after the "
                 "report is generated. Place each marker at the most relevant position inside "
                 "the matching section. Do NOT write URLs or image syntax — just the marker "
                 "text. Omit a marker if that data is unavailable "
