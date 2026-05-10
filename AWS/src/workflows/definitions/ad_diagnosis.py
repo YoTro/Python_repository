@@ -95,7 +95,7 @@ _KEY_TRAILING_EXT     = "ad_diag:trailing_ext"     # ERP trailing 3M extension
 # L1 (ctx.cache) is always checked first — L2 is only hit on job start / resume.
 
 _L2_DOMAIN = "ad_diag"
-_TTL_STATIC = 3600    # campaigns, keywords — account config, stable within a session
+_TTL_STATIC = 7200    # campaigns, keywords — account config, stable within a session
 _TTL_PERF   = 14400   # performance reports — fetched once per day range
 _TTL_CHANGE = 21600   # change history — historical data, 6h TTL to reduce /history API calls
 _TTL_YOY    = 86400   # YoY / trailing-ext ERP data — historical, rarely changes
@@ -115,6 +115,13 @@ def _l2_set(ctx: WorkflowContext, value, *parts) -> None:
     _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value)
 
 
+# Per-key asyncio locks to prevent cache stampede: when the cache expires and
+# multiple ASIN items are processed concurrently, all would miss L1+L2 and fire
+# simultaneous API calls.  The lock ensures only the first coroutine fetches;
+# all others wait and then find the result already populated in L1.
+_l2_inflight: Dict[str, "asyncio.Lock"] = {}
+
+
 def _l2_cached(
     l1_key_fn:   Callable[..., str],
     l2_ttl:      int,
@@ -127,6 +134,10 @@ def _l2_cached(
     → decorated function (live API call).  The return value is written to both
     levels so subsequent calls in the same job and resumed jobs are cache hits.
 
+    Stampede protection: an asyncio.Lock per l1_key serialises concurrent
+    callers.  The winner fetches and populates both cache levels; latecomers
+    re-check L1 after acquiring the lock and return the already-stored value.
+
     Parameters
     ----------
     l1_key_fn   : (ctx, *args, **kwargs) → str   — key for ctx.cache dict
@@ -138,17 +149,29 @@ def _l2_cached(
         @functools.wraps(fn)
         async def wrapper(ctx: WorkflowContext, *args, **kwargs):
             l1_key = l1_key_fn(ctx, *args, **kwargs)
+
+            # Fast path: already in L1 (no lock needed)
             if l1_key in ctx.cache:
                 return ctx.cache[l1_key]
-            l2_parts = l2_parts_fn(ctx, *args, **kwargs)
-            hit = _l2_get(ctx, l2_ttl, *l2_parts)
-            if hit is not None:
-                ctx.cache[l1_key] = hit
-                return hit
-            value = await fn(ctx, *args, **kwargs)
-            ctx.cache[l1_key] = value
-            _l2_set(ctx, value, *l2_parts)
-            return value
+
+            # Acquire per-key lock to serialise concurrent callers
+            if l1_key not in _l2_inflight:
+                _l2_inflight[l1_key] = asyncio.Lock()
+            async with _l2_inflight[l1_key]:
+                # Re-check L1 after acquiring — a prior waiter may have filled it
+                if l1_key in ctx.cache:
+                    return ctx.cache[l1_key]
+
+                l2_parts = l2_parts_fn(ctx, *args, **kwargs)
+                hit = _l2_get(ctx, l2_ttl, *l2_parts)
+                if hit is not None:
+                    ctx.cache[l1_key] = hit
+                    return hit
+
+                value = await fn(ctx, *args, **kwargs)
+                ctx.cache[l1_key] = value
+                _l2_set(ctx, value, *l2_parts)
+                return value
         return wrapper
     return decorator
 
@@ -559,8 +582,8 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
     if not matched:
         return {"performance_records": [], "total_spend": 0, "account_acos": None}
 
-    total_spend  = sum(r.get("spend",  0) or 0 for r in matched)
-    total_sales  = sum(r.get("sales",  0) or 0 for r in matched)
+    total_spend  = round(sum(r.get("spend",  0) or 0 for r in matched), 2)
+    total_sales  = round(sum(r.get("sales",  0) or 0 for r in matched), 2)
     total_orders = sum(r.get("orders", 0) or 0 for r in matched)
     total_clicks = sum(r.get("clicks", 0) or 0 for r in matched)
     account_acos = round(total_spend / total_sales * 100, 2) if total_sales > 0 else None
@@ -1308,6 +1331,7 @@ def _build_keyword_actions(
     inv_gate: Optional[Dict] = None,
     paused_campaign_ids: Optional[set] = None,
     spend_ceiling_bound: bool = False,
+    target_acos: Optional[float] = None,
 ) -> List[Dict]:
     alloc_map: Dict[str, Dict] = {a["keyword"]: a for a in alloc}
     actions: List[Dict] = []
@@ -1334,6 +1358,24 @@ def _build_keyword_actions(
             camp_is_paused = paused_campaign_ids and str(cid) in paused_campaign_ids
             if not is_brand and not camp_is_paused:
                 cur_clicks = lp_kw["max_daily_clicks"] / headroom
+                target_acos_pct = (target_acos or 0.35) * 100
+                if kw_acos_pct is None:
+                    _rationale = (
+                        f"LP assigned 0 clicks — insufficient CVR data (CVR {raw_cvr:.3f}) "
+                        f"to evaluate efficiency; keyword excluded from LP allocation"
+                    )
+                elif kw_acos_pct < target_acos_pct:
+                    _rationale = (
+                        f"LP assigned 0 clicks — keyword ACOS {kw_acos_pct}% is below target "
+                        f"{target_acos_pct:.0f}% but outcompeted by higher-CVR keywords within "
+                        f"the budget constraint; this keyword is efficient but not LP-optimal"
+                    )
+                else:
+                    _rationale = (
+                        f"LP assigned 0 clicks — CVR {raw_cvr:.3f} × CPC ${avg_cpc:.2f} → "
+                        f"keyword ACOS {kw_acos_pct}% exceeds target {target_acos_pct:.0f}% "
+                        f"(budget efficiency threshold)"
+                    )
                 actions.append({
                     "action":               "pause_keyword",
                     "priority":             "P1",
@@ -1345,11 +1387,7 @@ def _build_keyword_actions(
                     "keyword_acos_pct":     kw_acos_pct,
                     "expected_order_delta": -round(cur_clicks * raw_cvr, 2),
                     "expected_spend_delta": -round(cur_clicks * avg_cpc, 2),
-                    "rationale": (
-                        f"LP assigned 0 clicks — CVR {raw_cvr:.3f} × "
-                        f"CPC ${avg_cpc:.2f} → keyword ACOS {kw_acos_pct}% "
-                        f"exceeds budget efficiency threshold"
-                    ),
+                    "rationale": _rationale,
                 })
         else:
             opt_clicks = a["optimized_clicks"]
@@ -1605,6 +1643,13 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             if kw_attributed_orders > 0 and total_orders > 0
             else 1.0
         )
+        # Capture raw CVR BEFORE deflation mutates lp_input in-place.
+        # lp_raw_orders uses this map so that order_gap compares:
+        #   LP side  : optimized_clicks × un-deflated raw CVR (same basis as actual)
+        #   Actual   : kw_attributed_orders / days           (un-deflated)
+        # Without this, lp_raw_orders uses deflated CVR while actual is un-deflated,
+        # creating a systematic downward bias in order_gap when cvr_deflation < 1.
+        raw_cvr_map = {kw["name"]: kw["estimated_cvr"] for kw in lp_input}
         if cvr_deflation < 1.0:
             for kw in lp_input:
                 kw["estimated_cvr"] *= cvr_deflation
@@ -1651,7 +1696,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         camp_spend = result.get("camp_spend", {})
         kw_map     = {lp["name"]: lp for lp in lp_input}
 
-        raw_cvr_map   = {kw["name"]: kw["estimated_cvr"] for kw in lp_input}
+        # raw_cvr_map was captured before deflation — see comment above.
         lp_raw_orders = round(
             sum(a["optimized_clicks"] * raw_cvr_map.get(a["keyword"], 0) for a in alloc), 2
         )
@@ -1712,6 +1757,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             inv_gate=inv_gate,
             paused_campaign_ids=paused_cids,
             spend_ceiling_bound=spend_ceiling_bound,
+            target_acos=target_acos,
         )
 
         placement_data_unknown = set(placement_perf.keys()) <= {"UNKNOWN", ""}
@@ -1792,6 +1838,31 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         ]
         item["lp_zero_keywords"]  = zero_kws[:20]
         item["lp_maxed_keywords"] = maxed_kws[:10]
+
+        # Conflict suppression: a campaign-level increase_budget directly contradicts a
+        # keyword-level decrease_bid on the same campaign — the extra budget would flow
+        # into over-allocated keywords, worsening the inefficiency the bid cut was meant
+        # to fix.  Downgrade such campaign actions to review_bids and record the conflict.
+        decrease_bid_cids = {
+            str(ka["campaign_id"])
+            for ka in keyword_actions
+            if ka.get("action") == "decrease_bid" and ka.get("campaign_id")
+        }
+        for ca in campaign_actions:
+            if ca.get("action") in {"increase_budget", "enable_and_increase_budget"} and \
+                    str(ca.get("campaign_id", "")) in decrease_bid_cids:
+                original_action = ca["action"]
+                ca["action"] = "review_bids" if original_action == "increase_budget" \
+                    else "enable_and_review_bids"
+                ca["priority"] = "P1"
+                ca["rationale"] = (
+                    f"[Conflict resolved] {ca['rationale']} — "
+                    f"however, keyword_actions include decrease_bid for this campaign's keywords; "
+                    f"increasing budget would amplify over-allocated spend. "
+                    f"Downgraded from {original_action}: resolve keyword bid efficiency first, "
+                    f"then re-evaluate budget."
+                )
+
         item["campaign_actions"]  = campaign_actions
         item["keyword_actions"]   = keyword_actions[:30]
 
@@ -3104,7 +3175,11 @@ def _causal_reliability_tier(
     """
     AND-gate: 'high' requires BOTH historical calibration (hit_rate ≥0.70)
     AND at least one event being statistically significant in this run.
-    Downgrade to 'low' if either condition fails; 'none' if no data at all.
+    'low' sub-cases:
+      A: hit_rate not None and < 0.70 (calibrated but near-random)
+      B: hit_rate None and events_significant_pct == 0 (no calibration, no significance)
+      C: hit_rate None and events_significant_pct > 0 (significant results, no backtest)
+    'none': no backtest data and no significant events at all.
     """
     has_calibration  = (backtest_hit_rate or 0) >= 0.70
     has_significance = (events_significant_pct is not None) and events_significant_pct > 0
@@ -3704,7 +3779,11 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "eff_cpc = avg_cpc × bidding_strategy_multiplier × placement_multiplier; "
                 "pessimistic CVR shrinkage applied for low-sample keywords). "
                 "lp_optimal_orders_pessimistic uses shrunk CVR (may be < actual_daily_ad_orders — expected). "
-                "lp_optimal_orders_raw uses the same raw CVR as actual_daily_ad_orders. "
+                "lp_optimal_orders_raw uses un-shrunk AND un-deflated raw CVR — "
+                "same basis as actual_daily_ad_orders (both keyword-scope, un-deflated). "
+                "order_gap = lp_optimal_orders_raw − actual_daily_ad_orders is therefore "
+                "a fair apples-to-apples comparison: positive means LP reallocation gains orders, "
+                "negative means LP cannot outperform current allocation within budget. "
                 "actual_daily_ad_orders = spCampaigns ad-attributed orders ÷ days (AD ORDERS ONLY — "
                 "organic orders not included; true daily total consumption is higher). "
                 "order_gap = lp_optimal_orders_raw − actual_daily_ad_orders "
@@ -3769,7 +3848,7 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "CRITICAL — stock_shortfall=0 AND effective_stock_days < stock_gate_days can BOTH be true simultaneously and is NOT a contradiction: "
                 "stock_shortfall uses total confirmed pipeline (total_available + inbound_receiving + inbound_shipped) which may cover the 21-day target in aggregate; "
                 "effective_stock_days uses only near-term confirmed stock (total_available + inbound_receiving, 1-2d ETA) which may fall short of stock_gate_days; "
-                "when this coexists, write: 'Total pipeline sufficient (stock_shortfall=0), but near-term stock covers only {effective_stock_days}d — "
+                "when this coexists, write: 'Total pipeline sufficient (stock_shortfall=0), but near-term stock covers only {{effective_stock_days}}d — "
                 "the inventory gate will clear when inbound_shipped units arrive (ETA 10-30d).'\n"
                 "  campaign_actions → two evaluation paths based on LP scope:\n"
                 "    (a) LP-scoped campaigns (manual keyword targeting with click data): "
@@ -3802,6 +3881,22 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "'LP reallocates clicks to higher-CVR keywords; this keyword ACOS ($val%) is healthy but "
                 "other keywords generate more orders per dollar under the current budget constraint.' "
                 "Do NOT imply the keyword is inefficient based on ACOS alone — cite the LP's click allocation logic.\n"
+                "NOTE on pause_keyword — TWO CRITICAL RULES:\n"
+                "  (1) pause_keyword means the LP assigns 0 clicks in the OPTIMAL allocation plan. "
+                "It does NOT mean the keyword had zero historical orders. "
+                "FORBIDDEN: do NOT write 'zero orders despite spend', 'no conversions', or 'zero historical orders' "
+                "for a pause_keyword action unless the keyword's keyword_acos_pct is null/missing "
+                "(null ACOS is the only reliable signal of zero historical orders). "
+                "If keyword_acos_pct or estimated_cvr is present, the keyword HAS historical order data "
+                "— state it as 'LP allocates 0 clicks in the optimal plan' instead.\n"
+                "  (2) Do NOT describe a pause_keyword action as 'high ACOS' or 'underperforming' "
+                "when keyword_acos_pct < target_acos_pct (i.e., the keyword ACOS is below the target). "
+                "In that case the keyword is actually efficient — it simply loses the LP budget competition "
+                "to keywords with even higher CVR per dollar. "
+                "Correct framing: 'LP assigns 0 clicks — other keywords achieve more orders per dollar "
+                "under the current budget constraint; this keyword ACOS ($val%) is below target but "
+                "is outcompeted for budget by higher-CVR alternatives.' "
+                "Only use 'high ACOS' framing when keyword_acos_pct > target_acos_pct.\n"
                 "NOTE on decrease_bid under inventory gate: when lp_summary.stock_gate_days > effective_stock_days "
                 "AND there are lp_maxed_keywords, a decrease_bid action on a healthy-ACOS keyword is a PREPARATORY "
                 "action — freed budget will automatically flow to maxed keywords once the inventory gate is cleared "
@@ -3833,7 +3928,21 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "    suggested_match: EXACT; suggested_bid: target_acos × avg_price × Wilson CVR lower bound\n"
                 "    keyword_text, campaign_id, clicks, orders, spend_total, acos_pct, rationale\n"
                 "  ad_traffic_ratio / organic_traffic_ratio / traffic_growth_7d → "
-                "Xiyouzhaoci traffic score API (latest available snapshot)\n"
+                "Xiyouzhaoci traffic score API (latest available snapshot). "
+                "CRITICAL — traffic decline attribution rule: "
+                "traffic_growth_7d reflects TOTAL traffic (ad + organic combined). "
+                "When organic_traffic_ratio > 0.70, organic traffic dominates total traffic. "
+                "In this case, FORBIDDEN: do NOT attribute a total traffic decline primarily to "
+                "campaign pauses or budget cuts — ad traffic is a minority share and cannot "
+                "explain a large total traffic drop. "
+                "Instead, look for organic causes: "
+                "(a) rating_delta < 0 → lower rating reduces organic click-through rate; "
+                "(b) price premium vs competitors (price_mean vs competitor_price_summary median) → "
+                "higher price suppresses organic conversion and search ranking; "
+                "(c) rank_series showing declining organic rank (higher rank number) → "
+                "organic position lost. "
+                "Only when organic_traffic_ratio ≤ 0.30 can campaign pauses/budget cuts "
+                "be cited as the primary driver of total traffic decline.\n"
                 "  rank_tracked_keywords / rank_series_days → "
                 "Xiyouzhaoci daily organic rank trends; rank_series_days = days with rank data "
                 "within data_start_date → data_end_date for the top tracked keyword\n"
@@ -3861,9 +3970,13 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "  events_significant_count / events_significant_pct → how many change events in THIS run "
                 "had at least one model produce a statistically significant result (p<0.05 + CI not crossing zero). "
                 "events_significant_pct=0.0 means ALL events were insignificant in this run.\n"
-                "  causal_reliability → pre-computed AND-gate tier: 'high' requires BOTH backtest_hit_rate ≥0.70 "
-                "AND events_significant_pct > 0; 'low' if either condition fails but some data exists; "
-                "'none' if no calibration or significance data. "
+                "  causal_reliability → pre-computed AND-gate tier: "
+                "'high' requires BOTH backtest_hit_rate ≥0.70 AND events_significant_pct > 0; "
+                "'low' covers three sub-cases: "
+                "(A) hit_rate not None and < 0.70 — calibrated but near-random; "
+                "(B) hit_rate=None and events_significant_pct==0 — no calibration and no significance; "
+                "(C) hit_rate=None and events_significant_pct>0 — significant results but no backtest history; "
+                "'none' = hit_rate=None or 0 AND events_significant_pct=0 or None — no data at all. "
                 "Use this field (not the raw fraction) to apply Rule 4 label-downgrade logic\n\n"
                 "```json\n{_summary_json}\n```\n\n"
                 "> **Evidence Summary**: 1-2 sentences citing the single most critical metric "
@@ -3929,7 +4042,16 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "do not attribute lift solely to the ad change — flag as partially confounded.\n"
                 "  Use competitor_price_summary {{min, max, median}} time series to explain "
                 "sustained ACOS/CVR shifts that correlate with competitor price moves "
-                "rather than internal bid changes.\n\n"
+                "rather than internal bid changes.\n"
+                "- **CRITICAL — Same-day multi-event attribution**: "
+                "When multiple change_attribution entries share the same date "
+                "(e.g. three campaigns paused on 2026-04-30), all their causal_impact.point_effect "
+                "values reflect the SAME ASIN-level order decline measured once by a single BSTS model "
+                "and distributed across events — they are NOT independent estimates and MUST NOT be "
+                "summed or presented additively. "
+                "Write: 'Three campaigns paused on $date — the shared point_effect of $val orders/day "
+                "reflects one ASIN-level decline measured across all events, not $val × N.' "
+                "Never write language that implies the combined effect equals point_effect × N.\n\n"
 
                 "### Top 5 Prioritised Actions (most impactful first)\n\n"
                 "For each action use this sub-structure:\n\n"
@@ -4005,12 +4127,13 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "   When reporting both fields together, always explain the distinction: "
                 "'backtest_hit_rate=X% reflects historical model accuracy across N past events; "
                 "the consensus for this specific event is Y — [interpret Y independently]'.\n"
-                "   causal_reliability='low' (backtest_hit_rate 1–69%): "
-                "directional accuracy is near-random — DO NOT use 'demonstrated'/'causally linked'; "
+                "   causal_reliability='low' (any of: hit_rate 1–69%, or hit_rate=None with significant events, "
+                "or hit_rate=None with no significant events): "
+                "DO NOT use 'demonstrated'/'causally linked'; "
                 "downgrade ALL consensus labels by one level (Strong→Moderate, Moderate→Weak, Weak→Inconclusive); "
-                "prefix every causal citation with '(low causal reliability: hit_rate=$val%)'; "
+                "prefix every causal citation with '(low causal reliability)'; "
                 "do NOT promote any action to P0 solely on the basis of change_attribution evidence.\n"
-                "   causal_reliability='none' (backtest_hit_rate=0% or missing): "
+                "   causal_reliability='none' (backtest_hit_rate=0% or None AND events_significant_pct=0 or None): "
                 "downgrade ALL consensus labels by one level AND treat all causal evidence as unvalidated; "
                 "add '(backtest unvalidated)' after every citation; "
                 "do NOT use 'demonstrated' or 'causally linked'.\n"
@@ -4021,6 +4144,34 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "5. If confounders exist (promotion, price cut, competitor move), "
                 "do not attribute the outcome solely to ad actions — "
                 "rewrite the conclusion to reflect partial or unclear attribution.\n"
+                "5a. Apparent contradictions between demand trend and traffic trend MUST be explained — "
+                "do NOT leave them as unresolved coexisting statements. "
+                "Specifically: if you write that seasonal demand is rising (e.g. SFR improving, "
+                "market_trends showing week-over-week search volume increase) "
+                "AND ALSO that ad clicks or traffic are declining, "
+                "you MUST explain the root cause of the divergence. "
+                "Possible explanations to check in order:\n"
+                "  (a) Promotion / price cut: had_promotion=True or a large negative price_delta_window "
+                "in covariate_series → higher CVR may sustain orders despite lower clicks; "
+                "write: 'Rising demand coincides with active promotion/price cut — "
+                "higher CVR compensates for lower click volume; "
+                "verify whether orders hold when promotion ends.'\n"
+                "  (b) Bid reduction: if a decrease_bid or decrease_budget change_attribution event "
+                "precedes the click decline with positive consensus, "
+                "write: 'Click decline follows [change_type] on [date] — "
+                "intentional bid cut reduced impression share; "
+                "seasonal demand rising but not captured due to lower bids.'\n"
+                "  (c) Budget exhaustion driving impression cap: if budget_likely_exhausted=True, "
+                "write: 'Budget cap is reached — rising demand is constrained by ad budget, "
+                "not bid level; impression share limited by spend ceiling.'\n"
+                "  (d) Ad share shift: if organic rank is improving (rank_series showing lower rank number), "
+                "write: 'Organic rank improving — ad traffic may be declining as organic captures "
+                "a larger share of total demand.'\n"
+                "  (e) If none of the above apply: write explicitly "
+                "'Root cause of traffic decline vs rising demand is unclear from available data — "
+                "check search term report for impression share loss and competitor activity.'\n"
+                "FORBIDDEN: do NOT write both 'seasonal demand is rising' and 'clicks are declining' "
+                "in the same report without a connecting explanation for the divergence.\n"
                 "6. Append a **Caveats & Data Quality** subsection at the end of each ASIN "
                 "report if ANY of the following are true:\n"
                 "   - lp_summary.spend_ceiling_bound == true: write "
@@ -4042,8 +4193,13 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "'LP order estimate below actual (order_gap=$Z, no binding constraint identified): "
                 "possible CVR data gap or keyword mix mismatch — review bid strategy before scaling budget.'\n"
                 "   - lp_summary.budget_binding == true AND lp_summary.order_gap < 0: "
-                "this is expected (pessimistic CVR shrinkage under-estimates vs actual when budget is fully consumed); "
-                "do NOT write a caveat for this case — campaign_actions already reflects the correct recommendation.\n"
+                "this is expected and MUST NOT be flagged as a caveat. "
+                "Reason: pessimistic CVR shrinkage (Beta-Binomial Wilson shrinkage) systematically "
+                "under-estimates orders vs actual when the global budget is fully consumed — "
+                "this is a known model artifact, NOT a real performance gap. "
+                "STRICTLY FORBIDDEN: do NOT write any caveat, note, or qualification about "
+                "LP order estimate being below actual when budget_binding == true AND order_gap < 0. "
+                "campaign_actions already encodes the correct recommendation for this scenario.\n"
                 "   - lp_summary.placement_data_unknown == true: "
                 "do NOT recommend TOS/PP placement modifiers — "
                 "write 'Placement data unavailable (all traffic reported as UNKNOWN)' "
@@ -4054,24 +4210,36 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "Do NOT make high-confidence campaign-level recommendations under name_substring matching.\n"
                 "   - causal_reliability != 'high': write the appropriate caveat below "
                 "(causal_reliability is pre-computed — use it directly; do NOT re-derive from raw fractions):\n"
-                "     IMPORTANT: the two 'low' sub-conditions are MUTUALLY EXCLUSIVE — "
-                "apply exactly ONE based on which gate failed first:\n"
-                "     Sub-condition A — backtest_hit_rate < 0.70 (check this first): "
+                "     The three 'low' sub-conditions are MUTUALLY EXCLUSIVE — "
+                "evaluate in order A → B → C and apply exactly ONE:\n"
+                "     Sub-condition A — backtest_hit_rate is not None AND backtest_hit_rate < 0.70 (check first): "
                 "'Causal model directional accuracy $pct% (threshold 70%) — change_attribution "
                 "evidence is near-random; all consensus labels downgraded one tier. "
                 "($pct = backtest_hit_rate × 100, e.g. 0.65 → 65%.) "
                 "LP budget recommendations remain valid (independent of causal models).' "
                 "Apply ONLY when backtest_hit_rate is not None AND backtest_hit_rate < 0.70. "
-                "Do NOT apply this caveat alongside the 'no significant events' caveat.\n"
-                "     Sub-condition B — events_significant_pct == 0 (only when backtest_hit_rate IS None or 0): "
+                "Do NOT apply alongside Sub-condition B or C.\n"
+                "     Sub-condition B — backtest_hit_rate is None AND events_significant_pct == 0 "
+                "(no calibration data AND no significant events in this run): "
                 "'No change event in this run produced a statistically significant causal estimate "
                 "(p≥0.05 or CI crosses zero across all models). "
                 "Causal labels are descriptive only — do not use them to justify P0 actions.' "
-                "Apply ONLY when events_significant_pct == 0 AND Sub-condition A does NOT apply. "
-                "If events_significant_count ≥ 1, do NOT write this caveat even if backtest_hit_rate is low.\n"
+                "Apply ONLY when backtest_hit_rate IS None AND events_significant_pct == 0. "
+                "If events_significant_count ≥ 1, do NOT write this caveat.\n"
+                "     Sub-condition C — backtest_hit_rate is None AND events_significant_pct > 0 "
+                "(no calibration history, but this run produced statistically significant events): "
+                "'Causal model has no historical calibration data (backtest_hit_rate unavailable) — "
+                "directional accuracy across past events is unverified. "
+                "This run produced statistically significant estimates ($pct% of events, p<0.05), "
+                "but reliability cannot be confirmed without backtest history. "
+                "Treat causal labels as preliminary — use consensus and CI width, not causal_reliability, to judge strength.' "
+                "($pct = events_significant_pct × 100.) "
+                "Apply ONLY when backtest_hit_rate IS None AND events_significant_pct > 0.\n"
                 "     causal_reliability='none': "
                 "'Causal analysis has no calibration data and no significant results — "
-                "all change_attribution evidence is unvalidated; treat as exploratory.'\n"
+                "all change_attribution evidence is unvalidated; treat as exploratory.' "
+                "Apply ONLY when causal_reliability == 'none' (backtest_hit_rate is None or 0 "
+                "AND events_significant_pct == 0 or None).\n"
                 "This caveat is MANDATORY when causal_reliability is 'low' or 'none'.\n"
                 "   - Any change_attribution entry has attribution_suspect == true: write "
                 "'Attribution outlier: [event_date] [change_type] delta_orders=$X exceeds 1.5× pre-window mean "
@@ -4129,9 +4297,9 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "campaign_action or keyword_action in the Top 5 list.\n"
                 "     Demote its priority by one tier (P0→P1, P1→P2, P2→omit from Top 5).\n"
                 "     Under that action's 'Risks / caveats' add: "
-                "'⚠ Historical conflict ({conflict_change_type} on {conflict_event_date}): "
-                "a similar {action} event previously correlated with an order decline "
-                "({conflict_delta_orders}/day, {conflict_consensus}). "
+                "'⚠ Historical conflict ({{conflict_change_type}} on {{conflict_event_date}}): "
+                "a similar {{action}} event previously correlated with an order decline "
+                "({{conflict_delta_orders}}/day, {{conflict_consensus}}). "
                 "Validate this action against the historical pattern before executing.'\n"
                 "     Do NOT remove the action from the report — demotion + caveat is the correct response.\n"
                 "     Do NOT apply this rule when causal_reliability is 'low' or 'none' — "

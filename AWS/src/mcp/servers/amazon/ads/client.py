@@ -639,7 +639,20 @@ class AmazonAdsClient:
             "sort":     {"direction": sort_direction.upper(), "key": "DATE"},
         }
 
-        @exponential_backoff(max_retries=5, base_delay=60.0, max_delay=300.0, jitter=False)  # /history rate-limit is strict; honours Retry-After
+        def _history_is_retryable(resp: requests.Response) -> bool:
+            if resp.status_code == 401:
+                # Token expired during a long retry sequence — refresh and retry once.
+                logger.info("change_history got 401 — refreshing access token before retry")
+                self.auth._token_cache.pop(self.auth.store_id, None)
+                headers["Authorization"] = f"Bearer {self.auth.get_access_token()}"
+                return True
+            return False
+
+        @exponential_backoff(
+            max_retries=5, base_delay=60.0, max_delay=300.0, jitter=False,
+            retry_on_status=(429,),
+            is_retryable=_history_is_retryable,
+        )
         async def _post_with_retry(body_dict: Dict) -> Dict:
             body_bytes = json.dumps(body_dict).encode("utf-8")
             resp = await asyncio.to_thread(
