@@ -162,7 +162,7 @@ class AdBudgetOptimizer:
 
         # ── Constraint 3: Target ACOS (linearised) ───────────────────────
         # Σ clicks_i × (eff_cpc_i − target_acos × pess_cvr_i × avg_price) ≤ 0
-        if target_acos and avg_price and avg_price > 0:
+        if target_acos is not None and avg_price and avg_price > 0:
             c_acos = self.solver.Constraint(-self.solver.infinity(), 0.0, "target_acos")
             for i in range(n):
                 coeff = eff_cpcs[i] - target_acos * pess_cvrs[i] * avg_price

@@ -189,21 +189,24 @@ def _l2_cached(
             # Acquire per-key lock to serialise concurrent callers
             if l1_key not in _l2_inflight:
                 _l2_inflight[l1_key] = asyncio.Lock()
-            async with _l2_inflight[l1_key]:
-                # Re-check L1 after acquiring — a prior waiter may have filled it
-                if l1_key in ctx.cache:
-                    return ctx.cache[l1_key]
+            try:
+                async with _l2_inflight[l1_key]:
+                    # Re-check L1 after acquiring — a prior waiter may have filled it
+                    if l1_key in ctx.cache:
+                        return ctx.cache[l1_key]
 
-                l2_parts = l2_parts_fn(ctx, *args, **kwargs)
-                hit = _l2_get(ctx, l2_ttl, *l2_parts)
-                if hit is not None:
-                    ctx.cache[l1_key] = hit
-                    return hit
+                    l2_parts = l2_parts_fn(ctx, *args, **kwargs)
+                    hit = _l2_get(ctx, l2_ttl, *l2_parts)
+                    if hit is not None:
+                        ctx.cache[l1_key] = hit
+                        return hit
 
-                value = await fn(ctx, *args, **kwargs)
-                ctx.cache[l1_key] = value
-                _l2_set(ctx, value, *l2_parts)
-                return value
+                    value = await fn(ctx, *args, **kwargs)
+                    ctx.cache[l1_key] = value
+                    _l2_set(ctx, value, *l2_parts)
+                    return value
+            finally:
+                _l2_inflight.pop(l1_key, None)
         return wrapper
     return decorator
 
@@ -324,7 +327,7 @@ async def _ensure_daily_performance(ctx: WorkflowContext, asin: str) -> List[Dic
     client      = _ads_client(ctx)
     days        = ctx.config.get("days", 30)
     days_needed = days + abs(ATTR_PRE_START) + abs(ATTR_POST_END) + 1
-    today       = datetime.utcnow().date()
+    today       = datetime.now(tz=_store_tz(ctx)).date()
     chunk_end   = today - timedelta(days=1)
     remaining   = days_needed
     all_raw: List[Dict] = []
@@ -606,10 +609,9 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
     campaign_ids = set(item.get("campaign_ids", []))
     all_perf     = await _ensure_performance(ctx)
 
-    matched = [
-        r for r in all_perf
-        if str(r.get("campaign_id")) in campaign_ids
-    ] if campaign_ids else all_perf
+    if not campaign_ids:
+        return {"performance_records": [], "total_spend": 0, "account_acos": None}
+    matched = [r for r in all_perf if str(r.get("campaign_id")) in campaign_ids]
 
     if not matched:
         return {"performance_records": [], "total_spend": 0, "account_acos": None}
@@ -639,7 +641,6 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
 
     # Flag campaigns exceeding ACOS thresholds
     warn_thresh = ctx.config.get("acos_warn_threshold", 0.30) * 100
-    crit_thresh = ctx.config.get("acos_crit_threshold", 0.50) * 100
     high_acos_campaigns = [
         r for r in matched
         if r.get("acos") and r["acos"] > warn_thresh
@@ -680,8 +681,11 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
     # Last-resort can_sell_days backfill: only if neither inventory (daily_sales
     # supplied by caller) nor order_metrics (preferred) set can_sell_days already.
     if item.get("can_sell_days") is None and item.get("daily_sales_source") != "order_metrics" and total_orders > 0:
-        # Ad orders are only a fraction of total sales; this is a LOWER BOUND.
-        # Do NOT use for inventory risk decisions — flag clearly for the LLM.
+        # Ad orders exclude organic — daily consumption is understated, so can_sell_days
+        # is an upper bound (stock lasts LESS than this estimate in reality).
+        # inventory_risk is only set True when even this optimistic upper bound is below
+        # the threshold (definite risk). When the upper bound looks safe, inventory_risk
+        # is left unset (unknown) — never assert False on an unreliable estimate.
         daily_sales_ad = total_orders / days
         total_available = item.get("total_available") or 0
         if total_available > 0:
@@ -694,7 +698,9 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
                 "true daily unit consumption (ad + organic) is higher, "
                 "so actual stockout will occur SOONER than can_sell_days suggests"
             )
-            result["inventory_risk"] = can_sell_days < ctx.config.get("inventory_risk_days", 30)
+            if can_sell_days < ctx.config.get("inventory_risk_days", 30):
+                result["inventory_risk"] = True
+            # else: leave unset — upper-bound safety does not confirm no risk
             logger.info(
                 f"[backfill can_sell_days] {item.get('asin')}: "
                 f"ad_orders={total_orders}/{days}d → daily_sales_ad≈{daily_sales_ad:.1f} "
@@ -743,11 +749,10 @@ async def _enrich_keyword_performance(item: Dict, ctx: WorkflowContext) -> Dict:
 
     all_kw_perf = await _ensure_keyword_performance(ctx)
 
+    if not campaign_ids:
+        return {"keyword_performance": []}
     # Filter to this ASIN's campaigns
-    relevant = [
-        r for r in all_kw_perf
-        if str(r.get("campaign_id")) in campaign_ids
-    ] if campaign_ids else all_kw_perf
+    relevant = [r for r in all_kw_perf if str(r.get("campaign_id")) in campaign_ids]
 
     # Aggregate by (keyword_text, match_type)
     agg: Dict[tuple, Dict] = {}
@@ -800,11 +805,10 @@ async def _enrich_placement(item: Dict, ctx: WorkflowContext) -> Dict:
     campaign_ids = set(item.get("campaign_ids", []))
     all_records  = await _ensure_placement_performance(ctx)
 
+    if not campaign_ids:
+        return {"placement_performance": {}, "placement_configured_pcts": {}}
     # Filter to this ASIN's campaigns
-    relevant = [
-        r for r in all_records
-        if str(r.get("campaign_id")) in campaign_ids
-    ] if campaign_ids else all_records
+    relevant = [r for r in all_records if str(r.get("campaign_id")) in campaign_ids]
 
     # Aggregate by placement label
     agg: Dict[str, Dict] = {}
@@ -878,7 +882,7 @@ async def _enrich_change_history(item: Dict, ctx: WorkflowContext) -> Dict:
         cid  = str(meta.get("campaignId") or ev.get("entityId") or "")
 
         # Filter to this ASIN's campaigns since we now fetch profile-wide
-        if campaign_ids and cid not in campaign_ids:
+        if not campaign_ids or cid not in campaign_ids:
             continue
 
         # Noise filter: IN_BUDGET is auto-generated (not a human action); tiny tweaks are low-signal
@@ -1159,7 +1163,7 @@ def _build_campaign_actions(
         camp_daily_orders = camp_orders_total / days if days > 0 else 0.0
         camp_cpo          = round(camp_spend_total / camp_orders_total, 2) if camp_orders_total > 0 else None
 
-        target_acos_pct = (target_acos or 0.35) * 100
+        target_acos_pct = (target_acos or 0.30) * 100
         suggested = None
 
         # ── Auto / Product-Targeting campaigns: LP allocates $0 (not in scope) ──
@@ -1390,7 +1394,7 @@ def _build_keyword_actions(
             camp_is_paused = paused_campaign_ids and str(cid) in paused_campaign_ids
             if not is_brand and not camp_is_paused:
                 cur_clicks = lp_kw["max_daily_clicks"] / headroom
-                target_acos_pct = (target_acos or 0.35) * 100
+                target_acos_pct = (target_acos or 0.30) * 100
                 if kw_acos_pct is None:
                     # Insufficient data — low-priority pause, don't imply inefficiency
                     _action   = "pause_keyword"
@@ -1636,6 +1640,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             mu_by_match_type=mu_by_mt,
             global_mu=global_mu,
         )
+        lp_scope_cids_pre = {str(kw.get("campaign_id", "")) for kw in lp_input if kw.get("campaign_id")}
         if not lp_input:
             item["lp_summary"] = {"skipped": True, "reason": "all keywords filtered (insufficient clicks)",
                                   "lp_scoped_cids": sorted(lp_scope_cids_pre)}
@@ -1649,7 +1654,6 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         # global constraint match the actual LP operating budget and prevents the
         # LLM from summing lp_optimal_spend + non_lp_scope_daily_spend against
         # the total account budget (which would always look contradictory).
-        lp_scope_cids_pre = {str(kw.get("campaign_id", "")) for kw in lp_input if kw.get("campaign_id")}
         lp_scope_campaign_budget_raw = sum(
             float(camp_meta[cid].get("daily_budget") or 0)
             for cid in lp_scope_cids_pre
@@ -1831,8 +1835,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             "lp_scope_campaign_daily_budget": lp_budget,
             "total_account_daily_budget":     daily_budget,
             "lp_optimal_spend":              lp_spend_total,
-            "lp_optimal_orders_pessimistic": summary["total_expected_orders"],
-            "lp_optimal_orders_raw":         lp_raw_orders,
+            "lp_orders_bbs_estimate":  summary["total_expected_orders"],
+            "lp_orders_cvr_matched":   lp_raw_orders,
             "actual_daily_ad_orders":        round(actual_daily_ad_orders, 2),
             "auto_pt_daily_orders":          round(auto_pt_daily_orders, 2),
             "order_gap":                     round(order_gap, 2),
@@ -2406,7 +2410,7 @@ def _yoy_date_range(ctx: WorkflowContext) -> Tuple[str, str]:
     same day-of-week is preserved.
     """
     days  = ctx.config.get("days", 30)
-    today = _date_cls.today()
+    today = datetime.now(tz=_store_tz(ctx)).date()
     # Post-windows of events from [today-days, today-0] land in YoY space at:
     #   [today - days - YOY_OFFSET_DAYS + ATTR_POST_START,
     #    today - 1    - YOY_OFFSET_DAYS + ATTR_POST_END  ]
@@ -2425,7 +2429,7 @@ def _trailing_ext_date_range(ctx: WorkflowContext) -> Tuple[str, str]:
     takes priority for overlapping dates inside _normalized_delta_orders.
     """
     days     = ctx.config.get("days", 30)
-    today    = _date_cls.today()
+    today    = datetime.now(tz=_store_tz(ctx)).date()
     # daily_perf starts at approximately today - (days + |ATTR_PRE_START| + |ATTR_POST_END| + 2)
     dp_start_offset = days + abs(ATTR_PRE_START) + abs(ATTR_POST_END) + 2
     ext_end   = today - timedelta(days=dp_start_offset - 3)   # 3-day overlap
@@ -2534,7 +2538,7 @@ def _mine_auto_campaigns(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     from src.intelligence.processors.auto_mining import build_auto_mining_actions
 
     raw_st_records: List[Dict] = ctx.cache.get(_KEY_KW_PERFORMANCE, [])
-    target_acos = ctx.config.get("target_acos", 0.35)
+    target_acos = ctx.config.get("target_acos", 0.30)
     days        = ctx.config.get("days", 30)
 
     for item in items:
@@ -2946,7 +2950,7 @@ def _chart_placement_bar(item: Dict) -> Optional[bytes]:
     return _fig_to_png(fig)
 
 
-def _chart_inventory_burndown(item: Dict) -> Optional[bytes]:
+def _chart_inventory_burndown(item: Dict, store_today: Optional[str] = None) -> Optional[bytes]:
     total     = item.get("total_available")
     daily     = item.get("daily_sales")
     risk_days = 30
@@ -2964,7 +2968,7 @@ def _chart_inventory_burndown(item: Dict) -> Optional[bytes]:
     ax.axvspan(0, risk_end, color=_C["light_red"], alpha=0.35,
                label=f"Risk zone (<{risk_days}d)")
     ax.axvline(can_sell, color=_C["red"], lw=1.5, linestyle="--", alpha=0.8)
-    stockout_date = _date_cls.today() + timedelta(days=can_sell)
+    stockout_date = (_date_cls.fromisoformat(store_today) if store_today else _date_cls.today()) + timedelta(days=can_sell)
     ax.text(can_sell, total * 0.05, f"  Stockout\n  {stockout_date.isoformat()}",
             color=_C["red"], fontsize=8, va="bottom")
     ax.fill_between(x, y, 0, alpha=0.08, color=_C["blue"])
@@ -3018,7 +3022,7 @@ def _generate_charts(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     from concurrent.futures import ThreadPoolExecutor, Future
     from typing import Tuple as _Tuple
 
-    date_str    = _dt.date.today().isoformat()
+    date_str    = _dt.datetime.now(tz=_store_tz(ctx)).date().isoformat()
     max_workers = ctx.config.get("chart_workers", 8)
 
     def _run_one(asin: str, name: str, fn, upload_key: str) -> Optional[str]:
@@ -3045,7 +3049,7 @@ def _generate_charts(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 ("its_causal",         lambda _i=item, _p=daily_perf: _chart_its_causal(_i, _p)),
                 ("kw_quadrant",        lambda _i=item: _chart_kw_quadrant(_i)),
                 ("placement_bar",      lambda _i=item: _chart_placement_bar(_i)),
-                ("inventory_burndown", lambda _i=item: _chart_inventory_burndown(_i)),
+                ("inventory_burndown", lambda _i=item, _d=date_str: _chart_inventory_burndown(_i, _d)),
                 ("comp_price_box",     lambda _i=item: _chart_comp_price_box(_i)),
                 ("lp_waterfall",       lambda _i=item: _chart_lp_waterfall(_i)),
                 ("rank_trend",         lambda _i=item: _chart_rank_trend(_i)),
@@ -3139,7 +3143,7 @@ def _detect_action_conflicts(item: Dict) -> List[Dict]:
 
         if action in _SCALE_UP_ACTIONS:
             for attr in attrs:
-                if attr.get("change_type") != "BUDGET":
+                if attr.get("change_type") != "BUDGET_AMOUNT":
                     continue
                 if _scale_up(attr.get("old_value"), attr.get("new_value")) is True \
                         and attr.get("direction") == "negative":
@@ -3153,7 +3157,7 @@ def _detect_action_conflicts(item: Dict) -> List[Dict]:
         elif action in _SCALE_DOWN_ACTIONS:
             for attr in attrs:
                 ct = attr.get("change_type") or ""
-                if ct not in ("BUDGET", "STATUS"):
+                if ct not in ("BUDGET_AMOUNT", "STATUS"):
                     continue
                 is_down = (ct == "STATUS") or (_scale_up(attr.get("old_value"), attr.get("new_value")) is False)
                 if is_down and attr.get("direction") == "negative":
@@ -3181,7 +3185,7 @@ def _detect_action_conflicts(item: Dict) -> List[Dict]:
 
         if action in _SCALE_UP_ACTIONS:
             for attr in kw_attrs:
-                if attr.get("change_type") != "BID":
+                if attr.get("change_type") != "BID_AMOUNT":
                     continue
                 if _scale_up(attr.get("old_value"), attr.get("new_value")) is True \
                         and attr.get("direction") == "negative":
@@ -3195,7 +3199,7 @@ def _detect_action_conflicts(item: Dict) -> List[Dict]:
         elif action in _SCALE_DOWN_ACTIONS:
             for attr in kw_attrs:
                 ct = attr.get("change_type") or ""
-                if ct not in ("BID", "STATUS"):
+                if ct not in ("BID_AMOUNT", "STATUS"):
                     continue
                 is_down = (ct == "STATUS") or (_scale_up(attr.get("old_value"), attr.get("new_value")) is False)
                 if is_down and attr.get("direction") == "negative":
@@ -3238,14 +3242,12 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     Python-side extraction: 100% accurate, zero LLM token cost.
     Mirrors the highlights dict in the live test's _print_result.
     """
-    from datetime import date as _date
-
     rank_series: Dict = item.get("natural_rank_series") or {}
     market_trends: Dict = item.get("market_trends") or {}
     attributions: List = item.get("change_attributions") or []
     campaigns: List = item.get("campaigns") or []
     days = ctx.config.get("days", 30)
-    today = _date.today()
+    today = datetime.now(tz=_store_tz(ctx)).date()
     data_end_date   = (today - timedelta(days=1)).isoformat()
     data_start_date = (today - timedelta(days=days)).isoformat()
     active_campaign_count = sum(1 for c in campaigns if c.get("state") == "ENABLED")
@@ -3542,18 +3544,19 @@ def _chart_interpretation(item: Dict, name: str) -> str:
         ceiling = lp.get("spend_ceiling_bound", False)
         if ceiling:
             return (f"LP is ceiling-bound (spend ${lp.get('lp_optimal_spend',0):.0f} "
-                    f"vs budget ${lp.get('daily_budget',0):.0f}) — "
+                    f"vs budget ${lp.get('lp_scope_campaign_daily_budget',0):.0f}) — "
                     f"expand keyword coverage to unlock remaining budget.")
         if gap >= 0:
             return (f"Ad order gap +{gap:.1f}/day — rebalancing spend could gain {gap:.1f} ad orders/day. "
                     f"Blue bar = LP target; grey = budget cap. Organic orders not included.")
         binding = lp.get("budget_binding", False)
-        lp_raw  = lp.get("lp_optimal_orders_raw", 0)
+        lp_raw  = lp.get("lp_orders_cvr_matched", 0)
         actual  = lp.get("actual_daily_ad_orders", 0)
         if binding:
             return (f"Ad order gap {gap:+.1f}/day (LP-projected {lp_raw:.1f} vs actual {actual:.1f} orders/day). "
-                    f"Negative gap expected under budget constraint — pessimistic CVR shrinkage underestimates "
-                    f"vs historical when budget is fully consumed. Blue bar = LP target; grey = budget cap.")
+                    f"Negative gap expected under budget constraint — LP click ceiling limits optimised clicks "
+                    f"below actual (Amazon 125% pacing + seasonal CVR uplift not captured). "
+                    f"Blue bar = LP target; grey = budget cap.")
         return (f"Ad order gap {gap:+.1f}/day (LP-projected {lp_raw:.1f} vs actual {actual:.1f} orders/day) — "
                 f"LP order estimate below actual; review CVR data quality or keyword mix. "
                 f"Blue bar = LP target; grey = budget cap. Organic orders not included.")
@@ -3583,7 +3586,7 @@ def _export_report(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
     report_dir = os.path.abspath("data/reports")
     os.makedirs(report_dir, exist_ok=True)
-    date_str = _dt.date.today().isoformat()
+    date_str = _dt.datetime.now(tz=_store_tz(ctx)).date().isoformat()
 
     for item in items:
         text = item.get("ad_diagnosis_llm") or ""
@@ -3905,16 +3908,16 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "C3 target ACOS linearised, C4 click floor/ceiling; "
                 "inventory is NOT a LP constraint — replenishment timing is too unstable to model as a hard bound; "
                 "eff_cpc = avg_cpc × bidding_strategy_multiplier × placement_multiplier; "
-                "pessimistic CVR shrinkage applied for low-sample keywords). "
-                "lp_optimal_orders_pessimistic uses shrunk CVR (may be < actual_daily_ad_orders — expected). "
-                "lp_optimal_orders_raw uses un-shrunk AND un-deflated raw CVR — "
+                "pessimistic CVR shrinkage (Beta-Binomial) applied for low-sample keywords). "
+                "lp_orders_bbs_estimate uses Beta-Binomial shrunk CVR (may be < actual_daily_ad_orders — expected). "
+                "lp_orders_cvr_matched uses un-shrunk AND un-deflated raw CVR — "
                 "same basis as actual_daily_ad_orders (both keyword-scope, un-deflated). "
-                "order_gap = lp_optimal_orders_raw − actual_daily_ad_orders is therefore "
+                "order_gap = lp_orders_cvr_matched − actual_daily_ad_orders is therefore "
                 "a fair apples-to-apples comparison: positive means LP reallocation gains orders, "
                 "negative means LP cannot outperform current allocation within budget. "
                 "actual_daily_ad_orders = spCampaigns ad-attributed orders ÷ days (AD ORDERS ONLY — "
                 "organic orders not included; true daily total consumption is higher). "
-                "order_gap = lp_optimal_orders_raw − actual_daily_ad_orders "
+                "order_gap = lp_orders_cvr_matched − actual_daily_ad_orders "
                 "(positive = LP reallocates budget to gain more ad orders; "
                 "negative — two distinct causes: "
                 "(1) spend_ceiling_bound=true: click ceilings prevent the LP from using the full budget — "
@@ -3959,9 +3962,9 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "a negative order_gap when budget_binding=true is expected and should NOT be flagged as a caveat. "
                 "placement_data_unknown=true means all spend was reported under 'UNKNOWN' placement — "
                 "do NOT make placement-specific recommendations in this case. "
-                "recommended_stock_units = (organic_daily + lp_optimal_orders_raw) × stock_gate_days — "
+                "recommended_stock_units = (organic_daily + lp_orders_cvr_matched) × stock_gate_days — "
                 "total units required to safely execute the LP plan for stock_gate_days (default 21d) without stockout risk; "
-                "daily_consumption = organic daily orders + lp_optimal_orders_raw (LP-projected total consumption rate, NOT the same as the rate used for can_sell_days); "
+                "daily_consumption = organic daily orders + lp_orders_cvr_matched (LP-projected total consumption rate, NOT the same as the rate used for can_sell_days); "
                 "can_sell_days uses actual historical daily_sales (ad+organic) which is higher than lp_raw_orders alone — "
                 "so daily_consumption < actual consumption rate is EXPECTED and NOT a contradiction; "
                 "daily_consumption_source: 'order_metrics' = ad+organic (accurate), 'ad_orders_only' = underestimate (organic excluded — real shortfall is larger); "

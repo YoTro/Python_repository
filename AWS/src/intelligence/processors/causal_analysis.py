@@ -79,11 +79,13 @@ def _align_covariates(
     item-level time series.
 
     Columns:
-      0  sale_price         own price
-      1  promotion_flag     0/1
-      2  competitor_median  competitor price median
-      3  total_rank         organic rank (lowest totalRank across keywords)
-      4  sfr                ABA search frequency rank (primary keyword)
+      0  sale_price           own price
+      1  promotion_flag       0/1
+      2  competitor_median    competitor price median
+      3  total_rank           organic rank (lowest totalRank across keywords)
+      4  weekly_searches      ABA weekly search volume (primary keyword); positively
+                              correlated with demand and linearly scalable — preferred
+                              over SFR rank which is inverted and non-linear
 
     Missing values: forward-filled → backward-filled → zero if column entirely absent.
     Returns (dates_list, matrix) where dates_list[i] == matrix row i.
@@ -109,20 +111,21 @@ def _align_covariates(
     rank_series = item.get("natural_rank_series") or {}
     mkt_trends  = item.get("market_trends") or {}
 
-    # Weekly SFR → daily (first keyword only)
-    sfr_by_date: Dict[str, float] = {}
+    # Weekly search volume → daily (first keyword only, uniform distribution within week)
+    search_by_date: Dict[str, float] = {}
     for kw, weeks in mkt_trends.items():
         for iso_week, vals in weeks.items():
-            sfr = vals.get("sfr")
-            if sfr is None:
+            vol = vals.get("weekly_searches")
+            if vol is None:
                 continue
             try:
                 week_start = datetime.strptime(f"{iso_week}-1", "%G-W%V-%u").date()
             except ValueError:
                 continue
+            daily_vol = float(vol) / 7.0
             for offset in range(7):
                 d = (week_start + timedelta(days=offset)).strftime("%Y-%m-%d")
-                sfr_by_date.setdefault(d, float(sfr))
+                search_by_date.setdefault(d, daily_vol)
         break
 
     # Best organic rank per date (smallest totalRank)
@@ -144,7 +147,7 @@ def _align_covariates(
             float(bool(cov.get("promotion_flag", False))),
             comp.get("median"),
             best_rank.get(d),
-            sfr_by_date.get(d),
+            search_by_date.get(d),
         ])
 
     mat = np.array(raw, dtype=float)   # None → NaN
