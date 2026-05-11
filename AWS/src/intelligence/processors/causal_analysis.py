@@ -1082,6 +1082,35 @@ def run_causal_analysis(
         f"({n_asin_lvl} ASIN-level fallback); "
         f"significant={n_significant}/{len(runnable)}"
     )
+    # ── Same-day co-event annotation ─────────────────────────────────────────
+    # When ≥2 attributions share the same changed_at date, their causal_impact
+    # point_effect values all reflect ONE ASIN-level BSTS measurement — NOT
+    # independent estimates.  Annotate so consumers never sum them.
+    #   shared_effect = 'primary'   → the representative measurement for that date
+    #                  'duplicate'  → same BSTS output; cite primary only
+    #   same_day_event_ids          → event_ids of all other same-date entries
+    from collections import defaultdict
+    _by_date: Dict[str, List[Dict]] = defaultdict(list)
+    for a in attributions:
+        d = a.get("changed_at")
+        if d:
+            _by_date[d].append(a)
+    for _date, _group in _by_date.items():
+        if len(_group) < 2:
+            continue
+        _all_ids = [a.get("event_id") for a in _group]
+        _primary_set = False
+        for a in _group:
+            _ci_skipped = a.get("causal_impact", {}).get("skipped", True)
+            a["same_day_event_ids"] = [eid for eid in _all_ids if eid != a.get("event_id")]
+            if not _ci_skipped and not _primary_set:
+                a["shared_effect"] = "primary"
+                _primary_set = True
+            else:
+                a["shared_effect"] = "duplicate"
+        if not _primary_set:
+            _group[0]["shared_effect"] = "primary"
+
     backtest = _compute_backtest_stats(attributions)
     return {
         "change_attributions":      attributions,

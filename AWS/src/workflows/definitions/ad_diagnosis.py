@@ -85,6 +85,38 @@ _KEY_COVARIATES       = "ad_diag:covariates"
 _KEY_YOY_PERF         = "ad_diag:yoy_perf"        # ERP YoY post-window (364d back)
 _KEY_TRAILING_EXT     = "ad_diag:trailing_ext"     # ERP trailing 3M extension
 
+# ── Action priority tiers ────────────────────────────────────────────────────
+# Used by campaign_actions, keyword_actions, and mining_actions alike.
+# Every function that emits a "priority" field MUST use these constants so the
+# tier semantics remain consistent across all action types and are visible to
+# both code reviewers and the LLM prompt (the prompt references these strings).
+#
+# P0 — Immediate / revenue-blocking
+#       Situation is actively losing money or at risk of stockout / account suspension.
+#       Examples: budget exhausted daily (capping organic-traffic campaigns),
+#                 ACOS > 130% of target (burning margin), stockout imminent.
+#       LLM instruction: surface in Top 5, do NOT demote below P1.
+#
+# P1 — High-priority / clear action required
+#       A measurable problem exists; act within the current week.
+#       Examples: ACOS above target (not extreme), keyword genuinely inefficient
+#                 (kw_acos ≥ target → pause_keyword), campaign paused with healthy ACOS
+#                 (should re-enable), LP-causal conflict detected.
+#       LLM instruction: include in Top 5 unless overridden by a conflict rule.
+#
+# P2 — Monitor / conditional / low-urgency
+#       No urgent action; revisit when a condition changes (budget increases,
+#       stock clears gate, more data accumulates).
+#       Examples: hold_keyword (efficient but budget-constrained),
+#                 pause_keyword with null ACOS (data insufficient),
+#                 increase_bid gated behind inventory threshold,
+#                 maintain (campaign is healthy).
+#       LLM instruction: mention as secondary notes; omit from Top 5 if space
+#                        is needed for P0/P1 items.
+#
+# Sort order for action lists: P0 < P1 < P2  (ascending index = higher urgency).
+PRIORITY_SORT = ("P0", "P1", "P2")
+
 # ── L2 cache helpers (DataCache-backed, multi-tenant safe) ──────────────────
 # Key format: {tenant_id}:{store_id}:{part...}
 # - tenant_id isolates different seller accounts (multi-user safety)
@@ -1317,7 +1349,7 @@ def _build_campaign_actions(
             entry["prerequisite"] = prerequisite
         actions.append(entry)
 
-    actions.sort(key=lambda x: ("P0", "P1", "P2").index(x["priority"]))
+    actions.sort(key=lambda x: PRIORITY_SORT.index(x["priority"]))
     return actions
 
 
@@ -1360,25 +1392,34 @@ def _build_keyword_actions(
                 cur_clicks = lp_kw["max_daily_clicks"] / headroom
                 target_acos_pct = (target_acos or 0.35) * 100
                 if kw_acos_pct is None:
+                    # Insufficient data — low-priority pause, don't imply inefficiency
+                    _action   = "pause_keyword"
+                    _priority = "P2"
                     _rationale = (
                         f"LP assigned 0 clicks — insufficient CVR data (CVR {raw_cvr:.3f}) "
                         f"to evaluate efficiency; keyword excluded from LP allocation"
                     )
                 elif kw_acos_pct < target_acos_pct:
+                    # Efficient keyword squeezed out by budget — hold, do NOT actively pause
+                    _action   = "hold_keyword"
+                    _priority = "P2"
                     _rationale = (
                         f"LP assigned 0 clicks — keyword ACOS {kw_acos_pct}% is below target "
                         f"{target_acos_pct:.0f}% but outcompeted by higher-CVR keywords within "
-                        f"the budget constraint; this keyword is efficient but not LP-optimal"
+                        f"the budget constraint; do NOT pause — hold and revisit after budget increase"
                     )
                 else:
+                    # Genuinely inefficient — active pause warranted
+                    _action   = "pause_keyword"
+                    _priority = "P1"
                     _rationale = (
                         f"LP assigned 0 clicks — CVR {raw_cvr:.3f} × CPC ${avg_cpc:.2f} → "
                         f"keyword ACOS {kw_acos_pct}% exceeds target {target_acos_pct:.0f}% "
                         f"(budget efficiency threshold)"
                     )
                 actions.append({
-                    "action":               "pause_keyword",
-                    "priority":             "P1",
+                    "action":               _action,
+                    "priority":             _priority,
                     "keyword_text":         kw_text,
                     "match_type":           match_type,
                     "campaign_id":          cid,
@@ -1480,7 +1521,7 @@ def _build_keyword_actions(
                         ),
                     })
 
-    actions.sort(key=lambda x: ("P0", "P1", "P2").index(x["priority"]))
+    actions.sort(key=lambda x: PRIORITY_SORT.index(x["priority"]))
     return actions
 
 
@@ -3286,9 +3327,84 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         # Auto/PT campaign search-term mining results
         "auto_mining_summary":  (item.get("auto_mining") or {}).get("summary"),
         "auto_mining_beta_prior": (item.get("auto_mining") or {}).get("beta_prior"),
-        "auto_mining_negatives": (item.get("auto_mining") or {}).get("negatives", [])[:10],
-        "auto_mining_harvest":   (item.get("auto_mining") or {}).get("harvest", [])[:10],
+        "auto_mining_negatives": (item.get("auto_mining") or {}).get("negatives", [])[:30],
+        "auto_mining_harvest":   (item.get("auto_mining") or {}).get("harvest", [])[:20],
     }
+
+
+def _trim_keyword_performance(item: Dict) -> None:
+    """
+    Trim keyword_performance in-place before sending to LLM.
+
+    N is determined dynamically by three rules applied in order:
+
+    1. Floor  = max(keywords_in_lp, len(keyword_actions), _KW_PERF_FLOOR)
+       LP-analysed keywords and action-listed keywords must always be present.
+
+    2. Pareto = keep top-spend keywords until cumulative spend >= _KW_SPEND_COVERAGE
+       of total spend.  Accounts with concentrated spend truncate much shorter
+       than accounts with spread spend.
+
+    3. Ceiling = _KW_PERF_CEIL  — hard cap regardless of spread.
+
+    Final N = min(max(floor, pareto_n), ceiling).
+    The original count is preserved in keyword_performance_original_count so
+    the LLM knows the list may be truncated.
+    """
+    _KW_PERF_FLOOR    = 20    # always keep at least this many
+    _KW_SPEND_COVERAGE = 0.95  # Pareto threshold: cover 95% of spend
+    _KW_PERF_CEIL     = 300   # hard ceiling
+
+    kw_perf: List[Dict] = item.get("keyword_performance") or []
+    if not kw_perf:
+        return
+
+    original_count = len(kw_perf)
+
+    # Must-keep: keywords referenced in change_attributions (may have low spend
+    # if the bid/state change happened late in the window, but the LLM needs their
+    # historical CVR/ACOS to evaluate causal impact quality).
+    must_keep: set = {
+        a["keyword"].lower()
+        for a in (item.get("change_attributions") or [])
+        if a.get("keyword")
+    }
+
+    # Floor: LP-analysed + action keywords must be represented
+    lp_n   = (item.get("lp_summary") or {}).get("keywords_in_lp", 0) or 0
+    act_n  = len(item.get("keyword_actions") or [])
+    floor  = max(_KW_PERF_FLOOR, lp_n, act_n)
+
+    # Sort by spend descending (stable — preserves relative order on ties)
+    sorted_kw   = sorted(kw_perf, key=lambda x: x.get("total_spend", 0) or 0, reverse=True)
+    total_spend = sum(k.get("total_spend", 0) or 0 for k in sorted_kw)
+
+    # Pareto: accumulate until coverage threshold
+    if total_spend > 0:
+        cumulative = 0.0
+        pareto_n   = 0
+        for kw in sorted_kw:
+            cumulative += kw.get("total_spend", 0) or 0
+            pareto_n   += 1
+            if cumulative / total_spend >= _KW_SPEND_COVERAGE:
+                break
+    else:
+        pareto_n = floor
+
+    n = min(max(floor, pareto_n), _KW_PERF_CEIL)
+
+    # Partition: top-N by spend + any must-keep stragglers outside that window
+    top_n     = sorted_kw[:n]
+    top_texts = {kw.get("keyword_text", "").lower() for kw in top_n}
+    stragglers = [
+        kw for kw in sorted_kw[n:]
+        if kw.get("keyword_text", "").lower() in must_keep
+           and kw.get("keyword_text", "").lower() not in top_texts
+    ]
+
+    item["keyword_performance"] = top_n + stragglers
+    if len(item["keyword_performance"]) < original_count:
+        item["keyword_performance_original_count"] = original_count
 
 
 def _prepare_for_llm(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
@@ -3297,13 +3413,25 @@ def _prepare_for_llm(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
     Injects _summary_json (Python-exact highlights) as a scalar field so
     ProcessStep auto-substitutes it into {_summary_json} in the prompt.
-    Full item data is preserved — no fields are stripped.
+
+    Fields stripped / trimmed from items_json to avoid C=A∪B redundancy:
+      - performance_records      : raw per-campaign rows; all useful aggregates
+                                   already stored as scalar fields.
+      - auto_mining              : moved into _summary_json at full depth;
+                                   raw dict here would be a duplicate subset.
+      - keyword_performance      : trimmed to dynamic N via _trim_keyword_performance
+                                   (Pareto 95%-spend coverage, floored by LP keyword
+                                   count, hard-capped at 300).
     """
     import json as _json
+    _STRIP_FIELDS = ("performance_records", "auto_mining")
     for item in items:
         item["_summary_json"] = _json.dumps(
             _build_item_summary(item, ctx), ensure_ascii=False, default=str
         )
+        for f in _STRIP_FIELDS:
+            item.pop(f, None)
+        _trim_keyword_performance(item)
     return items
 
 
@@ -3862,14 +3990,29 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "for high-ACOS PT campaigns recommend removing or negating underperforming targets.\n"
                 "  campaign_state field present; action ∈ {{increase_budget, decrease_budget, review_bids, "
                 "pause_candidate, archive_candidate, enable_and_increase_budget, enable_and_review_bids, maintain}}; "
-                "priority ∈ {{P0, P1, P2}}; actions prefixed enable_and_* mean campaign is PAUSED — "
+                "priority ∈ {{P0, P1, P2}} — defined as follows and applied uniformly across all action types:\n"
+                "    P0 = Immediate / revenue-blocking: situation is actively losing money or at imminent risk "
+                "(budget exhausted daily, ACOS > 130% of target, stockout within stock_gate_days). "
+                "Surface in Top 5; do NOT demote.\n"
+                "    P1 = High-priority / act this week: measurable problem exists but not yet critical "
+                "(ACOS above target, keyword genuinely inefficient, LP-causal conflict, paused campaign with healthy ACOS). "
+                "Include in Top 5 unless a conflict rule overrides.\n"
+                "    P2 = Monitor / conditional: no urgent action; revisit when a condition changes "
+                "(hold_keyword waiting for budget, increase_bid gated by inventory, maintain, insufficient data). "
+                "Mention as secondary notes; omit from Top 5 if P0/P1 items fill the slots.\n"
+                "actions prefixed enable_and_* mean campaign is PAUSED — "
                 "re-enable BEFORE any budget/bid change\n"
                 "  keyword_actions → LP-derived keyword-level recommendations; "
-                "action ∈ {{pause_keyword, increase_bid, decrease_bid}}; "
+                "action ∈ {{pause_keyword, hold_keyword, increase_bid, decrease_bid}}; "
                 "fields: keyword_text, match_type, campaign_id, keyword_id (Ads API id for direct API call), "
                 "current_bid, keyword_acos_pct, rationale; "
-                "pause_keyword: expected_order_delta (orders/day lost by pausing, negative), "
+                "pause_keyword: LP assigned 0 clicks AND keyword_acos_pct ≥ target — genuinely inefficient; "
+                "expected_order_delta (orders/day lost by pausing, negative), "
                 "expected_spend_delta (spend/day saved, negative); "
+                "hold_keyword: LP assigned 0 clicks but keyword_acos_pct < target — keyword is EFFICIENT "
+                "but outcompeted for budget by higher-CVR alternatives; "
+                "do NOT pause it; monitor and revisit once budget is increased; "
+                "expected_order_delta / expected_spend_delta show what is currently foregone due to budget constraint; "
                 "increase_bid: estimated_order_uplift_per_10pct_bid, expected_spend_per_10pct_bid; "
                 "decrease_bid: expected_order_delta (negative), expected_spend_delta (negative = savings); "
                 "NOTE on decrease_bid when keyword_acos_pct < target_acos_pct: a decrease_bid on a keyword "
@@ -3881,22 +4024,21 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "'LP reallocates clicks to higher-CVR keywords; this keyword ACOS ($val%) is healthy but "
                 "other keywords generate more orders per dollar under the current budget constraint.' "
                 "Do NOT imply the keyword is inefficient based on ACOS alone — cite the LP's click allocation logic.\n"
-                "NOTE on pause_keyword — TWO CRITICAL RULES:\n"
-                "  (1) pause_keyword means the LP assigns 0 clicks in the OPTIMAL allocation plan. "
-                "It does NOT mean the keyword had zero historical orders. "
+                "NOTE on pause_keyword and hold_keyword — THREE CRITICAL RULES:\n"
+                "  (1) Both actions mean LP assigns 0 clicks. "
+                "Neither implies zero historical orders. "
                 "FORBIDDEN: do NOT write 'zero orders despite spend', 'no conversions', or 'zero historical orders' "
-                "for a pause_keyword action unless the keyword's keyword_acos_pct is null/missing "
-                "(null ACOS is the only reliable signal of zero historical orders). "
+                "unless keyword_acos_pct is null/missing. "
                 "If keyword_acos_pct or estimated_cvr is present, the keyword HAS historical order data "
                 "— state it as 'LP allocates 0 clicks in the optimal plan' instead.\n"
-                "  (2) Do NOT describe a pause_keyword action as 'high ACOS' or 'underperforming' "
-                "when keyword_acos_pct < target_acos_pct (i.e., the keyword ACOS is below the target). "
-                "In that case the keyword is actually efficient — it simply loses the LP budget competition "
-                "to keywords with even higher CVR per dollar. "
-                "Correct framing: 'LP assigns 0 clicks — other keywords achieve more orders per dollar "
-                "under the current budget constraint; this keyword ACOS ($val%) is below target but "
-                "is outcompeted for budget by higher-CVR alternatives.' "
-                "Only use 'high ACOS' framing when keyword_acos_pct > target_acos_pct.\n"
+                "  (2) hold_keyword = the keyword is EFFICIENT (ACOS below target) but excluded by budget constraint. "
+                "NEVER describe it as underperforming, high-ACOS, or problematic. "
+                "NEVER recommend pausing it. "
+                "Correct framing: 'Efficient keyword (ACOS $val% < target $t%) held due to budget constraint — "
+                "do not pause; increase budget to unlock this keyword.' "
+                "The expected_order_delta / expected_spend_delta fields show current opportunity cost, not waste.\n"
+                "  (3) pause_keyword only appears when keyword_acos_pct ≥ target or keyword_acos_pct is null. "
+                "Only in these cases is 'inefficient' or 'high ACOS' framing appropriate.\n"
                 "NOTE on decrease_bid under inventory gate: when lp_summary.stock_gate_days > effective_stock_days "
                 "AND there are lp_maxed_keywords, a decrease_bid action on a healthy-ACOS keyword is a PREPARATORY "
                 "action — freed budget will automatically flow to maxed keywords once the inventory gate is cleared "
@@ -3914,7 +4056,7 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "  auto_mining_beta_prior → Empirical Bayes Beta prior fitted from this ASIN's own search term CVR:\n"
                 "    alpha / beta: shape parameters; implied_cvr_pct = account-level CVR baseline\n"
                 "    n_terms_fitted: number of terms used to fit the prior (≥5 clicks each)\n"
-                "  auto_mining_negatives → negative keyword candidates (up to 10 shown; full list capped at 30):\n"
+                "  auto_mining_negatives → negative keyword candidates (full list, up to 30):\n"
                 "    action: 'add_negative_keyword'\n"
                 "    priority: P0 (high confidence) or P1 (directional); gates: "
                 "Gate A (EB expected_orders ≥ 3.0 → P0, ≥ 1.5 → P1, AND orders=0), "
@@ -3922,7 +4064,7 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "Gate C (effective CPO > 3× breakeven → P1, even with orders > 0)\n"
                 "    suggested_match: EXACT (single-word) or PHRASE (multi-word)\n"
                 "    keyword_text, campaign_id, clicks, orders, spend_total, daily_spend, expected_orders_eb, rationale\n"
-                "  auto_mining_harvest → search terms to promote from auto to manual (up to 10 shown; full list capped at 20):\n"
+                "  auto_mining_harvest → search terms to promote from auto to manual (full list, up to 20):\n"
                 "    action: 'harvest_to_manual'\n"
                 "    priority: P0 (≥5 orders, efficient ACOS) or P1 (2-4 orders, efficient ACOS)\n"
                 "    suggested_match: EXACT; suggested_bid: target_acos × avg_price × Wilson CVR lower bound\n"
@@ -4030,6 +4172,7 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "otherwise level_shift=$val [95% CI: level_shift_ci_lo – level_shift_ci_hi], "
                 "p=$p_val (significant if p < 0.10)\n"
                 "- **CausalImpact** *(Brodersen et al. 2015)*: if causal_impact.skipped=True write 'Skipped (reason: $reason)'; "
+                "if shared_effect='duplicate' write '[same-day co-event — point_effect shared with primary; not additive]'; "
                 "otherwise point_effect=$val [95% credible interval: ci_lo – ci_hi] (actual − BSTS counterfactual)\n"
                 "- **DML** *(Chernozhukov et al. 2018)*: if dml.skipped=True write 'Skipped (reason: $reason)'; "
                 "otherwise theta=$val [95% CI: theta_ci_lo – theta_ci_hi] (sandwich-SE; reliable only if r_squared ≥ 0)\n"
@@ -4044,14 +4187,20 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "sustained ACOS/CVR shifts that correlate with competitor price moves "
                 "rather than internal bid changes.\n"
                 "- **CRITICAL — Same-day multi-event attribution**: "
-                "When multiple change_attribution entries share the same date "
-                "(e.g. three campaigns paused on 2026-04-30), all their causal_impact.point_effect "
-                "values reflect the SAME ASIN-level order decline measured once by a single BSTS model "
-                "and distributed across events — they are NOT independent estimates and MUST NOT be "
-                "summed or presented additively. "
-                "Write: 'Three campaigns paused on $date — the shared point_effect of $val orders/day "
-                "reflects one ASIN-level decline measured across all events, not $val × N.' "
-                "Never write language that implies the combined effect equals point_effect × N.\n\n"
+                "Each change_attribution entry may carry two fields injected by the pipeline:\n"
+                "  • shared_effect = 'primary'   → this entry holds the representative BSTS measurement\n"
+                "  • shared_effect = 'duplicate' → this entry's causal_impact.point_effect is the SAME "
+                "ASIN-level decline as the primary entry, measured by a single BSTS model; "
+                "it is NOT an independent estimate.\n"
+                "  • same_day_event_ids → list of event_ids that share the same changed_at date.\n"
+                "Rules:\n"
+                "  1. Only cite the point_effect from the 'primary' entry when discussing order impact.\n"
+                "  2. For 'duplicate' entries write: "
+                "'[same-day co-event — point_effect shared with primary; not additive]' "
+                "instead of repeating the numeric value.\n"
+                "  3. NEVER sum or imply point_effect × N for same-day events — "
+                "the combined effect is the single primary point_effect, not a multiple of it.\n"
+                "  4. If shared_effect is absent, the event is unique on its date and the rule does not apply.\n\n"
 
                 "### Top 5 Prioritised Actions (most impactful first)\n\n"
                 "For each action use this sub-structure:\n\n"
@@ -4064,6 +4213,7 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "> - **Risks / caveats**: [What to monitor; set a time-box, e.g., 7 days. "
                 "NEVER write 'None' — every action carries monitoring risk. "
                 "For pause_keyword or decrease_bid: always note search-term coverage gap risk and recommend a review window. "
+                "For hold_keyword: note that this is an opportunity-cost item, not a problem — recommend monitoring once budget increases. "
                 "For increase_budget or increase_bid: always note ACOS drift risk and a time-box.]\n"
                 "> - **Reference change attribution**: [Cite a past change_attribution entry "
                 "if a similar action was taken; include the consensus confidence level. "
