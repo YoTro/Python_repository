@@ -811,7 +811,7 @@ def _compute_backtest_stats(attributions: List[Dict]) -> Dict[str, Any]:
 
     return {
         "backtest_total":           total,
-        "backtest_hit_rate":        round(hits / total, 3) if total > 0 else None,
+        "backtest_hit_rate":        round(hits / total * 100, 1) if total > 0 else None,
         "backtest_strong_n":        strong,
         "backtest_strong_hit_rate": round(strong_hits / strong, 3) if strong > 0 else None,
         "backtest_baseline_dist":   dict(baseline_counter),
@@ -823,7 +823,17 @@ def _compute_backtest_stats(attributions: List[Dict]) -> Dict[str, Any]:
 
 _CAUSAL_MODEL_COUNT = 3  # ITS, CausalImpact, DML — always the denominator
 
-def _build_consensus(its: Dict, ci: Dict, dml: Dict, attr: Dict) -> str:
+# Metric polarity: +1 means "positive model effect = improvement", -1 means inverted,
+# 0 means ambiguous (spend/clicks direction vs orders is not directly comparable).
+_METRIC_POLARITY: Dict[str, int] = {
+    "orders": 1, "sales": 1, "cvr": 1,
+    "clicks": 0, "spend": 0,
+    "acos": -1, "cpc": -1,
+}
+
+
+def _build_consensus(its: Dict, ci: Dict, dml: Dict, attr: Dict,
+                     metric_col: str = "orders") -> str:
     sig_flags: List[bool] = []
     votes: Dict[str, int] = {"positive": 0, "negative": 0}
 
@@ -835,16 +845,21 @@ def _build_consensus(its: Dict, ci: Dict, dml: Dict, attr: Dict) -> str:
         else:
             sig_flags.append(False)
 
+    # its_fallback: CI skipped, so ITS result was copied into ci for display.
+    # It is NOT an independent model vote — skip it to avoid double-counting ITS.
+    ci_is_fallback = ci.get("source") == "its_fallback"
+
     if not its.get("skipped"):
         _vote(its.get("p_level"), its.get("level_shift"))
-    if not ci.get("skipped"):
+    if not ci.get("skipped") and not ci_is_fallback:
         _vote(ci.get("p_value"), ci.get("point_effect"))
     if not dml.get("skipped"):
         _vote(dml.get("p_value"), dml.get("theta"))
 
     n_sig  = sum(sig_flags)
     n_ran  = len(sig_flags)
-    total  = _CAUSAL_MODEL_COUNT
+    # When CI ran as its_fallback, only 2 independent models exist.
+    total  = _CAUSAL_MODEL_COUNT - (1 if ci_is_fallback else 0)
     if n_ran == 0:
         return "Insufficient data for causal analysis."
 
@@ -870,11 +885,23 @@ def _build_consensus(its: Dict, ci: Dict, dml: Dict, attr: Dict) -> str:
     # rather than reporting contradictory "Strong evidence" labels.
     observed_dir  = attr.get("direction", "neutral")   # "improved" | "worsened" | "neutral"
     delta_orders  = attr.get("delta_orders", 0) or 0
-    # metric_vec is always orders: positive model effect ↔ improved
-    model_improved = dominant == "positive"
+
+    # Metric-polarity-aware conflict check.
+    # polarity=+1: positive model effect → improved (orders, sales, cvr)
+    # polarity=-1: positive model effect → worsened (acos, cpc — lower is better)
+    # polarity= 0: ambiguous direction vs orders observed window (spend, clicks)
+    polarity       = _METRIC_POLARITY.get(metric_col, 1)
+    if polarity == 1:
+        model_improved = dominant == "positive"
+    elif polarity == -1:
+        model_improved = dominant == "negative"   # lower acos/cpc = improvement
+    else:
+        model_improved = None  # skip conflict check for ambiguous metrics
+
     obs_improved   = observed_dir == "improved"
     obs_worsened   = observed_dir == "worsened"
     conflict = (
+        model_improved is not None and
         n_sig > 0 and observed_dir != "neutral" and
         ((model_improved and obs_worsened) or (not model_improved and obs_improved))
     )
@@ -889,14 +916,31 @@ def _build_consensus(its: Dict, ci: Dict, dml: Dict, attr: Dict) -> str:
             f"treat causal direction as unreliable; use window delta for priority{note}."
         )
 
+    fallback_note = " (CausalImpact unavailable — ITS used as fallback; not counted)" \
+                    if ci_is_fallback else ""
+
+    # Direction agreement: all significant models must vote the same way.
+    # 2 positive + 1 negative = significant but NOT in agreement — do not say "agree".
+    directions_split = votes["positive"] > 0 and votes["negative"] > 0
+
+    if directions_split:
+        return (
+            f"Conflicting model direction ({n_sig}/{total} models significant, "
+            f"{votes['positive']} positive / {votes['negative']} negative): "
+            f"{change_type} shows inconsistent directional evidence — "
+            f"treat causal direction as unreliable{note}{fallback_note}."
+        )
+
     if n_sig == n_ran == total:
         return (
             f"Strong evidence ({n_sig}/{total} models agree): "
-            f"{change_type} caused a significant {direction_lbl} in the outcome metric{note}."
+            f"{change_type} caused a significant {direction_lbl} in the outcome metric"
+            f"{note}{fallback_note}."
         )
     return (
         f"Weak evidence ({n_sig}/{total} models significant, {n_ran} ran): "
-        f"{change_type} may have contributed to a {direction_lbl} in the outcome metric{note}."
+        f"{change_type} may have contributed to a {direction_lbl} in the outcome metric"
+        f"{note}{fallback_note}."
     )
 
 
@@ -961,7 +1005,19 @@ def run_causal_analysis(
     date_idx = {d: i for i, d in enumerate(dates)}
 
     # Metric series: prefer daily_perf; fall back to sale_price from covariate_series
+    # Supported metric_col values: orders | spend | clicks | sales
+    # Derived (not directly in daily_perf):  acos | cvr | cpc
+    _DIRECT_METRICS  = {"orders", "spend", "clicks", "sales"}
+    _DERIVED_METRICS = {"acos", "cvr", "cpc"}
     metric_col = config.get("causal_metric", "orders")
+    if metric_col not in _DIRECT_METRICS | _DERIVED_METRICS:
+        logger.warning(
+            f"[causal_analysis] Unknown causal_metric '{metric_col}'; "
+            f"falling back to 'orders'. Supported: "
+            f"{sorted(_DIRECT_METRICS | _DERIVED_METRICS)}"
+        )
+        metric_col = "orders"
+
     daily_perf_map: Dict[str, Dict] = {}
     for rec in (daily_perf or []):
         d = rec.get("date")
@@ -972,10 +1028,24 @@ def run_causal_analysis(
             for k in ("orders", "spend", "clicks", "sales"):
                 daily_perf_map[d][k] = daily_perf_map[d].get(k, 0) + (rec.get(k) or 0)
 
+    def _derive_metric(day: Dict) -> float:
+        """Derive acos/cvr/cpc from accumulated spend/sales/orders/clicks."""
+        if metric_col == "acos":
+            sales = day.get("sales", 0) or 0
+            return round(day.get("spend", 0) / sales * 100, 4) if sales > 0 else 0.0
+        if metric_col == "cvr":
+            clicks = day.get("clicks", 0) or 0
+            return round(day.get("orders", 0) / clicks, 6) if clicks > 0 else 0.0
+        if metric_col == "cpc":
+            clicks = day.get("clicks", 0) or 0
+            return round(day.get("spend", 0) / clicks, 4) if clicks > 0 else 0.0
+        return float(day.get(metric_col, 0) or 0)
+
     metric_vec = np.zeros(len(dates))
     for i, d in enumerate(dates):
         if daily_perf_map:
-            metric_vec[i] = float(daily_perf_map.get(d, {}).get(metric_col, 0) or 0)
+            day = daily_perf_map.get(d, {})
+            metric_vec[i] = _derive_metric(day)
         else:
             val = cov_series.get(d, {}).get("sale_price")
             metric_vec[i] = float(val) if val is not None else 0.0
@@ -1030,7 +1100,7 @@ def run_causal_analysis(
         treatment[t0:] = 1.0
         dml = _dml_analyze(treatment, metric_vec, cov_matrix, t0=t0)
 
-        consensus = _build_consensus(its, ci, dml, attr)
+        consensus = _build_consensus(its, ci, dml, attr, metric_col=metric_col)
 
         # ── Per-event significance flags ──────────────────────────────────
         # ITS: p_level < 0.05 AND 95% CI does not cross zero
@@ -1077,7 +1147,7 @@ def run_causal_analysis(
     ]
     n_significant = sum(1 for a in runnable if a.get("event_significant"))
     events_significant_count = n_significant
-    events_significant_pct   = round(n_significant / len(runnable), 3) if runnable else None
+    events_significant_pct   = round(n_significant / len(runnable) * 100, 1) if runnable else None
 
     logger.info(
         f"[causal_analysis] {item.get('asin', '?')}: "

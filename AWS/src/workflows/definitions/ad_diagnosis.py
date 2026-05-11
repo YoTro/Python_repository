@@ -186,9 +186,16 @@ def _l2_cached(
             if l1_key in ctx.cache:
                 return ctx.cache[l1_key]
 
-            # Acquire per-key lock to serialise concurrent callers
+            # Acquire per-key lock to serialise concurrent callers.
+            # Pop the entry ONLY after a successful fetch so that on failure the
+            # lock stays registered in _l2_inflight.  Without this, a pop in the
+            # failure path lets new arrivals create an uncontested fresh lock and
+            # race the still-waiting coroutines — a stampede amplifier during
+            # API jitter.  Keeping the entry means all callers (waiting or new)
+            # queue behind the same lock and the next winner does a single retry.
             if l1_key not in _l2_inflight:
                 _l2_inflight[l1_key] = asyncio.Lock()
+            _fetched = False
             try:
                 async with _l2_inflight[l1_key]:
                     # Re-check L1 after acquiring — a prior waiter may have filled it
@@ -199,14 +206,17 @@ def _l2_cached(
                     hit = _l2_get(ctx, l2_ttl, *l2_parts)
                     if hit is not None:
                         ctx.cache[l1_key] = hit
+                        _fetched = True
                         return hit
 
                     value = await fn(ctx, *args, **kwargs)
                     ctx.cache[l1_key] = value
                     _l2_set(ctx, value, *l2_parts)
+                    _fetched = True
                     return value
             finally:
-                _l2_inflight.pop(l1_key, None)
+                if _fetched:
+                    _l2_inflight.pop(l1_key, None)
         return wrapper
     return decorator
 
@@ -366,12 +376,18 @@ async def _ensure_placement_performance(ctx: WorkflowContext) -> List[Dict]:
 
 
 @_l2_cached(
-    l1_key_fn   = lambda ctx: _KEY_CHANGE_HISTORY,
+    l1_key_fn   = lambda ctx, campaign_ids: f"{_KEY_CHANGE_HISTORY}:{_campaign_ids_hash(list(campaign_ids))}",
     l2_ttl      = _TTL_CHANGE,
-    l2_parts_fn = lambda ctx: ("change_history", ctx.config.get("days", 30)),
+    l2_parts_fn = lambda ctx, campaign_ids: ("change_history", ctx.config.get("days", 30),
+                                              _campaign_ids_hash(list(campaign_ids))),
 )
-async def _ensure_change_history(ctx: WorkflowContext) -> List[Dict]:
-    """Fetch change history for the lookback window + attribution tail, cached once."""
+async def _ensure_change_history(ctx: WorkflowContext, campaign_ids: List[str]) -> List[Dict]:
+    """Fetch change history for the given campaigns, scoped to the lookback + attribution tail.
+
+    Uses campaign-batched mode (parents=[{campaignId}]) when campaign_ids is provided —
+    this is both more targeted (no cross-ASIN noise) and fully paginated per campaign batch,
+    avoiding the 4000-event profile-wide cap that truncates high-volume accounts.
+    """
     client   = _ads_client(ctx)
     days     = ctx.config.get("days", 30)
     tz       = _store_tz(ctx)
@@ -383,13 +399,14 @@ async def _ensure_change_history(ctx: WorkflowContext) -> List[Dict]:
     start_dt = today - timedelta(days=days + abs(ATTR_POST_END))
     to_ms    = int(datetime(end_dt.year,   end_dt.month,   end_dt.day,   23, 59, 59, tzinfo=tz).timestamp() * 1000)
     from_ms  = int(datetime(start_dt.year, start_dt.month, start_dt.day,  0,  0,  0, tzinfo=tz).timestamp() * 1000)
-    # No campaign_ids: API only supports useProfileIdAdvertiser:true (profile-wide).
-    # Per-ASIN filtering happens client-side in _enrich_change_history.
     result = await client.get_change_history(
-        from_date=from_ms, to_date=to_ms, count=200, sort_direction="DESC",
+        from_date=from_ms, to_date=to_ms,
+        campaign_ids=campaign_ids or None,
+        count=200, sort_direction="DESC",
     )
     events = result.get("events", [])
-    logger.info(f"Fetched {len(events)} change history events")
+    logger.info(f"Fetched {len(events)} change history events "
+                f"({'profile-wide' if not campaign_ids else f'{len(campaign_ids)} campaigns'})")
     return events
 
 
@@ -651,7 +668,7 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
     budget_pct_threshold = ctx.config.get("budget_exhaustion_pct", 0.90)
     total_budget_capacity = item.get("total_daily_budget", 0) * days
     budget_exhaustion_pct = (
-        round(total_spend / total_budget_capacity, 4)
+        round(total_spend / total_budget_capacity * 100, 1)
         if total_budget_capacity > 0 else None
     )
 
@@ -675,7 +692,7 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
         "budget_exhaustion_pct":  budget_exhaustion_pct,
         "budget_likely_exhausted": (
             budget_exhaustion_pct is not None
-            and budget_exhaustion_pct > budget_pct_threshold
+            and budget_exhaustion_pct > budget_pct_threshold * 100
         ),
     }
     # Last-resort can_sell_days backfill: only if neither inventory (daily_sales
@@ -754,10 +771,13 @@ async def _enrich_keyword_performance(item: Dict, ctx: WorkflowContext) -> Dict:
     # Filter to this ASIN's campaigns
     relevant = [r for r in all_kw_perf if str(r.get("campaign_id")) in campaign_ids]
 
-    # Aggregate by (keyword_text, match_type)
+    # Aggregate by (campaign_id, keyword_text, match_type) — same keyword in
+    # different campaigns gets separate rows so LP budget constraints and
+    # keyword_actions are attributed to the correct campaign.
     agg: Dict[tuple, Dict] = {}
     for r in relevant:
-        key = (r.get("keyword_text", ""), r.get("match_type", ""))
+        cid = str(r.get("campaign_id", ""))
+        key = (cid, r.get("keyword_text", ""), r.get("match_type", ""))
         if key not in agg:
             agg[key] = {"spend": 0, "clicks": 0, "orders": 0, "impressions": 0, "sales": 0}
         agg[key]["spend"]       += r.get("spend", 0) or 0
@@ -767,7 +787,7 @@ async def _enrich_keyword_performance(item: Dict, ctx: WorkflowContext) -> Dict:
         agg[key]["sales"]       += r.get("sales", 0) or 0
 
     kw_performance = []
-    for (kw_text, match_type), v in agg.items():
+    for (cid, kw_text, match_type), v in agg.items():
         clicks = v["clicks"]
         if clicks < min_clicks:
             continue
@@ -777,6 +797,7 @@ async def _enrich_keyword_performance(item: Dict, ctx: WorkflowContext) -> Dict:
         # ACOS = ad spend / attributed sales revenue (not spend/orders which gives cost/order)
         acos = round(v["spend"] / v["sales"] * 100, 2) if v["sales"] > 0 else None
         kw_performance.append({
+            "campaign_id":   cid,
             "keyword_text":  kw_text,
             "match_type":    match_type,
             "total_spend":   round(v["spend"], 2),
@@ -868,12 +889,13 @@ async def _enrich_change_history(item: Dict, ctx: WorkflowContext) -> Dict:
     ensures it is warmed — do NOT remove this gather without moving the fetch elsewhere.
     """
     asin         = item.get("asin", "").upper()
-    campaign_ids = set(item.get("campaign_ids") or [])
+    campaign_ids = list(item.get("campaign_ids") or [])
     all_events, _ = await asyncio.gather(
-        _ensure_change_history(ctx),
+        _ensure_change_history(ctx, campaign_ids),
         _ensure_daily_performance(ctx, asin),
     )
 
+    cid_set  = set(str(c) for c in campaign_ids)
     relevant = []
     for ev in all_events:
         # Campaign ID: prefer metadata.campaignId (AD_GROUP/KEYWORD events),
@@ -881,8 +903,9 @@ async def _enrich_change_history(item: Dict, ctx: WorkflowContext) -> Dict:
         meta = ev.get("metadata") or {}
         cid  = str(meta.get("campaignId") or ev.get("entityId") or "")
 
-        # Filter to this ASIN's campaigns since we now fetch profile-wide
-        if not campaign_ids or cid not in campaign_ids:
+        # Guard: drop events outside this ASIN's campaigns (shouldn't happen in
+        # campaign-batched mode, but protects against stale profile-wide cache entries).
+        if cid_set and cid not in cid_set:
             continue
 
         # Noise filter: IN_BUDGET is auto-generated (not a human action); tiny tweaks are low-signal
@@ -965,19 +988,6 @@ def _compute_placement_multiplier(placement_perf: Dict, placement_mods: Dict) ->
     return result if result >= 0.5 else 1.0
 
 
-def _build_kw_to_campaign_map(raw_kw_perf: List[Dict], campaign_ids: set) -> Dict[tuple, str]:
-    kw_clicks_by_camp: Dict[tuple, Dict[str, int]] = {}
-    for r in raw_kw_perf:
-        cid = str(r.get("campaign_id", ""))
-        if cid not in campaign_ids:
-            continue
-        key = (r.get("keyword_text", ""), r.get("match_type", ""))
-        kw_clicks_by_camp.setdefault(key, {})
-        kw_clicks_by_camp[key][cid] = (
-            kw_clicks_by_camp[key].get(cid, 0) + int(r.get("clicks", 0) or 0)
-        )
-    return {key: max(cc, key=cc.get) for key, cc in kw_clicks_by_camp.items()}
-
 
 def _p90_headroom(daily_perf: List[Dict], fallback: float) -> float:
     """
@@ -1043,7 +1053,6 @@ def _compute_cvr_prior(kw_perf: List[Dict]) -> Tuple[Dict[str, float], float]:
 
 def _build_lp_input(
     kw_perf: List[Dict],
-    kw_to_campaign: Dict[tuple, str],
     camp_meta: Dict[str, Dict],
     brand_kws: set,
     headroom: float,
@@ -1060,19 +1069,20 @@ def _build_lp_input(
             continue
         kw_text    = kw["keyword_text"]
         match_type = kw["match_type"]
-        cid        = kw_to_campaign.get((kw_text, match_type), "")
+        cid        = str(kw.get("campaign_id", ""))
         strategy   = camp_meta.get(cid, {}).get("bidding_strategy", "")
         is_brand   = kw_text.lower() in {b.lower() for b in brand_kws}
         max_daily  = max(round(kw["daily_clicks"] * click_headroom, 1), 1.0)
         min_daily  = round(kw["daily_clicks"] * 0.3, 1) if is_brand else 0.0
         prior_mu   = mu_map.get(match_type.upper(), global_mu)
         lp_input.append({
-            "name":                f"{kw_text}|{match_type}",
+            "name":                f"{kw_text}|{match_type}|{cid}",
             "avg_cpc":             kw["avg_cpc"],
             "estimated_cvr":       kw["cvr"],
             "sample_clicks":       kw.get("total_clicks", 0),
             "sample_orders":       kw.get("total_orders", 0),
             "prior_mu":            prior_mu,
+            "daily_clicks":        kw["daily_clicks"],   # historical avg; source of truth for cur_clicks
             "max_daily_clicks":    max_daily,
             "min_daily_clicks":    min_daily,
             "campaign_id":         cid,
@@ -1089,7 +1099,7 @@ def _classify_lp_keywords(
     seen_zero: set = set()
     zero_kws: List[str] = []
     for kw in kw_perf:
-        composed = f"{kw['keyword_text']}|{kw['match_type']}"
+        composed = f"{kw['keyword_text']}|{kw['match_type']}|{kw.get('campaign_id', '')}"
         if composed not in alloc_names and kw.get("avg_cpc") and composed not in seen_zero:
             seen_zero.add(composed)
             zero_kws.append(f"{kw['keyword_text']} ({kw['match_type']})")
@@ -1151,7 +1161,7 @@ def _build_campaign_actions(
         if camp_budget <= 0:
             continue
 
-        budget_util  = round(actual_spend / camp_budget, 3)
+        budget_util  = round(actual_spend / camp_budget * 100, 1)
         lp_saturated = lp_spend >= camp_budget * 0.90
         in_lp_scope  = bool(_lp_scoped) and (cid in _lp_scoped)
 
@@ -1190,17 +1200,17 @@ def _build_campaign_actions(
                     f"ACOS {camp_acos}% above target {target_acos_pct:.0f}% — "
                     f"lower bids or add negatives (auto/PT, outside LP scope)"
                 )
-            elif budget_util >= 0.9:
+            elif budget_util >= 90:
                 suggested = round(camp_budget * 1.2, 0)
                 action, priority = "increase_budget", "P0"
                 rationale = (
-                    f"ACOS {camp_acos}% ≤ target, budget util {budget_util:.0%} — "
+                    f"ACOS {camp_acos}% ≤ target, budget util {budget_util:.1f}% — "
                     f"safe to scale (auto/PT, outside LP scope)"
                 )
             else:
                 action, priority = "maintain", "P2"
                 rationale = (
-                    f"ACOS {camp_acos}% ≤ target, {budget_util:.0%} utilisation — "
+                    f"ACOS {camp_acos}% ≤ target, {budget_util:.1f}% utilisation — "
                     f"healthy (auto/PT, outside LP scope)"
                 )
             if is_paused:
@@ -1294,7 +1304,7 @@ def _build_campaign_actions(
                 rationale = f"ACOS {camp_acos}% above target — lower bids on high-ACOS keywords before scaling"
         else:
             action, priority = "maintain", "P2"
-            rationale = f"Budget util {budget_util:.0%}, ACOS {camp_acos}% — within healthy range"
+            rationale = f"Budget util {budget_util:.1f}%, ACOS {camp_acos}% — within healthy range"
 
         # Inventory gate: downgrade spend-increasing actions when effective stock < threshold
         prerequisite: Optional[Dict] = None
@@ -1362,12 +1372,12 @@ def _build_keyword_actions(
     alloc: List[Dict],
     kw_id_map: Dict[tuple, Dict],
     brand_kws: set,
-    headroom: float,
     avg_price: Optional[float],
     inv_gate: Optional[Dict] = None,
     paused_campaign_ids: Optional[set] = None,
     spend_ceiling_bound: bool = False,
     target_acos: Optional[float] = None,
+    raw_cvr_map: Optional[Dict[str, float]] = None,
 ) -> List[Dict]:
     alloc_map: Dict[str, Dict] = {a["keyword"]: a for a in alloc}
     actions: List[Dict] = []
@@ -1383,7 +1393,10 @@ def _build_keyword_actions(
         cur_bid = _lookup.get("bid")
 
         a           = alloc_map.get(kw_name)
-        raw_cvr     = lp_kw["estimated_cvr"]
+        # Use pre-deflation CVR for human-facing metrics (kw_acos_pct, expected deltas).
+        # lp_kw["estimated_cvr"] was mutated in-place by CVR deflation before LP solve;
+        # raw_cvr_map holds the original values captured before that mutation.
+        raw_cvr     = (raw_cvr_map or {}).get(kw_name, lp_kw["estimated_cvr"])
         avg_cpc     = lp_kw["avg_cpc"]
         kw_acos_pct = (
             round(avg_cpc / (raw_cvr * avg_price) * 100, 1)
@@ -1393,7 +1406,7 @@ def _build_keyword_actions(
         if a is None:
             camp_is_paused = paused_campaign_ids and str(cid) in paused_campaign_ids
             if not is_brand and not camp_is_paused:
-                cur_clicks = lp_kw["max_daily_clicks"] / headroom
+                cur_clicks = lp_kw["daily_clicks"]
                 target_acos_pct = (target_acos or 0.30) * 100
                 if kw_acos_pct is None:
                     # Insufficient data — low-priority pause, don't imply inefficiency
@@ -1436,7 +1449,7 @@ def _build_keyword_actions(
                 })
         else:
             opt_clicks = a["optimized_clicks"]
-            cur_clicks = lp_kw["max_daily_clicks"] / headroom
+            cur_clicks = lp_kw["daily_clicks"]
             cap        = lp_kw["max_daily_clicks"]
             at_ceiling = opt_clicks >= cap * 0.95
 
@@ -1623,8 +1636,6 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         placement_perf       = item.get("placement_performance") or {}
         placement_mods       = item.get("placement_configured_pcts") or {}
         placement_multiplier = _compute_placement_multiplier(placement_perf, placement_mods)
-        kw_to_campaign       = _build_kw_to_campaign_map(raw_kw_perf, campaign_ids)
-
         total_orders    = item.get("total_orders") or 0
         total_sales     = item.get("total_sales")  or 0
         avg_price       = round(total_sales / total_orders, 2) if total_orders > 0 else None
@@ -1635,7 +1646,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         asin_daily = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
         mu_by_mt, global_mu = _compute_cvr_prior(kw_perf)
         lp_input = _build_lp_input(
-            kw_perf, kw_to_campaign, camp_meta, brand_kws, headroom, placement_multiplier,
+            kw_perf, camp_meta, brand_kws, headroom, placement_multiplier,
             daily_perf=asin_daily,
             mu_by_match_type=mu_by_mt,
             global_mu=global_mu,
@@ -1798,11 +1809,12 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         paused_cids = {str(cid) for cid, meta in camp_meta.items()
                        if (meta.get("state") or "").upper() == "PAUSED"}
         keyword_actions = _build_keyword_actions(
-            lp_input, alloc, kw_id_map, brand_kws, headroom, avg_price,
+            lp_input, alloc, kw_id_map, brand_kws, avg_price,
             inv_gate=inv_gate,
             paused_campaign_ids=paused_cids,
             spend_ceiling_bound=spend_ceiling_bound,
             target_acos=target_acos,
+            raw_cvr_map=raw_cvr_map,
         )
 
         placement_data_unknown = set(placement_perf.keys()) <= {"UNKNOWN", ""}
@@ -1846,7 +1858,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             "avg_effective_cpc":             summary["avg_effective_cpc"],
             "placement_multiplier":          round(placement_multiplier, 3),
             "placement_data_unknown":        placement_data_unknown,
-            "target_acos_applied":           target_acos,
+            "target_acos_applied":           round(target_acos * 100, 1) if target_acos is not None else None,
             # Stock recommendation: units needed to safely execute LP plan for stock_gate_days
             "recommended_stock_units":       recommended_stock,
             "stock_shortfall":               stock_shortfall,
@@ -2181,6 +2193,19 @@ async def _enrich_competitor_prices(item: Dict, ctx: WorkflowContext) -> Dict:
                 "contributor_asins": day_asins[:3],  # up to 3 for easy lookup
             }
 
+        sorted_dates = sorted(competitor_price_summary.keys())
+        avg_daily_count = (
+            round(sum(v["count"] for v in competitor_price_summary.values())
+                  / len(competitor_price_summary), 1)
+            if competitor_price_summary else 0
+        )
+        competitor_price_meta = {
+            "n_competitors":   len(competitor_asins),
+            "date_from":       sorted_dates[0]  if sorted_dates else None,
+            "date_to":         sorted_dates[-1] if sorted_dates else None,
+            "avg_daily_count": avg_daily_count,
+        }
+
         logger.info(
             f"Competitor prices for {asin}: {len(competitor_asins)} ASINs, "
             f"{len(competitor_price_summary)} date points"
@@ -2190,6 +2215,7 @@ async def _enrich_competitor_prices(item: Dict, ctx: WorkflowContext) -> Dict:
             "top_competitor_asins":     competitor_asins[:3],
             "competitor_price_by_asin": comp_price_by_asin,
             "competitor_price_summary": competitor_price_summary,
+            "competitor_price_meta":    competitor_price_meta,
         }
 
     except Exception as e:
@@ -2592,8 +2618,8 @@ def _run_causal_analysis(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     """
     from src.intelligence.processors.causal_analysis import run_causal_analysis
     for item in items:
+        asin = item.get("asin", "?").upper()
         try:
-            asin               = item.get("asin", "").upper()
             daily_perf         = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
             yoy_date_index     = _fetch_yoy_sync(ctx, asin)
             trailing_ext_index = _fetch_trailing_ext_sync(ctx, asin)
@@ -2604,8 +2630,19 @@ def _run_causal_analysis(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 trailing_ext_index = trailing_ext_index or None,
             )
             item.update(result)
+        except (ValueError, ImportError) as e:
+            # Expected operational failures: insufficient data, date-range issues,
+            # or optional dependency (rpy2 / causalimpact) not installed.
+            logger.warning(f"[causal_analysis] Skipped {asin}: {type(e).__name__}: {e}")
+            item["causal_analysis_error"] = f"{type(e).__name__}: {e}"
         except Exception as e:
-            logger.warning(f"[causal_analysis] Failed for {item.get('asin', '?')}: {e}")
+            # Unexpected error — likely a code bug; log with full traceback so it
+            # surfaces in monitoring rather than being silently swallowed.
+            logger.error(
+                f"[causal_analysis] Unexpected error for {asin}: {type(e).__name__}: {e}",
+                exc_info=True,
+            )
+            item["causal_analysis_error"] = f"{type(e).__name__}: {e}"
     return items
 
 
@@ -2794,7 +2831,8 @@ def _chart_daily_trend(item: Dict, daily_perf: List[Dict]) -> Optional[bytes]:
     return _fig_to_png(fig)
 
 
-def _chart_its_causal(item: Dict, daily_perf: List[Dict]) -> Optional[bytes]:
+def _chart_its_causal(item: Dict, daily_perf: List[Dict],
+                      causal_metric: str = "orders") -> Optional[bytes]:
     attributions = item.get("change_attributions") or []
     if not attributions or not daily_perf:
         return None
@@ -2805,13 +2843,31 @@ def _chart_its_causal(item: Dict, daily_perf: List[Dict]) -> Optional[bytes]:
     if not change_date_str:
         return None
 
-    col = {"orders": "orders", "spend": "spend", "clicks": "clicks"}.get(
-        item.get("causal_metric", "orders"), "orders")
-    by_date: Dict[str, float] = {}
+    _DIRECT_M  = {"orders", "spend", "clicks", "sales"}
+    _DERIVED_M = {"acos", "cvr", "cpc"}
+    metric = causal_metric if causal_metric in _DIRECT_M | _DERIVED_M else "orders"
+
+    # Accumulate raw daily totals; derive ratio metrics after summing.
+    _acc: Dict[str, Dict[str, float]] = {}
     for r in daily_perf:
         d = r.get("date") or r.get("report_date", "")
-        if d:
-            by_date[d] = by_date.get(d, 0.0) + float(r.get(col, 0) or 0)
+        if not d:
+            continue
+        if d not in _acc:
+            _acc[d] = {"orders": 0.0, "spend": 0.0, "clicks": 0.0, "sales": 0.0}
+        for k in ("orders", "spend", "clicks", "sales"):
+            _acc[d][k] += float(r.get(k, 0) or 0)
+
+    def _derive(day: Dict[str, float]) -> float:
+        if metric == "acos":
+            return round(day["spend"] / day["sales"] * 100, 4) if day["sales"] > 0 else 0.0
+        if metric == "cvr":
+            return round(day["orders"] / day["clicks"], 6) if day["clicks"] > 0 else 0.0
+        if metric == "cpc":
+            return round(day["spend"] / day["clicks"], 4) if day["clicks"] > 0 else 0.0
+        return day.get(metric, 0.0)
+
+    by_date: Dict[str, float] = {d: _derive(v) for d, v in _acc.items()}
 
     dates = sorted(by_date)
     if len(dates) < 5:
@@ -2854,7 +2910,7 @@ def _chart_its_causal(item: Dict, daily_perf: List[Dict]) -> Optional[bytes]:
             f"  {attr.get('change_type','change')}", color=_C["red"], fontsize=8, va="top")
     ci_str = (f"\n95% CI [{ls_ci_lo:+.2f}, {ls_ci_hi:+.2f}]"
               if ls_ci_lo is not None and ls_ci_hi is not None else "")
-    metric_lbl = (item.get("causal_metric") or "orders").capitalize()
+    metric_lbl = metric.upper() if metric in ("acos", "cvr", "cpc") else metric.capitalize()
     ax.set_title(f"{item.get('asin','?')} — ITS Causal Fit  "
                  f"(level_shift={level_shift:+.2f}{ci_str})", fontsize=10, pad=6)
     ax.set_ylabel(metric_lbl, fontsize=9)
@@ -2877,7 +2933,7 @@ def _chart_kw_quadrant(item: Dict) -> Optional[bytes]:
     acos_v   = np.array([kw_perf[i]["acos"]                    for i in valid], dtype=float)
     orders_v = np.array([kw_perf[i]["total_orders"]            for i in valid], dtype=float)
     spend_v  = np.array([kw_perf[i].get("total_spend") or 0   for i in valid], dtype=float)
-    labels_v = [kw_perf[i].get("keyword", "")                 for i in valid]
+    labels_v = [kw_perf[i].get("keyword_text", "")            for i in valid]
 
     acos_thresh  = (item.get("acos_warn_threshold") or 0.30) * 100
     orders_mid   = float(np.median(orders_v))
@@ -3046,7 +3102,7 @@ def _generate_charts(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             daily_perf = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
             generators = [
                 ("daily_trend",        lambda _i=item, _p=daily_perf: _chart_daily_trend(_i, _p)),
-                ("its_causal",         lambda _i=item, _p=daily_perf: _chart_its_causal(_i, _p)),
+                ("its_causal",         lambda _i=item, _p=daily_perf, _m=ctx.config.get("causal_metric", "orders"): _chart_its_causal(_i, _p, _m)),
                 ("kw_quadrant",        lambda _i=item: _chart_kw_quadrant(_i)),
                 ("placement_bar",      lambda _i=item: _chart_placement_bar(_i)),
                 ("inventory_burndown", lambda _i=item, _d=date_str: _chart_inventory_burndown(_i, _d)),
@@ -3146,7 +3202,7 @@ def _detect_action_conflicts(item: Dict) -> List[Dict]:
                 if attr.get("change_type") != "BUDGET_AMOUNT":
                     continue
                 if _scale_up(attr.get("old_value"), attr.get("new_value")) is True \
-                        and attr.get("direction") == "negative":
+                        and attr.get("direction") == "worsened":
                     d = attr.get("delta_orders_normalized") or attr.get("delta_orders")
                     _record(ca, "campaign", attr,
                             f"Budget increase on {attr['changed_at']} → orders declined "
@@ -3160,7 +3216,7 @@ def _detect_action_conflicts(item: Dict) -> List[Dict]:
                 if ct not in ("BUDGET_AMOUNT", "STATUS"):
                     continue
                 is_down = (ct == "STATUS") or (_scale_up(attr.get("old_value"), attr.get("new_value")) is False)
-                if is_down and attr.get("direction") == "negative":
+                if is_down and attr.get("direction") == "worsened":
                     d = attr.get("delta_orders_normalized") or attr.get("delta_orders")
                     _record(ca, "campaign", attr,
                             f"{ct} cut/pause on {attr['changed_at']} → orders declined "
@@ -3188,7 +3244,7 @@ def _detect_action_conflicts(item: Dict) -> List[Dict]:
                 if attr.get("change_type") != "BID_AMOUNT":
                     continue
                 if _scale_up(attr.get("old_value"), attr.get("new_value")) is True \
-                        and attr.get("direction") == "negative":
+                        and attr.get("direction") == "worsened":
                     d = attr.get("delta_orders_normalized") or attr.get("delta_orders")
                     _record(ka, "keyword", attr,
                             f"Bid increase on {attr['changed_at']} → orders declined "
@@ -3202,7 +3258,7 @@ def _detect_action_conflicts(item: Dict) -> List[Dict]:
                 if ct not in ("BID_AMOUNT", "STATUS"):
                     continue
                 is_down = (ct == "STATUS") or (_scale_up(attr.get("old_value"), attr.get("new_value")) is False)
-                if is_down and attr.get("direction") == "negative":
+                if is_down and attr.get("direction") == "worsened":
                     d = attr.get("delta_orders_normalized") or attr.get("delta_orders")
                     _record(ka, "keyword", attr,
                             f"Bid/status cut on {attr['changed_at']} → orders declined "
@@ -3218,15 +3274,15 @@ def _causal_reliability_tier(
     events_significant_pct: Optional[float],
 ) -> str:
     """
-    AND-gate: 'high' requires BOTH historical calibration (hit_rate ≥0.70)
+    AND-gate: 'high' requires BOTH historical calibration (hit_rate ≥70)
     AND at least one event being statistically significant in this run.
     'low' sub-cases:
-      A: hit_rate not None and < 0.70 (calibrated but near-random)
+      A: hit_rate not None and < 70 (calibrated but near-random)
       B: hit_rate None and events_significant_pct == 0 (no calibration, no significance)
       C: hit_rate None and events_significant_pct > 0 (significant results, no backtest)
     'none': no backtest data and no significant events at all.
     """
-    has_calibration  = (backtest_hit_rate or 0) >= 0.70
+    has_calibration  = (backtest_hit_rate or 0) >= 70
     has_significance = (events_significant_pct is not None) and events_significant_pct > 0
 
     if has_calibration and has_significance:
@@ -3288,6 +3344,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "lp_maxed_keywords":         (item.get("lp_maxed_keywords") or [])[:5],
         "campaign_actions":          (item.get("campaign_actions") or [])[:5],
         "keyword_actions":           (item.get("keyword_actions") or [])[:10],
+        "competitor_price_meta":      item.get("competitor_price_meta"),
         "ad_traffic_ratio":          item.get("ad_traffic_ratio"),
         "organic_traffic_ratio":     item.get("organic_traffic_ratio"),
         "rank_tracked_keywords":     item.get("rank_tracked_keywords"),
@@ -3309,7 +3366,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "events_significant_pct":     item.get("events_significant_pct"),
         # Pre-computed reliability tier — AND-gate of historical calibration AND
         # current-run event significance so LLM cannot overclaim on insignificant results:
-        #   "high"   backtest_hit_rate ≥0.70 AND ≥1 event statistically significant
+        #   "high"   backtest_hit_rate ≥70 AND ≥1 event statistically significant
         #   "low"    any calibration data OR some significant events, but not both conditions
         #   "none"   no backtest data and no significant events
         "causal_reliability": _causal_reliability_tier(
@@ -3459,7 +3516,7 @@ def _chart_interpretation(item: Dict, name: str) -> str:
 
     if name == "daily_trend":
         exh    = item.get("budget_exhaustion_pct") or 0
-        exh_s  = f"{exh:.0%}"  # ratio → percent string (e.g. 1.0138 → "101%")
+        exh_s  = f"{exh:.1f}%"
         acos_s = f"ACOS {account_acos:.0f}%" if account_acos else "ACOS N/A"
         above  = account_acos and account_acos > acos_warn
         return (f"Budget utilisation {exh_s} of daily cap; {acos_s} — "
@@ -3515,12 +3572,22 @@ def _chart_interpretation(item: Dict, name: str) -> str:
         lp  = item.get("lp_summary") or {}
         rec = lp.get("recommended_stock_units")
         gap = lp.get("stock_shortfall") or 0
-        rec_note = (
-            f" LP plan requires {rec} units ({lp.get('stock_gate_days',21)}d buffer); "
-            f"shortfall {gap} units — procure before activating gated actions."
-            if rec and gap > 0 else
-            f" LP plan requires {rec} units — current stock sufficient." if rec else ""
-        )
+        if rec and gap > 0:
+            rec_note = (
+                f" LP plan requires {rec} units ({lp.get('stock_gate_days', 21)}d buffer); "
+                f"shortfall {gap} units — procure before activating gated actions."
+            )
+        elif rec and risk:
+            # Pipeline meets LP target but near-term on-hand is below the gate threshold.
+            # Do NOT say "sufficient" here — it would contradict the risk warning above.
+            rec_note = (
+                f" LP plan requires {rec} units — pipeline meets target "
+                f"but near-term on-hand stock is short (see can_sell_days / effective_stock_days)."
+            )
+        elif rec:
+            rec_note = f" LP plan requires {rec} units — stock sufficient."
+        else:
+            rec_note = ""
         if risk:
             return (
                 f"⚠ Current stock ~{can_sell:.0f} days — budget/bid increases are gated until "
@@ -3530,13 +3597,22 @@ def _chart_interpretation(item: Dict, name: str) -> str:
 
     if name == "comp_price_box":
         own_price  = item.get("price") or item.get("sale_price")
+        meta       = item.get("competitor_price_meta") or {}
+        n_comp     = meta.get("n_competitors", 0)
+        date_from  = meta.get("date_from", "")
+        date_to    = meta.get("date_to", "")
+        sample_note = (
+            f" (sample: {n_comp} competitor ASINs, {date_from} – {date_to})"
+            if n_comp and date_from and date_to else ""
+        )
         comp_flat  = [v for prices in (item.get("competitor_price_by_asin") or {}).values()
                       for v in prices.values() if v is not None]
         if own_price and comp_flat:
             pct = sum(1 for p in comp_flat if p < float(own_price)) / len(comp_flat) * 100
             pos = "above" if float(own_price) > float(np.median(comp_flat)) else "below"
-            return f"Own price ${float(own_price):.2f} is {pos} competitor median; higher than {pct:.0f}% of sampled prices."
-        return "Competitor price distribution vs own price (red dashed line)."
+            return (f"Own price ${float(own_price):.2f} is {pos} competitor median; "
+                    f"higher than {pct:.0f}% of sampled prices.{sample_note}")
+        return f"Competitor price distribution vs own price (red dashed line).{sample_note}"
 
     if name == "lp_waterfall":
         lp      = item.get("lp_summary") or {}
@@ -3896,9 +3972,9 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "when daily_sales_source=order_metrics.\n"
                 "  account_acos → total_spend ÷ total_sales × 100 "
                 "(data_start_date → data_end_date)\n"
-                "  budget_exhaustion_pct → total_spend ÷ (total_daily_budget × lookback_days) "
-                "(data_start_date → data_end_date)\n"
-                "  budget_likely_exhausted → budget_exhaustion_pct > 90% threshold\n"
+                "  budget_exhaustion_pct → (total_spend ÷ (total_daily_budget × lookback_days)) × 100 "
+                "(data_start_date → data_end_date); percentage scale, e.g. 95.0 = 95%\n"
+                "  budget_likely_exhausted → budget_exhaustion_pct > 90 threshold\n"
                 "  keyword_count / avg_bid / min_bid / max_bid / match_type_dist → "
                 "Ads API keyword list for matched campaigns (current config, not time-series)\n"
                 "  kw_performance_count → rows in spSearchTerm report with ≥ min_clicks_for_cvr clicks "
@@ -3926,6 +4002,27 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "Wilson CVR shrinkage causes LP's estimated orders to fall below actual historical — "
                 "this is an artifact of pessimistic estimation, NOT evidence the current allocation beats LP; "
                 "campaign_actions already corrects for this by allowing increase_budget when ACOS is healthy). "
+                "CRITICAL — TWO DISTINCT LP NARRATIVES (never conflate them):\n"
+                "  NARRATIVE A — Reallocation opportunity (order_gap > 0): "
+                "LP found a better way to distribute the SAME total budget. "
+                "The gap is caused by ALLOCATION INEFFICIENCY, not budget shortage. "
+                "Correct framing: 'LP suggests reallocating the existing $X budget could yield +Y orders/day — "
+                "move spend from lp_zero_keywords (low ROI) to lp_maxed_keywords (high ROI).' "
+                "FORBIDDEN when order_gap > 0: do NOT write 'budget constraint is causing the order gap' "
+                "or 'orders left on table due to budget limit' — the total budget is the SAME; "
+                "the cause is suboptimal allocation, not insufficient total spend.\n"
+                "  NARRATIVE B — Genuine budget constraint (hold_keyword + budget_binding=true): "
+                "an efficient keyword (ACOS below target) is starved because the total budget is fully consumed "
+                "by other keywords. Correct framing: 'Keyword X is efficient (ACOS $val% < target) but "
+                "cannot scale — total budget is exhausted; increasing total budget unlocks this keyword.' "
+                "FORBIDDEN: do NOT conflate NARRATIVE B (need more total budget) with NARRATIVE A "
+                "(need better allocation). They may both be present, but must be stated separately "
+                "with distinct root causes.\n"
+                "  When BOTH narratives appear simultaneously, write them as two separate points: "
+                "'(1) Reallocating the current $X budget per LP plan could gain +Y orders/day "
+                "(allocation fix — no extra budget needed). "
+                "(2) Additionally, keyword Z is efficient but budget-constrained — "
+                "increasing total budget further would unlock Z.' "
                 "CRITICAL — LP budget split (read carefully before writing the Budget section):\n"
                 "  lp_scope_campaign_daily_budget = sum of LP-scope campaign daily budgets — the actual global "
                 "constraint given to LP. LP cannot spend more than this.\n"
@@ -4072,6 +4169,19 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "    priority: P0 (≥5 orders, efficient ACOS) or P1 (2-4 orders, efficient ACOS)\n"
                 "    suggested_match: EXACT; suggested_bid: target_acos × avg_price × Wilson CVR lower bound\n"
                 "    keyword_text, campaign_id, clicks, orders, spend_total, acos_pct, rationale\n"
+                "  competitor_price_meta → credibility metadata for the competitor price dataset:\n"
+                "    n_competitors: number of distinct competitor ASINs sampled\n"
+                "    date_from / date_to: first and last date with price data (YYYY-MM-DD)\n"
+                "    avg_daily_count: average number of competitors with price data per day\n"
+                "  MANDATORY CITATION RULE — competitor price claims: "
+                "whenever you cite a competitor price (min / max / median from competitor_price_summary), "
+                "you MUST append sample metadata in parentheses: "
+                "'(sampled from N competitors, date_from – date_to)'. "
+                "If competitor_price_meta is null or n_competitors < 3, "
+                "prefix the claim with '(limited sample — N competitors)' and treat it as directional only, "
+                "NOT as a strong competitive benchmark. "
+                "FORBIDDEN: do NOT write '$X vs $Y median' without immediately citing sample size and date range — "
+                "a bare price comparison without sample metadata is an unsubstantiated claim.\n"
                 "  ad_traffic_ratio / organic_traffic_ratio / traffic_growth_7d → "
                 "Xiyouzhaoci traffic score API (latest available snapshot). "
                 "CRITICAL — traffic decline attribution rule: "
@@ -4108,21 +4218,21 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "high (≥100 orders), medium (30–99), low (<30)\n"
                 "  acos_ci_lo / acos_ci_hi → 95% ACOS confidence interval (Wilson method on CVR "
                 "propagated to ACOS via ACOS = spend/sales; see Methodology section)\n"
-                "  backtest_hit_rate → stored as 0–1 fraction (e.g. 0.85 = 85%, 1.0 = 100%); "
+                "  backtest_hit_rate → percentage 0–100 (e.g. 85.0 = 85%); "
                 "fraction of evaluated change events where model-predicted direction matched observed post-window KPI direction; "
-                "threshold: <0.70 = near-random (causal_reliability='low'/'none'), ≥0.70 = reliable ('high')\n"
+                "threshold: <70 = near-random (causal_reliability='low'/'none'), ≥70 = reliable ('high')\n"
                 "  backtest_strong_hit_rate → same but restricted to 'Strong evidence' events only\n"
                 "  events_significant_count / events_significant_pct → how many change events in THIS run "
                 "had at least one model produce a statistically significant result (p<0.05 + CI not crossing zero). "
                 "events_significant_pct=0.0 means ALL events were insignificant in this run.\n"
                 "  causal_reliability → pre-computed AND-gate tier: "
-                "'high' requires BOTH backtest_hit_rate ≥0.70 AND events_significant_pct > 0; "
+                "'high' requires BOTH backtest_hit_rate ≥70 AND events_significant_pct > 0; "
                 "'low' covers three sub-cases: "
-                "(A) hit_rate not None and < 0.70 — calibrated but near-random; "
+                "(A) hit_rate not None and < 70 — calibrated but near-random; "
                 "(B) hit_rate=None and events_significant_pct==0 — no calibration and no significance; "
                 "(C) hit_rate=None and events_significant_pct>0 — significant results but no backtest history; "
                 "'none' = hit_rate=None or 0 AND events_significant_pct=0 or None — no data at all. "
-                "Use this field (not the raw fraction) to apply Rule 4 label-downgrade logic\n\n"
+                "Use this field to apply Rule 4 label-downgrade logic\n\n"
                 "```json\n{_summary_json}\n```\n\n"
                 "> **Evidence Summary**: 1-2 sentences citing the single most critical metric "
                 "visible in the snapshot above "
@@ -4151,17 +4261,30 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "- **Profitability**: [Insight] — "
                 "*Source: account_acos=$val%, TACOS=$val% (if tacos available), "
                 "net_profit_after_ads=$val (if cogs+price provided)*\n"
-                "- **LP Budget Optimisation**: [Insight] — "
-                "*Source: order_gap=$val orders left on table, "
-                "lp_zero_keywords=[kw1, kw2], lp_maxed_keywords=[kw3], "
-                "lp_top_allocations=[kw4: $budget_share%]*\n"
+                "- **LP Budget Optimisation**: [Insight — MUST distinguish two narratives] — "
+                "If order_gap > 0: write 'Reallocating the current $X budget per LP plan could yield +Y orders/day "
+                "(allocation fix — same total budget, different distribution); "
+                "move spend from [lp_zero_keywords] → [lp_maxed_keywords].' "
+                "If hold_keyword actions exist AND budget_binding=true: write separately "
+                "'Additionally, [keyword] is efficient (ACOS $val% < target) but budget-constrained — "
+                "increasing total budget would unlock it.' "
+                "NEVER merge these two into one sentence using 'budget constraint caused order_gap' — "
+                "the order_gap is an allocation story, hold_keyword is a total-spend story. "
+                "*Source: order_gap=$val, lp_zero_keywords=[kw1, kw2], lp_maxed_keywords=[kw3], "
+                "lp_top_allocations=[kw4: $budget_share%], budget_binding=T/F*\n"
                 "- **Change Attribution (past actions)**:\n"
                 "  - ✅ Positive: $change_type on $date → Δ orders = +$x "
-                "(causal confidence: high/med/low)\n"
-                "  - ❌ Negative: $change_type on $date → Δ ACOS = +$y pp "
-                "(causal confidence: high/med/low)\n"
+                "(consensus: Strong/Moderate evidence, causal_reliability=high)\n"
+                "  - ❌ Negative: $change_type on $date → Δ orders = -$x "
+                "(consensus: Strong/Moderate evidence, causal_reliability=high)\n"
+                "  - ⚠️ Uncertain: $change_type on $date → direction unclear "
+                "(consensus=Conflicting OR causal_reliability=low/none — do NOT assert direction)\n"
                 "  - ⚠️ Confounded: $change_type coincided with promotion/price cut → "
-                "effect cannot be isolated to bid/budget\n\n"
+                "effect cannot be isolated to bid/budget\n"
+                "  ⚠️ ICON RULE: ❌ Negative REQUIRES consensus startswith 'Strong evidence' OR "
+                "'Moderate evidence' AND dominant direction is negative AND causal_reliability ≠ 'none'. "
+                "If consensus is 'Conflicting' OR causal_reliability is 'low' OR 'none', "
+                "you MUST use ⚠️ Uncertain — NEVER ❌ Negative.\n\n"
 
                 "### Causal Confidence Assessment\n\n"
                 "For each change_attribution entry cited above:\n"
@@ -4184,11 +4307,17 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "model direction vs observed post-window direction for this ASIN)\n"
                 "- **Note**: Use 'causally demonstrated' only when consensus = 'Strong evidence' "
                 "(all 3 models agree). Use 'suggested' or 'estimated' otherwise.\n"
+                "  When consensus = 'Conflicting' or causal_reliability ≠ 'high': "
+                "use ⚠️ Uncertain (not ❌ Negative) regardless of delta_orders sign — "
+                "the direction is not reliably established.\n"
                 "  When had_promotion=True or price_delta_window is large negative: "
                 "do not attribute lift solely to the ad change — flag as partially confounded.\n"
                 "  Use competitor_price_summary {{min, max, median}} time series to explain "
                 "sustained ACOS/CVR shifts that correlate with competitor price moves "
-                "rather than internal bid changes.\n"
+                "rather than internal bid changes. "
+                "When citing any price from competitor_price_summary, always append "
+                "'(N competitors, date_from – date_to)' from competitor_price_meta — "
+                "do not cite competitor prices without sample size.\n"
                 "- **CRITICAL — Same-day multi-event attribution**: "
                 "Each change_attribution entry may carry two fields injected by the pipeline:\n"
                 "  • shared_effect = 'primary'   → this entry holds the representative BSTS measurement\n"
@@ -4248,8 +4377,16 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "max Σorders_i·x_i s.t. Σx_i≤daily_budget, x_i≤headroom·clicks_i·bid_i |\n"
                 "| ACOS CI | Wilson (1927), *JASA* 22:209–212 | "
                 "95% CI on CVR (Wilson score) propagated: ACOS_CI = ACOS_point × CVR_point / CVR_CI |\n\n"
-                "*All CIs at 95% (α=0.05). Significance threshold: p<0.10 (ITS/DML, one-sided) "
-                "given limited post-period samples typical in weekly ad cadence.*\n\n"
+                "*All CIs at 95% (α=0.05). Two significance thresholds are used for different purposes — "
+                "this is intentional, not an inconsistency: "
+                "(1) **Consensus voting** (ITS/DML direction votes in `_build_consensus`): p ≤ 0.10 one-sided — "
+                "lenient so that weak signals still contribute a direction vote; "
+                "the per-event ITS p-value shown in Causal Confidence Assessment uses this threshold. "
+                "(2) **Backtest event significance** (`events_significant_pct`, `causal_reliability` gate): "
+                "p < 0.05 AND 95% CI not crossing zero — strict; only events meeting both criteria count toward "
+                "backtest_hit_rate calibration and the causal_reliability='high' AND-gate. "
+                "When you see 'p < 0.10' in the ITS section it refers to threshold (1); "
+                "when you see 'p < 0.05 + CI not crossing zero' in causal_reliability it refers to threshold (2).*\n\n"
 
                 # ── Credibility & actionability rules ────────────────────────
                 "==== MANDATORY RULES (violations degrade report quality) ====\n\n"
@@ -4268,7 +4405,7 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "'~+N orders/day per +10% bid (impression elasticity unvalidated)'.\n"
                 "4. Uncertainty labelling — two independent dimensions, BOTH must pass:\n"
                 "   Dimension A — causal_reliability (pre-computed AND-gate, ASIN-level):\n"
-                "   causal_reliability='high': backtest_hit_rate ≥0.70 AND ≥1 event statistically significant "
+                "   causal_reliability='high': backtest_hit_rate ≥70 AND ≥1 event statistically significant"
                 "(p<0.05, CI not crossing zero) in this run — model is both historically calibrated AND currently significant.\n"
                 "   causal_reliability='low'/'none': at least one gate failed — downgrade all labels regardless of consensus.\n"
                 "   Dimension B — consensus (per-event model agreement):\n"
@@ -4365,12 +4502,12 @@ def build_ad_diagnosis(config: dict) -> Workflow:
                 "(causal_reliability is pre-computed — use it directly; do NOT re-derive from raw fractions):\n"
                 "     The three 'low' sub-conditions are MUTUALLY EXCLUSIVE — "
                 "evaluate in order A → B → C and apply exactly ONE:\n"
-                "     Sub-condition A — backtest_hit_rate is not None AND backtest_hit_rate < 0.70 (check first): "
+                "     Sub-condition A — backtest_hit_rate is not None AND backtest_hit_rate < 70 (check first): "
                 "'Causal model directional accuracy $pct% (threshold 70%) — change_attribution "
                 "evidence is near-random; all consensus labels downgraded one tier. "
                 "($pct = backtest_hit_rate × 100, e.g. 0.65 → 65%.) "
                 "LP budget recommendations remain valid (independent of causal models).' "
-                "Apply ONLY when backtest_hit_rate is not None AND backtest_hit_rate < 0.70. "
+                "Apply ONLY when backtest_hit_rate is not None AND backtest_hit_rate < 70. "
                 "Do NOT apply alongside Sub-condition B or C.\n"
                 "     Sub-condition B — backtest_hit_rate is None AND events_significant_pct == 0 "
                 "(no calibration data AND no significant events in this run): "
