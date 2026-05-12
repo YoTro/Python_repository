@@ -1162,6 +1162,13 @@ def run_causal_analysis(
     #   shared_effect = 'primary'   → the representative measurement for that date
     #                  'duplicate'  → same BSTS output; cite primary only
     #   same_day_event_ids          → event_ids of all other same-date entries
+    #
+    # Additionally, for 'duplicate' entries we null out ASIN-level delta fields
+    # that would otherwise carry the same numeric value as the primary and mislead
+    # the LLM into treating them as independent estimates:
+    #   delta_orders_normalized  → always ASIN-level (YoY/trailing baseline); nulled
+    #   delta_orders             → nulled only when kpi_level='asin' (ASIN fallback)
+    #   delta_baseline_source    → set to 'shared_with_primary' to signal provenance
     from collections import defaultdict
     _by_date: Dict[str, List[Dict]] = defaultdict(list)
     for a in attributions:
@@ -1181,6 +1188,10 @@ def run_causal_analysis(
                 _primary_set = True
             else:
                 a["shared_effect"] = "duplicate"
+                a["delta_orders_normalized"] = None
+                a["delta_baseline_source"] = "shared_with_primary"
+                if a.get("kpi_level") == "asin":
+                    a["delta_orders"] = None
         if not _primary_set:
             _group[0]["shared_effect"] = "primary"
 

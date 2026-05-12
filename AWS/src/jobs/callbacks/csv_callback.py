@@ -18,7 +18,8 @@ class CSVCallback(JobCallback):
         self.output_path = output_path
 
     async def on_progress(
-        self, step_index: int, total_steps: int, step_name: str, message: str = ""
+        self, step_index: int, total_steps: int, step_name: str, message: str = "",
+        remaining_step_names=None, workflow_name: str = "",
     ) -> None:
         logger.info(f"[{step_index}/{total_steps}] {step_name} {message}")
 

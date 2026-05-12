@@ -10,7 +10,7 @@ Different entry points use different callbacks:
 
 from abc import ABC, abstractmethod
 from enum import Enum, auto
-from typing import Set
+from typing import List, Optional, Set
 
 class CallbackCapability(Enum):
     """Capabilities that a specific output channel might support."""
@@ -34,6 +34,8 @@ class JobCallback(ABC):
         total_steps: int,
         step_name: str,
         message: str = "",
+        remaining_step_names: Optional[List[str]] = None,
+        workflow_name: str = "",
     ) -> None:
         """Called after each step completes."""
         ...
@@ -64,4 +66,4 @@ class JobCallback(ABC):
         Subclasses may override for a lighter-weight send (e.g. a simple chat
         message instead of a full progress card).
         """
-        await self.on_progress(step_index=0, total_steps=1, step_name="notify", message=message)
+        await self.on_progress(step_index=0, total_steps=1, step_name="notify", message=message, remaining_step_names=[])

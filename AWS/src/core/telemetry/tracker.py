@@ -1,7 +1,9 @@
 from __future__ import annotations
+import fcntl
 import json
 import logging
 import os
+import tempfile
 import time
 from typing import Dict, List, Optional
 
@@ -9,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 # Per-step history stored here; keyed by step_name, value = list of durations (s)
 _HISTORY_PATH = os.path.join(os.path.dirname(__file__), "step_history.json")
+_HISTORY_LOCK_PATH = _HISTORY_PATH + ".lock"
 _HISTORY_MAX_SAMPLES = 20   # rolling window per step
 
 
@@ -16,16 +19,48 @@ def _load_history() -> Dict[str, List[float]]:
     try:
         with open(_HISTORY_PATH, encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except FileNotFoundError:
+        return {}  # first run — expected
+    except json.JSONDecodeError as e:
+        logger.warning(f"[telemetry] step_history.json is corrupt ({e}); resetting history")
+        return {}
+    except OSError as e:
+        logger.warning(f"[telemetry] Could not read step_history.json: {e}")
         return {}
 
 
-def _save_history(history: Dict[str, List[float]]) -> None:
+def _append_step(step_key: str, duration: float) -> None:
+    """Append one duration sample to the on-disk history, multi-process safe.
+
+    Uses fcntl.flock (POSIX advisory lock) so concurrent processes serialise
+    the read-modify-write.  The final write is an atomic os.replace() so a
+    reader never sees a half-written file.
+    """
     try:
-        with open(_HISTORY_PATH, "w", encoding="utf-8") as f:
-            json.dump(history, f)
+        # 'a' mode creates the lock file if absent without truncating it.
+        with open(_HISTORY_LOCK_PATH, "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            history = _load_history()          # re-read under lock for latest state
+            samples = history.setdefault(step_key, [])
+            samples.append(duration)
+            if len(samples) > _HISTORY_MAX_SAMPLES:
+                del samples[:-_HISTORY_MAX_SAMPLES]
+            _dir = os.path.dirname(_HISTORY_PATH) or "."
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=_dir, suffix=".tmp")
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as tf:
+                    json.dump(history, tf)
+                os.replace(tmp_path, _HISTORY_PATH)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+    except OSError as e:
+        logger.warning(f"[telemetry] Could not persist step history: {e}")
     except Exception as e:
-        logger.debug(f"Could not save step history: {e}")
+        logger.warning(f"[telemetry] Unexpected error persisting step history: {e}")
 
 
 class TimeEstimator:
@@ -80,23 +115,43 @@ class TelemetryTracker:
         self.step_names: List[str] = []
         self.last_step_time = self.start_time
         self._history: Dict[str, List[float]] = _load_history()
+        # Name of the step that is currently executing (started but not yet finished).
+        # on_progress is called before a step runs, so the measured duration on the
+        # *next* call belongs to this pending name, not the incoming one.
+        self._pending_step_name: str = ""
 
     def record_step(self, step_name: str = "") -> None:
         now = time.monotonic()
         duration = now - self.last_step_time
-        self.step_times.append(duration)
-        self.step_names.append(step_name)
         self.last_step_time = now
         self.current_step += 1
 
-        # Persist to rolling history
-        if step_name:
-            key = f"{self.workflow_name}:{step_name}" if self.workflow_name else step_name
-            samples = self._history.setdefault(key, [])
-            samples.append(duration)
-            if len(samples) > _HISTORY_MAX_SAMPLES:
-                samples.pop(0)
-            _save_history(self._history)
+        # duration is the wall time of the step that just *finished* (_pending_step_name),
+        # not the one that is just starting (step_name).
+        completed_name = self._pending_step_name
+        self._pending_step_name = step_name
+
+        self.step_times.append(duration)
+        self.step_names.append(completed_name or step_name)
+
+        if completed_name:
+            self._persist_duration(completed_name, duration)
+
+    def finalize(self) -> None:
+        """Record the duration of the last step (no subsequent record_step to trigger it)."""
+        if not self._pending_step_name:
+            return
+        duration = time.monotonic() - self.last_step_time
+        self._persist_duration(self._pending_step_name, duration)
+        self._pending_step_name = ""
+
+    def _persist_duration(self, step_name: str, duration: float) -> None:
+        key = f"{self.workflow_name}:{step_name}" if self.workflow_name else step_name
+        samples = self._history.setdefault(key, [])
+        samples.append(duration)
+        if len(samples) > _HISTORY_MAX_SAMPLES:
+            samples.pop(0)
+        _append_step(key, duration)
 
     # ── ETA methods ──────────────────────────────────────────────────────
 

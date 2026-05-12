@@ -118,6 +118,8 @@ class Workflow:
                         total_steps=total_steps,
                         step_name=step.name,
                         message=f"Processing {len(items)} items",
+                        remaining_step_names=[s.name for s in active_steps[i + 1:]],
+                        workflow_name=self.name,
                     )
                 except Exception as e:
                     logger.warning(f"Callback on_progress failed: {e}")

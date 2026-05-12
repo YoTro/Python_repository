@@ -138,10 +138,18 @@ class FeishuCallback(JobCallback):
     # ── Progress (fire-and-forget, non-blocking) ─────────────────────────
 
     async def on_progress(
-        self, step_index: int, total_steps: int, step_name: str, message: str = ""
+        self,
+        step_index: int,
+        total_steps: int,
+        step_name: str,
+        message: str = "",
+        remaining_step_names=None,
+        workflow_name: str = "",
     ) -> None:
         if self._tracker.total_steps != total_steps:
             self._tracker.total_steps = total_steps
+        if workflow_name and not self._tracker.workflow_name:
+            self._tracker.workflow_name = workflow_name
 
         self._tracker.record_step(step_name)
 
@@ -155,7 +163,7 @@ class FeishuCallback(JobCallback):
         if message:
             text += f" - {message}"
 
-        eta = self._tracker.get_dynamic_eta()
+        eta = self._tracker.get_dynamic_eta(remaining_step_names=remaining_step_names)
         if eta is not None:
             text += f"\n⏳ {eta}"
 
@@ -362,6 +370,7 @@ class FeishuCallback(JobCallback):
 
     async def on_complete(self, result) -> None:
         self._cancel_heartbeat()
+        self._tracker.finalize()
         try:
             import os
             items = result.final_items if hasattr(result, "final_items") else []

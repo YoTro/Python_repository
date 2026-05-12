@@ -23,7 +23,8 @@ class MCPCallback(JobCallback):
         self._failed_job_id: Optional[str] = None
 
     async def on_progress(
-        self, step_index: int, total_steps: int, step_name: str, message: str = ""
+        self, step_index: int, total_steps: int, step_name: str, message: str = "",
+        remaining_step_names=None, workflow_name: str = "",
     ) -> None:
         logger.info(f"[MCP] [{step_index}/{total_steps}] {step_name} {message}")
 
