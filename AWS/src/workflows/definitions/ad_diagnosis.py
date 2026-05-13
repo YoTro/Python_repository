@@ -60,6 +60,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Patch
 
+from src.core.utils.charts import CHART_PALETTE as _CHART_PALETTE, fig_to_png as _fig_to_png, chart_upload as _chart_upload
+
 from src.workflows.registry import WorkflowRegistry
 from src.workflows.engine import Workflow, WorkflowContext
 from src.workflows.steps.enrich import EnrichStep
@@ -2652,28 +2654,7 @@ def _run_causal_analysis(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 # Chart generation
 # ---------------------------------------------------------------------------
 
-_CHART_PALETTE = {
-    "blue":       "#2563EB",
-    "orange":     "#F59E0B",
-    "red":        "#EF4444",
-    "green":      "#10B981",
-    "purple":     "#8B5CF6",
-    "grey":       "#9CA3AF",
-    "light_blue": "#BFDBFE",
-    "light_red":  "#FEE2E2",
-    "bg":         "#F9FAFB",
-}
 _C = _CHART_PALETTE  # shorthand
-
-
-def _fig_to_png(fig: plt.Figure) -> bytes:
-    buf = io.BytesIO()
-    try:
-        fig.savefig(buf, format="png", dpi=130, bbox_inches="tight",
-                    facecolor=fig.get_facecolor())
-        return buf.getvalue()
-    finally:
-        plt.close(fig)
 
 
 def _chart_lp_waterfall(item: Dict) -> Optional[bytes]:
@@ -2749,15 +2730,6 @@ def _chart_rank_trend(item: Dict) -> Optional[bytes]:
     ax.legend(fontsize=7, loc="upper right")
     fig.tight_layout()
     return _fig_to_png(fig)
-
-
-def _chart_upload(png: bytes, key: str) -> Optional[str]:
-    try:
-        from src.core.storage import get_storage_backend
-        return get_storage_backend().upload(key, png, "image/png")
-    except Exception as e:
-        logger.warning(f"[charts] upload failed for {key}: {e}")
-        return None
 
 
 def _chart_daily_trend(item: Dict, daily_perf: List[Dict]) -> Optional[bytes]:

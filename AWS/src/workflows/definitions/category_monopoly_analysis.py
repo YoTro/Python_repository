@@ -22,12 +22,15 @@ logger = logging.getLogger(__name__)
 # ── L2 cache helpers ─────────────────────────────────────────────────────────
 _L2_DOMAIN = "cat_monopoly"
 
-_TTL_BSR       = 3_600    # 1  h — BSR scrape
-_TTL_SALES     = 86_400   # 24 h — past-month sales
-_TTL_SELLER    = 21_600   # 6  h — seller/fulfillment info
-_TTL_SIGNALS   = 3_600    # 1  h — ABA + SERP + CPC market signals
-_TTL_TIMESERIES = 86_400  # 24 h — 12-month historical trends + keyword weekly
-_TTL_SS_BSR    = 86_400   # 24 h — Sellersprite monthly snapshots
+_TTL_BSR        = 3_600    # 1  h — BSR scrape
+_TTL_SALES      = 86_400   # 24 h — past-month sales
+_TTL_SELLER     = 21_600   # 6  h — seller/fulfillment info
+_TTL_SIGNALS    = 3_600    # 1  h — ABA + SERP + CPC market signals
+_TTL_TIMESERIES = 86_400   # 24 h — 12-month historical trends + keyword weekly
+_TTL_SS_BSR     = 86_400   # 24 h — Sellersprite monthly snapshots
+_TTL_KEYWORDS   = 21_600   # 6  h — LLM keyword extraction from BSR titles
+_TTL_EXTERNAL   = 43_200   # 12 h — TikTok PSI + deal intensity
+_TTL_TRAFFIC    = 21_600   # 6  h — Xiyouzhaoci batch ad-traffic ratios
 
 
 def _l2_key(ctx, *parts) -> str:
@@ -154,6 +157,14 @@ async def _fetch_core_keywords(items: List[dict], ctx: Any) -> List[dict]:
         return []
 
     top_titles = [item.get("Title", "") for item in items[:20] if item.get("Title")]
+    titles_hash = _hl.md5("|".join(top_titles).encode()).hexdigest()[:12]
+    cached = _l2_get(ctx, _TTL_KEYWORDS, "core_keywords", titles_hash)
+    if cached is not None:
+        ctx.cache["core_keywords"] = cached["core_keywords"]
+        ctx.cache["main_keyword"]  = cached["main_keyword"]
+        logger.info(f"[cat_monopoly] Core keywords L2 cache hit titles_hash={titles_hash}")
+        return items
+
     prompt = (
         "Analyze these 20 Amazon Best Seller product titles and identify the TOP 3 most accurate CORE search terms (keywords). "
         "Return them as a comma-separated list, most important first. "
@@ -170,7 +181,14 @@ async def _fetch_core_keywords(items: List[dict], ctx: Any) -> List[dict]:
         from src.intelligence.router import TaskCategory
         if ctx.router:
             res = await ctx.router.route_and_execute(prompt, category=TaskCategory.SIMPLE_CLEANING)
+            import re as _re_kw
             raw_text = res.text.strip().replace('"', '').replace("'", "").lower()
+            # Strip numbered/bullet prefixes first, while line boundaries still exist
+            raw_text = _re_kw.sub(r"(?m)^\s*\d+[\.\)]\s*", "", raw_text)  # "1. " / "1) "
+            raw_text = _re_kw.sub(r"(?m)^\s*[-•*]\s*", "", raw_text)      # "- " / "• "
+            # Then normalise remaining separators to commas
+            raw_text = _re_kw.sub(r"\n+", ",", raw_text)           # newlines → comma
+            raw_text = raw_text.replace(";", ",")                   # semicolons → comma
             candidates = [k.strip() for k in raw_text.split(",") if k.strip()]
             # Keep only short phrases that look like actual search keywords
             valid = [
@@ -189,7 +207,9 @@ async def _fetch_core_keywords(items: List[dict], ctx: Any) -> List[dict]:
         logger.warning(f"[fetch_core_keywords] Keyword extraction failed: {e}")
 
     ctx.cache["core_keywords"] = core_keywords
-    ctx.cache["main_keyword"] = core_keywords[0]
+    ctx.cache["main_keyword"]  = core_keywords[0]
+    _l2_set(ctx, {"core_keywords": core_keywords, "main_keyword": core_keywords[0]},
+            "core_keywords", titles_hash)
     logger.info(f"[fetch_core_keywords] Extracted: {core_keywords}")
     return items
 
@@ -215,9 +235,11 @@ async def _fetch_market_signals(items: List[dict], ctx: Any) -> List[dict]:
 
     async def _fetch_aba() -> None:
         from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
+        country   = ctx.config.get("store_id",  "US")      if hasattr(ctx, "config") else "US"
+        tenant_id = ctx.config.get("tenant_id", "default") if hasattr(ctx, "config") else "default"
         try:
             aba_res = await asyncio.to_thread(
-                XiyouZhaociAPI().get_aba_top_asins, "US", [main_keyword]
+                XiyouZhaociAPI(tenant_id=tenant_id).get_aba_top_asins, country, [main_keyword]
             )
             ctx.cache["keyword_data"] = (
                 aba_res["searchTerms"][0]
@@ -242,18 +264,28 @@ async def _fetch_market_signals(items: List[dict], ctx: Any) -> List[dict]:
         from src.mcp.servers.amazon.ads.client import AmazonAdsClient
         try:
             ads_client = AmazonAdsClient(store_id=ctx.config.get("store_id"))
-            match_types = ["EXACT", "PHRASE"]
-            strategies = ["AUTO_FOR_SALES", "LEGACY_FOR_SALES"]
-            bid_res = await ads_client.get_keyword_bid_recommendations(
-                keywords=[{"keyword": kw, "matchType": m} for kw in core_keywords for m in match_types],
-                asins=[(item.get("ASIN") or item.get("asin")) for item in items[:5]
-                       if (item.get("ASIN") or item.get("asin"))],
-                strategy=strategies,
+            kws = [{"keyword": kw, "matchType": m}
+                   for kw in core_keywords for m in ("EXACT", "PHRASE")]
+            # Do NOT pass competitor BSR ASINs — the bid API requires an ASIN owned
+            # by the advertiser. The client will auto-discover one via _get_owned_asin_fallback().
+            # Two separate calls — the API only accepts one strategy string per request.
+            legacy_res, auto_res = await asyncio.gather(
+                ads_client.get_keyword_bid_recommendations(
+                    keywords=kws, strategy="LEGACY_FOR_SALES"),
+                ads_client.get_keyword_bid_recommendations(
+                    keywords=kws, strategy="AUTO_FOR_SALES"),
+                return_exceptions=True,
             )
             ctx.cache["detailed_bid_analysis"] = {
-                s: bid_res.get(s, {}).get("bidRecommendations", [])
-                for s in strategies
+                "LEGACY_FOR_SALES": (legacy_res.get("bidRecommendations", [])
+                                     if not isinstance(legacy_res, Exception) else []),
+                "AUTO_FOR_SALES":   (auto_res.get("bidRecommendations", [])
+                                     if not isinstance(auto_res, Exception) else []),
             }
+            if isinstance(legacy_res, Exception):
+                logger.error(f"[fetch_market_signals] LEGACY bid fetch failed: {legacy_res}")
+            if isinstance(auto_res, Exception):
+                logger.error(f"[fetch_market_signals] AUTO bid fetch failed: {auto_res}")
         except Exception as e:
             logger.error(f"[fetch_market_signals] CPC bid fetch failed: {e}")
             ctx.cache.setdefault("detailed_bid_analysis", {})
@@ -270,6 +302,13 @@ async def _enrich_external_intensity(items: List[dict], ctx: Any) -> List[dict]:
     """Fetches Social (TikTok) and Deal promotion intensity for the category."""
     main_keyword = ctx.cache.get("main_keyword")
     if not main_keyword: return items
+
+    kw_hash = _hl.md5(main_keyword.encode()).hexdigest()[:12]
+    cached = _l2_get(ctx, _TTL_EXTERNAL, "external_intensity", kw_hash)
+    if cached is not None:
+        ctx.cache.update(cached)
+        logger.info(f"[cat_monopoly] External intensity L2 cache hit kw_hash={kw_hash}")
+        return items
 
     from src.mcp.servers.social.tiktok.client import TikTokClient
     from src.intelligence.processors.social_virality import SocialViralityProcessor
@@ -293,7 +332,14 @@ async def _enrich_external_intensity(items: List[dict], ctx: Any) -> List[dict]:
         deal_intensity_score = 9 if total_deals_found > 5 else 6 if total_deals_found > 2 else 3 if total_deals_found > 0 else 0
         ctx.cache["category_deal_intensity"] = deal_intensity_score
     except Exception as e: logger.error(f"Error during deal intensity analysis: {e}")
-    logger.info(f"External intensity: Social PSI={ctx.cache.get('category_social_psi', 'N/A')}, Deal Intensity={ctx.cache.get('category_deal_intensity', 'N/A')}")
+
+    _ext = {
+        "category_social_psi":     ctx.cache.get("category_social_psi", 0),
+        "category_social_verdict": ctx.cache.get("category_social_verdict", "Unknown"),
+        "category_deal_intensity": ctx.cache.get("category_deal_intensity", 0),
+    }
+    _l2_set(ctx, _ext, "external_intensity", kw_hash)
+    logger.info(f"External intensity: Social PSI={_ext['category_social_psi']}, Deal Intensity={_ext['category_deal_intensity']}")
     return items
 
 async def _fetch_historical_trends(items: List[dict], ctx: Any) -> List[dict]:
@@ -315,7 +361,9 @@ async def _fetch_historical_trends(items: List[dict], ctx: Any) -> List[dict]:
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-    api = XiyouZhaociAPI()
+    country   = ctx.config.get("store_id",  "US")      if hasattr(ctx, "config") else "US"
+    tenant_id = ctx.config.get("tenant_id", "default") if hasattr(ctx, "config") else "default"
+    api = XiyouZhaociAPI(tenant_id=tenant_id)
     historical_data: Dict[str, List[Dict[str, Any]]] = {}
 
     def _parse_daily_records(res: dict, asin: str) -> list:
@@ -350,7 +398,7 @@ async def _fetch_historical_trends(items: List[dict], ctx: Any) -> List[dict]:
         # Shape B: {"data": {"B0xxx": {"dailyData": [...]}}}
         if isinstance(data, dict) and asin in data:
             asin_data = data[asin]
-            daily = asin_data.get("dailyData") or asin_data if isinstance(asin_data, list) else []
+            daily = asin_data.get("dailyData") or (asin_data if isinstance(asin_data, list) else [])
             return _normalise(daily)
 
         # Shape C: {"data": [{"date": ..., "bsr": ...}]}
@@ -362,7 +410,7 @@ async def _fetch_historical_trends(items: List[dict], ctx: Any) -> List[dict]:
 
     async def _fetch_one(asin: str) -> None:
         try:
-            res = await asyncio.to_thread(api.get_asin_daily_trends, "US", asin, start_date, end_date)
+            res = await asyncio.to_thread(api.get_asin_daily_trends, country, asin, start_date, end_date)
             records = _parse_daily_records(res, asin)
             if records:
                 historical_data[asin] = records
@@ -380,12 +428,23 @@ async def _fetch_historical_trends(items: List[dict], ctx: Any) -> List[dict]:
 async def _enrich_batch_traffic_scores(items: List[dict], ctx: Any) -> List[dict]:
     """Fetches batch traffic scores for Top 20 ASINs to calculate average ad dependency."""
     if not items or not ctx.mcp: return items
-    
-    top_asins = [(item.get("ASIN") or item.get("asin")) for item in items[:20] if (item.get("ASIN") or item.get("asin"))]
+
+    top_asins = sorted(
+        (item.get("ASIN") or item.get("asin") or "").strip().upper()
+        for item in items[:20] if (item.get("ASIN") or item.get("asin"))
+    )
     if not top_asins: return items
-    
+
+    asins_hash = _hl.md5(",".join(top_asins).encode()).hexdigest()[:12]
+    cached = _l2_get(ctx, _TTL_TRAFFIC, "traffic_scores", asins_hash)
+    if cached is not None:
+        ctx.cache["actual_bsr_ad_ratio"] = cached["actual_bsr_ad_ratio"]
+        logger.info(f"[cat_monopoly] Traffic scores L2 cache hit asins_hash={asins_hash}")
+        return items
+
     try:
-        resp = await ctx.mcp.call_tool_json("xiyou_get_traffic_scores", {"asins": top_asins, "country": "US"})
+        country = ctx.config.get("store_id", "US") if hasattr(ctx, "config") else "US"
+        resp = await ctx.mcp.call_tool_json("xiyou_get_traffic_scores", {"asins": top_asins, "country": country})
         if isinstance(resp, list) and len(resp) > 0:
             import json
             data = json.loads(resp[0].get("text", "{}"))
@@ -395,6 +454,7 @@ async def _enrich_batch_traffic_scores(items: List[dict], ctx: Any) -> List[dict
                     import statistics
                     avg_ratio = statistics.mean(ratios)
                     ctx.cache["actual_bsr_ad_ratio"] = avg_ratio
+                    _l2_set(ctx, {"actual_bsr_ad_ratio": avg_ratio}, "traffic_scores", asins_hash)
                     logger.info(f"Calculated average BSR ad dependency: {avg_ratio:.2%}")
     except Exception as e:
         logger.error(f"Failed to fetch batch traffic scores: {e}")
@@ -419,10 +479,12 @@ async def _fetch_keyword_weekly_trends(items: List[dict], ctx: Any) -> List[dict
         return items
 
     try:
-        api = XiyouZhaociAPI()
+        country   = ctx.config.get("store_id",  "US")      if hasattr(ctx, "config") else "US"
+        tenant_id = ctx.config.get("tenant_id", "default") if hasattr(ctx, "config") else "default"
+        api = XiyouZhaociAPI(tenant_id=tenant_id)
         res = await asyncio.to_thread(
             api.get_search_term_trends,
-            country="US",
+            country=country,
             search_term=main_keyword,
         )
         terms = (res or {}).get("searchTerms") or []
@@ -609,18 +671,40 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
     from src.intelligence.processors.sales_estimator import SalesEstimator
     import statistics, json
     
+    import re as _re
+
+    def _parse_float(raw, default: float = 0.0) -> float:
+        """Extract the first decimal number from a messy string (handles ranges, symbols, suffixes)."""
+        m = _re.search(r"\d+(?:[.,]\d+)?", str(raw or "").replace(",", "."))
+        if not m:
+            return default
+        try:
+            return float(m.group().replace(",", "."))
+        except ValueError:
+            return default
+
+    def _parse_int(raw, default: int = 0) -> int:
+        """Extract the first integer from a messy string (handles commas, suffixes, parens)."""
+        m = _re.search(r"\d+", str(raw or "").replace(",", ""))
+        if not m:
+            return default
+        try:
+            return int(m.group())
+        except ValueError:
+            return default
+
     analyzer = CategoryMonopolyAnalyzer()
     external_data = {"social_psi": ctx.cache.get("category_social_psi"), "deal_intensity": ctx.cache.get("category_deal_intensity")}
     analysis_input = [
         {
-            "rank":           item.get("Rank", 999),
-            "price":          float(str(item.get("Price") or "0").replace("$", "").replace(",", "")),
+            "rank":           _parse_int(item.get("Rank"), default=999),
+            "price":          _parse_float(item.get("Price")),
             "sales":          item.get("sales", 0),
             "brand":          item.get("brand", "Unknown"),
             "seller_type":    item.get("seller_type", "Unknown"),
             "feedback_count": item.get("feedback_count", 0),
-            "review_count":   int(str(item.get("Reviews") or "0").replace(",", "")),
-            "rating":         float(str(item.get("Rating") or "0").split(" ")[0]),
+            "review_count":   _parse_int(item.get("Reviews")),
+            "rating":         _parse_float(item.get("Stars")),
             # Written reviews vs global ratings (from ReviewCountExtractor)
             "global_ratings":  item.get("global_ratings"),
             "written_reviews": item.get("written_reviews"),
@@ -647,31 +731,131 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
         keyword_weekly_trends=ctx.cache.get("keyword_weekly_trends"),
     )
 
-    # Format Bid Insight for LLM
-    bid_insight = []
-    legacy_recs = detailed_bids.get("LEGACY_FOR_SALES", [])
-    for rec in legacy_recs:
-        for expr in rec.get("bidRecommendationsForTargetingExpressions", []):
-            kw = expr.get("targetingExpression", {}).get("value")
-            m_type = expr.get("targetingExpression", {}).get("type")
-            bid = expr.get("suggestedBid", {}).get("amount", 0)
-            if bid > 0:
-                bid_insight.append(f"{kw}({m_type}): ${bid:.2f}")
+    # Pass raw bid recommendations directly — no pre-formatting.
+    # The LLM receives the full API payload for both strategies and renders it.
+    bid_raw = {
+        "LEGACY_FOR_SALES": detailed_bids.get("LEGACY_FOR_SALES", []),
+        "AUTO_FOR_SALES":   detailed_bids.get("AUTO_FOR_SALES", []),
+    }
+    # Count total keyword-level entries for data-quality tracking
+    bid_entry_count = sum(
+        len(rec.get("bidRecommendationsForTargetingExpressions", []))
+        for strategy_recs in bid_raw.values()
+        for rec in strategy_recs
+    )
 
     prices = [p["price"] for p in analysis_input if p["price"] > 0]
     median_price = statistics.median(prices) if prices else 25.0
+    total_monthly_units = result.get("niche_benchmarks", {}).get("total_estimated_monthly_units", 0)
+    niche_monthly_gmv = int(total_monthly_units * median_price)
     estimator = SalesEstimator()
     node_id = ctx.config.get("category_node_id")
     baseline = estimator.category_params.get(str(node_id), {}).get("market_logic", {})
 
     # ── review_disparity: top-10 avg / bottom-tail avg ────────────────────
-    # Guard: analysis_input[50:] is empty when len == 50, making max(1, mean([]))
-    # return 1 and the ratio collapses to top-10 avg — meaningless.
+    # Require ≥5 products in both buckets; otherwise the ratio is meaningless
+    # (tail empty → tail_avg collapses to 1 → disparity = raw top-10 average, not a ratio).
+    _MIN_BUCKET = 5
     top10_reviews = [p["review_count"] for p in analysis_input[:10]]
     tail_reviews  = [p["review_count"] for p in analysis_input[50:]]
-    top10_avg  = statistics.mean(top10_reviews) if top10_reviews else 0
-    tail_avg   = statistics.mean(tail_reviews)  if tail_reviews  else 1
-    review_disparity_val = round(top10_avg / max(tail_avg, 1), 1)
+    if len(top10_reviews) >= _MIN_BUCKET and len(tail_reviews) >= _MIN_BUCKET:
+        top10_avg = statistics.mean(top10_reviews)
+        tail_avg  = statistics.mean(tail_reviews)
+        review_disparity_val = round(top10_avg / max(tail_avg, 1), 1)
+    else:
+        review_disparity_val = None
+
+    # ── price distribution ────────────────────────────────────────────────────
+    valid_prices = sorted(p["price"] for p in analysis_input if p["price"] > 0)
+    if valid_prices:
+        def _pct_val(lst, pct):
+            k = (len(lst) - 1) * pct / 100
+            lo, hi = int(k), min(int(k) + 1, len(lst) - 1)
+            return lst[lo] + (lst[hi] - lst[lo]) * (k - lo)
+
+        def _tier_stats(prices: list) -> dict:
+            if not prices:
+                return {}
+            return {
+                "n":      len(prices),
+                "pct":    f"{len(prices)/len(valid_prices):.0%}",
+                "min":    f"${prices[0]:.2f}",
+                "median": f"${statistics.median(prices):.2f}",
+                "max":    f"${prices[-1]:.2f}",
+            }
+
+        price_p10  = _pct_val(valid_prices, 10)
+        price_p25  = _pct_val(valid_prices, 25)
+        price_p75  = _pct_val(valid_prices, 75)
+        price_p90  = _pct_val(valid_prices, 90)
+        price_mean = statistics.mean(valid_prices)
+        price_min  = valid_prices[0]
+        price_max  = valid_prices[-1]
+
+        # Dynamic buckets: ~5-7 equal-width bands spanning min→max, rounded to $5
+        _step = max(5, round((price_max - price_min) / 5 / 5) * 5) or 5
+        _lo   = int(price_min // _step) * _step
+        buckets: list[dict] = []
+        b = _lo
+        while b < price_max + _step:
+            lo_b, hi_b = b, b + _step
+            cnt = sum(1 for p in valid_prices if lo_b <= p < hi_b)
+            pct = cnt / len(valid_prices) * 100
+            buckets.append({"range": f"${lo_b:.0f}–${hi_b:.0f}", "lo": lo_b, "hi": hi_b,
+                             "count": cnt, "pct": f"{pct:.0f}%"})
+            b += _step
+
+        # ── Bimodal / tier detection ──────────────────────────────────────────
+        # A "valley" bucket separates two populated clusters when:
+        #   - its count ≤ 5% of total AND both neighbouring regions have ≥ 10% each.
+        # Scan interior buckets only (skip first and last).
+        _VALLEY_THRESH  = 0.05   # bucket share ≤ 5% = sparse
+        _CLUSTER_THRESH = 0.10   # region share ≥ 10% = populated
+        n_total_prices  = len(valid_prices)
+
+        tiers: list[dict] = []
+        is_bimodal = False
+        valley_range: str = ""
+
+        for vi in range(1, len(buckets) - 1):
+            vb = buckets[vi]
+            if vb["count"] / n_total_prices > _VALLEY_THRESH:
+                continue
+            left_cnt  = sum(bk["count"] for bk in buckets[:vi])
+            right_cnt = sum(bk["count"] for bk in buckets[vi + 1:])
+            if (left_cnt / n_total_prices >= _CLUSTER_THRESH and
+                    right_cnt / n_total_prices >= _CLUSTER_THRESH):
+                # Found a valley — split here
+                is_bimodal = True
+                valley_range = vb["range"]
+                left_prices  = [p for p in valid_prices if p < vb["lo"]]
+                right_prices = [p for p in valid_prices if p >= vb["hi"]]
+                tiers = [
+                    {"label": "Budget tier",  **_tier_stats(left_prices),
+                     "range": f"${left_prices[0]:.0f}–${left_prices[-1]:.0f}"},
+                    {"label": "Premium tier", **_tier_stats(right_prices),
+                     "range": f"${right_prices[0]:.0f}–${right_prices[-1]:.0f}"},
+                ]
+                break   # first valley is sufficient; deeper splits are edge cases
+
+        price_dist = {
+            "n":          n_total_prices,
+            "min":        f"${price_min:.2f}",
+            "p10":        f"${price_p10:.2f}",
+            "p25":        f"${price_p25:.2f}",
+            "median":     f"${median_price:.2f}",
+            "mean":       f"${price_mean:.2f}",
+            "p75":        f"${price_p75:.2f}",
+            "p90":        f"${price_p90:.2f}",
+            "max":        f"${price_max:.2f}",
+            "buckets":    [{k: v for k, v in bk.items() if k not in ("lo", "hi")}
+                           for bk in buckets],
+            "is_bimodal": is_bimodal,
+            "valley_range": valley_range,
+            "tiers":      tiers,
+        }
+    else:
+        price_dist = {"n": 0, "buckets": [], "is_bimodal": False, "tiers": []}
 
     # ── price trend: compare first-30d median vs last-30d median per ASIN ─
     historical_data = ctx.cache.get("historical_data") or {}
@@ -733,9 +917,24 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
         str(item.get("ASIN") or item.get("asin") or "").upper(): item.get("sales", 0)
         for item in items
     }
+    # ── Named thresholds (documented here for auditability) ─────────────────
+    # Signal 1 — Review-to-Sales Ratio (RSR): monthly review growth / monthly sales.
+    #   Natural ≈ 1–5%; >10% suggests coordinated review injection.
+    _RSR_THRESHOLD     = 0.10   # monthly-review-growth / monthly-sales; >10% = suspicious
+    # Signal 2 — Rating jump: sustained +0.3★ rise in 30 days is implausible organically.
+    _JUMP_STARS        = 0.3    # minimum stars rise over a 30-day window
+    _JUMP_WINDOW       = 30     # days
+    # Signal 3 — Written/global ratio: natural ≈ 0.10; paid reviewers always leave text.
+    _RATIO_THRESHOLD   = 0.50   # written_reviews / global_ratings; >50% = suspicious
+    # Combined trigger thresholds (fraction of eligible ASINs flagged):
+    _THRESH_HIGH_BASE  = 0.30   # >30% flagged → HIGH (non-seasonal)
+    _THRESH_HIGH_SEAS  = 0.40   # >40% flagged → HIGH (seasonal — fewer natural spikes expected)
+    _THRESH_MEDIUM     = 0.15   # >15% flagged → MEDIUM
+
     flagged_rsr = 0
     flagged_jump = 0
     integrity_total = 0
+    total_bsr = len(items)
 
     for asin, records in historical_data.items():
         pts = sorted(
@@ -747,31 +946,32 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
             continue
         integrity_total += 1
 
-        # Signal 1: RSR
+        # Signal 1: RSR — data source: Xiyouzhaoci daily_trends ratings field
+        # + SalesEstimator monthly sales estimate
         monthly_sales = sales_map.get(asin.upper(), 0)
         if monthly_sales > 0:
             review_delta = pts[-1][2] - pts[0][2]
             months_spanned = max(len(pts) / 30, 1)
             rsr = (review_delta / months_spanned) / monthly_sales
-            if rsr > 0.10:
+            if rsr > _RSR_THRESHOLD:
                 flagged_rsr += 1
 
-        # Signal 2: rating jump
+        # Signal 2: rating jump — data source: Xiyouzhaoci daily_trends stars field
         stars_series = [s for _, s, _ in pts if s]
-        for i in range(30, len(stars_series)):
-            if stars_series[i] - stars_series[i - 30] > 0.3:
+        for i in range(_JUMP_WINDOW, len(stars_series)):
+            if stars_series[i] - stars_series[i - _JUMP_WINDOW] > _JUMP_STARS:
                 flagged_jump += 1
                 break
 
-    # Signal 3: written/global ratio (per-product, from ReviewCountExtractor)
-    RATIO_THRESHOLD = 0.50
-    ratio_eligible  = [p for p in analysis_input if p.get("review_ratio") is not None]
-    flagged_ratio   = [p for p in ratio_eligible  if p["review_ratio"] > RATIO_THRESHOLD]
+    # Signal 3: written/global ratio — data source: ReviewCountExtractor (BSR page scrape)
+    ratio_eligible      = [p for p in analysis_input if p.get("review_ratio") is not None]
+    flagged_ratio       = [p for p in ratio_eligible  if p["review_ratio"] > _RATIO_THRESHOLD]
     flagged_ratio_count = len(flagged_ratio)
     ratio_flagged_pct   = len(flagged_ratio) / len(ratio_eligible) if ratio_eligible else 0.0
 
     seasonality_pattern_for_threshold = result.get("seasonality", {}).get("pattern", "")
-    integrity_threshold = 0.40 if "seasonal" in seasonality_pattern_for_threshold else 0.30
+    is_seasonal       = "seasonal" in seasonality_pattern_for_threshold
+    integrity_threshold = _THRESH_HIGH_SEAS if is_seasonal else _THRESH_HIGH_BASE
 
     if integrity_total > 0 or ratio_eligible:
         ts_ratio = max(flagged_rsr, flagged_jump) / integrity_total if integrity_total > 0 else 0.0
@@ -779,18 +979,32 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
         combined_ratio = max(ts_ratio, ratio_flagged_pct)
         integrity_risk = (
             "HIGH"   if combined_ratio >= integrity_threshold else
-            "MEDIUM" if combined_ratio >= 0.15               else
+            "MEDIUM" if combined_ratio >= _THRESH_MEDIUM      else
             "LOW"
         )
+        seasonal_note = (
+            f" [seasonal category — HIGH threshold raised to {_THRESH_HIGH_SEAS:.0%} to suppress false positives]"
+            if is_seasonal else ""
+        )
         integrity_str = (
-            f"{integrity_risk} — "
-            f"time-series: {ts_ratio:.0%} flagged (RSR={flagged_rsr}, jump={flagged_jump}, n={integrity_total}); "
-            f"written/global ratio > {RATIO_THRESHOLD:.0%}: {ratio_flagged_pct:.0%} of products "
-            f"({flagged_ratio_count}/{len(ratio_eligible)} with data, threshold={integrity_threshold:.0%})"
+            f"{integrity_risk}{seasonal_note} — "
+            f"Signal 1 RSR (Xiyouzhaoci trends + sales estimate, threshold >{_RSR_THRESHOLD:.0%}): "
+            f"{flagged_rsr}/{integrity_total} ASINs flagged; "
+            f"Signal 2 rating-jump (Xiyouzhaoci trends, >{_JUMP_STARS}★ in {_JUMP_WINDOW}d): "
+            f"{flagged_jump}/{integrity_total} ASINs flagged; "
+            f"time-series coverage: {integrity_total}/{total_bsr} BSR products had ≥60 days history; "
+            f"Signal 3 written/global ratio (BSR page scrape, threshold >{_RATIO_THRESHOLD:.0%}): "
+            f"{flagged_ratio_count}/{len(ratio_eligible)} products flagged "
+            f"({ratio_flagged_pct:.0%} of {len(ratio_eligible)} with ratio data); "
+            f"combined trigger threshold: >{integrity_threshold:.0%}"
         )
     else:
         integrity_risk = "unknown"
-        integrity_str = "unknown (insufficient data)"
+        integrity_str = (
+            "unknown — no ASINs had ≥60 days of Xiyouzhaoci price/rating history "
+            "and ReviewCountExtractor returned no written/global ratio data; "
+            "integrity signals cannot be computed"
+        )
 
     # Extract churn / seasonality / BSR churn signals for prompt template
     churn = result.get("market_churn", {})
@@ -806,17 +1020,134 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
         else ""
     )
 
+    # ── Data quality coverage (passed to LLM so it can caveat low-coverage claims) ──
+    n_total  = len(analysis_input) or 1
+    dq_sales    = sum(1 for p in analysis_input if (p.get("sales") or 0) > 0)
+    dq_seller   = sum(1 for p in analysis_input if p.get("seller_type") not in (None, "", "Unknown"))
+    dq_rating   = sum(1 for p in analysis_input if (p.get("rating") or 0) > 0)
+    dq_reviews  = sum(1 for p in analysis_input if (p.get("review_count") or 0) > 0)
+    dq_hist     = integrity_total          # ASINs with ≥60-day Xiyouzhaoci history
+    dq_ratio    = len(ratio_eligible)      # ASINs with written/global ratio from scrape
+    dq_snapshots = len(bsr_churn.get("snapshots_available", []))
+    dq_cpc      = bid_entry_count          # number of keyword CPC entries available
+
+    def _pct(n: int) -> str:
+        return f"{n}/{n_total} ({n / n_total:.0%})"
+
+    data_quality_str = (
+        f"BSR products scraped: {n_total} | "
+        f"sales estimate coverage: {_pct(dq_sales)} | "
+        f"seller-type coverage: {_pct(dq_seller)} | "
+        f"star-rating coverage: {_pct(dq_rating)} | "
+        f"review-count coverage: {_pct(dq_reviews)} | "
+        f"Xiyouzhaoci ≥60-day history: {dq_hist}/{n_total} ({dq_hist / n_total:.0%}) | "
+        f"written/global ratio data: {dq_ratio}/{n_total} ({dq_ratio / n_total:.0%}) | "
+        f"Sellersprite BSR snapshots available: {dq_snapshots} months | "
+        f"CPC keyword entries: {dq_cpc}"
+    )
+
+    # ── Startup capital breakdown ─────────────────────────────────────────────
+    # Conservative rule-of-thumb for a new FBA product launch.
+    # All constants are auditable here; change them to tune the recommendation.
+    _CAP_UNITS     = 1000   # first-batch order quantity (units)
+    _CAP_COGS      = 0.30   # COGS as fraction of retail price (China-manufactured)
+    _CAP_ACOS      = 0.30   # target ACOS during the ranking phase
+    _CAP_FEES      = 0.25   # Amazon platform fees (referral ~15% + FBA ~10%)
+    _CAP_PPC_MO    = 3      # months of PPC seed budget
+    _CAP_OVERHEAD  = 2000   # fixed launch costs: photography, A+, listing, freight ($)
+    _CAP_BUFFER    = 0.20   # working capital buffer on subtotal
+
+    # If bimodal, compute capital against each tier's median separately
+    # so the operator can see how the budget changes by tier choice.
+    _cap_price = median_price   # overall median — may be in the gap if bimodal
+    _cap_inv   = int(_CAP_UNITS * _cap_price * _CAP_COGS)
+    _cap_ppc   = int(_CAP_UNITS * _cap_price * _CAP_ACOS * _CAP_PPC_MO)
+    _cap_fees  = int(_CAP_UNITS * _cap_price * _CAP_FEES * _CAP_PPC_MO)
+    _cap_sub   = _cap_inv + _cap_ppc + _cap_fees + _CAP_OVERHEAD
+    _cap_total = int(_cap_sub * (1 + _CAP_BUFFER))
+
+    # Per-tier capital estimates when bimodal
+    _tier_capitals: list[dict] = []
+    if price_dist.get("is_bimodal"):
+        for tier in price_dist.get("tiers", []):
+            t_median_str = tier.get("median", "")
+            try:
+                t_med = float(t_median_str.lstrip("$"))
+            except ValueError:
+                continue
+            t_inv  = int(_CAP_UNITS * t_med * _CAP_COGS)
+            t_ppc  = int(_CAP_UNITS * t_med * _CAP_ACOS * _CAP_PPC_MO)
+            t_fees = int(_CAP_UNITS * t_med * _CAP_FEES * _CAP_PPC_MO)
+            t_sub  = t_inv + t_ppc + t_fees + _CAP_OVERHEAD
+            _tier_capitals.append({
+                "tier":      tier["label"],
+                "median":    t_median_str,
+                "inventory": f"${t_inv:,}",
+                "ppc":       f"${t_ppc:,}",
+                "fees":      f"${t_fees:,}",
+                "overhead":  f"${_CAP_OVERHEAD:,}",
+                "total":     f"${int(t_sub*(1+_CAP_BUFFER)):,}",
+            })
+
+    # ── Top ASIN evidence table (top 10 by BSR rank) ──────────────────────────
+    # analysis_input[i] corresponds to items[i] (same index).
+    # Sort by rank using the original index so both arrays stay aligned.
+    _TOP_N = 10
+    sorted_indices = sorted(
+        range(len(items)),
+        key=lambda i: _parse_int(items[i].get("Rank"), default=9999),
+    )
+    top_asin_rows = []
+    for i in sorted_indices[:_TOP_N]:
+        raw      = items[i]
+        enriched = analysis_input[i]
+        title_raw = raw.get("Title") or ""
+        title = title_raw[:40].rstrip() + ("…" if len(title_raw) > 40 else "")
+        top_asin_rows.append({
+            "rank":        enriched["rank"],
+            "asin":        (raw.get("ASIN") or raw.get("asin") or "N/A"),
+            "brand":       (enriched.get("brand") or "Unknown")[:20],
+            "title":       title,
+            "price":       f"${enriched['price']:.2f}" if enriched["price"] else "N/A",
+            "rating":      f"{enriched['rating']:.1f}★" if enriched["rating"] else "N/A",
+            "reviews":     f"{enriched['review_count']:,}" if enriched["review_count"] else "N/A",
+            "units_mo":    f"{enriched['sales']:,}" if enriched["sales"] else "N/A",
+            "seller_type": enriched.get("seller_type") or "Unknown",
+        })
+
     return [{
         "analysis_result": json.dumps(result, ensure_ascii=False),
         "main_keyword": ctx.cache.get("main_keyword"),
         "core_keywords": ", ".join(ctx.cache.get("core_keywords", [])),
         "niche_median_price": f"${median_price:.2f}",
-        "bid_insight": " | ".join(bid_insight[:10]),
-        "review_disparity": f"{review_disparity_val}x",
+        "niche_monthly_units": f"{total_monthly_units:,} units",
+        "niche_monthly_gmv": f"${niche_monthly_gmv:,}",
+        "bid_insight": json.dumps(bid_raw, ensure_ascii=False) if bid_entry_count else "N/A (no CPC data fetched)",
+        "data_quality": data_quality_str,
+        "review_disparity": (
+            f"{review_disparity_val}x"
+            if review_disparity_val is not None
+            else "N/A (fewer than 51 BSR products — top/tail buckets too small)"
+        ),
         "price_trend": price_trend_str,
         "new_entrant_ratio": new_entrant_str,
         "integrity_alert": integrity_str,
-        "recommended_capital": f"${int(median_price * 2500):,}",
+        "integrity_hist_cov": (
+            f"{integrity_total}/{n_total} ({integrity_total / n_total:.0%})"
+        ),
+        "integrity_ratio_cov": (
+            f"{len(ratio_eligible)}/{n_total} ({len(ratio_eligible) / n_total:.0%})"
+        ),
+        "recommended_capital":  f"${_cap_total:,}",
+        "capital_inventory":    f"${_cap_inv:,}",
+        "capital_ppc":          f"${_cap_ppc:,}",
+        "capital_fees":         f"${_cap_fees:,}",
+        "capital_overhead":     f"${_CAP_OVERHEAD:,}",
+        "capital_units":        str(_CAP_UNITS),
+        "capital_cogs_pct":     f"{_CAP_COGS:.0%}",
+        "capital_acos_pct":     f"{_CAP_ACOS:.0%}",
+        "capital_fees_pct":     f"{_CAP_FEES:.0%}",
+        "capital_ppc_months":   str(_CAP_PPC_MO),
         "industry_typical_cr3": f"{baseline.get('typical_cr3', 0.4) * 100}%",
         "data_confidence_r2": estimator.category_params.get(str(node_id), {}).get("r_squared", 0.95),
         "social_psi": ctx.cache.get("category_social_psi", "N/A"),
@@ -837,7 +1168,14 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
         "seasonality_pattern": seasonality.get("pattern", "unknown"),
         "seasonality_score": seasonality.get("seasonality_score", "N/A"),
         "seasonality_source": seasonality.get("source", "bsr_daily_trends"),
+        "seasonality_n_points": seasonality.get("n_data_points", 0),
         "peak_months": peak_months_str + platform_warning,
+        # Top ASIN evidence table (JSON → rendered as markdown table by LLM)
+        "top_asin_table": json.dumps(top_asin_rows, ensure_ascii=False),
+        # Price distribution (JSON → rendered as table by LLM)
+        "price_distribution": json.dumps(price_dist, ensure_ascii=False),
+        # Per-tier capital when bimodal (empty list if unimodal)
+        "tier_capitals": json.dumps(_tier_capitals, ensure_ascii=False),
     }]
 
 def _trim_repetition(text: str, min_run: int = 4) -> str:
@@ -896,13 +1234,15 @@ async def _prepare_report_artifact(items: List[dict], ctx: Any) -> List[dict]:
     # Strip LLM degeneration artifacts before persisting
     report_text = _trim_repetition(report_text)
 
-    import os, tempfile
+    import os
     from datetime import datetime
     import re as _re
     raw_kw = str(ctx.cache.get("main_keyword", "niche"))
     keyword = _re.sub(r"[^\w]", "_", raw_kw, flags=_re.ASCII)[:40].strip("_") or "niche"
     filename = f"Monopoly_Analysis_{keyword}_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
-    file_path = os.path.normpath(os.path.join(tempfile.gettempdir(), filename))
+    report_dir = os.path.abspath("data/reports")
+    os.makedirs(report_dir, exist_ok=True)
+    file_path = os.path.join(report_dir, filename)
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(report_text)
@@ -937,13 +1277,70 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
             name="deliver_report",
             prompt_template=(
                 f"{base_instructions}\n\n"
+                "### DATA QUALITY\n"
+                "{data_quality}\n"
+                "MANDATORY CAVEAT RULE: for any metric whose underlying data source has "
+                "coverage < 50% of BSR products, you MUST prefix the claim with "
+                "'(limited data — N/M ASINs)' and treat it as directional only, not a "
+                "precise benchmark. Specifically:\n"
+                "- If Xiyouzhaoci ≥60-day history < 50%: prefix price_trend, integrity signals 1 & 2, "
+                "and churn_pattern with '(limited history — N/M ASINs)'. "
+                "EXCEPTION: if seasonality_source == 'keyword_weekly_trends', do NOT apply this caveat "
+                "to seasonality — keyword ABA data is independent of Xiyouzhaoci BSR history.\n"
+                "- If sales estimate coverage < 50%: prefix recommended_capital and any "
+                "sales-derived figure with '(estimated from thin data)'\n"
+                "- If CPC keyword entries = 0: write 'CPC data unavailable — bid barrier "
+                "analysis skipped' instead of citing bid_insight\n"
+                "- If Sellersprite BSR snapshots < 2: treat bsr_churn signals as "
+                "insufficient and write 'BSR metabolism data unavailable'\n"
+                "NEVER present a default value (e.g. 0, Unknown, N/A) as a confirmed fact.\n\n"
                 "### TASK-SPECIFIC CONTEXT\n"
-                "Advising on a **{recommended_capital}** investment.\n"
+                "Advising on a **{recommended_capital}** minimum launch budget "
+                "({capital_units} units × {niche_median_price} median price).\n"
+                "CAPITAL TABLE RULE: In the Data Breakdown table, Investment Capital MUST appear as "
+                "FIVE consecutive rows — never collapsed into one:\n"
+                "  Row 1: Metric='Investment Capital (Total)' | Value='{recommended_capital}' | "
+                "Definition='Subtotal × 1.20 working-capital buffer'\n"
+                "  Row 2: Metric='  └ Inventory ({capital_units} units, COGS {capital_cogs_pct})' | "
+                "Value='{capital_inventory}' | Definition='{capital_units} units × {niche_median_price} × {capital_cogs_pct} COGS'\n"
+                "  Row 3: Metric='  └ PPC Seed ({capital_ppc_months}mo @ {capital_acos_pct} ACOS)' | "
+                "Value='{capital_ppc}' | Definition='Ranking-phase ad spend estimate'\n"
+                "  Row 4: Metric='  └ Platform Fees ({capital_ppc_months}mo @ {capital_fees_pct})' | "
+                "Value='{capital_fees}' | Definition='Amazon referral ~15% + FBA ~10%'\n"
+                "  Row 5: Metric='  └ Fixed Overhead' | Value='{capital_overhead}' | "
+                "Definition='Photography, A+ content, listing, inbound freight'\n"
+                "NEVER show a single Investment Capital row without these four sub-rows.\n"
+                "BIMODAL CAPITAL RULE: tier_capitals={tier_capitals}. "
+                "If tier_capitals is non-empty (bimodal market detected), append a second "
+                "capital table immediately after the breakdown rows under the sub-heading "
+                "'### Capital by Price Tier' with columns: "
+                "Tier | Tier Median | Inventory | PPC | Fees | Overhead | Total. "
+                "Warn the operator: 'The base Investment Capital above uses the overall median "
+                "price which falls in the gap between tiers — choose the tier you plan to enter "
+                "and use the corresponding Total as your actual budget.'\n"
                 "Primary Niche: **{main_keyword}** | Related Terms: {core_keywords}\n"
                 "Data Confidence (R²): **{data_confidence_r2}**\n\n"
                 "### DYNAMIC BENCHMARKS\n"
                 "- Median Price: {niche_median_price}\n"
-                "- Detailed CPC Insight: {bid_insight}\n"
+                "- Est. Niche Monthly Unit Sales: {niche_monthly_units} "
+                "(scraped from Amazon 'X+ bought in past month' badge — unit count, NOT revenue)\n"
+                "- Est. Niche Monthly GMV: {niche_monthly_gmv} "
+                "(= unit_sales × median_price; use as market-size proxy)\n"
+                "UNIT/REVENUE RULE: '{niche_monthly_units}' is a unit COUNT — NEVER prefix it with $. "
+                "'{niche_monthly_gmv}' is revenue — always use the $ prefix. "
+                "In the Data Breakdown table, report BOTH as separate rows: "
+                "'Total Est. Monthly Unit Sales' (integer, e.g. 40,694 units) "
+                "and 'Est. Niche Monthly GMV' (dollar figure, e.g. $702,400). "
+                "NEVER merge them into a single 'Total Est. Monthly Sales $...' row.\n"
+                "- Keyword Bid Recommendations (raw Amazon Ads API response): {bid_insight}\n"
+                "  Structure: {{LEGACY_FOR_SALES: [...], AUTO_FOR_SALES: [...]}}. "
+                "Each entry contains targetingExpression (keyword + matchType) and suggestedBid (amount, "
+                "and possibly rangeStart/rangeEnd). Render this verbatim as a markdown table in the report "
+                "with columns: Keyword | Match Type | Manual Bid (LEGACY) | Auto Bid (AUTO). "
+                "LEGACY_FOR_SALES = flat manual bid cost per click. "
+                "AUTO_FOR_SALES = Amazon's dynamic strategy estimate (usually higher — reflects "
+                "platform-assessed competition). A large LEGACY→AUTO gap means the platform thinks "
+                "this keyword is highly contested and automated bidding will aggressively overpay.\n"
                 "- Review Disparity: {review_disparity}\n"
                 "- Typical Industry CR3: {industry_typical_cr3}\n"
                 "- Social PSI: {social_psi} ({social_verdict})\n"
@@ -955,8 +1352,54 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 "- BSR Listing Metabolism: **{bsr_churn_label}** | Snapshots: {bsr_snapshots}\n"
                 "  - 3-Month Churn: {bsr_churn_3m} | 6-Month Churn: {bsr_churn_6m} | 12-Month Churn: {bsr_churn_12m}\n"
                 "- New Entrant Ratio (Sellersprite T-snapshot): {new_entrant_ratio}\n"
-                "- Seasonality: {seasonality_pattern} (score: {seasonality_score}, source: {seasonality_source}) | Peak Months: {peak_months}\n"
-                "- Integrity Alert: {integrity_alert}\n\n"
+                "- Seasonality: {seasonality_pattern} (score: {seasonality_score}, "
+                "source: {seasonality_source}, n={seasonality_n_points} data points) | Peak Months: {peak_months}\n"
+                "  Source legend: 'keyword_weekly_trends' = ABA weekly search-volume (direct consumer intent, "
+                "independent of BSR history); 'bsr_daily_trends' = Xiyouzhaoci BSR proxy (indirect — "
+                "reflects competitive rank, not raw demand). Prefer keyword source when available.\n"
+                "- Integrity Alert: {integrity_alert}\n"
+                "  Coverage — Signal 1+2 (rating history): {integrity_hist_cov}\n"
+                "  Coverage — Signal 3 (written/global ratio): {integrity_ratio_cov}\n"
+                "INTEGRITY TABLE RULE: In the Data Breakdown table, the Integrity Alert block MUST "
+                "occupy THREE consecutive rows (never collapse into one):\n"
+                "  Row 1: Metric='Integrity Alert' | Value=LOW/MEDIUM/HIGH/unknown | "
+                "Definition=trigger ratio vs threshold (e.g. 'RSR 0/8, ratio 0/15, threshold >30%')\n"
+                "  Row 2: Metric='Integrity: Rating History Coverage' | Value='{integrity_hist_cov}' | "
+                "Definition=ASINs with ≥60-day Xiyouzhaoci history; basis for Signal 1 RSR + Signal 2 rating-jump\n"
+                "  Row 3: Metric='Integrity: Review Ratio Coverage' | Value='{integrity_ratio_cov}' | "
+                "Definition=ASINs with written/global ratio data; basis for Signal 3\n"
+                "If either coverage is below 20%, append '(low coverage — treat as directional only)' "
+                "to the Integrity Alert value cell.\n\n"
+                "### TOP ASIN EVIDENCE TABLE\n"
+                "{top_asin_table}\n"
+                "Render the above JSON as a markdown table with these exact columns "
+                "(in this order): Rank | ASIN | Brand | Title | Price | Rating | Reviews | "
+                "Units/Mo | Seller Type. "
+                "Title: truncate at 40 chars with '…'. "
+                "Place this table immediately after the Data Breakdown section under the heading "
+                "'## Top 10 BSR Products (Evidence)'. "
+                "Below the table add one line: "
+                "'*Source: Amazon BSR page scrape + PastMonthSales badge. "
+                "Units/Mo = Amazon-displayed past-month purchase count.*'\n\n"
+                "### PRICE DISTRIBUTION\n"
+                "{price_distribution}\n"
+                "Render this JSON under the heading '## Price Distribution' immediately after "
+                "the Top 10 BSR Products section. Always include:\n"
+                "  1. A one-row percentile summary table: "
+                "Min | P10 | P25 | Median | Mean | P75 | P90 | Max\n"
+                "  2. A bucket frequency table: Price Range | # Products | Share\n"
+                "BIMODAL RULE: if 'is_bimodal' is true, the overall median is NOT "
+                "representative — it falls in the gap between two clusters. You MUST:\n"
+                "  a) Add a '⚠️ Bimodal distribution detected' alert above the tables, "
+                "citing the valley range from 'valley_range'.\n"
+                "  b) Render the 'tiers' array as a third table: "
+                "Tier | Price Range | # Products | Share | Tier Median\n"
+                "  c) State which tier the recommended_capital targets (it is always based on "
+                "the overall median, which may be misleading — flag this explicitly).\n"
+                "  d) In the Strategic Insights section, analyse each tier separately: "
+                "barrier, competitive intensity, and positioning advice differ by tier.\n"
+                "If 'is_bimodal' is false, add one sentence on whether the distribution is "
+                "skewed low, skewed high, or balanced, and the pricing implication.\n\n"
                 "### DATA: {analysis_result}\n\n"
                 "### ADDITIONAL TACTICAL RULES\n"
                 "- 400-550 words. No filler.\n"
@@ -967,7 +1410,26 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 "- SEASONALITY ALERT: If seasonality_pattern is 'strong_seasonal' or 'multi_peak_seasonal', advise on launch timing relative to peak_months and warn about off-season inventory risk.\n"
                 "- PRICE TREND ALERT: If price_trend is 'deflating', warn that this category is in a price war — margin compression is accelerating and late entrants face structural disadvantage. If 'inflating', note that premium positioning may be viable.\n"
                 "- NEW ENTRANT ALERT: If new_entrant_ratio > 40%, the category has low moat — many new products are breaking into the top-100, which means low ranking stickiness but also means a new entrant has a realistic shot. If < 15%, incumbents dominate and new entries rarely survive in the ranking.\n"
-                "- INTEGRITY ALERT: If integrity_alert is 'HIGH', explicitly warn that this category has a severely compromised compliance environment — widespread fake review injection or coordinated negative review attacks are likely. New entrants should budget for additional compliance overhead, and the true review barrier is likely higher than the raw data suggests. Combine with review_disparity to assess whether high-review incumbents are defensible or artificially inflated."
+                "- INTEGRITY ALERT: If integrity_alert is 'HIGH', explicitly warn that this category has a severely compromised compliance environment — widespread fake review injection or coordinated negative review attacks are likely. New entrants should budget for additional compliance overhead, and the true review barrier is likely higher than the raw data suggests. Combine with review_disparity to assess whether high-review incumbents are defensible or artificially inflated.\n"
+                "- PORTER'S FIVE FORCES — DIRECTION RULE (CRITICAL): "
+                "In Porter's Five Forces, the 'Threat' rating refers to how easy it is for a new player "
+                "or substitute to enter and succeed — NOT how hard the barriers are. "
+                "The direction is always the INVERSE of barrier height. "
+                "MANDATORY mappings from this report's data:\n"
+                "  • Threat of New Entrants: LOW when new_entrant_ratio < 15% OR avg_reviews_top10 > 5,000 "
+                "OR review_disparity > 5x — high barriers mean low threat. "
+                "HIGH only when new_entrant_ratio > 40% AND review barrier is low.\n"
+                "  • Bargaining Power of Buyers: HIGH when deal_intensity > 7 OR price compression is severe "
+                "(many sellers forced to discount). LOW when buyers have few alternatives.\n"
+                "  • Threat of Substitutes: HIGH when related keywords dominate search volume; "
+                "LOW when the product category is specific and has no close alternatives.\n"
+                "  • Rivalry: HIGH when CR3 < 30% (fragmented competition, many rivals) OR churn is high. "
+                "LOW when a few brands dominate and competition is stable.\n"
+                "  • Supplier Power: LOW for commodity inputs (most physical goods); "
+                "HIGH only when key raw materials are scarce or proprietary.\n"
+                "FORBIDDEN: do NOT write 'Threat of New Entrants: High' and then explain high review barriers "
+                "or low new_entrant_ratio — those data points map to LOW threat. "
+                "If you catch yourself writing this, flip the label to match the evidence."
             ),
             compute_target=ComputeTarget.CLOUD_LLM
         ),

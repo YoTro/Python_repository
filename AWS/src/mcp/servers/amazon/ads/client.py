@@ -131,18 +131,22 @@ class AmazonAdsClient:
 
                 response = await asyncio.to_thread(requests.post, endpoint, json=payload, headers=headers)
                 
-                # Handle 422 Ownership error
+                # Handle 422: any 422 while ASINs are in the payload may indicate an
+                # ownership mismatch (Amazon's message varies — don't rely on message text).
                 if response.status_code == 422:
                     error_details = response.text
-                    if "not owned by the advertiser" in error_details:
-                        logger.warning(f"Ownership mismatch for {current_asins}. Retrying with discovered fallback...")
+                    if current_asins:
+                        logger.warning(
+                            f"422 with ASINs {current_asins} — retrying with owned-ASIN fallback. "
+                            f"Detail: {error_details}"
+                        )
                         fallback = await self._get_owned_asin_fallback()
                         if fallback and fallback not in current_asins:
                             current_asins = [fallback]
                             continue
-                    
+
                     logger.error(f"API 422 Error: {error_details}")
-                    response.raise_for_status() # Trigger exception if not handled
+                    response.raise_for_status()
 
                 if response.status_code == 429:
                     wait_time = (attempt + 1) * 10

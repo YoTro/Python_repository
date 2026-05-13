@@ -24,7 +24,7 @@ standard_report:
        ❌ WRONG example (never do this):
        | Metric  | Value                                                                 |
        |---------|-----------------------------------------------------------------------|
-       | Reviews | {"reviews": [{"text": "Great product...", "rating": 5, "date": ...}]} |
+       | Reviews | {{"reviews": [{{"text": "Great product...", "rating": 5, "date": ...}}]}} |
        | Pros    | The product works well in indoor settings and users appreciate the natural ingredients. Many customers mentioned that it is easy to apply and does not leave residue. Some also noted... |
     5. Strategic Insights: Apply a framework from the Analysis Frameworks section.
     6. Risk/Opportunity Assessment: Provide direct, actionable advice.

@@ -80,7 +80,7 @@ class CategoryMonopolyAnalyzer:
                 "median_price": statistics.median([p.get("price", 0) for p in products if p.get("price", 0) > 0]) if products else 0,
                 "avg_reviews_top10": int(statistics.mean([p.get("review_count", 0) for p in sorted_products[:10]])) if len(sorted_products) >= 10 else 0,
                 "avg_reviews_bottom50": int(statistics.mean([p.get("review_count", 0) for p in sorted_products[50:]])) if len(sorted_products) > 50 else 0,
-                "total_estimated_monthly_sales": int(sum(p.get("sales", 0) for p in products))
+                "total_estimated_monthly_units": int(sum(p.get("sales", 0) for p in products))
             },
             "market_churn": churn_result,
             "seasonality": seasonality_result,
@@ -497,6 +497,7 @@ class CategoryMonopolyAnalyzer:
             "seasonality_score": 0, "is_seasonal": False, "peak_months": [],
             "pattern": "unknown", "monthly_amplitude": 0,
             "platform_event_dampened": [], "platform_event_in_peak": False,
+            "source": "bsr_daily_trends", "n_data_points": 0,
         }
         if not historical_data:
             return _no_data
@@ -581,6 +582,8 @@ class CategoryMonopolyAnalyzer:
             "monthly_amplitude": round(amplitude, 3),
             "platform_event_dampened": sorted(PLATFORM_EVENT_MONTHS),
             "platform_event_in_peak": platform_in_peak,
+            "source": "bsr_daily_trends",
+            "n_data_points": len(sorted_keys),
         }
 
     def _analyze_seasonality_from_keyword_trends(
@@ -618,7 +621,7 @@ class CategoryMonopolyAnalyzer:
             "seasonality_score": 0, "is_seasonal": False, "peak_months": [],
             "pattern": "unknown", "monthly_amplitude": 0,
             "platform_event_dampened": [], "platform_event_in_peak": False,
-            "source": "keyword_weekly_trends",
+            "source": "keyword_weekly_trends", "n_data_points": 0,
         }
 
         try:
@@ -715,6 +718,7 @@ class CategoryMonopolyAnalyzer:
             "platform_event_dampened": sorted(PLATFORM_EVENT_MONTHS),
             "platform_event_in_peak": platform_in_peak,
             "source": "keyword_weekly_trends",
+            "n_data_points": len(week_search),
         }
 
     @staticmethod
