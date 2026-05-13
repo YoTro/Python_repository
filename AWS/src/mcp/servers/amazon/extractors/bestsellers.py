@@ -24,7 +24,10 @@ class BestSellersExtractor(AmazonBaseScraper):
         Fetch Best Sellers pages and extract all ranked products.
 
         :param url: The Amazon Best Sellers URL.
-        :param max_pages: Number of pagination pages to scrape (default 2 = 100 items).
+        :param max_pages: Number of pagination pages to scrape (default 2, up to ~50 items/page).
+            Each page yields DOM items (ranks 1-30) plus lazy-loaded items (ranks 31-50)
+            fetched via ACP API; lazy items are skipped on failure, so actual count
+            may be less than max_pages × 50.
         :return: A list of dicts with Rank, ASIN, Title, Image, Stars, Reviews, Price.
         """
         all_results = []
@@ -161,9 +164,10 @@ class BestSellersExtractor(AmazonBaseScraper):
     def _parse_card(self, card) -> dict:
         """Extract product data from a single gridItemRoot DOM element."""
         item = {
-            "Rank": None,
-            "ASIN": None,
+            "Rank":  None,
+            "ASIN":  None,
             "Title": None,
+            "Brand": None,
             "Image": None,
             "Stars": None,
             "Reviews": None,
@@ -192,6 +196,9 @@ class BestSellersExtractor(AmazonBaseScraper):
                 img = card.find("img")
                 if img and img.get("alt"):
                     item["Title"] = img.get("alt")
+
+        # Brand is not present in Amazon's BSR card HTML.
+        # Populated downstream from Sellersprite snapshot data.
 
         # Image
         img = card.find("img")

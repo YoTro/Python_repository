@@ -20,7 +20,7 @@ class LingxingAuth:
     BASE_URL = "https://gw.lingxingerp.com/newadmin/api/passport"
 
     _DEFAULT_TOKEN_FILE = os.path.join(
-        os.path.dirname(__file__), "..", "..", "..", "..", "..", "config", "lingxing_token.json"
+        os.path.dirname(__file__), "..", "..", "..", "..", "..", "config", "auth", "lingxing_token.json"
     )
 
     def __init__(self, token_file: str = None):

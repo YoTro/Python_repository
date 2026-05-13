@@ -50,12 +50,17 @@ def _l2_set(ctx, value, *parts) -> None:
 # Extractor Wrappers
 # ---------------------------------------------------------------------------
 
-async def _fetch_bsr_list(items: List[dict], ctx: Any) -> List[dict]:
-    """Fetches the Top 100 BSR products from a category URL."""
+async def _fetch_bsr_list(_items: List[dict], ctx: Any) -> List[dict]:
+    """Seed step: fetches up to 100 BSR products (2 pages × 50) and returns them as the new item list.
+
+    Actual count may be less than 100: lazy-loaded items (ranks 31-50 per page)
+    are fetched via a separate ACP API and silently skipped on failure.
+    Replaces whatever _items were passed in — downstream steps operate on the
+    BSR product list, not the workflow seed items.
+    """
     url = ctx.config.get("url")
     if not url:
-        logger.error("No URL provided in workflow config for category_monopoly_analysis.")
-        return []
+        raise ValueError("No URL provided in workflow config for category_monopoly_analysis.")
 
     url_hash = _hl.md5(url.encode()).hexdigest()[:12]
     cached = _l2_get(ctx, _TTL_BSR, "bsr_list", url_hash)
@@ -66,6 +71,8 @@ async def _fetch_bsr_list(items: List[dict], ctx: Any) -> List[dict]:
     from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
     extractor = BestSellersExtractor()
     products = await extractor.get_bestsellers(url, max_pages=2)
+    if not products:
+        raise ValueError(f"BSR extractor returned no products for URL: {url}")
     _l2_set(ctx, products, "bsr_list", url_hash)
     logger.info(f"[cat_monopoly] Fetched {len(products)} BSR products, cached url_hash={url_hash}")
     return products
@@ -145,72 +152,194 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
     _l2_set(ctx, result, "seller_info", asin)
     return result
 
+def _ngram_candidates(titles: list, min_doc_freq: int = 3, top_n: int = 15) -> list:
+    """
+    Return unigrams and bigrams ranked by document frequency (# titles containing them).
+
+    Used to anchor LLM keyword extraction to terms actually present in the data,
+    preventing hallucination and ensuring stability across runs.
+    """
+    import re as _re_ng
+    from collections import Counter
+    _STOP = {
+        "the", "a", "an", "and", "or", "for", "of", "in", "with", "to",
+        "from", "by", "is", "are", "was", "be", "as", "on", "at", "up",
+        "it", "its", "this", "that", "all", "new", "set", "pack", "pcs",
+        "piece", "pieces", "count", "ct", "oz", "lb", "ft", "inch",
+    }
+    doc_counts: Counter = Counter()
+    for title in titles:
+        tokens = [t for t in _re_ng.findall(r"[a-z0-9]+", title.lower())
+                  if t not in _STOP and len(t) > 1]
+        seen_in_doc: set = set()
+        for n in (1, 2):
+            for i in range(len(tokens) - n + 1):
+                gram = " ".join(tokens[i: i + n])
+                if gram not in seen_in_doc:
+                    doc_counts[gram] += 1
+                    seen_in_doc.add(gram)
+    return [term for term, cnt in doc_counts.most_common(top_n) if cnt >= min_doc_freq]
+
+
 async def _fetch_core_keywords(items: List[dict], ctx: Any) -> List[dict]:
     """
     Step 1 of 2 for market context.
-    Uses LLM to extract the top 3 core search terms from BSR product titles.
-    Must complete before _fetch_market_signals since all downstream signals
-    (ABA, SERP, CPC) are keyed to these keywords.
+    Derives the top 3 core search keywords that define the niche.
+    Must complete before _fetch_market_signals (ABA, SERP, CPC all key on these).
     Writes: ctx.cache["core_keywords"], ctx.cache["main_keyword"]
+
+    Primary path — ASIN-keyword intersection (Xiyouzhaoci get_asin_keywords):
+      1. Call get_asin_keywords concurrently for the top 10 BSR ASINs.
+      2. Build a term→{asins} map.  Keep only terms present in ≥ MIN_ASIN_OVERLAP
+         ASINs — these are cross-product niche keywords, not sub-niche specific ones.
+      3. Sort surviving terms by (overlap_count × median_weekly_volume), take top 10
+         as candidate anchors, then ask LLM to pick the best 3.
+
+    Why intersection matters:
+      A "killer" BSR top-10 mixes insecticides, Neem Oil, flea/tick, wasp spray, and
+      deer repellents.  Terms like "wasp spray" only appear in a subset of ASINs;
+      true category-level terms (e.g. "bug killer", "pest control") span all of them.
+      Title-level n-grams cannot detect this because sub-niche product names overlap
+      by accident; cross-ASIN traffic data reflects actual buyer search behaviour.
+
+    Fallback — n-gram title frequency:
+      Used when the Xiyouzhaoci call fails or returns < MIN_CANDIDATES keywords.
+
+    Post-validation: LLM output is checked against the candidate set; fewer than
+    2 survivors → use top intersection candidates directly (no LLM).
     """
+    _MIN_ASIN_OVERLAP = 3    # keyword must drive traffic to at least this many ASINs
+    _MIN_CANDIDATES   = 3    # minimum intersection hits before falling back to n-grams
+
     if not items:
         return []
 
+    top_asins  = [item.get("ASIN") or item.get("asin") for item in items[:10] if item.get("ASIN") or item.get("asin")]
     top_titles = [item.get("Title", "") for item in items[:20] if item.get("Title")]
-    titles_hash = _hl.md5("|".join(top_titles).encode()).hexdigest()[:12]
-    cached = _l2_get(ctx, _TTL_KEYWORDS, "core_keywords", titles_hash)
+    cache_hash = _hl.md5(("|".join(top_asins) + "|".join(top_titles[:5])).encode()).hexdigest()[:12]
+
+    cached = _l2_get(ctx, _TTL_KEYWORDS, "core_keywords", cache_hash)
     if cached is not None:
         ctx.cache["core_keywords"] = cached["core_keywords"]
         ctx.cache["main_keyword"]  = cached["main_keyword"]
-        logger.info(f"[cat_monopoly] Core keywords L2 cache hit titles_hash={titles_hash}")
+        logger.info(f"[cat_monopoly] Core keywords L2 cache hit hash={cache_hash}")
         return items
 
-    prompt = (
-        "Analyze these 20 Amazon Best Seller product titles and identify the TOP 3 most accurate CORE search terms (keywords). "
-        "Return them as a comma-separated list, most important first. "
-        "Ignore brands and attributes. Titles: "
-        f"{top_titles}"
-    )
+    # ── n-gram fallback (always precomputed) ─────────────────────────────
+    freq_candidates = _ngram_candidates(top_titles, min_doc_freq=3)
+    stat_keywords   = freq_candidates[:3] if freq_candidates else ["unknown niche"]
 
-    # Prefixes that indicate an LLM refusal / error — must not become keywords
+    # ── Primary: cross-ASIN keyword intersection ──────────────────────────
+    intersection_candidates: list = []
+    try:
+        from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
+        from datetime import datetime, timedelta
+        country   = ctx.config.get("store_id",  "US")      if hasattr(ctx, "config") else "US"
+        tenant_id = ctx.config.get("tenant_id", "default") if hasattr(ctx, "config") else "default"
+        api       = XiyouZhaociAPI(tenant_id=tenant_id)
+
+        today     = datetime.utcnow().date()
+        end_date  = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        # Fetch keywords for each ASIN concurrently
+        async def _kw_for_asin(asin: str) -> tuple[str, list]:
+            try:
+                res = await asyncio.to_thread(
+                    api.get_asin_keywords, country, asin, start_date, end_date, 1, 50
+                )
+                return asin, res.get("list") or []
+            except Exception as e:
+                logger.warning(f"[fetch_core_keywords] get_asin_keywords({asin}): {e}")
+                return asin, []
+
+        results = await asyncio.gather(*[_kw_for_asin(a) for a in top_asins])
+
+        # Build term → set of ASINs that have this keyword
+        from collections import defaultdict
+        term_asins: dict = defaultdict(set)
+        term_vol:   dict = defaultdict(list)
+        for asin, kw_list in results:
+            for kw in kw_list:
+                term = (kw.get("searchTerm") or "").strip().lower()
+                vol  = (kw.get("searchTermReport") or {}).get("weeklySearchVolume") or 0
+                if term and 1 <= len(term.split()) <= 5:
+                    term_asins[term].add(asin)
+                    term_vol[term].append(vol)
+
+        # Keep only terms appearing across ≥ MIN_ASIN_OVERLAP distinct ASINs
+        import statistics as _stats
+        qualified = [
+            (term, len(asins), _stats.median(term_vol[term]))
+            for term, asins in term_asins.items()
+            if len(asins) >= _MIN_ASIN_OVERLAP
+        ]
+        # Sort: more ASINs first, then higher volume as tiebreaker
+        qualified.sort(key=lambda x: (x[1], x[2]), reverse=True)
+        intersection_candidates = [term for term, _, _ in qualified[:12]]
+        logger.info(
+            f"[fetch_core_keywords] intersection: {len(qualified)} terms ≥ {_MIN_ASIN_OVERLAP} ASINs; "
+            f"top={intersection_candidates[:5]}"
+        )
+    except Exception as e:
+        logger.warning(f"[fetch_core_keywords] ASIN intersection failed: {e}; using n-gram fallback")
+
+    # Prefer intersection candidates; fall back to n-grams if too thin
+    candidates = intersection_candidates if len(intersection_candidates) >= _MIN_CANDIDATES else freq_candidates
+    if not candidates:
+        candidates = stat_keywords
+
+    # ── LLM refinement (pick best 3 from the data-grounded candidates) ───
     _REFUSAL_PREFIXES = ("sorry", "i ", "i'", "based on", "the keyword", "here are",
                          "unfortunately", "as an", "i cannot", "i can't")
-
-    core_keywords = ["unknown niche"]
+    core_keywords = candidates[:3]
     try:
         from src.intelligence.router import TaskCategory
-        if ctx.router:
+        if ctx.router and candidates:
+            source_label = "cross-ASIN traffic data" if intersection_candidates else "BSR title frequency"
+            candidate_str = ", ".join(candidates[:12])
+            prompt = (
+                "You are classifying an Amazon BSR niche. "
+                f"The following search terms are grounded in {source_label} across the top BSR products: "
+                f"[{candidate_str}]. "
+                "From these candidates ONLY, pick the TOP 3 that best represent the core buyer "
+                "search intent for this niche — favour terms a buyer would type to find ANY of the "
+                "top products, not sub-niche specific ones. "
+                "Return a comma-separated list of exactly 3 terms — no explanation, no numbering."
+            )
             res = await ctx.router.route_and_execute(prompt, category=TaskCategory.SIMPLE_CLEANING)
             import re as _re_kw
             raw_text = res.text.strip().replace('"', '').replace("'", "").lower()
-            # Strip numbered/bullet prefixes first, while line boundaries still exist
-            raw_text = _re_kw.sub(r"(?m)^\s*\d+[\.\)]\s*", "", raw_text)  # "1. " / "1) "
-            raw_text = _re_kw.sub(r"(?m)^\s*[-•*]\s*", "", raw_text)      # "- " / "• "
-            # Then normalise remaining separators to commas
-            raw_text = _re_kw.sub(r"\n+", ",", raw_text)           # newlines → comma
-            raw_text = raw_text.replace(";", ",")                   # semicolons → comma
-            candidates = [k.strip() for k in raw_text.split(",") if k.strip()]
-            # Keep only short phrases that look like actual search keywords
-            valid = [
-                k for k in candidates
-                if 1 <= len(k.split()) <= 6
+            raw_text = _re_kw.sub(r"(?m)^\s*\d+[\.\)]\s*", "", raw_text)
+            raw_text = _re_kw.sub(r"(?m)^\s*[-•*]\s*", "", raw_text)
+            raw_text = _re_kw.sub(r"\n+", ",", raw_text)
+            raw_text = raw_text.replace(";", ",")
+            parsed = [k.strip() for k in raw_text.split(",") if k.strip()]
+            llm_valid = [
+                k for k in parsed
+                if 1 <= len(k.split()) <= 5
                 and not any(k.startswith(p) for p in _REFUSAL_PREFIXES)
+                and k in candidates  # must be from the data-grounded set
             ]
-            if valid:
-                core_keywords = valid[:3]
+            if len(llm_valid) >= 2:
+                core_keywords = llm_valid[:3]
             else:
                 logger.warning(
-                    f"[fetch_core_keywords] LLM returned no valid keywords "
-                    f"(raw: {raw_text[:120]!r}); keeping default"
+                    f"[fetch_core_keywords] LLM output not in candidates "
+                    f"(got {llm_valid!r}); using top candidates {candidates[:3]}"
                 )
     except Exception as e:
-        logger.warning(f"[fetch_core_keywords] Keyword extraction failed: {e}")
+        logger.warning(f"[fetch_core_keywords] LLM refinement failed: {e}; using top candidates")
 
     ctx.cache["core_keywords"] = core_keywords
     ctx.cache["main_keyword"]  = core_keywords[0]
     _l2_set(ctx, {"core_keywords": core_keywords, "main_keyword": core_keywords[0]},
-            "core_keywords", titles_hash)
-    logger.info(f"[fetch_core_keywords] Extracted: {core_keywords}")
+            "core_keywords", cache_hash)
+    logger.info(
+        f"[fetch_core_keywords] final={core_keywords} "
+        f"(source={'intersection' if intersection_candidates else 'ngram'}, "
+        f"candidates={candidates[:5]})"
+    )
     return items
 
 
@@ -344,12 +473,18 @@ async def _enrich_external_intensity(items: List[dict], ctx: Any) -> List[dict]:
 
 async def _fetch_historical_trends(items: List[dict], ctx: Any) -> List[dict]:
     """
-    Fetch 12-month daily BSR/rating trends for Top 20 ASINs.
-    Feeds CategoryMonopolyAnalyzer._analyze_market_churn() and ._analyze_seasonality().
+    Fetch 12-month daily BSR, rating, and price time-series for Top 20 ASINs.
+
+    Stored fields per day: date, bsr, stars, ratings, price.
+    Consumers:
+      - CategoryMonopolyAnalyzer._analyze_market_churn()  (bsr)
+      - CategoryMonopolyAnalyzer._analyze_seasonality()   (bsr)
+      - _run_monopoly_analysis price-trend block           (price: first-30d vs last-30d median)
     Runs concurrently; failures are soft-skipped so the workflow is never blocked.
     """
     from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
     from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
 
     top_asins = [
         (item.get("ASIN") or item.get("asin"))
@@ -359,8 +494,10 @@ async def _fetch_historical_trends(items: List[dict], ctx: Any) -> List[dict]:
     if not top_asins:
         return items
 
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+    _tz        = ZoneInfo(ctx.config.get("timezone", "America/Los_Angeles") if hasattr(ctx, "config") else "America/Los_Angeles")
+    _now       = datetime.now(tz=_tz)
+    end_date   = (_now - timedelta(days=1)).strftime("%Y-%m-%d")
+    start_date = (_now - timedelta(days=365)).strftime("%Y-%m-%d")
     country   = ctx.config.get("store_id",  "US")      if hasattr(ctx, "config") else "US"
     tenant_id = ctx.config.get("tenant_id", "default") if hasattr(ctx, "config") else "default"
     api = XiyouZhaociAPI(tenant_id=tenant_id)
@@ -373,6 +510,8 @@ async def _fetch_historical_trends(items: List[dict], ctx: Any) -> List[dict]:
           B. res["data"][asin]["dailyData"]            (ASIN-keyed dict)
           C. res["data"]                               (flat list of day dicts)
         Returns a normalised list of {"date", "bsr", "stars", "ratings", "price"}.
+        price is retained for the price-trend calculation in _run_monopoly_analysis
+        (first-30d vs last-30d median per ASIN → avg_price_change / price_trend_direction).
         """
         def _normalise(daily_list: list) -> list:
             return [
@@ -521,7 +660,7 @@ async def _fetch_time_series_data(items: List[dict], ctx: Any) -> List[dict]:
     end_date   = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
     ts_hash = _hl.md5(
-        (",".join(top_asins) + main_keyword + start_date).encode()
+        (",".join(top_asins) + main_keyword + start_date + end_date).encode()
     ).hexdigest()[:12]
 
     cached = _l2_get(ctx, _TTL_TIMESERIES, "time_series", ts_hash)
@@ -665,6 +804,218 @@ async def _fetch_sellersprite_bsr(items: List[dict], ctx: Any) -> List[dict]:
     return items
 
 
+# ---------------------------------------------------------------------------
+# Compliance Risk Detection
+# ---------------------------------------------------------------------------
+
+# Each entry covers one regulatory domain.
+# "triggers" are lowercase substrings matched against titles + keywords.
+# Ordered from most to least severe so the first match sets the floor level.
+_COMPLIANCE_DB: list = [
+    {
+        "id": "pesticide_fifra",
+        "label": "EPA-Registered Pesticide (FIFRA)",
+        "risk_level": "CRITICAL",
+        "triggers": [
+            "insecticide", "pesticide", "pest control", "bug killer", "insect killer",
+            "mosquito killer", "roach killer", "ant killer", "flea killer",
+            "pyrethrin", "pyrethroid", "permethrin", "bifenthrin", "cypermethrin",
+            "imidacloprid", "spinosad", "fipronil", "deltamethrin",
+            "malathion", "glyphosate", "weed killer", "herbicide", "fungicide",
+            "rodenticide", "rat killer", "mouse killer", "rat poison",
+            "kills insects", "kills bugs", "kills mosquito",
+        ],
+        "regulations": [
+            "FIFRA (Federal Insecticide, Fungicide, and Rodenticide Act) — EPA registration required",
+            "Amazon Pesticide Policy — EPA Reg. No. must appear in listing; unregistered claims blocked",
+            "State Registration — CA, NY, and others maintain separate approved-product registries",
+            "Prop 65 (CA) — specific active ingredients trigger cancer/reproductive-harm disclosure",
+        ],
+        "fba_note": (
+            "Concentrated pesticides and aerosol formulations are typically Amazon Hazmat/Dangerous Goods. "
+            "Requires Safety Data Sheet (SDS), UN number, and FBA hazmat approval. "
+            "Some products restricted to seller-fulfilled only."
+        ),
+        "new_entrant_burden": (
+            "Obtain EPA registration (18–36 months, $50k–$500k+) OR use an already-registered "
+            "formulation under a supplemental label. Budget for state-by-state registration fees. "
+            "Mandatory: hire a regulatory consultant before listing."
+        ),
+    },
+    {
+        "id": "flea_tick_pet",
+        "label": "Flea / Tick / Pet Parasite Control",
+        "risk_level": "HIGH",
+        "triggers": [
+            "flea", "tick", "flea and tick", "tick repellent", "flea repellent",
+            "flea collar", "tick collar", "heartworm", "parasite control",
+            "flea treatment", "flea spray for pets",
+        ],
+        "regulations": [
+            "EPA registration required when chemical active ingredient is used (FIFRA §3)",
+            "FDA oversight if product makes drug claims (e.g. 'treats' infestation)",
+            "Amazon Pet Insecticide Policy — requires EPA Reg. No. in back-end keywords",
+            "Topical spot-on treatments: additional FIFRA data requirements (pet safety studies)",
+        ],
+        "fba_note": (
+            "Aerosol flea sprays and concentrated dips may be classified as hazmat. "
+            "Flea collars with DDVP or tetrachlorvinphos face additional state bans (CA, NY)."
+        ),
+        "new_entrant_burden": (
+            "EPA registration or tolerance exemption required. "
+            "If selling under 'natural/essential oil' claims, verify each active is on EPA's 25(b) exempt list. "
+            "Dual EPA + FDA exposure if any drug claims are made."
+        ),
+    },
+    {
+        "id": "repellent_deet",
+        "label": "Human / Animal Repellent",
+        "risk_level": "HIGH",
+        "triggers": [
+            "mosquito repellent", "insect repellent", "deet", "picaridin",
+            "ir3535", "repel mosquito", "bug repellent", "bug spray",
+            "deer repellent", "rabbit repellent", "animal repellent",
+            "rodent repellent", "snake repellent",
+        ],
+        "regulations": [
+            "DEET / Picaridin / IR3535 skin-applied repellents: EPA registration (FIFRA §3)",
+            "Amazon DEET Policy — concentration limits enforced at listing level",
+            "Deer/animal repellents with chemical actives: EPA registration required; "
+            "'natural' repellents may qualify for FIFRA §25(b) exemption if active ingredients are listed",
+        ],
+        "fba_note": (
+            "Aerosol repellents and DEET concentrations >40% are common FBA hazmat triggers. "
+            "Verify UN number and FBA category approval before shipping to fulfilment centres."
+        ),
+        "new_entrant_burden": (
+            "DEET-based products require EPA registration. "
+            "§25(b) (natural/exempt) path requires all active ingredients to appear on the EPA exempt list — "
+            "do NOT assume 'natural' or 'essential oil' means unregulated."
+        ),
+    },
+    {
+        "id": "aerosol_flammable",
+        "label": "Aerosol / Flammable / Pressurised Container",
+        "risk_level": "MEDIUM",
+        "triggers": [
+            "aerosol", "spray can", "pressurized", "pressurised", "fogger",
+            "total release fogger", "fumigator", "propellant",
+            "flammable", "combustible",
+        ],
+        "regulations": [
+            "DOT Hazardous Materials Regulations (49 CFR) — aerosols classified as UN 1950",
+            "CPSC 16 CFR §1500 — flammable aerosols consumer product safety standard",
+            "IATA DGR — air-freight restrictions; affects Amazon's inbound freight lanes",
+        ],
+        "fba_note": (
+            "Aerosols and flammable liquids require FBA Dangerous Goods approval. "
+            "Must submit SDS and pass Amazon's hazmat review (typical 1–4 weeks). "
+            "Storage quantity limits apply per fulfilment centre."
+        ),
+        "new_entrant_burden": (
+            "Prepare SDS per GHS/OSHA HazCom 2012. "
+            "Submit for Amazon Dangerous Goods review before first inbound shipment. "
+            "Plan for longer lead time and possible repackaging to meet DOT specification packaging."
+        ),
+    },
+    {
+        "id": "disinfectant_sanitizer",
+        "label": "Disinfectant / Sanitizer / Antimicrobial",
+        "risk_level": "HIGH",
+        "triggers": [
+            "disinfectant", "sanitizer", "sanitiser", "antimicrobial",
+            "kills 99", "kills bacteria", "kills virus", "kills germs",
+            "hospital grade", "kills covid", "virucidal", "bactericidal",
+            "bleach", "hydrogen peroxide", "quaternary ammonium",
+        ],
+        "regulations": [
+            "EPA Pesticide Registration (FIFRA) — all antimicrobial claims require Reg. No.",
+            "FDA OTC Drug Monograph — hand sanitisers regulated as drugs (21 CFR 333)",
+            "Amazon Disinfectant/Sanitizer Policy — EPA Reg. No. mandatory in listing",
+            "FTC Green Guides — 'kills 99.9%' efficacy claims require substantiated test data",
+        ],
+        "fba_note": (
+            "Bleach-based and alcohol-based disinfectants (>70% alcohol) are FBA hazmat. "
+            "Corrosive products require UN-specification packaging."
+        ),
+        "new_entrant_burden": (
+            "EPA registration for each claimed pathogen/surface combination. "
+            "FDA NDA/ANDA if drug claims. "
+            "Third-party efficacy testing (AOAC or EN standards) required for '99.9% kill' claims."
+        ),
+    },
+    {
+        "id": "pool_spa_chemical",
+        "label": "Pool / Spa / Water Treatment Chemical",
+        "risk_level": "MEDIUM",
+        "triggers": [
+            "pool chemical", "pool shock", "pool algaecide", "algaecide",
+            "pool chlorine", "chlorine tablet", "spa chemical", "hot tub chemical",
+            "water treatment", "pond treatment", "clarifier", "water clarifier",
+        ],
+        "regulations": [
+            "EPA registration (FIFRA) for algaecides and biocidal water treatments",
+            "DOT UN1791 (sodium hypochlorite), UN2468 (trichloroisocyanuric acid) — hazmat",
+            "CPSC — oxidising pool chemicals have consumer safety labelling requirements",
+        ],
+        "fba_note": (
+            "Oxidising chemicals (chlorine, peroxide-based) are Amazon Hazmat. "
+            "Incompatible with many other FBA product types; separate storage required."
+        ),
+        "new_entrant_burden": (
+            "EPA registration for any algaecide/biocide claim. "
+            "DOT hazmat packaging and labelling. "
+            "Amazon DG approval required before first shipment."
+        ),
+    },
+]
+
+# Risk level ordering for aggregation
+_RISK_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "NONE": 0}
+
+
+def _detect_compliance_risks(scan_texts: list) -> dict:
+    """
+    Scan product titles and keywords for regulated-substance signals.
+
+    Returns a dict with:
+      detected   — list of matched compliance DB entries (id, label, risk_level, ...)
+      overall_risk — highest risk_level across all matches ("NONE" if no hits)
+      fba_hazmat  — True when any HIGH+ match is found
+      triggered_by — sample of trigger terms actually found in the text
+    """
+    combined = " ".join(t.lower() for t in scan_texts if t)
+    detected = []
+    all_triggers: list = []
+
+    for entry in _COMPLIANCE_DB:
+        hit_triggers = [t for t in entry["triggers"] if t in combined]
+        if not hit_triggers:
+            continue
+        detected.append({
+            "id":          entry["id"],
+            "label":       entry["label"],
+            "risk_level":  entry["risk_level"],
+            "regulations": entry["regulations"],
+            "fba_note":    entry["fba_note"],
+            "burden":      entry["new_entrant_burden"],
+            "triggered_by": hit_triggers[:5],
+        })
+        all_triggers.extend(hit_triggers[:3])
+
+    if not detected:
+        return {"detected": [], "overall_risk": "NONE", "fba_hazmat": False, "triggered_by": []}
+
+    best = max(detected, key=lambda d: _RISK_ORDER.get(d["risk_level"], 0))
+    fba_hazmat = any(_RISK_ORDER.get(d["risk_level"], 0) >= _RISK_ORDER["HIGH"] for d in detected)
+    return {
+        "detected":     detected,
+        "overall_risk": best["risk_level"],
+        "fba_hazmat":   fba_hazmat,
+        "triggered_by": list(dict.fromkeys(all_triggers))[:10],  # dedup, preserve order
+    }
+
+
 async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
     """Calculates scores and generates flattened niche benchmarks."""
     from src.intelligence.processors.monopoly_analyzer import CategoryMonopolyAnalyzer
@@ -674,12 +1025,19 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
     import re as _re
 
     def _parse_float(raw, default: float = 0.0) -> float:
-        """Extract the first decimal number from a messy string (handles ranges, symbols, suffixes)."""
-        m = _re.search(r"\d+(?:[.,]\d+)?", str(raw or "").replace(",", "."))
+        """Extract the first decimal number from a US-locale price/rating string.
+
+        Handles: currency symbols ($), thousand-separator commas, ranges ($9–$15),
+        suffixes/spaces.  Commas are always thousand separators in this context
+        (US locale), so they are stripped before matching — avoids misreading
+        "$1,299.99" as 1.299 when comma is naively replaced by a dot.
+        """
+        s = str(raw or "").replace(",", "")   # strip thousand separators
+        m = _re.search(r"\d+(?:\.\d+)?", s)
         if not m:
             return default
         try:
-            return float(m.group().replace(",", "."))
+            return float(m.group())
         except ValueError:
             return default
 
@@ -695,12 +1053,22 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
 
     analyzer = CategoryMonopolyAnalyzer()
     external_data = {"social_psi": ctx.cache.get("category_social_psi"), "deal_intensity": ctx.cache.get("category_deal_intensity")}
+
+    # Build ASIN→brand lookup from the most recent Sellersprite snapshot.
+    # Amazon's BSR card HTML carries no brand byline, so this is the authoritative source.
+    ss_snapshots = ctx.cache.get("sellersprite_snapshots", {})
+    _brand_lookup: dict = {}
+    if ss_snapshots:
+        _latest = ss_snapshots.get(max(ss_snapshots), [])
+        _brand_lookup = {p["asin"]: p.get("brand") for p in _latest if p.get("asin") and p.get("brand")}
+
     analysis_input = [
         {
             "rank":           _parse_int(item.get("Rank"), default=999),
             "price":          _parse_float(item.get("Price")),
             "sales":          item.get("sales", 0),
-            "brand":          item.get("brand", "Unknown"),
+            "brand":          _brand_lookup.get(item.get("ASIN") or item.get("asin"))
+                              or item.get("Brand") or item.get("brand") or None,
             "seller_type":    item.get("seller_type", "Unknown"),
             "feedback_count": item.get("feedback_count", 0),
             "review_count":   _parse_int(item.get("Reviews")),
@@ -840,6 +1208,7 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
 
         price_dist = {
             "n":          n_total_prices,
+            "total_bsr":  n_total,
             "min":        f"${price_min:.2f}",
             "p10":        f"${price_p10:.2f}",
             "p25":        f"${price_p25:.2f}",
@@ -855,7 +1224,7 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
             "tiers":      tiers,
         }
     else:
-        price_dist = {"n": 0, "buckets": [], "is_bimodal": False, "tiers": []}
+        price_dist = {"n": 0, "total_bsr": n_total, "buckets": [], "is_bimodal": False, "tiers": []}
 
     # ── price trend: compare first-30d median vs last-30d median per ASIN ─
     historical_data = ctx.cache.get("historical_data") or {}
@@ -892,8 +1261,17 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
         snapshots.get(max(snapshots)) if snapshots else []
     )
     if t_snapshot:
-        # Cutoff = 12 months before now (conservative: base_ym is already T-2 months)
-        cutoff_ms = (_time.time() - 365 * 86400) * 1000
+        # Cutoff = first day of (base_ym − 12 months), converted to ms-since-epoch.
+        # Must anchor to base_ym, NOT to now — base_ym is T-2 months, so using now
+        # would shift the window 2 months forward and under-count new entrants.
+        if base_ym and len(base_ym) == 6:
+            _by, _bm = int(base_ym[:4]), int(base_ym[4:])
+            _total = _by * 12 + (_bm - 1) - 12
+            _cy, _cm = _total // 12, _total % 12 + 1
+            import calendar as _cal
+            cutoff_ms = _cal.timegm((_cy, _cm, 1, 0, 0, 0)) * 1000
+        else:
+            cutoff_ms = (_time.time() - 365 * 86400) * 1000  # fallback when base_ym missing
         dated = [p for p in t_snapshot if p.get("available_date_ms")]
         new_entrants = [p for p in dated if p["available_date_ms"] >= cutoff_ms]
         new_entrant_ratio_val = len(new_entrants) / len(t_snapshot) if t_snapshot else 0.0
@@ -1006,6 +1384,131 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
             "integrity signals cannot be computed"
         )
 
+    # ── Compliance risk detection ────────────────────────────────────────────
+    # Scan BSR titles + core keywords for regulated-substance signals.
+    # Pure heuristic — no LLM, no extra API call.
+    _scan_texts = (
+        [ctx.cache.get("main_keyword", "")]
+        + list(ctx.cache.get("core_keywords", []))
+        + [item.get("Title", "") for item in items[:20]]
+    )
+    compliance_risks = _detect_compliance_risks(_scan_texts)
+
+    # ── Opportunity signals ──────────────────────────────────────────────────
+    # Concrete, number-backed anchors for the LLM's opportunity section.
+    # All derived from already-computed data — no extra API calls.
+    opportunity_signals: dict = {}
+    try:
+        # 1. Review floor to crack BSR top-20
+        top20_reviews = [
+            p["review_count"] for p in analysis_input[:20]
+            if (p.get("review_count") or 0) > 0
+        ]
+        if top20_reviews:
+            opportunity_signals["review_floor_top20"] = int(min(top20_reviews))
+            opportunity_signals["review_median_top20"] = int(statistics.median(top20_reviews))
+
+        # 2. Largest price gap: find the [$step]-wide band with fewest products
+        if valid_prices and len(valid_prices) >= 5:
+            _step = max(5, round((valid_prices[-1] - valid_prices[0]) / 5 / 5) * 5) or 5
+            _lo = int(valid_prices[0] // _step) * _step
+            _gap_band, _gap_cnt = None, len(valid_prices)
+            b = _lo
+            while b < valid_prices[-1]:
+                cnt = sum(1 for p in valid_prices if b <= p < b + _step)
+                if cnt < _gap_cnt:
+                    _gap_cnt = cnt
+                    _gap_band = f"${b:.0f}–${b + _step:.0f}"
+                b += _step
+            if _gap_band and _gap_cnt <= max(2, len(valid_prices) // 10):
+                opportunity_signals["price_gap_band"] = _gap_band
+                opportunity_signals["price_gap_count"] = _gap_cnt
+
+        # 3. Sub-niche fragmentation: classify each top-50 BSR title into a sub-niche
+        _SUB_NICHES = {
+            "insect_spray":    ["insect killer", "bug killer", "bug spray", "mosquito killer",
+                                "mosquito spray", "ant killer", "roach killer", "spider killer"],
+            "flea_tick":       ["flea", "tick"],
+            "weed_herbicide":  ["weed killer", "herbicide", "weed control"],
+            "neem_natural":    ["neem", "natural pest", "organic pest", "essential oil spray"],
+            "wasp_hornet":     ["wasp", "hornet", "yellow jacket"],
+            "rodent":          ["rat killer", "mouse killer", "rodent", "mice killer", "rat poison"],
+            "repellent":       ["repellent", "repel", "deter", "deer repellent", "rabbit repellent"],
+            "aerosol_spray":   ["spray concentrate", "spray barrier", "spray treatment"],
+        }
+        sub_counts: dict = {k: 0 for k in _SUB_NICHES}
+        for raw_item in items[:50]:
+            title = (raw_item.get("Title") or "").lower()
+            for sub, triggers in _SUB_NICHES.items():
+                if any(t in title for t in triggers):
+                    sub_counts[sub] += 1
+                    break  # assign first match only
+        # Keep non-zero sub-niches; flag the smallest with ≥2 products
+        sub_counts_nz = {k: v for k, v in sub_counts.items() if v > 0}
+        if sub_counts_nz:
+            opportunity_signals["sub_niche_counts"] = sub_counts_nz
+            smallest = min(sub_counts_nz, key=sub_counts_nz.get)
+            if sub_counts_nz[smallest] >= 2:
+                opportunity_signals["least_crowded_sub_niche"] = {
+                    "name": smallest.replace("_", " "),
+                    "count": sub_counts_nz[smallest],
+                }
+
+        # 4. Rank positions with the lowest review counts (easiest to displace)
+        ranked_by_reviews = sorted(
+            [
+                {"rank": p["rank"], "reviews": p["review_count"]}
+                for p in analysis_input
+                if p.get("rank") and 10 <= p["rank"] <= 50 and (p.get("review_count") or 0) > 0
+            ],
+            key=lambda x: x["reviews"],
+        )
+        if ranked_by_reviews:
+            weakest = ranked_by_reviews[0]
+            opportunity_signals["weakest_rank_slot"] = {
+                "rank": weakest["rank"],
+                "reviews": weakest["reviews"],
+                "implication": (
+                    f"BSR #{weakest['rank']} held with only {weakest['reviews']:,} reviews — "
+                    f"lowest in the rank-10–50 band, suggesting a beachhead entry point"
+                ),
+            }
+
+        # 5. Compliance-accessible angle (when CRITICAL regulatory risk detected,
+        #    flag the §25(b) natural/exempt path as the lower-barrier entry route)
+        if compliance_risks.get("overall_risk") == "CRITICAL":
+            natural_ids = {"neem_natural", "repellent"}
+            detected_ids = {d["id"] for d in compliance_risks.get("detected", [])}
+            if not natural_ids & detected_ids:
+                opportunity_signals["compliance_accessible_angle"] = (
+                    "FIFRA §25(b) exempt path: products using only EPA-listed minimum-risk "
+                    "active ingredients (e.g. citric acid, peppermint oil, garlic) require NO "
+                    "EPA registration, dramatically reducing time-to-market and regulatory cost. "
+                    "The natural/organic sub-segment is underrepresented in this BSR top-50."
+                )
+
+        # 6. New entrant proof points from Sellersprite snapshot
+        ss_new_asins = []
+        if t_snapshot and "cutoff_ms" in dir():
+            ss_new_asins = [
+                p["asin"] for p in t_snapshot
+                if p.get("available_date_ms") and p["available_date_ms"] >= cutoff_ms  # type: ignore[name-defined]
+            ]
+        if ss_new_asins:
+            # Cross-reference with raw BSR items to get titles
+            asin_to_title = {
+                (it.get("ASIN") or it.get("asin")): it.get("Title", "")
+                for it in items
+            }
+            examples = [
+                asin_to_title[a][:60] for a in ss_new_asins[:3] if asin_to_title.get(a)
+            ]
+            if examples:
+                opportunity_signals["recent_breakthrough_examples"] = examples
+
+    except Exception as _opp_err:
+        logger.warning(f"[opportunity_signals] computation failed: {_opp_err}")
+
     # Extract churn / seasonality / BSR churn signals for prompt template
     churn = result.get("market_churn", {})
     seasonality = result.get("seasonality", {})
@@ -1026,6 +1529,7 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
     dq_seller   = sum(1 for p in analysis_input if p.get("seller_type") not in (None, "", "Unknown"))
     dq_rating   = sum(1 for p in analysis_input if (p.get("rating") or 0) > 0)
     dq_reviews  = sum(1 for p in analysis_input if (p.get("review_count") or 0) > 0)
+    dq_brand    = sum(1 for p in analysis_input if p.get("brand"))
     dq_hist     = integrity_total          # ASINs with ≥60-day Xiyouzhaoci history
     dq_ratio    = len(ratio_eligible)      # ASINs with written/global ratio from scrape
     dq_snapshots = len(bsr_churn.get("snapshots_available", []))
@@ -1040,6 +1544,8 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
         f"seller-type coverage: {_pct(dq_seller)} | "
         f"star-rating coverage: {_pct(dq_rating)} | "
         f"review-count coverage: {_pct(dq_reviews)} | "
+        f"brand coverage: {_pct(dq_brand)} | "
+        f"price coverage: {_pct(len(valid_prices))} | "
         f"Xiyouzhaoci ≥60-day history: {dq_hist}/{n_total} ({dq_hist / n_total:.0%}) | "
         f"written/global ratio data: {dq_ratio}/{n_total} ({dq_ratio / n_total:.0%}) | "
         f"Sellersprite BSR snapshots available: {dq_snapshots} months | "
@@ -1049,20 +1555,27 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
     # ── Startup capital breakdown ─────────────────────────────────────────────
     # Conservative rule-of-thumb for a new FBA product launch.
     # All constants are auditable here; change them to tune the recommendation.
-    _CAP_UNITS     = 1000   # first-batch order quantity (units)
-    _CAP_COGS      = 0.30   # COGS as fraction of retail price (China-manufactured)
-    _CAP_ACOS      = 0.30   # target ACOS during the ranking phase
-    _CAP_FEES      = 0.25   # Amazon platform fees (referral ~15% + FBA ~10%)
-    _CAP_PPC_MO    = 3      # months of PPC seed budget
-    _CAP_OVERHEAD  = 2000   # fixed launch costs: photography, A+, listing, freight ($)
-    _CAP_BUFFER    = 0.20   # working capital buffer on subtotal
+    #
+    # Basis: ONE first batch of _CAP_UNITS units sold at median price.
+    # Inventory, PPC, and fees all use the same _CAP_UNITS denominator so the
+    # totals are directly comparable.  _CAP_SELL_MONTHS is a transparency label
+    # only (how long it realistically takes to sell one batch); it must NOT be
+    # used as a multiplier on PPC or fees — that would imply selling 3× the
+    # batch, making the three line items inconsistent.
+    _CAP_UNITS       = 1000   # first-batch order quantity (units)
+    _CAP_COGS        = 0.30   # COGS as fraction of retail price (China-manufactured)
+    _CAP_ACOS        = 0.30   # target ACOS during the ranking phase
+    _CAP_FEES        = 0.25   # Amazon platform fees (referral ~15% + FBA ~10%)
+    _CAP_SELL_MONTHS = 3      # expected months to sell through the first batch (display only)
+    _CAP_OVERHEAD    = 2000   # fixed launch costs: photography, A+, listing, freight ($)
+    _CAP_BUFFER      = 0.20   # working capital buffer on subtotal
 
     # If bimodal, compute capital against each tier's median separately
     # so the operator can see how the budget changes by tier choice.
     _cap_price = median_price   # overall median — may be in the gap if bimodal
     _cap_inv   = int(_CAP_UNITS * _cap_price * _CAP_COGS)
-    _cap_ppc   = int(_CAP_UNITS * _cap_price * _CAP_ACOS * _CAP_PPC_MO)
-    _cap_fees  = int(_CAP_UNITS * _cap_price * _CAP_FEES * _CAP_PPC_MO)
+    _cap_ppc   = int(_CAP_UNITS * _cap_price * _CAP_ACOS)
+    _cap_fees  = int(_CAP_UNITS * _cap_price * _CAP_FEES)
     _cap_sub   = _cap_inv + _cap_ppc + _cap_fees + _CAP_OVERHEAD
     _cap_total = int(_cap_sub * (1 + _CAP_BUFFER))
 
@@ -1076,8 +1589,8 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
             except ValueError:
                 continue
             t_inv  = int(_CAP_UNITS * t_med * _CAP_COGS)
-            t_ppc  = int(_CAP_UNITS * t_med * _CAP_ACOS * _CAP_PPC_MO)
-            t_fees = int(_CAP_UNITS * t_med * _CAP_FEES * _CAP_PPC_MO)
+            t_ppc  = int(_CAP_UNITS * t_med * _CAP_ACOS)
+            t_fees = int(_CAP_UNITS * t_med * _CAP_FEES)
             t_sub  = t_inv + t_ppc + t_fees + _CAP_OVERHEAD
             _tier_capitals.append({
                 "tier":      tier["label"],
@@ -1147,7 +1660,7 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
         "capital_cogs_pct":     f"{_CAP_COGS:.0%}",
         "capital_acos_pct":     f"{_CAP_ACOS:.0%}",
         "capital_fees_pct":     f"{_CAP_FEES:.0%}",
-        "capital_ppc_months":   str(_CAP_PPC_MO),
+        "capital_sell_months":  str(_CAP_SELL_MONTHS),
         "industry_typical_cr3": f"{baseline.get('typical_cr3', 0.4) * 100}%",
         "data_confidence_r2": estimator.category_params.get(str(node_id), {}).get("r_squared", 0.95),
         "social_psi": ctx.cache.get("category_social_psi", "N/A"),
@@ -1176,6 +1689,10 @@ async def _run_monopoly_analysis(items: List[dict], ctx: Any) -> List[dict]:
         "price_distribution": json.dumps(price_dist, ensure_ascii=False),
         # Per-tier capital when bimodal (empty list if unimodal)
         "tier_capitals": json.dumps(_tier_capitals, ensure_ascii=False),
+        # Compliance / regulatory / hazmat risk (heuristic scan of titles + keywords)
+        "compliance_risks": json.dumps(compliance_risks, ensure_ascii=False),
+        # Concrete opportunity anchors for the actionable section
+        "opportunity_signals": json.dumps(opportunity_signals, ensure_ascii=False),
     }]
 
 def _trim_repetition(text: str, min_run: int = 4) -> str:
@@ -1236,10 +1753,12 @@ async def _prepare_report_artifact(items: List[dict], ctx: Any) -> List[dict]:
 
     import os
     from datetime import datetime
+    from zoneinfo import ZoneInfo
     import re as _re
     raw_kw = str(ctx.cache.get("main_keyword", "niche"))
     keyword = _re.sub(r"[^\w]", "_", raw_kw, flags=_re.ASCII)[:40].strip("_") or "niche"
-    filename = f"Monopoly_Analysis_{keyword}_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
+    _tz = ZoneInfo(ctx.config.get("timezone", "America/Los_Angeles"))
+    filename = f"Monopoly_Analysis_{keyword}_{datetime.now(tz=_tz).strftime('%Y%m%d_%H%M')}.md"
     report_dir = os.path.abspath("data/reports")
     os.makedirs(report_dir, exist_ok=True)
     file_path = os.path.join(report_dir, filename)
@@ -1289,6 +1808,8 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 "to seasonality — keyword ABA data is independent of Xiyouzhaoci BSR history.\n"
                 "- If sales estimate coverage < 50%: prefix recommended_capital and any "
                 "sales-derived figure with '(estimated from thin data)'\n"
+                "- If brand coverage < 50%: prefix brand concentration claims with "
+                "'(limited brand data — N/M ASINs)'\n"
                 "- If CPC keyword entries = 0: write 'CPC data unavailable — bid barrier "
                 "analysis skipped' instead of citing bid_insight\n"
                 "- If Sellersprite BSR snapshots < 2: treat bsr_churn signals as "
@@ -1303,10 +1824,10 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 "Definition='Subtotal × 1.20 working-capital buffer'\n"
                 "  Row 2: Metric='  └ Inventory ({capital_units} units, COGS {capital_cogs_pct})' | "
                 "Value='{capital_inventory}' | Definition='{capital_units} units × {niche_median_price} × {capital_cogs_pct} COGS'\n"
-                "  Row 3: Metric='  └ PPC Seed ({capital_ppc_months}mo @ {capital_acos_pct} ACOS)' | "
-                "Value='{capital_ppc}' | Definition='Ranking-phase ad spend estimate'\n"
-                "  Row 4: Metric='  └ Platform Fees ({capital_ppc_months}mo @ {capital_fees_pct})' | "
-                "Value='{capital_fees}' | Definition='Amazon referral ~15% + FBA ~10%'\n"
+                "  Row 3: Metric='  └ PPC Seed ({capital_acos_pct} ACOS on {capital_units} units, ~{capital_sell_months}mo sell-through)' | "
+                "Value='{capital_ppc}' | Definition='{capital_units} units × {niche_median_price} × {capital_acos_pct} ACOS'\n"
+                "  Row 4: Metric='  └ Platform Fees ({capital_fees_pct} on {capital_units} units)' | "
+                "Value='{capital_fees}' | Definition='{capital_units} units × {niche_median_price} × {capital_fees_pct} platform fees'\n"
                 "  Row 5: Metric='  └ Fixed Overhead' | Value='{capital_overhead}' | "
                 "Definition='Photography, A+ content, listing, inbound freight'\n"
                 "NEVER show a single Investment Capital row without these four sub-rows.\n"
@@ -1388,6 +1909,11 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 "  1. A one-row percentile summary table: "
                 "Min | P10 | P25 | Median | Mean | P75 | P90 | Max\n"
                 "  2. A bucket frequency table: Price Range | # Products | Share\n"
+                "COVERAGE RULE: if 'n' < 'total_bsr', you MUST add a footnote line immediately "
+                "below the bucket table: "
+                "'† Price coverage: {n}/{total_bsr} BSR products had a valid price; "
+                "# Products and Share are out of priced products only.'\n"
+                "Never cite a bucket Share% as a fraction of total BSR products when coverage is partial.\n"
                 "BIMODAL RULE: if 'is_bimodal' is true, the overall median is NOT "
                 "representative — it falls in the gap between two clusters. You MUST:\n"
                 "  a) Add a '⚠️ Bimodal distribution detected' alert above the tables, "
@@ -1400,7 +1926,58 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 "barrier, competitive intensity, and positioning advice differ by tier.\n"
                 "If 'is_bimodal' is false, add one sentence on whether the distribution is "
                 "skewed low, skewed high, or balanced, and the pricing implication.\n\n"
+                "### COMPLIANCE & REGULATORY RISK\n"
+                "{compliance_risks}\n"
+                "This JSON is the output of a heuristic scanner that matched product titles and "
+                "keywords against a regulatory database. Render it under the heading "
+                "'## ⚠️ Compliance & Regulatory Risk' immediately after the Price Distribution section.\n"
+                "RENDERING RULES:\n"
+                "- If overall_risk == 'NONE': write a single line: "
+                "'No regulated-substance signals detected in BSR titles or keywords.' "
+                "and skip the rest of this section.\n"
+                "- Otherwise, open with a risk badge: "
+                "🔴 CRITICAL / 🟠 HIGH / 🟡 MEDIUM based on overall_risk.\n"
+                "- For each entry in 'detected', render ONE paragraph covering: "
+                "(a) which regulation applies, (b) what this means for FBA/logistics, "
+                "(c) what a new entrant must do before listing. "
+                "Cite the regulation name exactly as given — do NOT paraphrase regulation names.\n"
+                "- If fba_hazmat is true, add a callout box: "
+                "'⚠️ FBA HAZMAT: One or more product types in this niche require Amazon Dangerous Goods "
+                "approval. Budget for SDS preparation, hazmat review (1–4 weeks), and possible "
+                "seller-fulfilled fallback.'\n"
+                "- Close the section with: "
+                "'**Recommendation**: Before entering this niche, consult a regulatory attorney or "
+                "Amazon-specialist compliance consultant. Listing without the required registrations "
+                "or permits risks immediate ASIN suppression, account suspension, and civil liability.'\n"
+                "- STRICT: do NOT add regulations not present in the JSON. "
+                "Do NOT say a product IS compliant or IS non-compliant — only state what registrations ARE REQUIRED.\n\n"
                 "### DATA: {analysis_result}\n\n"
+                "### OPPORTUNITY SIGNALS\n"
+                "{opportunity_signals}\n"
+                "These are computed facts from this niche's data. Use them as MANDATORY anchors "
+                "in the '# Actionable Prioritization' section. Rules:\n"
+                "- 'review_floor_top20': the actual minimum reviews held by any BSR top-20 product. "
+                "Use this as the specific target: 'You need X reviews to reach BSR #N, not X,000+.' "
+                "NEVER write a generic review barrier without citing this number.\n"
+                "- 'price_gap_band' + 'price_gap_count': if present, name this specific band as "
+                "the underserved price point. Write: 'Only N products occupy the $X–$Y range — "
+                "this is the whitespace entry point.'\n"
+                "- 'least_crowded_sub_niche': if present, name this sub-niche explicitly as the "
+                "recommended entry angle. Write: 'The [name] sub-segment has only N products in "
+                "the top-50 — lowest competition density in this BSR.' "
+                "Do NOT recommend sub-niches that are not in this data.\n"
+                "- 'weakest_rank_slot': if present, cite the specific rank, ASIN, and review count: "
+                "'BSR #[rank] is held with only [reviews] reviews — a directly achievable displacement target.'\n"
+                "- 'compliance_accessible_angle': if present, include this as a P0 item. "
+                "A new entrant avoiding FIFRA registration is a structural cost advantage, not a nice-to-have.\n"
+                "- 'recent_breakthrough_examples': if present, name 1–2 product titles as proof "
+                "that new entrants CAN break into this BSR within the last 12 months.\n"
+                "FORBIDDEN in the Actionable section: "
+                "'superior efficacy', 'compelling brand story', 'clear value proposition', "
+                "'eco-friendly formulation' (unless eco-friendly is in opportunity_signals), "
+                "'unique application method' — these are filler. "
+                "Every P0/P1 item MUST contain at least one specific number or named sub-niche "
+                "from the data above.\n\n"
                 "### ADDITIONAL TACTICAL RULES\n"
                 "- 400-550 words. No filler.\n"
                 "- ANALYZE BID BARRIERS: Compare the suggested CPC to the median price. If CPC > 10% of median price, highlight extreme capital risk.\n"

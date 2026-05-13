@@ -46,13 +46,29 @@ class SearchExtractor(AmazonBaseScraper):
                 sales_el = result.find('span', class_='a-size-base a-color-secondary', string=re.compile(r'bought in past month'))
                 past_month_sales = parse_integer(sales_el.get_text(strip=True)) if sales_el else None
 
+                # Brand: Amazon renders brand byline as <a id="bylineInfo">Visit the X Store</a>
+                # or occasionally as plain text "Brand: X". Both forms live under the same id.
+                brand = None
+                byline = result.find('a', id='bylineInfo')
+                if byline:
+                    text = byline.get_text(strip=True)
+                    m = re.match(r'Visit the (.+?) Store$', text)
+                    brand = m.group(1) if m else text or None
+                else:
+                    # Fallback: plain-text byline span (older layout / no store page)
+                    byline_span = result.find('span', id='bylineInfo')
+                    if byline_span:
+                        text = byline_span.get_text(strip=True)
+                        brand = re.sub(r'^Brand:\s*', '', text, flags=re.I) or None
+
                 products.append(Product(
                     asin=asin,
                     title=title,
                     price=price,
                     rating=rating,
                     review_count=review_count,
-                    past_month_sales=past_month_sales
+                    past_month_sales=past_month_sales,
+                    brand=brand,
                 ))
             except Exception as e:
                 logger.error(f"Error parsing search result item: {e}")
