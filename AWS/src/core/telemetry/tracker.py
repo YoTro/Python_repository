@@ -118,10 +118,19 @@ class TelemetryTracker:
         # Name of the step that is currently executing (started but not yet finished).
         # on_progress is called before a step runs, so the measured duration on the
         # *next* call belongs to this pending name, not the incoming one.
-        self._pending_step_name: str = ""
+        self._pending_step_name: Optional[str] = None
 
     def record_step(self, step_name: str = "") -> None:
         now = time.monotonic()
+
+        # on_progress is emitted before a step starts. The first call therefore
+        # marks the beginning of step 1; it must not count object construction
+        # time as a completed step duration.
+        if self._pending_step_name is None:
+            self._pending_step_name = step_name
+            self.last_step_time = now
+            return
+
         duration = now - self.last_step_time
         self.last_step_time = now
         self.current_step += 1
@@ -139,11 +148,15 @@ class TelemetryTracker:
 
     def finalize(self) -> None:
         """Record the duration of the last step (no subsequent record_step to trigger it)."""
-        if not self._pending_step_name:
+        if self._pending_step_name is None:
             return
         duration = time.monotonic() - self.last_step_time
-        self._persist_duration(self._pending_step_name, duration)
-        self._pending_step_name = ""
+        self.current_step += 1
+        self.step_times.append(duration)
+        self.step_names.append(self._pending_step_name)
+        if self._pending_step_name:
+            self._persist_duration(self._pending_step_name, duration)
+        self._pending_step_name = None
 
     def _persist_duration(self, step_name: str, duration: float) -> None:
         key = f"{self.workflow_name}:{step_name}" if self.workflow_name else step_name
