@@ -377,6 +377,7 @@ class FeishuCallback(JobCallback):
 
             # --- Artifact Delivery (Attachment) First Priority ---
             file_path = items[0].get("report_file_path") if items else None
+            artifact_sent = False
             if file_path and os.path.exists(file_path):
                 logger.info(f"Detected report artifact for delivery: {file_path}")
                 try:
@@ -394,6 +395,7 @@ class FeishuCallback(JobCallback):
                             receive_id=self.chat_id,
                             file_key=file_key
                         )
+                        artifact_sent = True
                         logger.info("Report attachment sent successfully.")
                 except Exception as e:
                     logger.error(f"Failed to send artifact attachment: {e}")
@@ -405,12 +407,16 @@ class FeishuCallback(JobCallback):
                     # Try common LLM output field names in priority order
                     for key in ("response", "ad_diagnosis_llm", "result", "output"):
                         if key in item and item[key]:
-                            text = item[key] if isinstance(item[key], str) else json.dumps(item[key], ensure_ascii=False)
+                            text = item[key] if isinstance(item[key], str) else json.dumps(item[key], ensure_ascii=False, default=str)
                             logger.info(f"on_complete: using item['{key}'] ({len(text)} chars) for card text")
                             break
                     else:
-                        text = json.dumps(item, ensure_ascii=False, indent=2)
-                        logger.info(f"on_complete: no text key found, using full item JSON ({len(text)} chars)")
+                        if artifact_sent:
+                            text = "Workflow completed. The full report has been sent as an attachment."
+                            logger.info("on_complete: no text key found after artifact delivery; using concise completion text")
+                        else:
+                            text = json.dumps(item, ensure_ascii=False, indent=2, default=str)
+                            logger.info(f"on_complete: no text key found, using full item JSON ({len(text)} chars)")
 
                 from src.intelligence.parsers.markdown_cleaner import OutputParser
                 text = OutputParser.clean_for_feishu(text)

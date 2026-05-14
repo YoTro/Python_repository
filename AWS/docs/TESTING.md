@@ -92,7 +92,7 @@ Validates all three layers of the rate limiting architecture in isolation and co
 
 *   **Command**:
     ```bash
-    export PYTHONPATH=$PYTHONPATH:. && .venv311/bin/python3 -m unittest tests/test_rate_limiting_system.py -v
+    export PYTHONPATH=$PYTHONPATH:. && venv311/bin/python3 -m unittest tests/test_rate_limiting_system.py -v
     ```
 *   **Note**: Tests reset the `RateLimiter` singleton state in `setUp` (`_concurrent`, `_tenant_counters`, `_chat_last`, bucket tokens) to ensure isolation between runs.
 

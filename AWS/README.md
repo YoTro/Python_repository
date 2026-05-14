@@ -212,7 +212,7 @@ Environment variables set automatically by the script:
 
 After deployment, copy your `.env` file to the project root and start the bot:
 ```bash
-source .venv311/bin/activate
+source venv311/bin/activate
 PYTHONPATH=. python src/entry/feishu/bot_listener.py --bot amazon_bot
 ```
 

@@ -15,7 +15,7 @@ from typing import List, Dict, Any, Callable, Optional, Type
 from pydantic import BaseModel
 
 from src.workflows.steps.base import Step, StepResult, WorkflowContext, ComputeTarget
-from src.core.errors.exceptions import BatchPendingError
+from src.core.errors.exceptions import BatchPendingError, FatalError
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +111,9 @@ class ProcessStep(Step):
             category = TaskCategory.DEEP_REASONING
 
         prompts_to_process = []
-        items_to_process = []
+        items_to_process = []  # List of (item, cache_key, original_idx)
         
-        for item in items:
+        for i, item in enumerate(items):
             cache_key = f"{ctx.job_id}:{self.name}:{item.get('asin', hash(str(item)))}"
             if cache_key in ctx.cache:
                 item[self.output_field] = ctx.cache[cache_key]
@@ -129,8 +129,20 @@ class ProcessStep(Step):
                     **{k: v for k, v in item.items() if isinstance(v, (str, int, float, bool, type(None)))},
                 )
                 prompts_to_process.append(prompt)
-                items_to_process.append((item, cache_key))
+                items_to_process.append((item, cache_key, i))
+            except (KeyError, IndexError) as e:
+                item_id = item.get("asin") or item.get("keyword") or i
+                logger.error(f"[{self.name}] Prompt formatting failed for item {item_id}: {e}")
+                raise FatalError(
+                    f"[{self.name}] prompt formatting failed for item {item_id}: {e}"
+                ) from e
             except Exception as e:
+                if e.__class__.__name__ in {"PromptBudgetError", "PromptValidationError"}:
+                    item_id = item.get("asin") or item.get("keyword") or i
+                    logger.error(f"[{self.name}] Prompt rendering failed for item {item_id}: {e}")
+                    raise FatalError(
+                        f"[{self.name}] prompt rendering failed for item {item_id}: {e}"
+                    ) from e
                 logger.warning(f"[{self.name}] Prompt formatting failed for item: {e}")
                 item[self.output_field] = None
 
@@ -154,15 +166,15 @@ class ProcessStep(Step):
             from src.intelligence.dto import BatchRequest as _BatchRequest
             api_requests = []
             event_requests = []
-            for idx, (prompt, (item, cache_key)) in enumerate(
-                zip(prompts_to_process, items_to_process)
+            for prompt, (item, cache_key, original_idx) in zip(
+                prompts_to_process, items_to_process
             ):
                 api_requests.append(_BatchRequest(
                     custom_id=cache_key,
                     prompt=prompt,
                     schema=self.output_schema,
                 ))
-                event_requests.append({"custom_id": cache_key, "item_idx": idx})
+                event_requests.append({"custom_id": cache_key, "item_idx": original_idx})
 
             schema_path = None
             if self.output_schema:
@@ -195,7 +207,7 @@ class ProcessStep(Step):
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for (item, cache_key), result in zip(items_to_process, results):
+            for (item, cache_key, _original_idx), result in zip(items_to_process, results):
                 if isinstance(result, Exception):
                     logger.warning(f"[{self.name}] LLM call failed for item: {result}")
                     item[self.output_field] = None

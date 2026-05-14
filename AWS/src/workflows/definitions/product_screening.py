@@ -24,6 +24,7 @@ from src.workflows.steps.process import ProcessStep
 from src.workflows.steps.filter import FilterStep, RangeRule, ThresholdRule, EnumRule
 from src.workflows.steps.base import ComputeTarget
 from src.core.data_cache import data_cache as _data_cache
+from src.intelligence.prompts.manager import prompt_manager
 
 logger = logging.getLogger(__name__)
 
@@ -102,23 +103,6 @@ async def _search_and_expand(items: list, ctx: WorkflowContext) -> list:
     return expanded
 
 
-async def _enrich_product_details(item: dict, ctx: WorkflowContext) -> dict:
-    """Fetch price, rating, title, features from product page."""
-    from src.mcp.servers.amazon.extractors.product_details import ProductDetailsExtractor
-    extractor = ProductDetailsExtractor()
-    from src.core.models.product import Product
-    product = Product(asin=item["asin"])
-    enriched = await extractor.enrich_product(product)
-    return {
-        "title": enriched.title,
-        "price": enriched.price,
-        "rating": enriched.rating,
-        "review_count": enriched.review_count,
-        "features": enriched.features,
-        "is_fba": enriched.is_fba,
-    }
-
-
 async def _enrich_via_profitability_api(item: dict, ctx: WorkflowContext) -> dict:
     """
     High-efficiency enrichment using Amazon's Profitability Calculator API.
@@ -136,12 +120,15 @@ async def _enrich_via_profitability_api(item: dict, ctx: WorkflowContext) -> dic
     from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
     extractor = ProfitabilitySearchExtractor()
 
-    # Searching for an ASIN usually returns the exact product match
+    # Searching by ASIN may return surrounding catalog results; verify the match.
     results = await extractor.search_products(asin, page_offset=1)
     if not results:
         return {}
 
-    p = results[0]
+    p = next((r for r in results if (r.get("asin") or "").upper() == asin.upper()), None)
+    if p is None:
+        logger.warning("[profitability] ASIN %s not found in %d results; discarding", asin, len(results))
+        return {}
     weight_lb = p.get("weight") or 0.0
     # Convert lb to grams for workflow_defaults.yaml alignment (1 lb ≈ 453.59g)
     weight_grams = round(weight_lb * 453.59, 2)
@@ -238,7 +225,7 @@ async def _enrich_compliance(item: dict, ctx: WorkflowContext) -> dict:
     Sets these fields on the item:
       compliance_status       "pass" | "warning" | "fail"
       compliance_flags        list[{type, detail, ...}] — all issues found
-      epa_status              "exempt" | "not_required" | "required" (backward compat)
+      epa_status              "not_required" | "warning" | "required"
       amazon_restricted       bool
       cpsc_recalled           bool
       required_certifications list[str] — deduplicated list of required cert names
@@ -252,7 +239,10 @@ async def _enrich_compliance(item: dict, ctx: WorkflowContext) -> dict:
 
     # Representative keyword: prefer category, fall back to first 4 words of title
     keyword = category if category else " ".join(title.split()[:4])
-    kw_hash = _hl.md5(keyword.lower().encode()).hexdigest()[:12]
+    # Include brand in cache key: CPSC recall query is brand-scoped, so two
+    # products in the same category but different brands must not share a result.
+    cache_seed = f"{keyword.lower()}|{brand.lower()}"
+    kw_hash = _hl.md5(cache_seed.encode()).hexdigest()[:12]
     cached = _l2_get(ctx, _TTL_COMPLIANCE, "compliance", kw_hash)
     if cached is not None:
         return cached
@@ -420,8 +410,11 @@ async def _summarize_reviews(items: list, ctx: WorkflowContext) -> list:
     for item in items:
         reviews = item.get("reviews") or []
         if len(reviews) < 5:
-            item.setdefault("manipulation_risk_score", 0)
-            item.setdefault("manipulation_risk_verdict", "INSUFFICIENT_DATA")
+            # Do NOT default score to 0 — insufficient data is not low risk.
+            # Leaving manipulation_risk_score absent causes ThresholdRule to
+            # return False, which correctly holds these items for manual review.
+            item["manipulation_risk_score"]   = None
+            item["manipulation_risk_verdict"] = "INSUFFICIENT_DATA"
             continue
 
         try:
@@ -437,8 +430,8 @@ async def _summarize_reviews(items: list, ctx: WorkflowContext) -> list:
             item["review_barrier_months"]     = summary.competitive_barrier_months
         except Exception as e:
             logger.error(f"Review summarization failed for {item.get('asin')}: {e}")
-            item.setdefault("manipulation_risk_score", 0)
-            item.setdefault("manipulation_risk_verdict", "ERROR")
+            item["manipulation_risk_score"]   = None
+            item["manipulation_risk_verdict"] = "ERROR"
 
     return items
 
@@ -457,7 +450,7 @@ async def _enrich_ad_metrics_xiyou(item: dict, ctx: WorkflowContext) -> dict:
         import json
         resp = await ctx.mcp.call_tool_json("xiyou_get_traffic_scores", {
             "asins": [asin],
-            "country": "US"
+            "country": ctx.config.get("store_id", "US"),
         })
         if isinstance(resp, list) and len(resp) > 0:
             data = json.loads(resp[0].get("text", "{}"))
@@ -504,29 +497,36 @@ async def _calculate_profit_mcp(items: list, ctx: WorkflowContext) -> list:
         logger.error("MCP client not available in context. Skipping profit calculation.")
         return items
 
+    # Conservative COGS default: overridable, intentionally higher than a naive
+    # 25% guess so that estimated margins are pessimistic rather than flattering.
+    cogs_default_pct = ctx.config.get("cogs_default_pct", 0.35)
+
     for item in items:
         asin = item.get("asin")
         price = item.get("price")
-        
-        # Determine estimated cost (COGS)
+
+        # Determine COGS and track whether it came from the caller or was estimated.
         cost = item.get("estimated_cost")
-        if cost is None and price:
-            cost = price * 0.25 # Default 25% COGS estimate
+        if cost is not None:
+            cost_confidence = "actual"
+        elif price:
+            cost = price * cogs_default_pct
             item["estimated_cost"] = cost
             item["cost_source"] = "estimated_default"
+            cost_confidence = "estimated"
+        else:
+            cost_confidence = "estimated"
+        item["cost_confidence"] = cost_confidence
 
         if asin and cost:
             try:
-                # Call finance MCP tool
-                # The tool will enrich missing price/category from cache if needed
                 resp = await ctx.mcp.call_tool_json("calc_profit", {
                     "asin": asin,
                     "estimated_cost": cost
                 })
-                
+
                 if isinstance(resp, list) and len(resp) > 0:
                     import json
-                    # TextContent holds the JSON response
                     profit_data = json.loads(resp[0].get("text", "{}"))
                     if profit_data.get("profitability"):
                         p = profit_data["profitability"]
@@ -534,8 +534,10 @@ async def _calculate_profit_mcp(items: list, ctx: WorkflowContext) -> list:
                         item["profit_margin"] = p.get("margin")
                         item["roi"] = p.get("roi")
                         item["fees"] = profit_data.get("fees")
-                        # Add cost_ratio for filtering
-                        if price and cost:
+                        # cost_ratio is only meaningful when COGS is real; when
+                        # estimated it equals cogs_default_pct by construction
+                        # and would trivially pass any cost_ratio filter.
+                        if price and cost and cost_confidence == "actual":
                             item["cost_ratio"] = round(cost / price, 4)
             except Exception as e:
                 logger.error(f"Failed to calculate profit via MCP for {asin}: {e}")
@@ -635,8 +637,12 @@ def build_product_screening(config: dict) -> Workflow:
             name="profit_filter",
             rules=[
                 ThresholdRule("profit_margin", min_val=config.get("profit_margin_min", 0.30)),
-                # cost_ratio_max filtering: cost should be < 30% of price
-                ThresholdRule("cost_ratio", max_val=config.get("cost_ratio_max", 0.30)),
+                # cost_ratio is only set when estimated_cost was caller-supplied
+                # (cost_confidence="actual"). When COGS is estimated, cost_ratio
+                # equals cogs_default_pct by construction, so the filter would be
+                # testing a number we invented — skip it unless explicitly set.
+                *([ThresholdRule("cost_ratio", max_val=config["cost_ratio_max"])]
+                  if "cost_ratio_max" in config else []),
             ],
         ),
 
@@ -685,7 +691,7 @@ def build_product_screening(config: dict) -> Workflow:
                 ),
                 EnumRule(
                     "epa_status",
-                    config.get("epa_status_allowed", ["exempt", "not_required"]),
+                    config.get("epa_status_allowed", ["not_required", "warning"]),
                 ),
             ],
         ),
@@ -705,32 +711,29 @@ def build_product_screening(config: dict) -> Workflow:
             enabled=config.get("enable_ad_analysis_xiyou", True)
         ),
 
-        # ── Stage 8: Social Media Assessment (Optional) ──
+        # ── Stage 8: Social Media Assessment (stub — disabled by default) ──
+        # _enrich_social_data calls SocialViralityProcessor.analyze() which does
+        # not exist yet; social_virality_analysis is a pass-through placeholder.
+        # Set enable_social_analysis=True only after a real TikTok/Meta integration
+        # is wired up, to prevent simulated data from reaching the LLM synthesis.
         EnrichStep(
             name="enrich_social_data",
             extractor_fn=_enrich_social_data,
             parallel=True,
-            enabled=config.get("enable_social_analysis", True)
+            enabled=config.get("enable_social_analysis", False)
         ),
         ProcessStep(
             name="social_virality_analysis",
-            fn=lambda items, ctx: items, # Placeholder for SocialViralityProcessor
+            fn=lambda items, ctx: items,
             compute_target=ComputeTarget.PURE_PYTHON,
-            enabled=config.get("enable_social_analysis", True)
+            enabled=config.get("enable_social_analysis", False)
         ),
 
         # ── Stage 9: Final Synthesis (Cloud LLM) ──
+        # Template managed in config/specs/product_screening_synthesis.yaml
         ProcessStep(
             name="final_synthesis",
-            prompt_template=(
-                "Analyze these {count} candidate products for Amazon US market entry. "
-                "Rank them by overall potential considering profit margin, competition, "
-                "market demand, compliance risk (compliance_status, required_certifications), "
-                "and review quality (manipulation_risk_verdict, manipulation_risk_score, review_velocity). "
-                "Flag any product with manipulation_risk_verdict='SUSPICIOUS' or 'CRITICAL' and explain why. "
-                "Flag any product with compliance_status='warning' and explain the cert/regulatory requirement. "
-                "Provide a brief recommendation for each."
-            ),
+            prompt_template=prompt_manager.get_spec("product_screening_synthesis").template,
             compute_target=ComputeTarget.CLOUD_LLM,
             enabled=True,
         ),

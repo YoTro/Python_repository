@@ -12,7 +12,7 @@ REPO_URL="https://github.com/YoTro/Python_repository.git"
 PROJECT_NAME="Python_repository"
 APP_SUBDIR="AWS"
 PYTHON_VERSION="3.11"
-STATUS_FILE=".deploy_status"
+STATUS_FILE="$HOME/.deploy_status"
 
 # Qwen2.5-3B-Instruct-GGUF (Q4_K_M)
 MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
@@ -180,17 +180,40 @@ else
 fi
 
 # 5. Download Model
-if [ ! -f "models/llm/$MODEL_NAME" ]; then
+# Q4_K_M quantised Qwen2.5-3B GGUF is ~1.9 GB; reject anything under 1 GB as truncated.
+MODEL_MIN_BYTES=1073741824
+_model_path="models/llm/$MODEL_NAME"
+_model_size=$(stat -c%s "$_model_path" 2>/dev/null || echo 0)
+
+if [ ! -f "$_model_path" ]; then
     echo "🤖 Downloading Qwen 3B Model..."
-    wget -O "models/llm/$MODEL_NAME" "$MODEL_URL"
+elif [ "$_model_size" -lt "$MODEL_MIN_BYTES" ]; then
+    echo "⚠️  Model file is only ${_model_size} bytes — resuming interrupted download..."
+else
+    echo "⏭️  Model already downloaded ($(( _model_size / 1048576 )) MB), skipping."
+fi
+
+if [ ! -f "$_model_path" ] || [ "$_model_size" -lt "$MODEL_MIN_BYTES" ]; then
+    # -c resumes from current file size; partial file is kept on failure for next run
+    if ! wget -c --show-progress -O "$_model_path" "$MODEL_URL"; then
+        echo "❌ Model download failed — partial file kept; re-run script to resume." >&2
+        exit 1
+    fi
+    _model_size=$(stat -c%s "$_model_path" 2>/dev/null || echo 0)
+    if [ "$_model_size" -lt "$MODEL_MIN_BYTES" ]; then
+        echo "❌ Downloaded file is only ${_model_size} bytes — likely truncated. Removing." >&2
+        rm -f "$_model_path"
+        exit 1
+    fi
+    echo "✅ Model ready ($(( _model_size / 1048576 )) MB)."
 fi
 
 # 6. Virtual Environment (venv311)
-if [ ! -d ".venv311" ]; then
+if [ ! -d "venv311" ]; then
     echo "🛠️ Creating venv311 (Python 3.11)..."
-    python${PYTHON_VERSION} -m venv .venv311
+    python${PYTHON_VERSION} -m venv venv311
 fi
-source .venv311/bin/activate
+source venv311/bin/activate
 
 # 7. CUDA Detection — validate runtime, not just driver
 # -------------------------------------------------------
@@ -310,10 +333,24 @@ if [ -f "$REDIS_CONF" ]; then
 fi
 if command -v systemctl &>/dev/null && systemctl list-units --type=service &>/dev/null 2>&1; then
     sudo systemctl enable redis-server
-    sudo systemctl start redis-server &
+    sudo systemctl start redis-server
+    # Verify Redis came up — fail fast rather than silently continue
+    if ! sudo systemctl is-active --quiet redis-server; then
+        echo "❌ Redis failed to start. Journal:" >&2
+        sudo journalctl -u redis-server -n 20 --no-pager >&2
+        exit 1
+    fi
+    echo "✅ Redis is running."
 else
     # Fallback for containers / minimal Ubuntu without systemd
     redis-server --daemonize yes --logfile logs/redis.log
+    # Brief wait then ping to confirm
+    sleep 2
+    if ! redis-cli ping &>/dev/null; then
+        echo "❌ Redis daemon failed to start — check logs/redis.log" >&2
+        exit 1
+    fi
+    echo "✅ Redis is running (daemon mode)."
 fi
 
 # Set REDIS_URL (used by data_cache.py to select RedisBackend over JsonFile)
@@ -327,5 +364,5 @@ echo "----------------------------------------------------------------"
 echo "✅ Deployment Complete!"
 echo "----------------------------------------------------------------"
 echo "💡 To activate Zsh:  exec zsh"
-echo "💡 To start app:     source .venv311/bin/activate && python main.py"
+echo "💡 To start app:     source venv311/bin/activate && python main.py"
 echo "----------------------------------------------------------------"

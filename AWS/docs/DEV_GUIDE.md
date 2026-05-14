@@ -177,7 +177,7 @@ Config keys for the Lingxing provider:
 4.  **LLM Routing**: `pytest tests/test_gemini_advanced_pricing.py`.
 5.  **Rate Limiting** (37 tests, all three layers):
     ```bash
-    export PYTHONPATH=$PYTHONPATH:. && .venv311/bin/python3 -m unittest tests/test_rate_limiting_system.py -v
+    export PYTHONPATH=$PYTHONPATH:. && venv311/bin/python3 -m unittest tests/test_rate_limiting_system.py -v
     ```
 
 ---
