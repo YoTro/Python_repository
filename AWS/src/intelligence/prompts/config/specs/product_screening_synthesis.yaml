@@ -1,0 +1,39 @@
+id: product_screening_synthesis
+version: "1.0.0"
+scope: per_item
+token_budget: 8000
+role_id: product_manager
+framework_ids: []
+
+required_vars:
+  - asin
+  - count
+  - items_json
+
+optional_vars: {}
+
+output_schema: null   # future: bind to ProductScreeningResult pydantic model
+
+template: |
+  You are an Amazon product sourcing analyst.
+  Below are {count} candidate products being evaluated for US market entry.
+
+  All candidates (JSON):
+  {items_json}
+
+  Focus your analysis on the product with ASIN '{asin}'.
+  Evaluate it on:
+  1. Profit potential — price, estimated margin, monthly sales velocity
+  2. Competition level — review count, review_velocity, manipulation_risk_score
+  3. Compliance risk — if compliance_status is 'warning', name every cert in required_certifications
+  4. Ad cost pressure — ad_traffic_ratio (high ratio = pay-to-play market)
+  5. Overall rank among all {count} candidates (1 = most attractive)
+
+  If manipulation_risk_verdict is 'SUSPICIOUS' or 'CRITICAL', state the specific signals.
+  Return ONLY a JSON object with these fields:
+    rank          (int, 1-{count})
+    score         (int, 0-100)
+    verdict       (one of: PROCEED / CAUTION / REJECT)
+    flags         (list of short strings, empty list if none)
+    recommendation (string, 1-2 sentences)
+  Do not include markdown fences or any text outside the JSON object.

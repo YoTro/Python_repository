@@ -1,0 +1,181 @@
+id: monopoly_report
+version: "1.0.0"
+scope: batch
+token_budget: 32000
+role_id: senior_strategist
+framework_ids:
+  - psi_benchmarking
+  - strategic_analysis
+include_system_in_prompt: true
+
+required_vars:
+  - data_quality
+  - recommended_capital
+  - capital_units
+  - niche_median_price
+  - capital_cogs_pct
+  - capital_inventory
+  - capital_acos_pct
+  - capital_sell_months
+  - capital_ppc
+  - capital_fees_pct
+  - capital_fees
+  - capital_overhead
+  - tier_capitals
+  - main_keyword
+  - data_confidence_r2
+  - niche_monthly_units
+  - niche_monthly_gmv
+  - bid_insight
+  - review_disparity
+  - industry_typical_cr3
+  - social_psi
+  - social_verdict
+  - deal_intensity
+  - price_trend
+  - churn_pattern
+  - churn_score
+  - new_product_ratio
+  - collapse_rate
+  - bsr_churn_label
+  - bsr_snapshots
+  - bsr_churn_3m
+  - bsr_churn_6m
+  - bsr_churn_12m
+  - new_entrant_ratio
+  - seasonality_pattern
+  - seasonality_score
+  - seasonality_source
+  - seasonality_n_points
+  - peak_months
+  - integrity_alert
+  - integrity_hist_cov
+  - integrity_ratio_cov
+  - top_asin_table
+  - price_distribution
+  - n
+  - total_bsr
+  - compliance_risks
+  - analysis_result
+  - opportunity_signals
+
+optional_vars:
+  core_keywords: "(none)"
+
+output_schema: null
+
+# NOTE: this template is prepended with assemble_report_instructions(role_id, framework_ids)
+# at workflow build time. See build_category_monopoly_analysis() in category_monopoly_analysis.py.
+template: |
+  ### DATA QUALITY
+  {data_quality}
+  MANDATORY CAVEAT RULE: for any metric whose underlying data source has coverage < 50% of BSR products, you MUST prefix the claim with '(limited data — N/M ASINs)' and treat it as directional only, not a precise benchmark. Specifically:
+  - If Xiyouzhaoci ≥60-day history < 50%: prefix price_trend, integrity signals 1 & 2, and churn_pattern with '(limited history — N/M ASINs)'. EXCEPTION: if seasonality_source == 'keyword_weekly_trends', do NOT apply this caveat to seasonality — keyword ABA data is independent of Xiyouzhaoci BSR history.
+  - If sales estimate coverage < 50%: prefix recommended_capital and any sales-derived figure with '(estimated from thin data)'
+  - If brand coverage < 50%: prefix brand concentration claims with '(limited brand data — N/M ASINs)'
+  - If CPC keyword entries = 0: write 'CPC data unavailable — bid barrier analysis skipped' instead of citing bid_insight
+  - If Sellersprite BSR snapshots < 2: treat bsr_churn signals as insufficient and write 'BSR metabolism data unavailable'
+  NEVER present a default value (e.g. 0, Unknown, N/A) as a confirmed fact.
+
+  ### TASK-SPECIFIC CONTEXT
+  Advising on a **{recommended_capital}** minimum launch budget ({capital_units} units × {niche_median_price} median price).
+  CAPITAL TABLE RULE: In the Data Breakdown table, Investment Capital MUST appear as FIVE consecutive rows — never collapsed into one:
+    Row 1: Metric='Investment Capital (Total)' | Value='{recommended_capital}' | Definition='Subtotal × 1.20 working-capital buffer'
+    Row 2: Metric='  └ Inventory ({capital_units} units, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_units} units × {niche_median_price} × {capital_cogs_pct} COGS'
+    Row 3: Metric='  └ PPC Seed ({capital_acos_pct} ACOS on {capital_units} units, ~{capital_sell_months}mo sell-through)' | Value='{capital_ppc}' | Definition='{capital_units} units × {niche_median_price} × {capital_acos_pct} ACOS'
+    Row 4: Metric='  └ Platform Fees ({capital_fees_pct} on {capital_units} units)' | Value='{capital_fees}' | Definition='{capital_units} units × {niche_median_price} × {capital_fees_pct} platform fees'
+    Row 5: Metric='  └ Fixed Overhead' | Value='{capital_overhead}' | Definition='Photography, A+ content, listing, inbound freight'
+  NEVER show a single Investment Capital row without these four sub-rows.
+  BIMODAL CAPITAL RULE: tier_capitals={tier_capitals}. If tier_capitals is non-empty (bimodal market detected), append a second capital table immediately after the breakdown rows under the sub-heading '### Capital by Price Tier' with columns: Tier | Tier Median | Inventory | PPC | Fees | Overhead | Total. Warn the operator: 'The base Investment Capital above uses the overall median price which falls in the gap between tiers — choose the tier you plan to enter and use the corresponding Total as your actual budget.'
+  Primary Niche: **{main_keyword}** | Related Terms: {core_keywords}
+  Data Confidence (R²): **{data_confidence_r2}**
+
+  ### DYNAMIC BENCHMARKS
+  - Median Price: {niche_median_price}
+  - Est. Niche Monthly Unit Sales: {niche_monthly_units} (scraped from Amazon 'X+ bought in past month' badge — unit count, NOT revenue)
+  - Est. Niche Monthly GMV: {niche_monthly_gmv} (= unit_sales × median_price; use as market-size proxy)
+  UNIT/REVENUE RULE: '{niche_monthly_units}' is a unit COUNT — NEVER prefix it with $. '{niche_monthly_gmv}' is revenue — always use the $ prefix. In the Data Breakdown table, report BOTH as separate rows: 'Total Est. Monthly Unit Sales' (integer, e.g. 40,694 units) and 'Est. Niche Monthly GMV' (dollar figure, e.g. $702,400). NEVER merge them into a single 'Total Est. Monthly Sales $...' row.
+  - Keyword Bid Recommendations (raw Amazon Ads API response): {bid_insight}
+    Structure: {{LEGACY_FOR_SALES: [...], AUTO_FOR_SALES: [...]}}. Each entry contains targetingExpression (keyword + matchType) and suggestedBid (amount, and possibly rangeStart/rangeEnd). Render this verbatim as a markdown table in the report with columns: Keyword | Match Type | Manual Bid (LEGACY) | Auto Bid (AUTO). LEGACY_FOR_SALES = flat manual bid cost per click. AUTO_FOR_SALES = Amazon's dynamic strategy estimate (usually higher — reflects platform-assessed competition). A large LEGACY→AUTO gap means the platform thinks this keyword is highly contested and automated bidding will aggressively overpay.
+  - Review Disparity: {review_disparity}
+  - Typical Industry CR3: {industry_typical_cr3}
+  - Social PSI: {social_psi} ({social_verdict})
+  - Deal Intensity: {deal_intensity}/10
+
+  ### MARKET HEALTH SIGNALS
+  - Price Trend: {price_trend}
+  - Rating Churn Pattern: {churn_pattern} (score: {churn_score})
+  - New Product Flood Ratio: {new_product_ratio} | Rating Collapse Rate: {collapse_rate}
+  - BSR Listing Metabolism: **{bsr_churn_label}** | Snapshots: {bsr_snapshots}
+    - 3-Month Churn: {bsr_churn_3m} | 6-Month Churn: {bsr_churn_6m} | 12-Month Churn: {bsr_churn_12m}
+  - New Entrant Ratio (Sellersprite T-snapshot): {new_entrant_ratio}
+  - Seasonality: {seasonality_pattern} (score: {seasonality_score}, source: {seasonality_source}, n={seasonality_n_points} data points) | Peak Months: {peak_months}
+    Source legend: 'keyword_weekly_trends' = ABA weekly search-volume (direct consumer intent, independent of BSR history); 'bsr_daily_trends' = Xiyouzhaoci BSR proxy (indirect — reflects competitive rank, not raw demand). Prefer keyword source when available.
+  - Integrity Alert: {integrity_alert}
+    Coverage — Signal 1+2 (rating history): {integrity_hist_cov}
+    Coverage — Signal 3 (written/global ratio): {integrity_ratio_cov}
+  INTEGRITY TABLE RULE: In the Data Breakdown table, the Integrity Alert block MUST occupy THREE consecutive rows (never collapse into one):
+    Row 1: Metric='Integrity Alert' | Value=LOW/MEDIUM/HIGH/unknown | Definition=trigger ratio vs threshold (e.g. 'RSR 0/8, ratio 0/15, threshold >30%')
+    Row 2: Metric='Integrity: Rating History Coverage' | Value='{integrity_hist_cov}' | Definition=ASINs with ≥60-day Xiyouzhaoci history; basis for Signal 1 RSR + Signal 2 rating-jump
+    Row 3: Metric='Integrity: Review Ratio Coverage' | Value='{integrity_ratio_cov}' | Definition=ASINs with written/global ratio data; basis for Signal 3
+  If either coverage is below 20%, append '(low coverage — treat as directional only)' to the Integrity Alert value cell.
+
+  ### TOP ASIN EVIDENCE TABLE
+  {top_asin_table}
+  Render the above JSON as a markdown table with these exact columns (in this order): Rank | ASIN | Brand | Title | Price | Rating | Reviews | Units/Mo | Seller Type. Title: truncate at 40 chars with '…'. Place this table immediately after the Data Breakdown section under the heading '## Top 10 BSR Products (Evidence)'. Below the table add one line: '*Source: Amazon BSR page scrape + PastMonthSales badge. Units/Mo = Amazon-displayed past-month purchase count.*'
+
+  ### PRICE DISTRIBUTION
+  {price_distribution}
+  Render this JSON under the heading '## Price Distribution' immediately after the Top 10 BSR Products section. Always include:
+    1. A one-row percentile summary table: Min | P10 | P25 | Median | Mean | P75 | P90 | Max
+    2. A bucket frequency table: Price Range | # Products | Share
+  COVERAGE RULE: if 'n' < 'total_bsr', you MUST add a footnote line immediately below the bucket table: '† Price coverage: {n}/{total_bsr} BSR products had a valid price; # Products and Share are out of priced products only.'
+  Never cite a bucket Share% as a fraction of total BSR products when coverage is partial.
+  BIMODAL RULE: if 'is_bimodal' is true, the overall median is NOT representative — it falls in the gap between two clusters. You MUST:
+    a) Add a '⚠️ Bimodal distribution detected' alert above the tables, citing the valley range from 'valley_range'.
+    b) Render the 'tiers' array as a third table: Tier | Price Range | # Products | Share | Tier Median
+    c) State which tier the recommended_capital targets (it is always based on the overall median, which may be misleading — flag this explicitly).
+    d) In the Strategic Insights section, analyse each tier separately: barrier, competitive intensity, and positioning advice differ by tier.
+  If 'is_bimodal' is false, add one sentence on whether the distribution is skewed low, skewed high, or balanced, and the pricing implication.
+
+  ### COMPLIANCE & REGULATORY RISK
+  {compliance_risks}
+  This JSON is the output of a heuristic scanner that matched product titles and keywords against a regulatory database. Render it under the heading '## ⚠️ Compliance & Regulatory Risk' immediately after the Price Distribution section.
+  RENDERING RULES:
+  - If overall_risk == 'NONE': write a single line: 'No regulated-substance signals detected in BSR titles or keywords.' and skip the rest of this section.
+  - Otherwise, open with a risk badge: 🔴 CRITICAL / 🟠 HIGH / 🟡 MEDIUM based on overall_risk.
+  - For each entry in 'detected', render ONE paragraph covering: (a) which regulation applies, (b) what this means for FBA/logistics, (c) what a new entrant must do before listing. Cite the regulation name exactly as given — do NOT paraphrase regulation names.
+  - If fba_hazmat is true, add a callout box: '⚠️ FBA HAZMAT: One or more product types in this niche require Amazon Dangerous Goods approval. Budget for SDS preparation, hazmat review (1–4 weeks), and possible seller-fulfilled fallback.'
+  - Close the section with: '**Recommendation**: Before entering this niche, consult a regulatory attorney or Amazon-specialist compliance consultant. Listing without the required registrations or permits risks immediate ASIN suppression, account suspension, and civil liability.'
+  - STRICT: do NOT add regulations not present in the JSON. Do NOT say a product IS compliant or IS non-compliant — only state what registrations ARE REQUIRED.
+
+  ### DATA: {analysis_result}
+
+  ### OPPORTUNITY SIGNALS
+  {opportunity_signals}
+  These are computed facts from this niche's data. Use them as MANDATORY anchors in the '# Actionable Prioritization' section. Rules:
+  - 'review_floor_top20': the actual minimum reviews held by any BSR top-20 product. Use this as the specific target: 'You need X reviews to reach BSR #N, not X,000+.' NEVER write a generic review barrier without citing this number.
+  - 'price_gap_band' + 'price_gap_count': if present, name this specific band as the underserved price point. Write: 'Only N products occupy the $X–$Y range — this is the whitespace entry point.'
+  - 'least_crowded_sub_niche': if present, name this sub-niche explicitly as the recommended entry angle. Write: 'The [name] sub-segment has only N products in the top-50 — lowest competition density in this BSR.' Do NOT recommend sub-niches that are not in this data.
+  - 'weakest_rank_slot': if present, cite the specific rank, ASIN, and review count: 'BSR #[rank] is held with only [reviews] reviews — a directly achievable displacement target.'
+  - 'compliance_accessible_angle': if present, include this as a P0 item. A new entrant avoiding FIFRA registration is a structural cost advantage, not a nice-to-have.
+  - 'recent_breakthrough_examples': if present, name 1–2 product titles as proof that new entrants CAN break into this BSR within the last 12 months.
+  FORBIDDEN in the Actionable section: 'superior efficacy', 'compelling brand story', 'clear value proposition', 'eco-friendly formulation' (unless eco-friendly is in opportunity_signals), 'unique application method' — these are filler. Every P0/P1 item MUST contain at least one specific number or named sub-niche from the data above.
+
+  ### ADDITIONAL TACTICAL RULES
+  - 400-550 words. No filler.
+  - ANALYZE BID BARRIERS: Compare the suggested CPC to the median price. If CPC > 10% of median price, highlight extreme capital risk.
+  - Identify which specific keywords are 'High Barrier' and if PHRASE/EXACT gaps offer opportunities.
+  - CHURN ALERT: If churn_pattern is 'predatory_competition' or 'lemon_market', dedicate a paragraph to survival risk and whether the category is worth entering at all.
+  - BSR METABOLISM ALERT: If bsr_churn_label is 'fomo_spike_die', warn that this is a trend-driven category where products spike and die — advise on quick-in/quick-out strategy or avoidance. If 'blue_ocean', highlight that new entrants CAN sustain rankings and explain why. If 'mature_stable', note the high survivor_sales_share and advise on differentiation required to displace incumbents.
+  - SEASONALITY ALERT: If seasonality_pattern is 'strong_seasonal' or 'multi_peak_seasonal', advise on launch timing relative to peak_months and warn about off-season inventory risk.
+  - PRICE TREND ALERT: If price_trend is 'deflating', warn that this category is in a price war — margin compression is accelerating and late entrants face structural disadvantage. If 'inflating', note that premium positioning may be viable.
+  - NEW ENTRANT ALERT: If new_entrant_ratio > 40%, the category has low moat — many new products are breaking into the top-100, which means low ranking stickiness but also means a new entrant has a realistic shot. If < 15%, incumbents dominate and new entries rarely survive in the ranking.
+  - INTEGRITY ALERT: If integrity_alert is 'HIGH', explicitly warn that this category has a severely compromised compliance environment — widespread fake review injection or coordinated negative review attacks are likely. New entrants should budget for additional compliance overhead, and the true review barrier is likely higher than the raw data suggests. Combine with review_disparity to assess whether high-review incumbents are defensible or artificially inflated.
+  - PORTER'S FIVE FORCES — DIRECTION RULE (CRITICAL): In Porter's Five Forces, the 'Threat' rating refers to how easy it is for a new player or substitute to enter and succeed — NOT how hard the barriers are. The direction is always the INVERSE of barrier height. MANDATORY mappings from this report's data:
+    • Threat of New Entrants: LOW when new_entrant_ratio < 15% OR avg_reviews_top10 > 5,000 OR review_disparity > 5x — high barriers mean low threat. HIGH only when new_entrant_ratio > 40% AND review barrier is low.
+    • Bargaining Power of Buyers: HIGH when deal_intensity > 7 OR price compression is severe (many sellers forced to discount). LOW when buyers have few alternatives.
+    • Threat of Substitutes: HIGH when related keywords dominate search volume; LOW when the product category is specific and has no close alternatives.
+    • Rivalry: HIGH when CR3 < 30% (fragmented competition, many rivals) OR churn is high. LOW when a few brands dominate and competition is stable.
+    • Supplier Power: LOW for commodity inputs (most physical goods); HIGH only when key raw materials are scarce or proprietary.
+  FORBIDDEN: do NOT write 'Threat of New Entrants: High' and then explain high review barriers or low new_entrant_ratio — those data points map to LOW threat. If you catch yourself writing this, flip the label to match the evidence.
