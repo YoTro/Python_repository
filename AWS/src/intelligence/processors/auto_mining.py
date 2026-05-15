@@ -303,18 +303,26 @@ def build_auto_mining_actions(
             expected = round(clicks * (alpha / (alpha + beta)), 2)
             # Single-word queries → exact negative; multi-word → phrase negative
             suggested_match = "EXACT" if len(query.split()) == 1 else "PHRASE"
+            # expected_order_delta: orders actually at risk when the negative is added.
+            # Gate A/B (orders==0): use observed orders — delta = 0.  expected_orders_eb
+            # is the DETECTION signal (why we flag the term), NOT the forward impact.
+            # Gate C (orders>0, CPO > 3× breakeven): real conversions are lost; use
+            # observed rate as the best estimate of ongoing loss.
+            expected_order_delta = 0.0 if orders == 0 else -round(orders / days, 2)
             negatives.append({
-                "action":             "add_negative_keyword",
-                "priority":           neg_p,
-                "campaign_id":        cid,
-                "keyword_text":       query,
-                "suggested_match":    suggested_match,
-                "clicks":             clicks,
-                "orders":             orders,
-                "spend_total":        round(spend, 2),
-                "daily_spend":        daily_spend,
-                "expected_orders_eb": expected,
-                "breakeven_spend":    round(breakeven_spend, 2),
+                "action":               "add_negative_keyword",
+                "priority":             neg_p,
+                "campaign_id":          cid,
+                "keyword_text":         query,
+                "suggested_match":      suggested_match,
+                "clicks":               clicks,
+                "orders":               orders,
+                "spend_total":          round(spend, 2),
+                "daily_spend":          daily_spend,
+                "expected_orders_eb":   expected,
+                "expected_order_delta": expected_order_delta,
+                "expected_spend_delta": -daily_spend,
+                "breakeven_spend":      round(breakeven_spend, 2),
                 "rationale": (
                     f"${spend:.2f} spent ({clicks} clicks, {orders} orders); "
                     f"EB expected {expected:.1f} orders at account CVR "

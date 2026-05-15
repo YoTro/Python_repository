@@ -39,6 +39,7 @@ Config keys (with defaults):
   causal_metric           str   "orders" metric to model: orders | acos | clicks | spend
   stock_gate_days         int   21       min effective stock days before spend-up actions are P0/P1
   inbound_lead_days       int   30       assumed transit days for inbound_shipped (30=sea, 10=domestic US)
+  keyword_max_results     int   10000    max configured keywords to fetch per ASIN campaign set
 """
 
 import asyncio
@@ -133,6 +134,7 @@ _TTL_STATIC = 7200    # campaigns, keywords — account config, stable within a 
 _TTL_PERF   = 14400   # performance reports — fetched once per day range
 _TTL_CHANGE = 21600   # change history — historical data, 6h TTL to reduce /history API calls
 _TTL_YOY    = 86400   # YoY / trailing-ext ERP data — historical, rarely changes
+_KEYWORD_LIST_MAX_RESULTS = 10000
 
 
 def _l2_key(ctx: WorkflowContext, *parts) -> str:
@@ -309,15 +311,30 @@ async def _ensure_keyword_performance(ctx: WorkflowContext) -> List[Dict]:
 
 
 @_l2_cached(
-    l1_key_fn   = lambda ctx, campaign_ids: f"{_KEY_KEYWORDS}:{','.join(sorted(campaign_ids))}",
+    l1_key_fn   = lambda ctx, campaign_ids: (
+        f"{_KEY_KEYWORDS}:v2:{ctx.config.get('keyword_max_results', _KEYWORD_LIST_MAX_RESULTS)}:"
+        f"{','.join(sorted(campaign_ids))}"
+    ),
     l2_ttl      = _TTL_STATIC,
-    l2_parts_fn = lambda ctx, campaign_ids: ("keywords", _campaign_ids_hash(campaign_ids)),
+    l2_parts_fn = lambda ctx, campaign_ids: (
+        "keywords_v2",
+        ctx.config.get("keyword_max_results", _KEYWORD_LIST_MAX_RESULTS),
+        _campaign_ids_hash(campaign_ids),
+    ),
 )
 async def _ensure_keywords(ctx: WorkflowContext, campaign_ids: List[str]) -> List[Dict]:
     """Fetch keywords for a set of campaign_ids, cached by sorted id-tuple."""
-    return await _ads_client(ctx).list_keywords(
-        campaign_ids=campaign_ids, states=["ENABLED", "PAUSED"]
+    limit = ctx.config.get("keyword_max_results", _KEYWORD_LIST_MAX_RESULTS)
+    keywords = await _ads_client(ctx).list_keywords(
+        campaign_ids=campaign_ids,
+        states=["ENABLED", "PAUSED"],
+        max_results=limit,
     )
+    if len(keywords) >= limit:
+        logger.warning(
+            f"Keyword list reached keyword_max_results={limit}; keyword_count may still be truncated"
+        )
+    return keywords
 
 
 _ADVERT_PROD_MAX_DAYS = 31  # spAdvertisedProduct API window limit
@@ -1012,6 +1029,73 @@ def _p90_headroom(daily_perf: List[Dict], fallback: float) -> float:
     return min(round(p90 / avg * 1.5, 2), fallback)
 
 
+def _compute_daily_budget_metrics(
+    asin_daily: List[Dict],
+    daily_budget_cap: float,
+    days: int,
+    exhaustion_threshold: float = 0.85,
+) -> Dict:
+    """
+    Compute day-level budget utilization metrics from spAdvertisedProduct daily records.
+
+    Why this is more trustworthy than budget_exhaustion_pct:
+    - budget_exhaustion_pct = total_spend / (snapshot_budget × days): the denominator
+      uses the CURRENT budget snapshot, not the budget at each historical day.  If the
+      budget was raised or cut mid-period the aggregate is misleading.
+    - More importantly, the average masks distribution: 85% average could mean the
+      budget was hit every single day (chronic constraint) or that it was idle for
+      20 days then hit cap 10 days (campaign was paused).  These require different actions.
+    - Amazon allows ≤25% daily overspend for pacing, so a threshold of 0.85 (not 1.0)
+      correctly identifies days where the budget was effectively the binding constraint.
+
+    asin_daily records (spAdvertisedProduct) are already filtered to the target ASIN,
+    so we sum all records per date without further campaign filtering.
+    """
+    if not asin_daily or daily_budget_cap <= 0:
+        return {}
+
+    from collections import defaultdict
+    raw_by_date: dict = defaultdict(float)
+    for r in asin_daily:
+        dt = r.get("date")
+        if dt:
+            raw_by_date[dt] += float(r.get("spend") or 0)
+
+    if not raw_by_date:
+        return {}
+
+    sorted_dates = sorted(raw_by_date.keys())[-days:]
+    daily_vals = [raw_by_date[d] for d in sorted_dates]
+    active_vals = [v for v in daily_vals if v > 0]
+    active_days = len(active_vals)
+    if active_days == 0:
+        return {}
+
+    utilizations = [v / daily_budget_cap for v in active_vals]
+    exhausted = sum(1 for u in utilizations if u >= exhaustion_threshold)
+    avg_util = sum(utilizations) / len(utilizations)
+    p90_util = sorted(utilizations)[int(len(utilizations) * 0.9)]
+    exhausted_pct = round(exhausted / active_days * 100, 1)
+
+    if exhausted_pct >= 60:
+        pressure = "chronic"
+    elif exhausted_pct >= 30:
+        pressure = "moderate"
+    elif exhausted_pct >= 10:
+        pressure = "light"
+    else:
+        pressure = "none"
+
+    return {
+        "budget_active_days":          active_days,
+        "budget_exhausted_days":       exhausted,
+        "budget_exhausted_days_pct":   exhausted_pct,
+        "avg_daily_utilization_pct":   round(avg_util * 100, 1),
+        "p90_daily_utilization_pct":   round(p90_util * 100, 1),
+        "budget_pressure":             pressure,
+    }
+
+
 _MIN_KWS_FOR_STRATUM = 3   # min keyword count for a match-type-specific μ
 _MIN_CLICKS_FOR_MU   = 20  # min clicks per keyword to include in μ calculation
 
@@ -1648,6 +1732,12 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
         asin       = (item.get("asin") or "").upper()
         asin_daily = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
+
+        # Day-level budget pressure metrics (must use reconciled daily_budget from above,
+        # not the raw snapshot, so that budget-change periods are handled correctly).
+        budget_metrics = _compute_daily_budget_metrics(asin_daily, daily_budget, days)
+        item.update(budget_metrics)
+
         mu_by_mt, global_mu = _compute_cvr_prior(kw_perf)
         lp_input = _build_lp_input(
             kw_perf, camp_meta, brand_kws, headroom, placement_multiplier,
@@ -3306,8 +3396,14 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "total_sales":               item.get("total_sales"),
         "total_orders":              item.get("total_orders"),
         "account_acos":              item.get("account_acos"),
-        "budget_exhaustion_pct":     item.get("budget_exhaustion_pct"),
-        "budget_likely_exhausted":   item.get("budget_likely_exhausted"),
+        "budget_exhaustion_pct":       item.get("budget_exhaustion_pct"),    # legacy avg; prefer daily metrics below
+        "budget_likely_exhausted":     item.get("budget_likely_exhausted"),  # legacy bool; prefer budget_pressure
+        "budget_active_days":          item.get("budget_active_days"),
+        "budget_exhausted_days":       item.get("budget_exhausted_days"),
+        "budget_exhausted_days_pct":   item.get("budget_exhausted_days_pct"),
+        "avg_daily_utilization_pct":   item.get("avg_daily_utilization_pct"),
+        "p90_daily_utilization_pct":   item.get("p90_daily_utilization_pct"),
+        "budget_pressure":             item.get("budget_pressure"),
         "keyword_count":             item.get("keyword_count"),
         "avg_bid":                   item.get("avg_bid"),
         "match_type_dist":           item.get("match_type_dist"),
@@ -3322,7 +3418,11 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "ad_traffic_ratio":          item.get("ad_traffic_ratio"),
         "organic_traffic_ratio":     item.get("organic_traffic_ratio"),
         "rank_tracked_keywords":     item.get("rank_tracked_keywords"),
-        "rank_series_days":          len(next(iter(rank_series.values()), {})),
+        "rank_series_days":          sum(
+            1 for d in next(iter(rank_series.values()), {})
+            if data_start_date <= d <= data_end_date
+        ),
+        "rank_series_history_days":  len(next(iter(rank_series.values()), {})),
         "market_trends_keywords":    list(market_trends.keys()),
         "change_attributions_count":  len(attributions),
         "attribution_suspect_count":  sum(1 for a in attributions if a.get("attribution_suspect")),
@@ -3489,11 +3589,19 @@ def _chart_interpretation(item: Dict, name: str) -> str:
     account_acos = item.get("account_acos")
 
     if name == "daily_trend":
-        exh    = item.get("budget_exhaustion_pct") or 0
-        exh_s  = f"{exh:.1f}%"
+        pressure = item.get("budget_pressure")
+        exh_days = item.get("budget_exhausted_days")
+        act_days = item.get("budget_active_days")
+        avg_util = item.get("avg_daily_utilization_pct")
+        if pressure and pressure != "none" and exh_days is not None and act_days:
+            exh_s = f"Budget {pressure} pressure ({exh_days}/{act_days}d hit cap)"
+        elif avg_util is not None:
+            exh_s = f"Budget utilisation avg {avg_util:.1f}% of daily cap"
+        else:
+            exh_s = f"Budget utilisation {(item.get('budget_exhaustion_pct') or 0):.1f}%"
         acos_s = f"ACOS {account_acos:.0f}%" if account_acos else "ACOS N/A"
         above  = account_acos and account_acos > acos_warn
-        return (f"Budget utilisation {exh_s} of daily cap; {acos_s} — "
+        return (f"{exh_s}; {acos_s} — "
                 f"{'above' if above else 'at or below'} target {acos_warn:.0f}%. "
                 f"Orange dashed lines = change events.")
 
