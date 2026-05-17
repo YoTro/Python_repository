@@ -40,3 +40,31 @@ class ERPClient(ABC):
     ) -> List[Dict[str, Any]]:
         """Sales orders for a SKU over the past N days. Override if supported."""
         raise NotImplementedError(f"{type(self).__name__} does not implement get_sales_orders")
+
+    def get_fba_shipment_tracking(
+        self,
+        sku: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        transport_type: Optional[str] = None,
+        shipment_status: Optional[List[str]] = None,
+        search_field: str = "shipment_id",
+        search_value: Optional[str] = None,
+        **kwargs,
+    ) -> List[Dict[str, Any]]:
+        """
+        Historical FBA shipment records with stage timestamps.
+
+        Each record should contain (provider fills what it has):
+          shipment_id, shipment_name, sku, quantity, transport_type,
+          domestic_ship_date      — origin dispatch date
+          overseas_arrival_date   — overseas warehouse arrival date
+          overseas_ship_date      — overseas warehouse departure date
+          fba_received_date       — FBA receive-complete date
+          status
+
+        search_field valid values (Lingxing):
+          shipment_id, destination_fulfillment_center_id,
+          product_sku, fnsku, asin, parent_asin, product_name
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement get_fba_shipment_tracking")

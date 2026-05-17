@@ -264,6 +264,134 @@ class SPAPIClient:
         )
         return data.get("payload", [])
 
+    # ── FBA Inbound Shipments ──────────────────────────────────────────────
+
+    async def get_inbound_shipments(
+        self,
+        shipment_status_list: Optional[List[str]] = None,
+        last_updated_after: Optional[str] = None,
+        last_updated_before: Optional[str] = None,
+        query_type: str = "DATE_RANGE",
+        max_pages: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """
+        FBA Inbound Shipments API v0 — list historical shipments.
+
+        Rate limit: 2 req/s, burst 30.  Paginated via NextToken.
+
+        Parameters
+        ----------
+        shipment_status_list : filter by status, e.g. ["CLOSED", "RECEIVING"].
+                               Defaults to ["CLOSED"] when query_type="DATE_RANGE".
+        last_updated_after   : ISO-8601 UTC string, e.g. "2023-01-01T00:00:00Z".
+        last_updated_before  : ISO-8601 UTC string.
+        query_type           : "DATE_RANGE" (requires last_updated_after) or
+                               "SHIPMENT" (requires ShipmentIdList).
+        max_pages            : safety cap on pagination (default 20).
+
+        Returns
+        -------
+        List of raw shipment dicts from the API payload.
+        Each dict includes: ShipmentId, ShipmentName, ShipmentStatus,
+        DestinationFulfillmentCenterId, LastUpdatedDate, CreatedDate,
+        ShipFromAddress, LabelPrepType, AreCasesRequired, ConfirmedNeedByDate.
+        """
+        statuses = shipment_status_list or ["CLOSED"]
+        # DATE_RANGE requires both bounds; default LastUpdatedBefore to now.
+        if not last_updated_before:
+            last_updated_before = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        params: Dict[str, Any] = {
+            "MarketplaceId":       self.auth.marketplace_id,
+            "QueryType":           query_type,
+            "ShipmentStatusList":  ",".join(statuses),
+            "LastUpdatedAfter":    last_updated_after or "2020-01-01T00:00:00Z",
+            "LastUpdatedBefore":   last_updated_before,
+        }
+
+        loop = asyncio.get_event_loop()
+        all_shipments: List[Dict] = []
+        page = 0
+        while page < max_pages:
+            data = await loop.run_in_executor(
+                None, lambda p=params: self._get("/fba/inbound/v0/shipments", p)
+            )
+            payload = data.get("payload", {})
+            shipments = payload.get("ShipmentData", [])
+            all_shipments.extend(shipments)
+            next_token = payload.get("NextToken")
+            if not next_token or not shipments:
+                break
+            params = {"MarketplaceId": self.auth.marketplace_id,
+                      "QueryType": "NEXT_TOKEN", "NextToken": next_token}
+            page += 1
+
+        logger.info(f"get_inbound_shipments: fetched {len(all_shipments)} shipments "
+                    f"(status={statuses}, pages={page+1})")
+        return all_shipments
+
+    async def get_inbound_plans(
+        self,
+        status: Optional[str] = None,
+        max_pages: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        FBA Inbound Plans API 2024-03-20 — list inbound plans with date fields.
+
+        Unlike v0 shipments, each plan record includes:
+          createdAt       — plan creation date (ISO-8601 UTC)
+          lastUpdatedAt   — last status change date; when status=SHIPPED this
+                            approximates the overseas warehouse departure date
+          sourceAddress   — countryCode identifies sea (CN) vs domestic shipments
+          status          — ACTIVE | SHIPPED | VOIDED
+
+        Rate limit: 2 req/s.  Paginated via paginationToken.
+
+        Parameters
+        ----------
+        status    : filter by plan status ("ACTIVE", "SHIPPED", or "VOIDED").
+                    Pass None to fetch all statuses across separate calls.
+        max_pages : pagination safety cap.
+
+        Returns
+        -------
+        List of inbound plan dicts.
+        """
+        loop = asyncio.get_event_loop()
+
+        async def _fetch_status(s: Optional[str]) -> List[Dict]:
+            params: Dict[str, Any] = {"pageSize": 30}  # API max is 30
+            if s:
+                params["status"] = s
+            results = []
+            pages = 0
+            while pages < max_pages:
+                data = await loop.run_in_executor(
+                    None, lambda p=params: self._get("/inbound/fba/2024-03-20/inboundPlans", p)
+                )
+                results.extend(data.get("inboundPlans", []))
+                token = data.get("pagination", {}).get("nextToken") if isinstance(data.get("pagination"), dict) else data.get("paginationToken")
+                if not token:
+                    break
+                params = {"pageSize": 30, "paginationToken": token}
+                if s:
+                    params["status"] = s
+                pages += 1
+            return results
+
+        if status:
+            plans = await _fetch_status(status)
+        else:
+            # Fetch all three status groups
+            results = await asyncio.gather(
+                _fetch_status("SHIPPED"),
+                _fetch_status("ACTIVE"),
+                _fetch_status("VOIDED"),
+            )
+            plans = [p for group in results for p in group]
+
+        logger.info(f"get_inbound_plans: fetched {len(plans)} plans (status={status})")
+        return plans
+
     # ── Catalog ────────────────────────────────────────────────────────────
 
     async def get_catalog_item(self, asin: str) -> Dict[str, Any]:

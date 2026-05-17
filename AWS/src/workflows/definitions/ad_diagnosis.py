@@ -38,7 +38,10 @@ Config keys (with defaults):
   enable_causal_analysis  bool  True     run ITS / CausalImpact / DML on change events
   causal_metric           str   "orders" metric to model: orders | acos | clicks | spend
   stock_gate_days         int   21       min effective stock days before spend-up actions are P0/P1
-  inbound_lead_days       int   30       assumed transit days for inbound_shipped (30=sea, 10=domestic US)
+  inbound_lead_days       int   30       assumed transit days for inbound_shipped; overridden by actual
+                                         sea-transit p75 from Lingxing when enable_lingxing=True
+  enable_lingxing         bool  auto     fetch shipment lead-time from Lingxing ERP; defaults to True
+                                         when LINGXING_ACCOUNT env var is set, False otherwise
   keyword_max_results     int   10000    max configured keywords to fetch per ASIN campaign set
 """
 
@@ -50,7 +53,7 @@ import logging
 import math
 import os
 import re
-from datetime import datetime, timedelta, date as _date_cls
+from datetime import datetime, timedelta, date as _date_cls, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -87,6 +90,7 @@ _KEY_PLACEMENT        = "ad_diag:placement"
 _KEY_COVARIATES       = "ad_diag:covariates"
 _KEY_YOY_PERF         = "ad_diag:yoy_perf"        # ERP YoY post-window (364d back)
 _KEY_TRAILING_EXT     = "ad_diag:trailing_ext"     # ERP trailing 3M extension
+_KEY_LEAD_TIME        = "ad_diag:lead_time"        # Lingxing shipment lead-time (store-wide)
 
 # ── Action priority tiers ────────────────────────────────────────────────────
 # Used by campaign_actions, keyword_actions, and mining_actions alike.
@@ -493,6 +497,87 @@ async def _enrich_inventory(item: Dict, ctx: WorkflowContext) -> Dict:
         return {"inventory_records": [], "total_available": 0, "inventory_risk": False}
 
 
+async def _enrich_shipment_lead_time(item: Dict, ctx: WorkflowContext) -> Dict:
+    """
+    Fetch and compute store-wide FBA shipment lead-time distributions from Lingxing ERP.
+
+    This is store-level data (shared across all ASINs), so the result is cached under
+    _KEY_LEAD_TIME and reused for every item in the same workflow run.
+
+    Populates item["shipment_lead_time"] with the output of compute_quarterly_lead_times:
+      {
+        "sea_transit":      {"overall": {n,p25,median,p75,p90,max,mean}, "by_quarter": {...}},
+        "overseas_to_fba":  {"overall": {...}, "by_quarter": {...}},
+        "by_quarter_summary": {"2024-Q3": {sea_transit_median, fba_processing_median, ...}},
+        "total_input": N, "skipped": M,
+      }
+    """
+    # Store-level cache: compute once per workflow run, reuse for every ASIN.
+    if _KEY_LEAD_TIME in ctx.cache:
+        item["shipment_lead_time"] = ctx.cache[_KEY_LEAD_TIME]
+        return item
+
+    try:
+        from src.mcp.servers.erp.lingxing.client import LingxingClient
+        from src.intelligence.processors.shipment_lead_time import (
+            adapt_lingxing_shipments,
+            compute_quarterly_lead_times,
+        )
+
+        loop = asyncio.get_event_loop()
+
+        def _fetch() -> List[Dict]:
+            client = LingxingClient()
+            if not client.token:
+                raise RuntimeError("Lingxing: no auth token")
+            end_dt   = _date_cls.today()
+            start_dt = end_dt.replace(year=end_dt.year - 2)
+            return client.get_fba_shipment_tracking(
+                start_date=start_dt.strftime("%Y-%m-%d"),
+                end_date=end_dt.strftime("%Y-%m-%d"),
+                fetch_all=True,
+            )
+
+        raw        = await loop.run_in_executor(None, _fetch)
+        normalised = adapt_lingxing_shipments(raw)
+
+        # Dual-phase analysis:
+        #   Phase A — sea transit: SHIPPED → RECEIVING (departure to FBA first scan)
+        #   Phase B — FBA processing: RECEIVING → CLOSED
+        result = compute_quarterly_lead_times(
+            normalised,
+            sea_start_field   = "domestic_ship_date",
+            sea_end_field     = "overseas_arrival_date",
+            ovs_start_field   = "overseas_arrival_date",
+            ovs_end_field     = "fba_received_date",
+            # local_to_fba: SHIPPED→RECEIVING ≤ 12d = domestic 3PL/warehouse→FBA.
+            # sea_transit uses min=13 so the two populations are mutually exclusive.
+            local_start_field = "domestic_ship_date",
+            local_end_field   = "overseas_arrival_date",
+            local_min_days    = 0,
+            local_max_days    = 12,
+            quarter_field     = "overseas_arrival_date",
+            sea_min_days      = 13,
+            sea_max_days      = 180,
+            ovs_min_days      = 0,
+            ovs_max_days      = 60,
+        )
+
+        ctx.cache[_KEY_LEAD_TIME] = result
+        item["shipment_lead_time"] = result
+        logger.info(
+            f"_enrich_shipment_lead_time: {result.get('total_input', 0)} shipments, "
+            f"sea n={result['sea_transit']['overall'].get('n', 0)}, "
+            f"fba n={result['overseas_to_fba']['overall'].get('n', 0)}"
+        )
+    except Exception as e:
+        logger.warning(f"_enrich_shipment_lead_time failed: {e}")
+        ctx.cache[_KEY_LEAD_TIME] = {}
+        item["shipment_lead_time"] = {}
+
+    return item
+
+
 async def _enrich_order_metrics(item: Dict, ctx: WorkflowContext) -> Dict:
     """
     Fetch total units ordered via SP-API getOrderMetrics for this ASIN.
@@ -619,12 +704,16 @@ def _build_campaign_result(matched: List[Dict], strategy: str) -> Dict:
     total_daily_budget = sum(
         c.get("daily_budget") or 0 for c in matched if c.get("state") == "ENABLED"
     )
-    strategies = list({c.get("bidding_strategy") for c in matched if c.get("bidding_strategy")})
+    strategy_counts: Dict[str, int] = {}
+    for c in matched:
+        s = c.get("bidding_strategy")
+        if s:
+            strategy_counts[s] = strategy_counts.get(s, 0) + 1
     return {
         "campaigns":               matched,
         "campaign_ids":            campaign_ids,
         "total_daily_budget":      total_daily_budget,
-        "bidding_strategies":      strategies,
+        "bidding_strategies":      strategy_counts,
         "campaign_match_strategy": strategy,
     }
 
@@ -1077,7 +1166,7 @@ def _compute_daily_budget_metrics(
     p90_util = sorted(utilizations)[int(len(utilizations) * 0.9)]
     exhausted_pct = round(exhausted / active_days * 100, 1)
 
-    if exhausted_pct >= 60:
+    if exhausted_pct >= 75:
         pressure = "chronic"
     elif exhausted_pct >= 30:
         pressure = "moderate"
@@ -1094,6 +1183,124 @@ def _compute_daily_budget_metrics(
         "p90_daily_utilization_pct":   round(p90_util * 100, 1),
         "budget_pressure":             pressure,
     }
+
+
+def _compute_campaign_budget_coverage(
+    camp_meta: Dict[str, Dict],
+    asin_daily: List[Dict],
+    change_events: List[Dict],
+    days: int,
+    exhaustion_threshold: float = 0.85,
+) -> List[Dict]:
+    """
+    Per-campaign intraday budget coverage: did each campaign's daily budget
+    last through the full day?
+
+    Algorithm:
+    1. Reconstruct the effective budget cap for each historical date using
+       BUDGET_AMOUNT change-history events (walk backwards from current snapshot).
+    2. For each (campaign, date), compare daily spend vs. effective cap.
+    3. If spend ≥ 85% of cap the budget was binding that day — the campaign
+       likely stopped serving ads before midnight (mid-day exhaustion).
+
+    Returns one dict per campaign, sorted by exhausted_pct descending.
+    """
+    if not asin_daily or not camp_meta:
+        return []
+
+    # Build per-campaign daily spend: {cid: {date: spend}}
+    daily_by_cid: Dict[str, Dict[str, float]] = {}
+    for r in asin_daily:
+        cid = str(r.get("campaign_id", "") or "")
+        dt  = r.get("date") or r.get("report_date", "")
+        if not cid or not dt:
+            continue
+        daily_by_cid.setdefault(cid, {})
+        daily_by_cid[cid][dt] = daily_by_cid[cid].get(dt, 0.0) + float(r.get("spend") or 0)
+
+    # Reconstruct historical budget caps from BUDGET_AMOUNT change events.
+    # Change events are stored oldest-first after sorting; each event records
+    # the budget transition (previousValue → newValue) at changed_at (epoch ms).
+    # Walking the events forward lets us know what budget was active on each date.
+    budget_changes: Dict[str, List[Tuple[str, float]]] = {}  # cid → [(date, new_budget)]
+    for ev in sorted(change_events, key=lambda e: e.get("changed_at") or 0):
+        if ev.get("change_type") != "BUDGET_AMOUNT":
+            continue
+        cid  = str(ev.get("campaign_id") or "")
+        ts   = ev.get("changed_at")
+        nval = ev.get("new_value")
+        if not cid or not ts or nval is None:
+            continue
+        try:
+            epoch_s  = int(ts) / 1000
+            ev_date  = datetime.fromtimestamp(epoch_s, tz=timezone.utc).strftime("%Y-%m-%d")
+            budget_changes.setdefault(cid, []).append((ev_date, float(nval)))
+        except (TypeError, ValueError, OSError):
+            continue
+
+    results = []
+    for cid, meta in camp_meta.items():
+        cid_str      = str(cid)
+        current_cap  = float(meta.get("daily_budget") or 0)
+        if current_cap <= 0:
+            continue
+        camp_daily   = daily_by_cid.get(cid_str, {})
+        sorted_dates = sorted(camp_daily.keys())[-days:]
+        if not sorted_dates:
+            continue
+
+        # Reconstruct effective cap per date.  Strategy: start with current_cap,
+        # then for each date scan budget_changes for events that occurred AFTER
+        # that date — if any exist, the cap on that date was previousValue, not
+        # current_cap. We approximate by using the snapshot before that event.
+        changes_for_cid = sorted(budget_changes.get(cid_str, []), key=lambda x: x[0])
+
+        def _cap_on_date(dt: str) -> float:
+            # Walk changes forward; the cap on `dt` is the value that was active
+            # just before or at the most recent change on/before `dt`.
+            cap = current_cap
+            for ev_date, new_budget in reversed(changes_for_cid):
+                if ev_date > dt:
+                    # This change happened after `dt`, so on `dt` the cap was
+                    # the previousValue.  We don't have previousValue here, but
+                    # we can use the new_budget of the next-earlier change.
+                    cap = new_budget
+                else:
+                    break
+            return cap if cap > 0 else current_cap
+
+        exhausted = 0
+        active    = 0
+        total_spend = 0.0
+        for dt in sorted_dates:
+            spend = camp_daily.get(dt, 0.0)
+            if spend <= 0:
+                continue
+            active += 1
+            total_spend += spend
+            cap = _cap_on_date(dt)
+            if cap > 0 and spend / cap >= exhaustion_threshold:
+                exhausted += 1
+
+        if active == 0:
+            continue
+
+        exhausted_pct   = round(exhausted / active * 100, 1)
+        all_day_pct     = round(100 - exhausted_pct, 1)
+        avg_daily_spend = round(total_spend / active, 2)
+        results.append({
+            "campaign_id":      cid_str,
+            "campaign_name":    (meta.get("campaign_name") or meta.get("name") or cid_str)[:40],
+            "active_days":      active,
+            "exhausted_days":   exhausted,
+            "exhausted_pct":    exhausted_pct,
+            "all_day_pct":      all_day_pct,
+            "current_budget":   current_cap,
+            "avg_daily_spend":  avg_daily_spend,
+        })
+
+    results.sort(key=lambda x: x["exhausted_pct"], reverse=True)
+    return results
 
 
 _MIN_KWS_FOR_STRATUM = 3   # min keyword count for a match-type-specific μ
@@ -1732,11 +1939,29 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
         asin       = (item.get("asin") or "").upper()
         asin_daily = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
+        if not asin_daily:
+            # Fallback: filter the all-campaigns daily cache by this ASIN's campaign_ids.
+            # This handles test fixtures and edge cases where the per-ASIN L1 key was
+            # not populated (e.g., _ensure_daily_performance ran from L2 without writing L1).
+            _cid_strs  = {str(cid) for cid in (item.get("campaign_ids") or [])}
+            asin_daily = [
+                r for r in ctx.cache.get(_KEY_DAILY_PERF, [])
+                if str(r.get("campaign_id", "")) in _cid_strs
+            ]
 
         # Day-level budget pressure metrics (must use reconciled daily_budget from above,
         # not the raw snapshot, so that budget-change periods are handled correctly).
         budget_metrics = _compute_daily_budget_metrics(asin_daily, daily_budget, days)
         item.update(budget_metrics)
+
+        # Per-campaign intraday budget coverage: did each campaign last through the day?
+        # Uses BUDGET_AMOUNT change-history events to reconstruct historical caps so
+        # comparisons aren't skewed by mid-period budget increases.
+        item["campaign_budget_coverage"] = _compute_campaign_budget_coverage(
+            camp_meta, asin_daily,
+            item.get("change_events") or [],
+            days,
+        )
 
         mu_by_mt, global_mu = _compute_cvr_prior(kw_perf)
         lp_input = _build_lp_input(
@@ -1869,7 +2094,11 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
         # ── Inventory gate ────────────────────────────────────────────────
         stock_gate_days   = ctx.config.get("stock_gate_days", 21)
-        inbound_lead_days = ctx.config.get("inbound_lead_days", 30)
+        # Use actual p75 sea transit from Lingxing data if available; fall back to config.
+        _lt_sea = (item.get("shipment_lead_time") or {}).get("sea_transit", {}).get("overall", {})
+        inbound_lead_days = int(
+            _lt_sea.get("p75") or ctx.config.get("inbound_lead_days", 30)
+        )
         daily_sales_val   = item.get("daily_sales") or 0
         inbound_receiving = item.get("inbound_receiving") or 0
         inbound_shipped   = item.get("inbound_shipped") or 0
@@ -2769,12 +2998,198 @@ def _chart_lp_waterfall(item: Dict) -> Optional[bytes]:
     ax.set_xlabel("Daily Spend ($)", fontsize=9)
     ax.set_title(f"{item.get('asin','?')} — LP Budget Allocation vs Actual  "
                  f"(+/- = LP reallocation delta)", fontsize=10, pad=6)
-    ax.legend(fontsize=8, loc="lower right")
+    ax.legend(fontsize=8, loc="upper center",
+              bbox_to_anchor=(0.5, -0.12), ncol=3,
+              framealpha=0.6, borderpad=0.5)
     for i, row in enumerate(rows):
         delta = (row.get("lp_optimal_spend") or 0) - (row.get("actual_daily_spend") or 0)
         if abs(delta) >= 0.5:
             ax.text(max(lp_opt[i], current[i]) + 0.5, y[i] + 0.22,
                     f"{delta:+.0f}", fontsize=7, va="center", color=_C["blue"])
+    fig.tight_layout(rect=[0, 0.08, 1, 1])
+    return _fig_to_png(fig)
+
+
+def _chart_campaign_budget_coverage(item: Dict) -> Optional[bytes]:
+    """
+    Per-campaign intraday budget coverage stacked bar chart.
+    Each bar = active_days split into: all-day (green) vs exhausted (red/orange).
+    Right-hand side: spend vs. budget cap comparison bars.
+    """
+    coverage: List[Dict] = item.get("campaign_budget_coverage") or []
+    coverage = [c for c in coverage if c.get("active_days", 0) > 0]
+    if not coverage:
+        return None
+
+    rows = coverage[:8]  # max 8 campaigns
+    names        = [r["campaign_name"][:28] for r in rows]
+    active       = [r["active_days"]        for r in rows]
+    exhausted    = [r["exhausted_days"]     for r in rows]
+    all_day      = [a - e for a, e in zip(active, exhausted)]
+    exh_pct      = [r["exhausted_pct"]      for r in rows]
+    avg_spend    = [r["avg_daily_spend"]    for r in rows]
+    cap          = [r["current_budget"]     for r in rows]
+
+    def _bar_color(pct: float) -> str:
+        if pct >= 75:   return _C["red"]
+        if pct >= 30:   return _C["orange"]
+        return _C["green"]
+
+    y = np.arange(len(rows))
+    fig, (ax_days, ax_spend) = plt.subplots(
+        1, 2, figsize=(12, max(3.5, len(rows) * 0.65)),
+        gridspec_kw={"width_ratios": [1.4, 1.0]},
+        facecolor=_C["bg"],
+    )
+
+    # ── Left: stacked day bars ─────────────────────────────────────────────
+    ax_days.set_facecolor(_C["bg"])
+    ax_days.barh(y, all_day,   left=0,       height=0.55,
+                 color=_C["green"], alpha=0.85, label="Budget lasted all day")
+    for i, (e, a, pct) in enumerate(zip(exhausted, all_day, exh_pct)):
+        color = _bar_color(pct)
+        ax_days.barh(i, e, left=a, height=0.55,
+                     color=color, alpha=0.85,
+                     label=("Mid-day exhausted" if i == 0 else "_nolegend_"))
+        # Label inside exhausted segment if wide enough
+        if e >= 1:
+            ax_days.text(a + e / 2, i, f"{pct:.0f}%",
+                         ha="center", va="center", fontsize=7.5,
+                         color="white", fontweight="bold")
+
+    ax_days.set_yticks(y)
+    ax_days.set_yticklabels(names, fontsize=8)
+    ax_days.set_xlabel("Active days", fontsize=9)
+    ax_days.set_title("Budget Coverage\n(green = full day | colored = ran dry)",
+                      fontsize=9, pad=6)
+    ax_days.legend(fontsize=7.5, loc="lower right", framealpha=0.5)
+
+    # ── Right: spend vs cap comparison ────────────────────────────────────
+    ax_spend.set_facecolor(_C["bg"])
+    ax_spend.barh(y + 0.18, cap,       0.30, color=_C["grey"],
+                  alpha=0.45, label="Daily budget cap")
+    for i, (s, c_val, pct) in enumerate(zip(avg_spend, cap, exh_pct)):
+        color = _bar_color(pct)
+        ax_spend.barh(i - 0.18, s, 0.30,
+                      color=color, alpha=0.85,
+                      label=("Avg daily spend" if i == 0 else "_nolegend_"))
+        gap = s - c_val
+        gap_str = f"${gap:+.0f}" if abs(gap) >= 0.5 else ""
+        ax_spend.text(max(s, c_val) + 0.5, i,
+                      gap_str, fontsize=7, va="center",
+                      color=_C["red"] if gap > 0 else _C["grey"])
+
+    ax_spend.set_yticks(y)
+    ax_spend.set_yticklabels([])
+    ax_spend.set_xlabel("Daily Spend ($)", fontsize=9)
+    ax_spend.set_title("Avg Spend vs Cap\n(grey = cap | colored = avg spend)",
+                       fontsize=9, pad=6)
+    ax_spend.legend(fontsize=7.5, loc="lower right", framealpha=0.5)
+
+    fig.suptitle(f"{item.get('asin','?')} — Campaign Intraday Budget Coverage",
+                 fontsize=10, y=1.01)
+    fig.tight_layout()
+    return _fig_to_png(fig)
+
+
+def _chart_budget_utilization(item: Dict, daily_perf: List[Dict]) -> Optional[bytes]:
+    """
+    Daily spend vs budget cap bar chart, bars colour-coded by utilization tier:
+      🔴 red    ≥ 85 % of cap  (exhausted — budget is binding)
+      🟡 orange 60–84 %        (high utilization)
+      🔵 blue   < 60 %         (healthy headroom)
+      grey      inactive day   (zero spend)
+    Horizontal lines at 85 % (exhaustion threshold) and 100 % (cap).
+    """
+    if not daily_perf:
+        return None
+
+    budget_cap = float(item.get("total_daily_budget") or 0)
+    if budget_cap <= 0:
+        return None
+
+    # Aggregate spend across all campaigns per date
+    by_date: Dict[str, float] = {}
+    for r in daily_perf:
+        d = r.get("date") or r.get("report_date", "")
+        if d:
+            by_date[d] = by_date.get(d, 0.0) + float(r.get("spend") or 0)
+
+    dates = sorted(by_date)
+    if len(dates) < 3:
+        return None
+
+    dt_objs = [_date_cls.fromisoformat(d) for d in dates]
+    spends   = [by_date[d] for d in dates]
+
+    # Colour each bar by utilization tier
+    bar_colors = []
+    for s in spends:
+        util = s / budget_cap
+        if s == 0:
+            bar_colors.append(_C["grey"])
+        elif util >= 0.85:
+            bar_colors.append(_C["red"])
+        elif util >= 0.60:
+            bar_colors.append(_C["orange"])
+        else:
+            bar_colors.append(_C["light_blue"])
+
+    pressure     = item.get("budget_pressure") or "unknown"
+    exh_days     = item.get("budget_exhausted_days")
+    act_days     = item.get("budget_active_days")
+    avg_util     = item.get("avg_daily_utilization_pct")
+    p90_util     = item.get("p90_daily_utilization_pct")
+
+    exh_label = (f"{exh_days}/{act_days}d hit cap" if exh_days is not None and act_days
+                 else "")
+    avg_label = (f"avg {avg_util:.0f}%  p90 {p90_util:.0f}%"
+                 if avg_util is not None and p90_util is not None else "")
+
+    fig, ax = plt.subplots(figsize=(10, 4), facecolor=_C["bg"])
+    ax.set_facecolor(_C["bg"])
+
+    bar_w = max(0.6, 0.8 * (dt_objs[-1] - dt_objs[0]).days / len(dt_objs))
+    ax.bar(dt_objs, spends, width=bar_w, color=bar_colors, zorder=2)
+
+    # Budget cap line and 85 % threshold line
+    ax.axhline(budget_cap,          color=_C["grey"],   lw=1.2, linestyle="-",
+               label=f"Budget cap ${budget_cap:.0f}/day", zorder=3)
+    ax.axhline(budget_cap * 0.85,   color=_C["red"],    lw=1.0, linestyle="--",
+               label="85 % cap (exhaustion threshold)", zorder=3)
+
+    # Change-event vertical markers
+    change_dates = {a.get("changed_at") for a in (item.get("change_attributions") or [])
+                    if a.get("changed_at")}
+    for cd in change_dates:
+        try:
+            ax.axvline(_date_cls.fromisoformat(cd), color=_C["orange"],
+                       lw=1.0, linestyle="--", alpha=0.7, zorder=4)
+        except Exception:
+            pass
+
+    # Legend patches for colour tiers
+    from matplotlib.patches import Patch
+    legend_patches = [
+        Patch(color=_C["red"],        label="Exhausted ≥ 85 %"),
+        Patch(color=_C["orange"],     label="High 60–84 %"),
+        Patch(color=_C["light_blue"], label="Healthy < 60 %"),
+        Patch(color=_C["grey"],       label="Inactive"),
+    ]
+    ax.legend(handles=legend_patches, fontsize=7, loc="upper left",
+              ncol=2, framealpha=0.7)
+
+    ax.set_ylabel("Daily Spend ($)", fontsize=9)
+    title_parts = [f"{item.get('asin','?')} — Budget Utilization",
+                   f"pressure={pressure}"]
+    if exh_label:
+        title_parts.append(exh_label)
+    if avg_label:
+        title_parts.append(avg_label)
+    ax.set_title("  |  ".join(title_parts), fontsize=10, pad=6)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+    ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+    fig.autofmt_xdate(rotation=30)
     fig.tight_layout()
     return _fig_to_png(fig)
 
@@ -2817,8 +3232,11 @@ def _chart_rank_trend(item: Dict) -> Optional[bytes]:
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
     ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
     fig.autofmt_xdate(rotation=30)
-    ax.legend(fontsize=7, loc="upper right")
-    fig.tight_layout()
+    n_kw = min(len(rank_series), 5)
+    ax.legend(fontsize=7, loc="upper center",
+              bbox_to_anchor=(0.5, -0.18), ncol=n_kw,
+              framealpha=0.6, borderpad=0.5)
+    fig.tight_layout(rect=[0, 0.08, 1, 1])
     return _fig_to_png(fig)
 
 
@@ -3034,38 +3452,139 @@ def _chart_kw_quadrant(item: Dict) -> Optional[bytes]:
     return _fig_to_png(fig)
 
 
-def _chart_placement_bar(item: Dict) -> Optional[bytes]:
+def _chart_placement_donut(item: Dict) -> Optional[bytes]:
     placement  = item.get("placement_performance") or {}
     configured = item.get("placement_configured_pcts") or {}
     keys = [k for k in placement if placement[k].get("acos") is not None]
     if not keys:
         return None
-    label_map = {
-        "PLACEMENT_TOP_OF_SEARCH":  "Top of Search",
-        "PLACEMENT_REST_OF_SEARCH": "Rest of Search",
-        "PLACEMENT_PRODUCT_PAGE":   "Product Page",
-    }
-    display  = [label_map.get(k, k)               for k in keys]
-    act_acos = [placement[k]["acos"]               for k in keys]
-    cfg_pct  = [configured.get(k) or 0            for k in keys]
-    spend_sh = [placement[k].get("spend_share", 0) for k in keys]
-    x = np.arange(len(keys)); w = 0.35
 
-    fig, ax = plt.subplots(figsize=(10, 4.0), facecolor=_C["bg"])
-    ax.set_facecolor(_C["bg"])
-    bars1 = ax.bar(x - w/2, act_acos, w, color=_C["blue"],   alpha=0.85, label="Actual ACOS (%)")
-    bars2 = ax.bar(x + w/2, cfg_pct,  w, color=_C["orange"], alpha=0.85, label="Configured Bid Adj. (%)")
+    label_map = {
+        "PLACEMENT_TOP_OF_SEARCH":  "Top of\nSearch",
+        "PLACEMENT_REST_OF_SEARCH": "Rest of\nSearch",
+        "PLACEMENT_PRODUCT_PAGE":   "Product\nPage",
+    }
+    # Fixed colors keyed by placement name — ensures each slot is always the
+    # same color regardless of how many placements are present.
+    _COLOR_BY_PLACEMENT = {
+        "top of search on-amazon":  "#2563EB",  # blue
+        "detail page on-amazon":    "#F59E0B",  # amber
+        "other on-amazon":          "#8B5CF6",  # purple
+        "off amazon":               "#10B981",  # teal
+        "placement_top_of_search":  "#2563EB",
+        "placement_rest_of_search": "#8B5CF6",
+        "placement_product_page":   "#F59E0B",
+    }
+    _FALLBACK_COLORS = ["#2563EB", "#F59E0B", "#8B5CF6", "#10B981", "#EF4444"]
+
     warn_pct = (item.get("acos_warn_threshold") or 0.30) * 100
-    ax.axhline(warn_pct, color=_C["red"], lw=1, linestyle=":", alpha=0.7,
-               label=f"ACOS warn {warn_pct:.0f}%")
-    for bar, sh in zip(bars1, spend_sh):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
-                f"{sh:.0f}%", ha="center", va="bottom", fontsize=8, color=_C["blue"])
-    ax.set_xticks(x); ax.set_xticklabels(display, fontsize=9)
-    ax.set_ylabel("Percent (%)", fontsize=9)
-    ax.set_title(f"{item.get('asin','?')} — Placement Performance  (spend share labeled)",
-                 fontsize=10, pad=6)
-    ax.legend(fontsize=8)
+    display  = [label_map.get(k, k)                for k in keys]
+    act_acos = [placement[k]["acos"]               for k in keys]
+    cfg_pct  = [configured.get(k) or 0             for k in keys]
+    raw_sh   = [placement[k].get("spend_share", 0) for k in keys]
+    spend_sh = [max(s, 1.0) for s in raw_sh]
+    seg_colors = [
+        _COLOR_BY_PLACEMENT.get(k.lower(), _FALLBACK_COLORS[i % len(_FALLBACK_COLORS)])
+        for i, k in enumerate(keys)
+    ]
+
+    def _health_color(acos: float) -> str:
+        if acos <= warn_pct * 0.85:
+            return _C["green"]
+        elif acos <= warn_pct:
+            return _C["orange"]
+        return _C["red"]
+
+    def _health_label(acos: float) -> str:
+        if acos <= warn_pct * 0.85:
+            return "✓"
+        elif acos <= warn_pct:
+            return "△"
+        return "✗"
+
+    fig, (ax_ring, ax_tbl) = plt.subplots(
+        1, 2, figsize=(10, 5),
+        gridspec_kw={"width_ratios": [1.1, 0.9]},
+        facecolor=_C["bg"],
+    )
+
+    # ── Donut (segment color = placement identity) ─────────────────────────
+    ax_ring.set_facecolor(_C["bg"])
+    wedge_labels = [f"{d}\n{raw:.0f}%" for d, raw in zip(display, raw_sh)]
+    wedges, texts = ax_ring.pie(
+        spend_sh,
+        labels=wedge_labels,
+        colors=seg_colors,
+        startangle=90,
+        wedgeprops=dict(width=0.52, edgecolor="white", linewidth=2.5),
+        textprops=dict(fontsize=8.5),
+    )
+    # Add health indicator dot on each wedge label
+    for text, acos in zip(texts, act_acos):
+        text.set_color(_health_color(acos))
+        text.set_fontweight("bold")
+    ax_ring.text(0, 0, "Spend\nShare", ha="center", va="center",
+                 fontsize=9, fontweight="bold", color="#374151")
+    ax_ring.set_title(f"{item.get('asin', '?')} — Placement Performance",
+                      fontsize=10, pad=8)
+
+    # ── ACOS vs Bid-Adj table ──────────────────────────────────────────────
+    ax_tbl.set_facecolor(_C["bg"])
+    ax_tbl.axis("off")
+
+    short_labels = {
+        "Top of\nSearch":  "Top of Search",
+        "Rest of\nSearch": "Rest of Search",
+        "Product\nPage":   "Product Page",
+    }
+    rows = []
+    for d, acos, cfg in zip(display, act_acos, cfg_pct):
+        diff = acos - warn_pct
+        sign = "+" if diff > 0 else ""
+        rows.append([
+            short_labels.get(d, d),
+            f"{acos:.1f}%",
+            f"+{cfg:.0f}%",
+            f"{sign}{diff:.0f}%",
+            _health_label(acos),
+        ])
+
+    tbl = ax_tbl.table(
+        cellText=rows,
+        colLabels=["Placement", "ACOS", "Bid Adj", "vs Target", ""],
+        cellLoc="center",
+        loc="center",
+        bbox=[0.0, 0.22, 1.0, 0.60],
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(8.5)
+    for j in range(5):
+        tbl[(0, j)].set_facecolor("#E5E7EB")
+        tbl[(0, j)].set_text_props(fontweight="bold")
+    for i, (seg_c, acos) in enumerate(zip(seg_colors, act_acos), start=1):
+        # Placement name cell uses segment color as left-border tint
+        tbl[(i, 0)].set_facecolor(seg_c + "22")  # 13% opacity hex
+        diff_val = acos - warn_pct
+        hc = _health_color(acos)
+        tbl[(i, 3)].set_facecolor(
+            "#FEE2E2" if diff_val > 0 else
+            "#FEF3C7" if diff_val > -5 else
+            "#D1FAE5"
+        )
+        tbl[(i, 4)].set_facecolor(hc)
+        tbl[(i, 4)].set_text_props(color="white", fontweight="bold")
+
+    from matplotlib.patches import Patch as _Patch
+    ax_tbl.legend(
+        handles=[
+            _Patch(facecolor=_C["green"],  label=f"✓  ≤ {warn_pct * 0.85:.0f}%  healthy"),
+            _Patch(facecolor=_C["orange"], label=f"△  ≤ {warn_pct:.0f}%  watch"),
+            _Patch(facecolor=_C["red"],    label=f"✗  > {warn_pct:.0f}%  over target"),
+        ],
+        loc="lower center", fontsize=7.5, framealpha=0.4,
+        title=f"ACOS health (target {warn_pct:.0f}%)", title_fontsize=7.5,
+    )
+
     fig.tight_layout()
     return _fig_to_png(fig)
 
@@ -3098,6 +3617,139 @@ def _chart_inventory_burndown(item: Dict, store_today: Optional[str] = None) -> 
     ax.set_title(f"{item.get('asin','?')} — {risk_flag}Inventory Burn-down  "
                  f"({total:,} units / {daily:.1f}/day → {can_sell}d)", fontsize=10, pad=6)
     ax.legend(fontsize=8)
+    fig.tight_layout()
+    return _fig_to_png(fig)
+
+
+def _chart_lead_time_dist(item: Dict) -> Optional[bytes]:
+    """
+    Horizontal range chart — shipment lead-time distribution by quarter.
+
+    Left panel  : sea transit (SHIPPED → RECEIVING), shown only when n ≥ 1.
+    Right panel : FBA processing time (RECEIVING → CLOSED), shown when n ≥ 1.
+    Falls back to single panel when only one metric has data.
+
+    Each quarter row shows: p25–p75 shaded bar + median tick + p90 marker.
+    """
+    import matplotlib.patches as mpatches
+
+    lt = item.get("shipment_lead_time") or {}
+    sea_by_q   = (lt.get("sea_transit")    or {}).get("by_quarter") or {}
+    ovs_by_q   = (lt.get("overseas_to_fba") or {}).get("by_quarter") or {}
+    local_by_q = (lt.get("local_to_fba")   or {}).get("by_quarter") or {}
+
+    # Collect quarters that have at least one series with n ≥ 1
+    all_quarters = sorted(
+        q for q in set(list(sea_by_q) + list(ovs_by_q) + list(local_by_q))
+        if (sea_by_q.get(q, {}).get("n", 0) > 0
+            or ovs_by_q.get(q, {}).get("n", 0) > 0
+            or local_by_q.get(q, {}).get("n", 0) > 0)
+    )
+    if not all_quarters:
+        return None
+
+    has_sea   = any(sea_by_q.get(q, {}).get("n", 0) > 0 for q in all_quarters)
+    has_ovs   = any(ovs_by_q.get(q, {}).get("n", 0) > 0 for q in all_quarters)
+    has_local = any(local_by_q.get(q, {}).get("n", 0) > 0 for q in all_quarters)
+    n_panels = (1 if has_sea else 0) + (1 if has_local else 0) + (1 if has_ovs else 0)
+    if n_panels == 0:
+        return None
+
+    fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, max(3, len(all_quarters) * 0.65 + 1.2)))
+    if n_panels == 1:
+        axes = [axes]
+    fig.patch.set_facecolor(_C["bg"])
+
+    panel_data = []
+    if has_sea:
+        panel_data.append(("Sea Transit\n(SHIPPED→RECEIVING, >12d)", sea_by_q, _C["blue"]))
+    if has_local:
+        panel_data.append(("Local Warehouse→FBA\n(SHIPPED→RECEIVING, ≤12d)", local_by_q, _C["green"]))
+    if has_ovs:
+        panel_data.append(("FBA Processing\n(RECEIVING→CLOSED)", ovs_by_q, _C["orange"]))
+
+    y_pos = list(range(len(all_quarters)))
+
+    for ax, (title, by_q, color) in zip(axes, panel_data):
+        ax.set_facecolor(_C["bg"])
+        ax.set_title(title, fontsize=9, fontweight="bold", color="#374151", pad=6)
+
+        x_max = 0
+        for yi, q in enumerate(all_quarters):
+            stats = by_q.get(q) or {}
+            n      = stats.get("n", 0)
+            p25    = stats.get("p25")
+            median = stats.get("median")
+            p75    = stats.get("p75")
+            p90    = stats.get("p90")
+
+            if n == 0 or median is None:
+                ax.text(0.5, yi, "—", ha="left", va="center", fontsize=8, color="#9CA3AF")
+                continue
+
+            x_max = max(x_max, p90 or p75 or median)
+
+            # p25–p75 range bar
+            ax.barh(
+                yi,
+                (p75 or median) - (p25 or median),
+                left=(p25 or median),
+                height=0.55,
+                color=color,
+                alpha=0.35,
+                zorder=2,
+            )
+            # Median tick
+            ax.plot([median, median], [yi - 0.32, yi + 0.32],
+                    color=color, linewidth=2.5, zorder=3)
+            # p90 marker
+            if p90:
+                ax.plot(p90, yi, marker="|", markersize=10,
+                        markeredgewidth=1.8, color=color, alpha=0.6, zorder=3)
+                ax.annotate(
+                    f"p90={p90:.0f}d",
+                    xy=(p90, yi),
+                    xytext=(4, 0),
+                    textcoords="offset points",
+                    fontsize=7,
+                    color="#6B7280",
+                    va="center",
+                )
+            # Median label
+            ax.annotate(
+                f"med={median:.0f}d  n={n}",
+                xy=(p25 or median, yi),
+                xytext=(-4, 0),
+                textcoords="offset points",
+                fontsize=7,
+                color=color,
+                ha="right",
+                va="center",
+            )
+
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(all_quarters, fontsize=8)
+        ax.set_xlabel("Days", fontsize=8)
+        ax.set_xlim(left=0, right=max(x_max * 1.35, 10))
+        ax.invert_yaxis()
+        ax.grid(axis="x", color="#E5E7EB", linewidth=0.6, zorder=1)
+        ax.spines[["top", "right", "left"]].set_visible(False)
+        ax.tick_params(axis="both", labelsize=8)
+
+        # Legend
+        legend_handles = [
+            mpatches.Patch(color=color, alpha=0.35, label="p25–p75"),
+            plt.Line2D([0], [0], color=color, linewidth=2.5, label="median"),
+            plt.Line2D([0], [0], color=color, alpha=0.6, marker="|",
+                       markersize=8, markeredgewidth=1.8, linewidth=0, label="p90"),
+        ]
+        ax.legend(handles=legend_handles, fontsize=7, loc="lower right",
+                  framealpha=0.7, edgecolor="#E5E7EB")
+
+    fig.suptitle(
+        f"{item.get('asin', '?')} — Shipment Lead-Time Distribution",
+        fontsize=10, fontweight="bold", color="#374151", y=1.01,
+    )
     fig.tight_layout()
     return _fig_to_png(fig)
 
@@ -3165,14 +3817,17 @@ def _generate_charts(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             asin       = (item.get("asin") or "unknown").upper()
             daily_perf = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
             generators = [
-                ("daily_trend",        lambda _i=item, _p=daily_perf: _chart_daily_trend(_i, _p)),
-                ("its_causal",         lambda _i=item, _p=daily_perf, _m=ctx.config.get("causal_metric", "orders"): _chart_its_causal(_i, _p, _m)),
-                ("kw_quadrant",        lambda _i=item: _chart_kw_quadrant(_i)),
-                ("placement_bar",      lambda _i=item: _chart_placement_bar(_i)),
-                ("inventory_burndown", lambda _i=item, _d=date_str: _chart_inventory_burndown(_i, _d)),
-                ("comp_price_box",     lambda _i=item: _chart_comp_price_box(_i)),
-                ("lp_waterfall",       lambda _i=item: _chart_lp_waterfall(_i)),
-                ("rank_trend",         lambda _i=item: _chart_rank_trend(_i)),
+                ("daily_trend",          lambda _i=item, _p=daily_perf: _chart_daily_trend(_i, _p)),
+                ("its_causal",           lambda _i=item, _p=daily_perf, _m=ctx.config.get("causal_metric", "orders"): _chart_its_causal(_i, _p, _m)),
+                ("kw_quadrant",          lambda _i=item: _chart_kw_quadrant(_i)),
+                ("placement_donut",       lambda _i=item: _chart_placement_donut(_i)),
+                ("inventory_burndown",   lambda _i=item, _d=date_str: _chart_inventory_burndown(_i, _d)),
+                ("comp_price_box",       lambda _i=item: _chart_comp_price_box(_i)),
+                ("lp_waterfall",         lambda _i=item: _chart_lp_waterfall(_i)),
+                ("budget_utilization",   lambda _i=item, _p=daily_perf: _chart_budget_utilization(_i, _p)),
+                ("campaign_budget_cov",  lambda _i=item: _chart_campaign_budget_coverage(_i)),
+                ("rank_trend",           lambda _i=item: _chart_rank_trend(_i)),
+                ("lead_time_dist",       lambda _i=item: _chart_lead_time_dist(_i)),
             ]
             for name, fn in generators:
                 key = f"reports/ad_diagnosis/{asin}/{date_str}/{name}.png"
@@ -3188,7 +3843,7 @@ def _generate_charts(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         urls = urls_by_item[id(item)]
         item["chart_urls"] = urls
         asin = (item.get("asin") or "unknown").upper()
-        logger.info(f"[charts] {asin}: {len(urls)}/8 charts uploaded")
+        logger.info(f"[charts] {asin}: {len(urls)}/{len(generators)} charts uploaded")
 
     return items
 
@@ -3333,6 +3988,50 @@ def _detect_action_conflicts(item: Dict) -> List[Dict]:
     return conflicts
 
 
+def _summarise_lead_time(lt: Optional[Dict]) -> Dict:
+    """Compact summary of compute_quarterly_lead_times output for the LLM snapshot."""
+    if not lt:
+        return {}
+    sea   = (lt.get("sea_transit")    or {}).get("overall") or {}
+    ovs   = (lt.get("overseas_to_fba") or {}).get("overall") or {}
+    local = (lt.get("local_to_fba")   or {}).get("overall") or {}
+    by_q: Dict = lt.get("by_quarter_summary") or {}
+    compact_q = {
+        q: {
+            "sea_median":   v.get("sea_transit_median"),
+            "sea_p75":      v.get("sea_transit_p75"),
+            "fba_median":   v.get("overseas_to_fba_median"),
+            "fba_p75":      v.get("overseas_to_fba_p75"),
+            "local_median": v.get("local_to_fba_median"),
+            "local_p75":    v.get("local_to_fba_p75"),
+            "n":            (v.get("sea_shipment_count") or 0)
+                            + (v.get("local_shipment_count") or 0)
+                            + (1 if v.get("overseas_to_fba_median") is not None else 0),
+        }
+        for q, v in by_q.items()
+        if any(v.get(k) is not None for k in (
+            "sea_transit_median", "overseas_to_fba_median", "local_to_fba_median"))
+    }
+    result: Dict = {
+        "sea_transit_overall": {
+            "n": sea.get("n", 0), "p25": sea.get("p25"),
+            "median": sea.get("median"), "p75": sea.get("p75"), "p90": sea.get("p90"),
+        } if sea.get("n", 0) > 0 else None,
+        "fba_processing_overall": {
+            "n": ovs.get("n", 0), "p25": ovs.get("p25"),
+            "median": ovs.get("median"), "p75": ovs.get("p75"), "p90": ovs.get("p90"),
+        } if ovs.get("n", 0) > 0 else None,
+        "by_quarter": compact_q,
+        "total_shipments_analysed": lt.get("total_input", 0),
+    }
+    if local.get("n", 0) > 0:
+        result["local_to_fba_overall"] = {
+            "n": local.get("n", 0), "p25": local.get("p25"),
+            "median": local.get("median"), "p75": local.get("p75"), "p90": local.get("p90"),
+        }
+    return result
+
+
 def _causal_reliability_tier(
     backtest_hit_rate: Optional[float],
     events_significant_pct: Optional[float],
@@ -3354,6 +4053,123 @@ def _causal_reliability_tier(
     if (backtest_hit_rate or 0) > 0 or has_significance:
         return "low"
     return "none"
+
+
+# ---------------------------------------------------------------------------
+# Quick Metrics Snapshot — pre-rendered table with fixed Source column
+# ---------------------------------------------------------------------------
+
+# Maps summary field name → the fixed "Source / How derived" string shown in the
+# report table.  Mirrors the legend in ad_diagnosis_report.yaml.  Fields absent
+# from this dict are not included in the pre-rendered table.
+_SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
+    "title":                    "SP-API Catalog",
+    "brand":                    "SP-API Catalog",
+    "lookback_days":            "days config (default 30); period: data_start_date → data_end_date",
+    "data_start_date":          "reporting window start (today − lookback_days)",
+    "data_end_date":            "reporting window end (yesterday)",
+    "total_available":          "FBA Inventory API — fulfillable units (point-in-time)",
+    "inbound_receiving":        "FBA inbound — at FC being checked in (1-2d, certain)",
+    "inbound_shipped":          "FBA inbound — in transit from seller (10-30d ETA)",
+    "inbound_working":          "FBA inbound — shipment plan not yet shipped (uncertain ETA)",
+    "total_inbound":            "inbound_receiving + inbound_shipped (confirmed in-transit only)",
+    "can_sell_days":            "total_available ÷ daily_sales (null if daily_sales unavailable)",
+    "inventory_risk":           "can_sell_days < inventory_risk_days (default 30d)",
+    "campaign_count":           "count of campaigns matched to this ASIN",
+    "campaign_match_strategy":  "matching method: explicit_config / spAdvertisedProduct / name_substring / none",
+    "active_campaign_count":    "campaigns with state=ENABLED",
+    "paused_campaign_count":    "campaigns with state=PAUSED",
+    "total_daily_budget":       "sum of ENABLED campaign daily budgets (Ads API, current config)",
+    "bidding_strategies":       "Ads API campaigns — {strategy: campaign_count}; e.g. AUTO_FOR_SALES ×2, LEGACY_FOR_SALES ×1",
+    "total_spend":              "Ads API spCampaigns — ad-attributed spend, data_start_date → data_end_date",
+    "total_sales":              "Ads API spCampaigns — ad-attributed sales, data_start_date → data_end_date",
+    "total_orders":             "Ads API spCampaigns — AD-ATTRIBUTED orders only (organic excluded)",
+    "total_clicks":             "Ads API spCampaigns — ad-attributed clicks, data_start_date → data_end_date",
+    "account_acos":             "total_spend ÷ total_sales × 100",
+    "budget_exhaustion_pct":    "DEPRECATED — total_spend ÷ (snapshot_budget × days); prefer budget_pressure",
+    "budget_likely_exhausted":  "DEPRECATED — derived from budget_exhaustion_pct > 90%",
+    "budget_active_days":       "days with non-zero spend in lookback window",
+    "budget_exhausted_days":    "active days where daily spend ≥ 85% of campaign daily budget cap",
+    "budget_exhausted_days_pct":"budget_exhausted_days ÷ budget_active_days × 100",
+    "avg_daily_utilization_pct":"mean(daily_spend ÷ campaign_daily_budget) × 100 across active days",
+    "p90_daily_utilization_pct":"90th-percentile daily utilization across active days",
+    "budget_pressure":          "chronic ≥75% / moderate 30-74% / light 10-29% / none <10% of active days at cap",
+    "budget_starved_campaigns": "campaigns with exhausted_pct ≥ 30% (daily spend ≥ 85% of cap on ≥ 30% of active days — budget likely runs out mid-day); see campaign_budget_coverage in _summary_json for per-campaign breakdown",
+    "keyword_count":            "Ads API keyword list — matched campaigns (current config)",
+    "avg_bid":                  "Ads API keyword list — matched campaigns (current config)",
+    "min_bid":                  "Ads API keyword list — matched campaigns (current config)",
+    "max_bid":                  "Ads API keyword list — matched campaigns (current config)",
+    "match_type_dist":          "Ads API keyword list — matched campaigns (current config)",
+    "kw_performance_count":     "spSearchTerm report rows with ≥ min_clicks_for_cvr clicks",
+    "lp_zero_keywords":         "LP optimal plan assigns 0 clicks — TWO causes: (1) keyword_acos_pct > target_acos_applied → genuinely inefficient, LP correctly excluded; (2) keyword_acos_pct ≤ target_acos_applied AND budget_binding=True → efficient but crowded out by higher-ROI keywords consuming the full budget. Check keyword_acos_pct vs target_acos_applied to distinguish.",
+    "lp_maxed_keywords":        "LP — keywords at click ceiling (high-ROI; reallocate budget here)",
+    "ad_traffic_ratio":         "Xiyouzhaoci traffic score API (latest snapshot)",
+    "organic_traffic_ratio":    "Xiyouzhaoci traffic score API (latest snapshot)",
+    "traffic_growth_7d":        "Xiyouzhaoci traffic score API (latest snapshot)",
+    "rank_tracked_keywords":    "Xiyouzhaoci daily organic rank — tracked keyword list",
+    "rank_series_days":         "Xiyouzhaoci rank data days within reporting window",
+    "rank_series_history_days": "Xiyouzhaoci rank data days in full historical baseline (rank_lookback_months)",
+    "market_trends_keywords":   "Xiyouzhaoci SFR weekly trend data",
+    "change_attributions_count":"filtered attributable change events (noise filter); top 20 used for analysis",
+    "attribution_suspect_count":"attribution entries where |Δorders| > 1.5× pre-window mean (ASIN fallback)",
+    "causal_consensus_sample":  "ITS + CausalImpact + DML model agreement for highest-priority event",
+    "orders_reliability":       "high ≥100 orders / medium 30-99 / low <30 in lookback window",
+    "acos_ci_lo":               "95% ACOS CI lower bound (Wilson score on CVR)",
+    "acos_ci_hi":               "95% ACOS CI upper bound (Wilson score on CVR)",
+    "backtest_hit_rate":        "historical model accuracy — fraction of past events where direction matched",
+    "backtest_strong_hit_rate": "backtest hit rate restricted to 'Strong evidence' events only",
+    "backtest_total":           "total change events evaluated in backtest history",
+    "events_significant_count": "change events with p<0.05 AND CI not crossing zero in this run",
+    "events_significant_pct":   "events_significant_count ÷ runnable events × 100",
+    "causal_reliability":       "AND-gate: backtest_hit_rate ≥70% AND ≥1 significant event → 'high'",
+    "shipment_lead_time":       "Lingxing ERP shipment records — sea transit (SHIPPED→RECEIVING) + FBA processing (RECEIVING→CLOSED); full quarterly breakdown in _summary_json",
+}
+
+# Fields that are dicts/lists with dedicated report sections — omit from the table.
+_SNAPSHOT_SKIP_FIELDS: frozenset = frozenset({
+    "asin",
+    "lp_summary", "lp_top_allocations",
+    "campaign_actions", "keyword_actions",
+    "auto_mining_summary", "auto_mining_beta_prior",
+    "auto_mining_negatives", "auto_mining_harvest",
+    "action_conflicts", "competitor_price_meta",
+    "campaign_budget_coverage",   # rendered as derived scalar below; full list in _summary_json
+    "shipment_lead_time",         # nested dict — full data in _summary_json; snapshot uses scalar below
+})
+
+
+def _render_snapshot_table(summary: Dict) -> str:
+    """
+    Pre-render the Quick Metrics Snapshot as a fixed three-column markdown table.
+
+    Source / How derived values are taken from _SNAPSHOT_FIELD_SOURCE — they
+    are identical across every run, eliminating LLM-driven variation.
+    Fields absent from the source dict, or in _SNAPSHOT_SKIP_FIELDS, are omitted.
+    """
+    rows = ["| Field | Value | Source / How derived |", "|---|---|---|"]
+    for field, value in summary.items():
+        if field in _SNAPSHOT_SKIP_FIELDS:
+            continue
+        source = _SNAPSHOT_FIELD_SOURCE.get(field)
+        if source is None:
+            continue
+        if isinstance(value, dict):
+            if field == "bidding_strategies" and value:
+                val_str = ", ".join(f"{s} ×{n}" for s, n in sorted(value.items()))
+            else:
+                continue  # safety net for other unexpected nested dicts
+        elif value is None:
+            val_str = "—"
+        elif isinstance(value, list):
+            val_str = str(value)[:300]
+        elif isinstance(value, bool):
+            val_str = str(value)
+        elif isinstance(value, float):
+            val_str = f"{value:.2f}" if abs(value) < 10_000 else f"{value:.0f}"
+        else:
+            val_str = str(value)
+        rows.append(f"| {field} | {val_str} | {source} |")
+    return "\n".join(rows)
 
 
 def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
@@ -3424,7 +4240,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         ),
         "rank_series_history_days":  len(next(iter(rank_series.values()), {})),
         "market_trends_keywords":    list(market_trends.keys()),
-        "change_attributions_count":  len(attributions),
+        "change_attributions_count":  item.get("change_attributions_total_count", len(attributions)),
         "attribution_suspect_count":  sum(1 for a in attributions if a.get("attribution_suspect")),
         "causal_consensus_sample":    attributions[0].get("consensus") if attributions else None,
         # Statistical sufficiency & ACOS CI
@@ -3462,6 +4278,14 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "auto_mining_beta_prior": (item.get("auto_mining") or {}).get("beta_prior"),
         "auto_mining_negatives": (item.get("auto_mining") or {}).get("negatives", [])[:30],
         "auto_mining_harvest":   (item.get("auto_mining") or {}).get("harvest", [])[:20],
+        # Per-campaign intraday budget coverage (full list in _summary_json)
+        "campaign_budget_coverage": item.get("campaign_budget_coverage") or [],
+        "budget_starved_campaigns": sum(
+            1 for c in (item.get("campaign_budget_coverage") or [])
+            if c.get("exhausted_pct", 0) >= 30
+        ),
+        # Shipment lead-time distribution (store-wide, from Lingxing ERP)
+        "shipment_lead_time": _summarise_lead_time(item.get("shipment_lead_time")),
     }
 
 
@@ -3559,9 +4383,9 @@ def _prepare_for_llm(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     import json as _json
     _STRIP_FIELDS = ("performance_records", "auto_mining")
     for item in items:
-        item["_summary_json"] = _json.dumps(
-            _build_item_summary(item, ctx), ensure_ascii=False, default=str
-        )
+        summary = _build_item_summary(item, ctx)
+        item["_summary_json"]    = _json.dumps(summary, ensure_ascii=False, default=str)
+        item["_snapshot_table"]  = _render_snapshot_table(summary)
         for f in _STRIP_FIELDS:
             item.pop(f, None)
         _trim_keyword_performance(item)
@@ -3569,14 +4393,17 @@ def _prepare_for_llm(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
 
 _CHART_META: Dict[str, str] = {
-    "daily_trend":        "Daily Performance Trend",
-    "its_causal":         "ITS Causal Analysis",
-    "kw_quadrant":        "Keyword ACOS × Orders",
-    "placement_bar":      "Placement Performance",
-    "inventory_burndown": "Inventory Burn-down",
-    "comp_price_box":     "Competitor Price Distribution",
-    "lp_waterfall":       "LP Budget Allocation",
-    "rank_trend":         "Organic Rank Trend",
+    "daily_trend":          "Daily Performance Trend",
+    "its_causal":           "ITS Causal Analysis",
+    "kw_quadrant":          "Keyword ACOS × Orders",
+    "placement_donut":      "Placement Performance",
+    "inventory_burndown":   "Inventory Burn-down",
+    "comp_price_box":       "Competitor Price Distribution",
+    "lp_waterfall":         "LP Budget Allocation",
+    "budget_utilization":   "Daily Budget Utilization",
+    "campaign_budget_cov":  "Campaign Budget Coverage",
+    "rank_trend":           "Organic Rank Trend",
+    "lead_time_dist":       "Shipment Lead-Time Distribution",
 }
 
 # Matches [CHART:chart_name] anywhere in the text (LLM-inserted placeholder)
@@ -3632,13 +4459,14 @@ def _chart_interpretation(item: Dict, name: str) -> str:
                     f"{scale} scale candidates (bottom-right: efficient + high vol). Bubble = spend.")
         return "Keyword ACOS vs orders quadrant. Bubble size = spend."
 
-    if name == "placement_bar":
+    if name == "placement_donut":
         tos      = (item.get("placement_performance") or {}).get("PLACEMENT_TOP_OF_SEARCH") or {}
         tos_acos = tos.get("acos")
         if tos_acos:
             rec = "reduce TOS bid adjustment" if tos_acos > acos_warn else "TOS within target"
-            return f"TOS ACOS {tos_acos:.0f}% vs target {acos_warn:.0f}% → {rec}. Bar height = %; label = spend share."
-        return "Compare actual ACOS (blue) vs configured bid adjustment (orange) per placement."
+            return (f"Donut slice size = spend share. TOS ACOS {tos_acos:.0f}% vs target {acos_warn:.0f}% → {rec}. "
+                    f"Green = healthy, orange = watch, red = over target.")
+        return "Donut slice size = spend share per placement. Color = ACOS health vs target. Table shows ACOS vs configured bid adjustment."
 
     if name == "inventory_burndown":
         can_sell   = item.get("can_sell_days") or 0
@@ -3719,10 +4547,72 @@ def _chart_interpretation(item: Dict, name: str) -> str:
                 f"LP order estimate below actual; review CVR data quality or keyword mix. "
                 f"Blue bar = LP target; grey = budget cap. Organic orders not included.")
 
+    if name == "budget_utilization":
+        pressure  = item.get("budget_pressure") or "unknown"
+        exh_days  = item.get("budget_exhausted_days")
+        act_days  = item.get("budget_active_days")
+        avg_util  = item.get("avg_daily_utilization_pct")
+        p90_util  = item.get("p90_daily_utilization_pct")
+        cap       = item.get("total_daily_budget") or 0
+        exh_s = (f"{exh_days}/{act_days}d hit the 85 % cap"
+                 if exh_days is not None and act_days else "")
+        util_s = (f"avg {avg_util:.0f}%, p90 {p90_util:.0f}%"
+                  if avg_util is not None and p90_util is not None else "")
+        parts = [p for p in [exh_s, util_s] if p]
+        return (f"Budget pressure = {pressure} (cap ${cap:.0f}/day). "
+                + ("; ".join(parts) + ". " if parts else "")
+                + "Red bars = exhausted days (≥ 85 % of cap); "
+                "orange = high utilization (60–84 %); blue = healthy. "
+                "Orange dashed lines = change events.")
+
+    if name == "campaign_budget_cov":
+        starved = item.get("budget_starved_campaigns") or 0
+        cov     = item.get("campaign_budget_coverage") or []
+        if starved > 0 and cov:
+            worst = cov[0]
+            return (
+                f"{starved} campaign(s) exhaust budget mid-day. "
+                f"Worst: '{worst['campaign_name']}' ran dry on {worst['exhausted_days']}/{worst['active_days']} days "
+                f"({worst['exhausted_pct']:.0f}%). "
+                f"Left panel: green = full-day coverage, red/orange = mid-day exhaustion. "
+                f"Right panel: avg spend vs. daily cap."
+            )
+        return ("All campaigns maintained full-day budget coverage. "
+                "Left panel: green bars = budget lasted all day. Right panel: avg spend vs. cap.")
+
     if name == "rank_trend":
         n = len(item.get("natural_rank_series") or {})
         return (f"Organic rank for {n} keyword(s). Downward slope = improving position. "
                 f"Orange lines = ad change events. Correlate rank drops with bid/budget cuts.")
+
+    if name == "lead_time_dist":
+        lt = item.get("shipment_lead_time") or {}
+        sea   = (lt.get("sea_transit")    or {}).get("overall") or {}
+        ovs   = (lt.get("overseas_to_fba") or {}).get("overall") or {}
+        local = (lt.get("local_to_fba")   or {}).get("overall") or {}
+        parts = []
+        if sea.get("n", 0):
+            parts.append(
+                f"sea freight (SHIPPED→RECEIVING >12d) median {sea.get('median', 0):.0f}d "
+                f"(p25={sea.get('p25', 0):.0f}d, p75={sea.get('p75', 0):.0f}d, n={sea['n']})"
+            )
+        if local.get("n", 0):
+            parts.append(
+                f"local warehouse→FBA (SHIPPED→RECEIVING ≤12d) median {local.get('median', 0):.0f}d "
+                f"(p25={local.get('p25', 0):.0f}d, p75={local.get('p75', 0):.0f}d, n={local['n']})"
+            )
+        if ovs.get("n", 0):
+            parts.append(
+                f"FBA processing (RECEIVING→CLOSED) median {ovs.get('median', 0):.0f}d "
+                f"(p25={ovs.get('p25', 0):.0f}d, p75={ovs.get('p75', 0):.0f}d, n={ovs['n']})"
+            )
+        if parts:
+            return (
+                "Historical lead-time by quarter: "
+                + "; ".join(parts)
+                + ". Use local warehouse→FBA p75 as the replenishment dispatch buffer."
+            )
+        return "Shipment lead-time distribution chart. No data available."
 
     return ""
 
@@ -3889,6 +4779,16 @@ def build_ad_diagnosis(config: dict) -> Workflow:
             parallel=True,
             concurrency=3,
             enabled=config.get("enable_xiyou", True),
+        ),
+        # Shipment lead-time: store-wide FBA transit + FBA processing distributions.
+        # Cached after first ASIN; subsequent ASINs read from ctx.cache[_KEY_LEAD_TIME].
+        # Disabled when enable_lingxing=False or LINGXING_ACCOUNT env var is absent.
+        EnrichStep(
+            name="fetch_shipment_lead_time",
+            extractor_fn=_enrich_shipment_lead_time,
+            parallel=True,
+            concurrency=1,
+            enabled=config.get("enable_lingxing", bool(os.getenv("LINGXING_ACCOUNT"))),
         ),
 
         # ── Stage 2: campaign structure (fetch account-level once, filter per ASIN) ──

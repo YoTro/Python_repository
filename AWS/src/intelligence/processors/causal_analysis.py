@@ -460,7 +460,7 @@ def _build_attributions(
         key=lambda a: (a.get("priority", 0), abs(a["delta_orders"])),
         reverse=True,
     )
-    return attributions[:20]
+    return len(attributions), attributions[:20]
 
 
 # ── Stage 2: ITS ──────────────────────────────────────────────────────────────
@@ -985,13 +985,13 @@ def run_causal_analysis(
     tz = ZoneInfo(config.get("timezone", "America/Los_Angeles"))
 
     # ── Stage 1: window attribution ──────────────────────────────────────────
-    attributions = _build_attributions(
+    total_attributions_count, attributions = _build_attributions(
         item, daily_perf or [], tz,
         yoy_date_index=yoy_date_index or None,
         trailing_ext_index=trailing_ext_index or None,
     )
     if not attributions:
-        return {"change_attributions": []}
+        return {"change_attributions": [], "change_attributions_total_count": 0}
 
     # ── Build shared covariate matrix and metric vector ───────────────────────
     all_dates  = sorted(cov_series.keys())
@@ -1000,7 +1000,7 @@ def run_causal_analysis(
 
     dates, cov_matrix = _align_covariates(item, start_date, end_date)
     if not dates:
-        return {"change_attributions": attributions}
+        return {"change_attributions": attributions, "change_attributions_total_count": total_attributions_count}
 
     date_idx = {d: i for i, d in enumerate(dates)}
 
@@ -1197,8 +1197,9 @@ def run_causal_analysis(
 
     backtest = _compute_backtest_stats(attributions)
     return {
-        "change_attributions":      attributions,
-        "events_significant_count": events_significant_count,
-        "events_significant_pct":   events_significant_pct,
+        "change_attributions":             attributions,
+        "change_attributions_total_count": total_attributions_count,
+        "events_significant_count":        events_significant_count,
+        "events_significant_pct":          events_significant_pct,
         **backtest,
     }

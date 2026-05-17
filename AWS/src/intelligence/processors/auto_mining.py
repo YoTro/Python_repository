@@ -57,7 +57,7 @@ _HARVEST_CI_ALPHA      = 0.05  # one-sided Wilson CI level for CVR lower bound
 
 # ── Stage 1: Empirical Bayes prior ────────────────────────────────────────────
 
-def _fit_beta_prior(term_totals: List[Dict]) -> Tuple[float, float]:
+def _fit_beta_prior(term_totals: List[Dict]) -> Tuple[float, float, bool]:
     """
     Fit Beta(α, β) from observed CVRs via Method of Moments.
 
@@ -65,24 +65,39 @@ def _fit_beta_prior(term_totals: List[Dict]) -> Tuple[float, float]:
     on noise.  If fewer than _PRIOR_MIN_TERMS valid terms exist, falls back
     to a weak prior anchored at pooled CVR (5-click equivalent strength).
 
-    Returns (alpha, beta) with both values ≥ 0.1 for numerical stability.
+    Returns (alpha, beta, is_fallback).
+    is_fallback=True means the prior is not data-fitted from this ASIN's
+    own conversion history and should be labelled as such in the rationale.
     """
     valid = [t for t in term_totals if t.get("clicks", 0) >= _PRIOR_MIN_CLICKS]
 
-    # Pooled CVR as base reference
-    total_c  = sum(t["clicks"] for t in valid)
-    total_o  = sum(t["orders"] for t in valid)
-    mu_pool  = total_o / total_c if total_c > 0 else 0.02
+    # Pooled CVR from high-click terms
+    total_c = sum(t["clicks"] for t in valid)
+    total_o = sum(t["orders"] for t in valid)
+
+    # When high-click terms yield zero conversions, extend the pool to ALL
+    # terms so the prior reflects actual observed conversion rate rather than
+    # the hardcoded 0.02 default.
+    if total_c == 0 or total_o == 0:
+        all_c = sum(t.get("clicks", 0) for t in term_totals)
+        all_o = sum(t.get("orders", 0) for t in term_totals)
+        mu_pool = all_o / all_c if all_c > 0 else 0.02
+        is_fallback = True
+    else:
+        mu_pool = total_o / total_c
+        is_fallback = False
 
     if len(valid) < _PRIOR_MIN_TERMS:
         k = 5.0
-        return max(mu_pool * k, 0.1), max((1.0 - mu_pool) * k, 0.1)
+        # Use 1e-3 floor instead of 0.1 to avoid the alpha floor creating an
+        # artificial ~2% implied CVR when mu_pool is 0 (no observed conversions).
+        return max(mu_pool * k, 1e-3), max((1.0 - mu_pool) * k, 0.1), is_fallback
 
     # MOM: only terms with at least 1 conversion carry variance information
     obs_cvrs = [t["orders"] / t["clicks"] for t in valid if t["orders"] > 0]
     if len(obs_cvrs) < 3:
         k = 5.0
-        return max(mu_pool * k, 0.1), max((1.0 - mu_pool) * k, 0.1)
+        return max(mu_pool * k, 1e-3), max((1.0 - mu_pool) * k, 0.1), is_fallback or True
 
     mu  = sum(obs_cvrs) / len(obs_cvrs)
     var = sum((x - mu) ** 2 for x in obs_cvrs) / len(obs_cvrs)
@@ -92,13 +107,13 @@ def _fit_beta_prior(term_totals: List[Dict]) -> Tuple[float, float]:
     var     = min(max(var, 1e-6), var_max)
     k       = max(mu * (1.0 - mu) / var - 1.0, 1.0)
 
-    alpha = max(mu * k, 0.1)
+    alpha = max(mu * k, 1e-3)
     beta  = max((1.0 - mu) * k, 0.1)
     logger.debug(
         f"[auto_mining] EB prior: α={alpha:.3f} β={beta:.3f} "
         f"(μ={mu:.4f}, n_obs={len(obs_cvrs)}, n_valid={len(valid)})"
     )
-    return alpha, beta
+    return alpha, beta, False
 
 
 # ── Stage 2: Negative detection ───────────────────────────────────────────────
@@ -280,7 +295,7 @@ def build_auto_mining_actions(
                             "reason": "no search term data found for auto/PT campaigns"}}
 
     # Stage 1: fit EB prior from this ASIN's own data
-    alpha, beta = _fit_beta_prior(term_totals)
+    alpha, beta, prior_is_fallback = _fit_beta_prior(term_totals)
     prior_cvr_pct = round(alpha / (alpha + beta) * 100, 2)
 
     # Breakeven spend: price a seller is willing to pay per order at target ACOS
@@ -325,9 +340,13 @@ def build_auto_mining_actions(
                 "breakeven_spend":      round(breakeven_spend, 2),
                 "rationale": (
                     f"${spend:.2f} spent ({clicks} clicks, {orders} orders); "
-                    f"EB expected {expected:.1f} orders at account CVR "
-                    f"{prior_cvr_pct:.1f}%; "
-                    f"breakeven_spend=${breakeven_spend:.2f}"
+                    f"EB expected {expected:.1f} orders at "
+                    + (
+                        f"prior CVR {prior_cvr_pct:.1f}% (fallback — insufficient conversion data); "
+                        if prior_is_fallback
+                        else f"account CVR {prior_cvr_pct:.1f}%; "
+                    )
+                    + f"breakeven_spend=${breakeven_spend:.2f}"
                 ),
             })
             # A negative candidate is not evaluated for harvest
@@ -373,6 +392,7 @@ def build_auto_mining_actions(
             "alpha":           round(alpha, 4),
             "beta":            round(beta, 4),
             "implied_cvr_pct": prior_cvr_pct,
+            "is_fallback":     prior_is_fallback,
             "n_terms_fitted":  len([t for t in term_totals
                                     if t.get("clicks", 0) >= _PRIOR_MIN_CLICKS]),
         },

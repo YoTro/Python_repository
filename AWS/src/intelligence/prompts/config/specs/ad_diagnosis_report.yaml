@@ -9,6 +9,7 @@ required_vars:
   - count
   - report_date
   - _summary_json
+  - _snapshot_table
   - items_json
 
 optional_vars: {}
@@ -32,16 +33,11 @@ template: |
 
   ### Quick Metrics Snapshot
 
-  The block below is the authoritative pre-computed summary. Render scalar fields as a three-column table (Field | Value | Source / How derived). Use `null` as-is — do NOT substitute guesses. Do NOT re-derive any value from the full JSON.
+  The table below is pre-computed by the pipeline — field values and Source / How derived strings are deterministic and fixed. Do NOT re-derive any value, do NOT modify any source string. Fields excluded from the table (they are dicts/lists rendered in dedicated sections below): lp_summary, lp_top_allocations, campaign_actions, keyword_actions, auto_mining_summary, auto_mining_beta_prior, auto_mining_negatives, auto_mining_harvest.
 
-  SKIP these fields from the table (they are dicts or lists-of-dicts — render them only in their dedicated report sections, NOT here): lp_summary, lp_top_allocations, campaign_actions, keyword_actions, auto_mining_summary, auto_mining_beta_prior, auto_mining_negatives, auto_mining_harvest.
+  {_snapshot_table}
 
-  Column definitions:
-  - **Field**: exact key name from the JSON below.
-  - **Value**: exact value (keep null as `—`). For simple arrays (e.g. lp_zero_keywords, rank_tracked_keywords), show the array inline. Never write 'object' — if a value cannot be shown as a scalar or simple array, skip the row.
-  - **Source / How derived**: one short phrase from the legend below. ⚠️ Do NOT write 'Pre-computed highlights', 'summary', or any generic phrase — every row must have a *specific* source (e.g. 'SP-API Catalog', 'FBA Inventory API', 'Ads API spCampaigns report', etc.).
-
-  Legend (Field → derivation):
+  **Field interpretation guide** (apply when writing Diagnostic Findings and other sections — these rules explain what each field means, not how to fill the table above):
     title / brand / size / bullet_point_count → SP-API Catalog
     lookback_days → days config (default 30); period covered: data_start_date → data_end_date
     data_start_date / data_end_date → reporting window used for all time-series fields (today − lookback_days → yesterday; use these when describing 'past N days')
@@ -53,6 +49,7 @@ template: |
     daily_sales / daily_sales_source → daily_sales = total units sold ÷ lookback_days (ALL channels: ad-attributed + organic). Source priority: (1) caller-supplied, (2) order_metrics = SP-API getOrderMetrics (ad + organic, most accurate), (3) ad_orders_only = spCampaigns ad-attributed orders ÷ days only — organic orders excluded, so daily_sales is a LOWER BOUND on true consumption velocity. When reporting inventory runway, always state the source. When daily_sales_source=ad_orders_only, warn that true stockout will occur SOONER than can_sell_days indicates (organic sales consume inventory too).
     can_sell_days → total_available ÷ daily_sales (null if daily_sales unavailable; when daily_sales_source=ad_orders_only: this is an UPPER BOUND — actual stockout is sooner because organic orders are excluded from the denominator; can_sell_days_note field contains a human-readable caveat)
     inventory_risk → can_sell_days < inventory_risk_days config (default 30 d)
+    shipment_lead_time → store-wide FBA shipment lead-time from Lingxing ERP (null when Lingxing not configured). Three phases: (1) sea_transit_overall = SHIPPED→RECEIVING transit >12d (long-haul sea freight, China origin); (2) local_to_fba_overall = SHIPPED→RECEIVING transit ≤12d (domestic dispatch from destination-country 3PL/overseas warehouse to FBA); (3) fba_processing_overall = RECEIVING→CLOSED (FBA receive-complete processing time). Structure: {{sea_transit_overall: {{n, p25, median, p75, p90}}, local_to_fba_overall: {{n, p25, median, p75, p90}}, fba_processing_overall: {{n, p25, median, p75, p90}}, by_quarter: {{"YYYY-Qn": {{sea_median, sea_p75, local_median, local_p75, fba_median, fba_p75, n}}}}}}. PLANNING RULE: total lead time = sea_transit_p75 (China→3PL) + local_to_fba_p75 (3PL→FBA) + fba_processing_p75 (FBA processing). If can_sell_days ≤ total lead time, a replenishment order must ship NOW to avoid stockout. inbound_lead_days is automatically set to sea_transit p75 when data is available.
     campaign_count → count of campaigns matched to this ASIN (matching method in campaign_match_strategy)
     campaign_match_strategy → how campaigns were matched to this ASIN: explicit_config (most reliable) | spAdvertisedProduct (ground truth — campaigns that actually delivered ads for this ASIN per report data) | name_substring (fragile — ASIN in campaign name; may include unrelated campaigns) | none
     active_campaign_count → campaigns with state=ENABLED
@@ -68,7 +65,12 @@ template: |
     budget_exhausted_days_pct → budget_exhausted_days ÷ budget_active_days × 100 — primary budget pressure signal
     avg_daily_utilization_pct → mean(daily_spend ÷ campaign_daily_budget) × 100 across active days (uses LP-reconciled budget, not raw snapshot)
     p90_daily_utilization_pct → 90th-percentile daily utilization — what the typical high-demand day looks like; if p90 ≥ 85%, budget caps delivery on peak days even when the average appears healthy
-    budget_pressure → categorical: 'chronic' = cap hit on ≥60% of active days (budget is a systemic constraint, primary blocker); 'moderate' = 30–59% of days (budget constrains peak-day delivery); 'light' = 10–29% of days (occasional constraint); 'none' = <10% of days (budget is not the binding constraint)
+    budget_pressure → categorical: 'chronic' = cap hit on ≥75% of active days (budget is a systemic constraint, primary blocker); 'moderate' = 30–74% of days (budget constrains delivery on most active days); 'light' = 10–29% of days (occasional constraint); 'none' = <10% of days (budget is not the binding constraint)
+    budget_starved_campaigns → count of campaigns whose daily spend hit ≥85% of their cap on ≥30% of active days — these campaigns run out of budget mid-day and stop serving ads before midnight. Per-campaign detail is in campaign_budget_coverage (in _summary_json): [campaign_name, active_days, exhausted_days, exhausted_pct, all_day_pct, current_budget, avg_daily_spend]. all_day_pct = % of active days the budget lasted through the full day. INTERPRETATION RULES:
+      - If exhausted_pct ≥ 75%: the campaign almost always runs dry mid-day — budget is a hard ceiling on delivery; the reported ACOS reflects only morning/early-day traffic (often higher CVR), which means measured ACOS may look deceptively healthy while afternoon/evening volume is zero.
+      - If exhausted_pct 30–74%: budget constrains roughly half the campaign days; recommend raising daily budget by at least (avg_daily_spend − current_budget) × 1.20 to ensure all-day delivery.
+      - If exhausted_pct < 30%: budget is not a binding constraint for this campaign; focus on bids and keyword quality instead.
+      - BUDGET_AMOUNT change-history events are used to reconstruct historical caps so the exhausted_pct is not skewed by mid-period budget increases.
     keyword_count / avg_bid / min_bid / max_bid / match_type_dist → Ads API keyword list for matched campaigns (current config, not time-series)
     kw_performance_count → rows in spSearchTerm report with ≥ min_clicks_for_cvr clicks (data_start_date → data_end_date)
     lp_summary / lp_top_allocations / lp_zero_keywords / lp_maxed_keywords → OR-Tools LP (maximise ad orders; constraints: C1 global budget, C2 per-campaign budget caps, C3 target ACOS linearised, C4 click floor/ceiling; inventory is NOT a LP constraint — replenishment timing is too unstable to model as a hard bound; eff_cpc = avg_cpc × bidding_strategy_multiplier × placement_multiplier; pessimistic CVR shrinkage (Beta-Binomial) applied for low-sample keywords). lp_orders_bbs_estimate uses Beta-Binomial shrunk CVR (may be < actual_daily_ad_orders — expected). lp_orders_cvr_matched uses un-shrunk AND un-deflated raw CVR — same basis as actual_daily_ad_orders (both keyword-scope, un-deflated). order_gap = lp_orders_cvr_matched − actual_daily_ad_orders is therefore a fair apples-to-apples comparison: positive means LP reallocation gains orders, negative means LP cannot outperform current allocation within budget. actual_daily_ad_orders = spCampaigns ad-attributed orders ÷ days (AD ORDERS ONLY — organic orders not included; true daily total consumption is higher). order_gap = lp_orders_cvr_matched − actual_daily_ad_orders (positive = LP reallocates budget to gain more ad orders; negative — two distinct causes: (1) spend_ceiling_bound=true: click ceilings prevent the LP from using the full budget — order_gap is ceiling-limited, primary action is expand keywords / raise bids; (2) budget_binding=true (lp_optimal_spend ≥ 85% of daily_budget): budget is exhausted and Wilson CVR shrinkage causes LP's estimated orders to fall below actual historical — this is an artifact of pessimistic estimation, NOT evidence the current allocation beats LP; campaign_actions already corrects for this by allowing increase_budget when ACOS is healthy). CRITICAL — lp_zero_keywords does NOT mean 'inefficient'. A keyword is in lp_zero_keywords because the LP allocated 0 clicks to it. There are TWO distinct reasons — you MUST check keyword_acos_pct before labelling:
@@ -145,35 +147,43 @@ template: |
     events_significant_count / events_significant_pct → how many change events in THIS run had at least one model produce a statistically significant result (p<0.05 + CI not crossing zero). events_significant_pct=0.0 means ALL events were insignificant in this run.
     causal_reliability → pre-computed AND-gate tier: 'high' requires BOTH backtest_hit_rate ≥70 AND events_significant_pct > 0; 'low' covers three sub-cases: (A) hit_rate not None and < 70 — calibrated but near-random; (B) hit_rate=None and events_significant_pct==0 — no calibration and no significance; (C) hit_rate=None and events_significant_pct>0 — significant results but no backtest history; 'none' = hit_rate=None or 0 AND events_significant_pct=0 or None — no data at all. Use this field to apply Rule 4 label-downgrade logic
 
-  ```json
-  {_summary_json}
-  ```
-
   > **Evidence Summary**: 1-2 sentences citing the single most critical metric visible in the snapshot above (e.g., ACOS 45% vs. 30% warn threshold, budget exhausted 27/30 days, organic rank dropped from #12 → #28 over 10 days, can_sell_days=null → daily_sales not resolved). If a key field is null, call it out explicitly.
 
   ### Diagnostic Findings
 
   Each bullet must include a direct data citation in *italics*.
 
-  - **Budget**: [Insight] — MUST use day-level metrics (not the deprecated budget_exhaustion_pct). Write: '$X/day budget; budget_pressure=Y — {budget_exhausted_days}/{budget_active_days} days ({budget_exhausted_days_pct}%) hit the cap; avg utilization {avg_daily_utilization_pct}%, p90 day {p90_daily_utilization_pct}%.' Interpret pressure: 'chronic' → budget is a systemic constraint on nearly every active day, increasing it is the primary lever; 'moderate' → budget caps delivery on peak days, consider raising cap by p90_daily_utilization_pct − 100%; 'light' or 'none' → budget is not the binding constraint, focus on bids and keyword quality instead. FORBIDDEN: do NOT cite budget_exhaustion_pct or budget_likely_exhausted as primary evidence — they are deprecated aggregates that mask day-level distribution. *Source: budget_pressure=$val, budget_exhausted_days=$val, budget_active_days=$val, avg_daily_utilization_pct=$val, p90_daily_utilization_pct=$val*
+  **SOURCE LINE RULES** — apply to every *Source:* line:
+  - Maximum ~150 characters per source line.
+  - **Never dump raw lists or arrays.** Replace any list with a count + top-3 names only. E.g., `campaign_budget_coverage: 8 campaigns (CampaignA 100%, CampaignB 96%, CampaignC 93%)` — never the raw Python list repr.
+  - Scalar values only: `field=value`. Nested dicts: `object.field=value`.
+  - If a field is an array, write `field_count=$n` and name the top-1 to top-3 items inline.
+
+  - **Budget**: [Insight] — MUST use day-level metrics (not the deprecated budget_exhaustion_pct). Write: '$X/day budget; budget_pressure=Y — {{budget_exhausted_days}}/{{budget_active_days}} days ({{budget_exhausted_days_pct}}%) hit the cap; avg utilization {{avg_daily_utilization_pct}}%, p90 day {{p90_daily_utilization_pct}}%.'
+    [CHART:budget_utilization] Interpret pressure: 'chronic' (≥75% of days at cap) → budget is a systemic constraint, increasing it is the primary lever; 'moderate' (30–74%) → budget constrains delivery on most active days, consider raising cap by p90_daily_utilization_pct − 100%; 'light' or 'none' → budget is not the binding constraint, focus on bids and keyword quality instead. FORBIDDEN: do NOT cite budget_exhaustion_pct or budget_likely_exhausted as primary evidence — they are deprecated aggregates that mask day-level distribution.
+    INTRADAY COVERAGE — if budget_starved_campaigns > 0: name the specific campaigns from campaign_budget_coverage, state their exhausted_pct and all_day_pct, and explain the implication: a campaign that runs dry at midday only serves morning traffic (often high-CVR), so its ACOS may look healthy while afternoon/evening impressions are zero — total volume is structurally capped. Recommend raising each starved campaign's daily budget to at least avg_daily_spend × 1.20. If budget_starved_campaigns == 0: skip this sub-point.
+    [CHART:campaign_budget_cov] Left panel: green = budget lasted all day; red/orange = mid-day exhaustion (darker = more severe). Right panel: avg daily spend vs. cap per campaign.
+    *Source: budget_pressure=$val, budget_exhausted_days=$val/$budget_active_days d, avg_daily_utilization_pct=$val, p90=$val, budget_starved_campaigns=$n (top: CampaignA exhausted_pct%, CampaignB exhausted_pct%)*
   - **Bids vs. Competition**: [Insight] — *Source: avg_bid=$val, high_acos_keywords=[kw1(ACOS%), kw2(ACOS%)]*
   - **Placement Strategy**: [Insight] — *Source: TOS ACOS=$val (modifier=$x%, spend_share=$y%) | PP ACOS=$val (modifier=$z%, spend_share=$w%) → mismatch if any*
   - **Keywords**: [Insight] — *Source: keyword_count=$n, match_type_dist={{exact:$a%, phrase:$b%}}, high_acos_keywords=[...]*
   - **Organic & Market**: [Insight] — *Source: ad_traffic_ratio=$val, organic_rank_trend=improving/stable/declining for kw=$kw; SFR trend up/down in week YYYY-Www → demand increased/decreased*
   - **Inventory**: [Insight] — *Source: inventory_risk=T/F, can_sell_days=$d*
+    SHIPMENT LEAD-TIME GUIDANCE — if shipment_lead_time is present in _summary_json: report all three phases present in the data — (1) sea transit (China→3PL, median & p75), (2) local warehouse→FBA dispatch (3PL→FBA, median & p75), (3) FBA processing (RECEIVING→CLOSED, median). State total planning buffer = sea p75 + local p75 + fba p75. If any quarterly trend shows p75 rising, flag it as lead-time inflation risk. Use `[CHART:lead_time_dist]` here.
+    *Source: shipment_lead_time.sea_transit_overall.{{median,p75}}, shipment_lead_time.local_to_fba_overall.{{median,p75}}, shipment_lead_time.fba_processing_overall.{{median,p75}}, shipment_lead_time.by_quarter*
   - **Profitability**: [Insight] — *Source: account_acos=$val%, TACOS=$val% (if tacos available), net_profit_after_ads=$val (if cogs+price provided)*
-  - **LP Budget Optimisation**: [Insight — MUST distinguish two narratives] — ALWAYS open this bullet with the validation equation as an inline mini-table so readers can verify order_gap independently:
-    ```
+  - **LP Budget Optimisation**: [Insight — MUST distinguish two narratives] — ALWAYS open this bullet with the validation equation as an inline mini-table so readers can verify order_gap independently. Output the table as raw markdown (NO code fences / NO backtick blocks — bare pipe syntax only so it renders as a table):
+
     | | Orders/day | Budget/day |
     |---|---|---|
     | Current allocation (LP scope) | actual_daily_ad_orders | lp_scope_campaign_daily_budget |
     | LP optimal allocation | lp_orders_cvr_matched | lp_optimal_spend |
     | Gap | order_gap | — |
-    ```
+
     Fill each cell with the exact numeric value from lp_summary. This table is MANDATORY — omitting it means readers cannot verify the gap. After the table, write the narrative:
     If order_gap > 0: write 'Reallocating the current $X budget per LP plan could yield +Y orders/day (allocation fix — same total budget, different distribution); move spend away from above-target-ACOS lp_zero_keywords toward lp_maxed_keywords.' CRITICAL: only name a lp_zero_keyword here if its keyword_acos_pct > target_acos_applied. If a lp_zero_keyword has keyword_acos_pct ≤ target_acos_applied, it is budget-crowded-out — do NOT group it with above-target keywords; instead mention it under the budget-constraint narrative. If hold_keyword actions exist AND budget_binding=true: write separately 'Additionally, [keyword] (campaign [id]) is efficient (ACOS $val% < target) but budget-constrained — increasing total budget would unlock it.' NEVER merge these two into one sentence using 'budget constraint caused order_gap' — the order_gap is an allocation story, hold_keyword is a total-spend story.
-    If budget_binding=true AND budget_pressure IN ('none', 'light'): MUST explain the apparent contradiction — write 'Note: budget_binding=true applies to LP-scoped campaigns only ($lp_scope_campaign_daily_budget/day); account-wide budget_pressure=$val ({budget_exhausted_days}/{budget_active_days}d) reflects ALL campaigns including non-LP-scoped auto/PT campaigns.'
-    *Source: order_gap=$val, actual_daily_ad_orders=$val, lp_orders_cvr_matched=$val, lp_scope_campaign_daily_budget=$val, lp_optimal_spend=$val, lp_zero_keywords=[kw1, kw2], lp_maxed_keywords=[kw3], lp_top_allocations=[kw4: $budget_share%], budget_binding=T/F*
+    If budget_binding=true AND budget_pressure IN ('none', 'light'): MUST explain the apparent contradiction — write 'Note: budget_binding=true applies to LP-scoped campaigns only ($lp_scope_campaign_daily_budget/day); account-wide budget_pressure=$val ({{budget_exhausted_days}}/{{budget_active_days}}d) reflects ALL campaigns including non-LP-scoped auto/PT campaigns.'
+    *Source: order_gap=$val, actual_daily_ad_orders=$val, lp_orders_cvr_matched=$val, budget=$lp_scope_campaign_daily_budget, lp_optimal_spend=$val, zero_kws=$n (e.g. kw1, kw2), maxed_kws=$n, top_alloc=kw4 $pct%, budget_binding=T/F*
   - **Change Attribution (past actions)**:
     - ✅ Positive: $change_type on $date → Δ orders = +$x (consensus: Strong/Moderate evidence, causal_reliability=high)
     - ❌ Negative: $change_type on $date → Δ orders = -$x (consensus: Strong/Moderate evidence, causal_reliability=high)
@@ -256,7 +266,7 @@ template: |
   5a. Apparent contradictions between demand trend and traffic trend MUST be explained — do NOT leave them as unresolved coexisting statements. Specifically: if you write that seasonal demand is rising (e.g. SFR improving, market_trends showing week-over-week search volume increase) AND ALSO that ad clicks or traffic are declining, you MUST explain the root cause of the divergence. Possible explanations to check in order:
     (a) Promotion / price cut: had_promotion=True or a large negative price_delta_window in covariate_series → higher CVR may sustain orders despite lower clicks; write: 'Rising demand coincides with active promotion/price cut — higher CVR compensates for lower click volume; verify whether orders hold when promotion ends.'
     (b) Bid reduction: if a decrease_bid or decrease_budget change_attribution event precedes the click decline with positive consensus, write: 'Click decline follows [change_type] on [date] — intentional bid cut reduced impression share; seasonal demand rising but not captured due to lower bids.'
-    (c) Budget exhaustion driving impression cap: if budget_pressure IN ('chronic', 'moderate'), write: 'Budget cap reached on {budget_exhausted_days}/{budget_active_days} days ({budget_exhausted_days_pct}%) — rising demand is constrained by ad budget, not bid level; impression share limited by spend ceiling.'
+    (c) Budget exhaustion driving impression cap: if budget_pressure IN ('chronic', 'moderate'), write: 'Budget cap reached on {{budget_exhausted_days}}/{{budget_active_days}} days ({{budget_exhausted_days_pct}}%) — rising demand is constrained by ad budget, not bid level; impression share limited by spend ceiling.'
     (d) Ad share shift: if organic rank is improving (rank_series showing lower rank number), write: 'Organic rank improving — ad traffic may be declining as organic captures a larger share of total demand.'
     (e) If none of the above apply: write explicitly 'Root cause of traffic decline vs rising demand is unclear from available data — check search term report for impression share loss and competitor activity.'
   FORBIDDEN: do NOT write both 'seasonal demand is rising' and 'clicks are declining' in the same report without a connecting explanation for the divergence.
@@ -299,10 +309,13 @@ template: |
      - `[CHART:daily_trend]` — daily orders/ACOS time series; place in Quick Metrics Snapshot or Overview
      - `[CHART:its_causal]` — ITS/CausalImpact causal chart; place in Causal Confidence Assessment
      - `[CHART:kw_quadrant]` — keyword ACOS × orders quadrant; place in Diagnostic Findings / Keywords
-     - `[CHART:placement_bar]` — placement ACOS vs bid adjustment; place in Diagnostic Findings / Placement
+     - `[CHART:placement_donut]` — placement spend share (donut) + ACOS vs bid adjustment table; place in Diagnostic Findings / Placement
      - `[CHART:inventory_burndown]` — inventory burn-down; place in Diagnostic Findings / Inventory
      - `[CHART:comp_price_box]` — competitor price distribution; place in Diagnostic Findings / Organic & Market
      - `[CHART:lp_waterfall]` — LP budget waterfall; place in Diagnostic Findings / LP Budget Optimisation
+     - `[CHART:budget_utilization]` — daily budget utilization bar chart; place in Diagnostic Findings / Budget
+     - `[CHART:campaign_budget_cov]` — per-campaign intraday coverage (stacked days + spend vs cap); place in Diagnostic Findings / Budget, only if budget_starved_campaigns > 0
      - `[CHART:rank_trend]` — organic rank trend; place in Diagnostic Findings / Organic & Market
+     - `[CHART:lead_time_dist]` — shipment lead-time distribution by quarter; place in Diagnostic Findings / Inventory, only if shipment_lead_time data is present
 
   Begin the report now.
