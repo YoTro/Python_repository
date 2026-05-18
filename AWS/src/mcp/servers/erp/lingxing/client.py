@@ -9,6 +9,16 @@ from .auth import LingxingAuth
 
 logger = logging.getLogger(__name__)
 
+_TOKEN_EXPIRED_CODES = {401, "401", -1, -999}
+_TOKEN_EXPIRED_MSGS  = ("token", "未登录", "登录已过期")
+
+
+def _is_token_expired(data: dict) -> bool:
+    if data.get("code") in _TOKEN_EXPIRED_CODES:
+        return True
+    msg = str(data.get("msg", "")).lower()
+    return any(kw in msg for kw in _TOKEN_EXPIRED_MSGS)
+
 
 class LingxingClient(ERPClient):
     """
@@ -34,6 +44,8 @@ class LingxingClient(ERPClient):
         self._env_key    = os.getenv("LINGXING_ENV_KEY")    or _meta.get("env_key", "")
         self._uid        = os.getenv("LINGXING_UID")        or _meta.get("uid", "")
         self._zid        = os.getenv("LINGXING_ZID")        or _meta.get("zid", "")
+        # sids: optional store filter ("4443,4441"). Empty = all stores (API default).
+        self._sids = os.getenv("LINGXING_SIDS") or _meta.get("sids", "")
 
     # ── Internal request helper ───────────────────────────────────────────────
 
@@ -52,7 +64,7 @@ class LingxingClient(ERPClient):
         try:
             resp = self.session.request(method, url, headers=headers, **kwargs)
             data = resp.json()
-            if data.get("code") in (401, "401", -1) or "token" in str(data.get("msg", "")).lower():
+            if _is_token_expired(data):
                 logger.warning("Token expired, re-authenticating...")
                 self.token = self.auth.login()
                 if self.token:
@@ -92,7 +104,7 @@ class LingxingClient(ERPClient):
         try:
             resp = self.session.request("POST", url, headers=headers, json=payload)
             data = resp.json()
-            if data.get("code") in (401, "401", -1) or "token" in str(data.get("msg", "")).lower():
+            if _is_token_expired(data):
                 logger.warning("Token expired, re-authenticating...")
                 self.token = self.auth.login()
                 if self.token:
@@ -195,7 +207,9 @@ class LingxingClient(ERPClient):
         search_value     : text value to match against search_field (optional).
         fetch_all        : auto-paginate to collect all records (default True).
         """
-        _sids = sids or os.getenv("LINGXING_SIDS", "")
+        # sids: omit entirely when empty → API returns all stores for this account.
+        # Pass when filtering to specific stores: "4443,4441"
+        _sids = sids or os.getenv("LINGXING_SIDS") or self._sids or ""
         _seq_counter = [0]
 
         def _build_payload(offset: int) -> dict:
@@ -222,7 +236,6 @@ class LingxingClient(ERPClient):
                 "principal_uids":             [],
                 "is_store_diff":              "",
                 "search_field":               search_field,
-                "sids":                       _sids,
                 "shipment_status":            shipment_status or [],
                 "is_relate_shipment":         "",
                 "seniorSearchList":           [],
@@ -231,6 +244,7 @@ class LingxingClient(ERPClient):
                 "length":                     length,
                 "req_time_sequence":          f"/api/fba_shipment/showShipment_v2$${_seq_counter[0]}",
             }
+            if _sids:        payload["sids"]         = _sids
             if sku:          payload["msku"]         = sku
             if start_date:   payload["start_date"]   = start_date
             if end_date:     payload["end_date"]      = end_date

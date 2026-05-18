@@ -499,34 +499,34 @@ async def _enrich_inventory(item: Dict, ctx: WorkflowContext) -> Dict:
 
 async def _enrich_shipment_lead_time(item: Dict, ctx: WorkflowContext) -> Dict:
     """
-    Fetch and compute store-wide FBA shipment lead-time distributions from Lingxing ERP.
+    Fetch and compute store-wide FBA shipment lead-time distributions.
 
-    This is store-level data (shared across all ASINs), so the result is cached under
-    _KEY_LEAD_TIME and reused for every item in the same workflow run.
+    Data source priority:
+      1. Lingxing ERP  — full phase breakdown (sea transit + FBA processing).
+                         Used when sea_transit.n ≥ 5.
+      2. SP-API Inbound Plans 2024-03-20 — proxy: plan_creation → fba_receive
+                         for CN-source SHIPPED plans only.  sea_transit.p75 will
+                         overestimate by roughly the plan-lead-time lag (~7-21d);
+                         data_source = 'sp_api_plans' flags this.
+      3. No data       — data_source = 'none'; inbound_lead_days falls back to config.
 
-    Populates item["shipment_lead_time"] with the output of compute_quarterly_lead_times:
-      {
-        "sea_transit":      {"overall": {n,p25,median,p75,p90,max,mean}, "by_quarter": {...}},
-        "overseas_to_fba":  {"overall": {...}, "by_quarter": {...}},
-        "by_quarter_summary": {"2024-Q3": {sea_transit_median, fba_processing_median, ...}},
-        "total_input": N, "skipped": M,
-      }
+    Result cached under _KEY_LEAD_TIME and shared across all ASINs in the run.
     """
-    # Store-level cache: compute once per workflow run, reuse for every ASIN.
     if _KEY_LEAD_TIME in ctx.cache:
         item["shipment_lead_time"] = ctx.cache[_KEY_LEAD_TIME]
         return item
 
+    from src.intelligence.processors.shipment_lead_time import compute_quarterly_lead_times
+    result: Dict = {}
+
+    # ── Primary: Lingxing ERP ─────────────────────────────────────────────
     try:
         from src.mcp.servers.erp.lingxing.client import LingxingClient
-        from src.intelligence.processors.shipment_lead_time import (
-            adapt_lingxing_shipments,
-            compute_quarterly_lead_times,
-        )
+        from src.intelligence.processors.shipment_lead_time import adapt_lingxing_shipments
 
         loop = asyncio.get_event_loop()
 
-        def _fetch() -> List[Dict]:
+        def _fetch_lingxing() -> List[Dict]:
             client = LingxingClient()
             if not client.token:
                 raise RuntimeError("Lingxing: no auth token")
@@ -538,20 +538,14 @@ async def _enrich_shipment_lead_time(item: Dict, ctx: WorkflowContext) -> Dict:
                 fetch_all=True,
             )
 
-        raw        = await loop.run_in_executor(None, _fetch)
+        raw        = await loop.run_in_executor(None, _fetch_lingxing)
         normalised = adapt_lingxing_shipments(raw)
-
-        # Dual-phase analysis:
-        #   Phase A — sea transit: SHIPPED → RECEIVING (departure to FBA first scan)
-        #   Phase B — FBA processing: RECEIVING → CLOSED
-        result = compute_quarterly_lead_times(
+        lx = compute_quarterly_lead_times(
             normalised,
             sea_start_field   = "domestic_ship_date",
             sea_end_field     = "overseas_arrival_date",
             ovs_start_field   = "overseas_arrival_date",
             ovs_end_field     = "fba_received_date",
-            # local_to_fba: SHIPPED→RECEIVING ≤ 12d = domestic 3PL/warehouse→FBA.
-            # sea_transit uses min=13 so the two populations are mutually exclusive.
             local_start_field = "domestic_ship_date",
             local_end_field   = "overseas_arrival_date",
             local_min_days    = 0,
@@ -562,19 +556,61 @@ async def _enrich_shipment_lead_time(item: Dict, ctx: WorkflowContext) -> Dict:
             ovs_min_days      = 0,
             ovs_max_days      = 60,
         )
-
-        ctx.cache[_KEY_LEAD_TIME] = result
-        item["shipment_lead_time"] = result
-        logger.info(
-            f"_enrich_shipment_lead_time: {result.get('total_input', 0)} shipments, "
-            f"sea n={result['sea_transit']['overall'].get('n', 0)}, "
-            f"fba n={result['overseas_to_fba']['overall'].get('n', 0)}"
-        )
+        sea_n = lx.get("sea_transit", {}).get("overall", {}).get("n", 0)
+        if sea_n >= 5:
+            lx["data_source"] = "lingxing_erp"
+            result = lx
+            logger.info(
+                f"_enrich_shipment_lead_time [lingxing]: {lx.get('total_input', 0)} shipments, "
+                f"sea n={sea_n}, fba n={lx.get('overseas_to_fba', {}).get('overall', {}).get('n', 0)}"
+            )
+        else:
+            logger.warning(
+                f"_enrich_shipment_lead_time: Lingxing sea n={sea_n} < 5 — trying SP-API fallback"
+            )
     except Exception as e:
-        logger.warning(f"_enrich_shipment_lead_time failed: {e}")
-        ctx.cache[_KEY_LEAD_TIME] = {}
-        item["shipment_lead_time"] = {}
+        logger.warning(f"_enrich_shipment_lead_time: Lingxing failed ({e}) — trying SP-API fallback")
 
+    # ── Fallback: SP-API Inbound Plans 2024-03-20 ─────────────────────────
+    # Proxy measurement: plan_creation (createdAt) → FBA receive (lastUpdatedAt).
+    # Captures full plan-to-receive horizon; biased longer than true sea transit
+    # by the time between plan creation and actual factory departure (~7-21d).
+    if not result:
+        try:
+            from src.mcp.servers.amazon.sp_api.client import SPAPIClient
+            from src.intelligence.processors.shipment_lead_time import adapt_sp_api_plans
+
+            sp_client = SPAPIClient()
+            plans = await sp_client.get_inbound_plans(status="SHIPPED")
+            normalised_sp = adapt_sp_api_plans(plans, cn_only=True, shipped_only=True)
+            sp = compute_quarterly_lead_times(
+                normalised_sp,
+                sea_start_field = "domestic_ship_date",   # proxy: plan createdAt
+                sea_end_field   = "fba_received_date",    # proxy: plan lastUpdatedAt
+                ovs_start_field = "overseas_arrival_date",  # always None → ovs_to_fba skipped
+                ovs_end_field   = "fba_received_date",
+                quarter_field   = "fba_received_date",
+                sea_min_days    = 20,   # exclude domestic/air noise; plan pre-date adds ~7-21d
+                sea_max_days    = 150,
+            )
+            sea_n = sp.get("sea_transit", {}).get("overall", {}).get("n", 0)
+            if sea_n >= 3:
+                sp["data_source"] = "sp_api_plans"
+                result = sp
+                logger.info(
+                    f"_enrich_shipment_lead_time [sp_api_plans]: sea n={sea_n} "
+                    f"(proxy plan_creation→fba_receive; p75 may overestimate by ~14d)"
+                )
+            else:
+                logger.warning(f"_enrich_shipment_lead_time: SP-API plans sea n={sea_n} < 3 — no lead-time data")
+        except Exception as e:
+            logger.warning(f"_enrich_shipment_lead_time: SP-API fallback failed ({e})")
+
+    if not result:
+        result = {"data_source": "none"}
+
+    ctx.cache[_KEY_LEAD_TIME] = result
+    item["shipment_lead_time"] = result
     return item
 
 
@@ -2102,8 +2138,11 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
         # ── Inventory gate ────────────────────────────────────────────────
         stock_gate_days   = ctx.config.get("stock_gate_days", 21)
-        # Use actual p75 sea transit from Lingxing data if available; fall back to config.
-        _lt_sea = (item.get("shipment_lead_time") or {}).get("sea_transit", {}).get("overall", {})
+        # inbound_lead_days priority: (1) Lingxing sea_transit.p75, (2) SP-API plans p75
+        # (biased longer by plan-creation lag — conservative upper bound), (3) config default.
+        _lt      = item.get("shipment_lead_time") or {}
+        _lt_sea  = _lt.get("sea_transit", {}).get("overall", {})
+        _lt_src  = _lt.get("data_source", "none")
         inbound_lead_days = int(
             _lt_sea.get("p75") or ctx.config.get("inbound_lead_days", 30)
         )
@@ -2118,12 +2157,13 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             effective_stock_days = round(eff_units / daily_sales_val)
         inv_gate: Optional[Dict] = (
             {
-                "stock_gate_days":    stock_gate_days,
+                "stock_gate_days":      stock_gate_days,
                 "effective_stock_days": effective_stock_days,
-                "can_sell_days":      can_sell_days,
-                "inbound_receiving":  inbound_receiving,
-                "inbound_shipped":    inbound_shipped,
-                "inbound_lead_days":  inbound_lead_days,
+                "can_sell_days":        can_sell_days,
+                "inbound_receiving":    inbound_receiving,
+                "inbound_shipped":      inbound_shipped,
+                "inbound_lead_days":    inbound_lead_days,
+                "inbound_lead_source":  _lt_src,
             }
             if effective_stock_days is not None else None
         )
@@ -2226,6 +2266,50 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         ]
         item["lp_zero_keywords"]  = zero_kws[:20]
         item["lp_maxed_keywords"] = maxed_kws[:10]
+
+        # ── LP reallocation table: per-campaign current vs optimal (spend + orders) ──
+        # delta_orders uses raw_cvr_map (un-deflated) on the LP side — same basis as
+        # lp_orders_cvr_matched / order_gap — so per-campaign deltas sum to ≈ order_gap.
+        # Sorted by delta_orders descending (biggest gainers first); capped at 8 rows.
+        if days > 0:
+            # Current spend & orders per campaign (LP scope, keyword-attributed)
+            _camp_cur_spend: Dict[str, float] = {}
+            _camp_cur_orders: Dict[str, float] = {}
+            for r in perf_records_all:
+                cid = str(r.get("campaign_id", ""))
+                if cid in lp_scoped_cids:
+                    _camp_cur_spend[cid]  = _camp_cur_spend.get(cid, 0.0)  + float(r.get("spend",  0) or 0)
+                    _camp_cur_orders[cid] = _camp_cur_orders.get(cid, 0.0) + float(r.get("orders", 0) or 0)
+            _camp_cur_spend_d  = {k: round(v / days, 2) for k, v in _camp_cur_spend.items()}
+            _camp_cur_orders_d = {k: round(v / days, 2) for k, v in _camp_cur_orders.items()}
+            # LP optimal orders per campaign (raw CVR, consistent with order_gap)
+            _camp_lp_orders: Dict[str, float] = {}
+            for a in alloc:
+                cid = str(a.get("campaign_id", ""))
+                _camp_lp_orders[cid] = (
+                    _camp_lp_orders.get(cid, 0.0)
+                    + a["optimized_clicks"] * raw_cvr_map.get(a["keyword"], 0.0)
+                )
+            _all_cids = lp_scoped_cids | set(camp_spend.keys())
+            _realloc: List[Dict] = []
+            for cid in _all_cids:
+                cur_spend   = _camp_cur_spend_d.get(cid, 0.0)
+                lp_spend_v  = round(camp_spend.get(cid, 0.0), 2)
+                cur_orders  = _camp_cur_orders_d.get(cid, 0.0)
+                lp_orders_v = round(_camp_lp_orders.get(cid, 0.0), 2)
+                name = (camp_meta.get(cid) or {}).get("name") or cid
+                _realloc.append({
+                    "campaign_name":  name,
+                    "current_spend":  cur_spend,
+                    "lp_spend":       lp_spend_v,
+                    "delta_spend":    round(lp_spend_v - cur_spend, 2),
+                    "current_orders": cur_orders,
+                    "lp_orders":      lp_orders_v,
+                    "delta_orders":   round(lp_orders_v - cur_orders, 2),
+                })
+            # Sort by delta_orders descending — biggest order gainers first
+            _realloc.sort(key=lambda x: x["delta_orders"], reverse=True)
+            item["lp_reallocation_table"] = _realloc[:8]
 
         # Conflict suppression: a campaign-level increase_budget directly contradicts a
         # keyword-level decrease_bid on the same campaign — the extra budget would flow
@@ -4037,6 +4121,7 @@ def _summarise_lead_time(lt: Optional[Dict]) -> Dict:
             "n": local.get("n", 0), "p25": local.get("p25"),
             "median": local.get("median"), "p75": local.get("p75"), "p90": local.get("p90"),
         }
+    result["data_source"] = lt.get("data_source", "lingxing_erp")
     return result
 
 
@@ -4139,7 +4224,7 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
 # Fields that are dicts/lists with dedicated report sections — omit from the table.
 _SNAPSHOT_SKIP_FIELDS: frozenset = frozenset({
     "asin",
-    "lp_summary", "lp_top_allocations",
+    "lp_summary", "lp_top_allocations", "lp_reallocation_table",
     "campaign_actions", "keyword_actions",
     "auto_mining_summary", "auto_mining_beta_prior",
     "auto_mining_negatives", "auto_mining_harvest",
@@ -4242,6 +4327,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "lp_top_allocations":        (item.get("lp_top_allocations") or [])[:3],
         "lp_zero_keywords":          (item.get("lp_zero_keywords") or [])[:5],
         "lp_maxed_keywords":         (item.get("lp_maxed_keywords") or [])[:5],
+        "lp_reallocation_table":     item.get("lp_reallocation_table") or [],
         "campaign_actions":          (item.get("campaign_actions") or [])[:5],
         "keyword_actions":           (item.get("keyword_actions") or [])[:10],
         "competitor_price_meta":      item.get("competitor_price_meta"),

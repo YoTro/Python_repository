@@ -33,7 +33,7 @@ template: |
 
   ### Quick Metrics Snapshot
 
-  The table below is pre-computed by the pipeline — field values and Source / How derived strings are deterministic and fixed. Do NOT re-derive any value, do NOT modify any source string. Fields excluded from the table (they are dicts/lists rendered in dedicated sections below): lp_summary, lp_top_allocations, campaign_actions, keyword_actions, auto_mining_summary, auto_mining_beta_prior, auto_mining_negatives, auto_mining_harvest.
+  The table below is pre-computed by the pipeline — field values and Source / How derived strings are deterministic and fixed. Do NOT re-derive any value, do NOT modify any source string. Fields excluded from the table (they are dicts/lists rendered in dedicated sections below): lp_summary, lp_top_allocations, lp_reallocation_table, campaign_actions, keyword_actions, auto_mining_summary, auto_mining_beta_prior, auto_mining_negatives, auto_mining_harvest.
 
   {_snapshot_table}
 
@@ -49,7 +49,7 @@ template: |
     daily_sales / daily_sales_source → daily_sales = total units sold ÷ lookback_days (ALL channels: ad-attributed + organic). Source priority: (1) caller-supplied, (2) order_metrics = SP-API getOrderMetrics (ad + organic, most accurate), (3) ad_orders_only = spCampaigns ad-attributed orders ÷ days only — organic orders excluded, so daily_sales is a LOWER BOUND on true consumption velocity. When reporting inventory runway, always state the source. When daily_sales_source=ad_orders_only, warn that true stockout will occur SOONER than can_sell_days indicates (organic sales consume inventory too).
     can_sell_days → total_available ÷ daily_sales (null if daily_sales unavailable; when daily_sales_source=ad_orders_only: this is an UPPER BOUND — actual stockout is sooner because organic orders are excluded from the denominator; can_sell_days_note field contains a human-readable caveat)
     inventory_risk → can_sell_days < inventory_risk_days config (default 30 d)
-    shipment_lead_time → store-wide FBA shipment lead-time from Lingxing ERP (null when Lingxing not configured). Three phases: (1) sea_transit_overall = SHIPPED→RECEIVING transit >12d (long-haul sea freight, China origin); (2) local_to_fba_overall = SHIPPED→RECEIVING transit ≤12d (domestic dispatch from destination-country 3PL/overseas warehouse to FBA); (3) fba_processing_overall = RECEIVING→CLOSED (FBA receive-complete processing time). Structure: {{sea_transit_overall: {{n, p25, median, p75, p90}}, local_to_fba_overall: {{n, p25, median, p75, p90}}, fba_processing_overall: {{n, p25, median, p75, p90}}, by_quarter: {{"YYYY-Qn": {{sea_median, sea_p75, local_median, local_p75, fba_median, fba_p75, n}}}}}}. PLANNING RULE: total lead time = sea_transit_p75 (China→3PL) + local_to_fba_p75 (3PL→FBA) + fba_processing_p75 (FBA processing). If can_sell_days ≤ total lead time, a replenishment order must ship NOW to avoid stockout. inbound_lead_days is automatically set to sea_transit p75 when data is available.
+    shipment_lead_time → store-wide FBA shipment lead-time distribution. data_source field indicates measurement quality: 'lingxing_erp' = precise stage-level dates (SHIPPED/RECEIVING/CLOSED); 'sp_api_plans' = proxy (plan_creation → fba_receive for CN-source SHIPPED plans — sea_transit.p75 overestimates true sea transit by roughly the plan-creation-to-departure lag, typically 7–21d; treat as conservative upper bound); 'none' = no data, inbound_lead_days falls back to config default. Three phases (lingxing_erp only): (1) sea_transit_overall = SHIPPED→RECEIVING transit >12d; (2) local_to_fba_overall = SHIPPED→RECEIVING ≤12d (domestic 3PL→FBA); (3) fba_processing_overall = RECEIVING→CLOSED. Structure: {{sea_transit_overall: {{n, p25, median, p75, p90}}, local_to_fba_overall: {{n, p25, median, p75, p90}}, fba_processing_overall: {{n, p25, median, p75, p90}}, by_quarter: {{"YYYY-Qn": {{sea_median, sea_p75, ...}}}}, data_source: str}}. PLANNING RULE: total lead time = sea_transit_p75 + local_to_fba_p75 + fba_processing_p75. When data_source='sp_api_plans': use sea_transit_p75 as a single-phase total-lead-time proxy and note '(SP-API proxy estimate; may overestimate by ~2 weeks)'. If can_sell_days ≤ total lead time, a replenishment order must ship NOW. inbound_lead_days is set to sea_transit_p75 when available (from either source).
     campaign_count → count of campaigns matched to this ASIN (matching method in campaign_match_strategy)
     campaign_match_strategy → how campaigns were matched to this ASIN: explicit_config (most reliable) | spAdvertisedProduct (ground truth — campaigns that actually delivered ads for this ASIN per report data) | name_substring (fragile — ASIN in campaign name; may include unrelated campaigns) | none
     active_campaign_count → campaigns with state=ENABLED
@@ -77,6 +77,7 @@ template: |
       - BUDGET_AMOUNT change-history events are used to reconstruct historical caps so the exhausted_pct is not skewed by mid-period budget increases.
     keyword_count / avg_bid / min_bid / max_bid / match_type_dist → Ads API keyword list for matched campaigns (current config, not time-series)
     kw_performance_count → rows in spSearchTerm report with ≥ min_clicks_for_cvr clicks (data_start_date → data_end_date)
+    lp_reallocation_table → list of up to 8 LP-scoped campaigns sorted by delta_orders descending (biggest order gainers first); fields: campaign_name, current_spend (historical daily avg $/day), lp_spend (LP-optimal $/day), delta_spend (lp − current, ≈ 0 net), current_orders (keyword-attributed orders/day), lp_orders (LP-estimated orders/day using raw un-deflated CVR — same basis as order_gap), delta_orders (lp_orders − current_orders; sum ≈ order_gap). Positive delta_orders = LP allocates more clicks → more orders; negative = LP cuts this campaign. Rendered in the standalone "Budget Redistribution" section between Diagnostic Findings and Top 5 Actions.
     lp_summary / lp_top_allocations / lp_zero_keywords / lp_maxed_keywords → OR-Tools LP (maximise ad orders; constraints: C1 global budget, C2 per-campaign budget caps, C3 target ACOS linearised, C4 click floor/ceiling; inventory is NOT a LP constraint — replenishment timing is too unstable to model as a hard bound; eff_cpc = avg_cpc × bidding_strategy_multiplier × placement_multiplier; pessimistic CVR shrinkage (Beta-Binomial) applied for low-sample keywords). lp_orders_bbs_estimate uses Beta-Binomial shrunk CVR (may be < actual_daily_ad_orders — expected). lp_orders_cvr_matched uses un-shrunk AND un-deflated raw CVR — same basis as actual_daily_ad_orders (both keyword-scope, un-deflated). order_gap = lp_orders_cvr_matched − actual_daily_ad_orders is therefore a fair apples-to-apples comparison: positive means LP reallocation gains orders, negative means LP cannot outperform current allocation within budget. actual_daily_ad_orders = spCampaigns ad-attributed orders ÷ days (AD ORDERS ONLY — organic orders not included; true daily total consumption is higher). order_gap = lp_orders_cvr_matched − actual_daily_ad_orders (positive = LP reallocates budget to gain more ad orders; negative — two distinct causes: (1) spend_ceiling_bound=true: click ceilings prevent the LP from using the full budget — order_gap is ceiling-limited, primary action is expand keywords / raise bids; (2) budget_binding=true (lp_optimal_spend ≥ 85% of daily_budget): budget is exhausted and Wilson CVR shrinkage causes LP's estimated orders to fall below actual historical — this is an artifact of pessimistic estimation, NOT evidence the current allocation beats LP; campaign_actions already corrects for this by allowing increase_budget when ACOS is healthy). CRITICAL — lp_zero_keywords does NOT mean 'inefficient'. A keyword is in lp_zero_keywords because the LP allocated 0 clicks to it. There are TWO distinct reasons — you MUST check keyword_acos_pct before labelling:
     (i) Genuinely low ROI: keyword_acos_pct > target_acos_applied → LP correctly excluded it. Call it 'inefficient' or 'above-target ACOS'; recommend pausing or cutting bid.
     (ii) Budget-crowded-out: keyword_acos_pct ≤ target_acos_applied AND budget_binding=true → the keyword is EFFICIENT but was excluded because the budget was fully consumed by even-higher-ROI keywords first. Do NOT call it 'inefficient'. Call it 'efficient but crowded out by budget'; recommend increasing total budget.
@@ -174,7 +175,7 @@ template: |
   - **Keywords**: [Insight] — *Source: keyword_count=$n, match_type_dist={{exact:$a%, phrase:$b%}}, high_acos_keywords=[...]*
   - **Organic & Market**: [Insight] — *Source: ad_traffic_ratio=$val, organic_rank_trend=improving/stable/declining for kw=$kw; SFR trend up/down in week YYYY-Www → demand increased/decreased*
   - **Inventory**: [Insight] — *Source: inventory_risk=T/F, can_sell_days=$d*
-    SHIPMENT LEAD-TIME GUIDANCE — if shipment_lead_time is present in _summary_json: report all three phases present in the data — (1) sea transit (China→3PL, median & p75), (2) local warehouse→FBA dispatch (3PL→FBA, median & p75), (3) FBA processing (RECEIVING→CLOSED, median). State total planning buffer = sea p75 + local p75 + fba p75. If any quarterly trend shows p75 rising, flag it as lead-time inflation risk. Use `[CHART:lead_time_dist]` here.
+    SHIPMENT LEAD-TIME GUIDANCE — if shipment_lead_time is present AND data_source ≠ 'none': check data_source first. If data_source='lingxing_erp': report all three phases — (1) sea transit (China→3PL, median & p75), (2) local warehouse→FBA (3PL→FBA, median & p75), (3) FBA processing (median). State total planning buffer = sea p75 + local p75 + fba p75. If any quarterly p75 rising, flag as lead-time inflation risk. If data_source='sp_api_plans': report sea_transit_p75 as total-lead-time proxy with explicit caveat '(SP-API proxy: plan creation → FBA receive; may overestimate by ~2 weeks — use as conservative upper bound)'; do NOT report fba_processing or local_to_fba (not available from this source). Use `[CHART:lead_time_dist]` when data_source='lingxing_erp' only (SP-API has no per-phase breakdown for the chart).
     *Source: shipment_lead_time.sea_transit_overall.{{median,p75}}, shipment_lead_time.local_to_fba_overall.{{median,p75}}, shipment_lead_time.fba_processing_overall.{{median,p75}}, shipment_lead_time.by_quarter*
   - **Profitability**: [Insight] — *Source: account_acos=$val%, TACOS=$val% (if tacos available), net_profit_after_ads=$val (if cogs+price provided)*
   - **LP Budget Optimisation**: [Insight — MUST distinguish two narratives] — ALWAYS open this bullet with the validation equation as an inline mini-table so readers can verify order_gap independently. Output the table as raw markdown (NO code fences / NO backtick blocks — bare pipe syntax only so it renders as a table):
@@ -219,16 +220,67 @@ template: |
     4. delta_orders (campaign-level window) may still be present on duplicate entries when kpi_level='campaign'; it reflects that specific campaign's window shift, which is independent — you may cite it with that qualification.
     5. If shared_effect is absent, the event is unique on its date and the rule does not apply.
 
+  ### Budget Redistribution
+
+  Render this section ONLY when ALL three conditions hold: (1) order_gap > 0, (2) lp_reallocation_table has ≥ 3 rows, (3) any row has |delta_orders| ≥ 0.5. If any condition fails, omit this section entirely — do NOT output the heading.
+
+  Output the heading `**LP Budget Redistribution — Top Movers**` then the table immediately below (raw markdown, bare pipe syntax, NO code fences). Rows are pre-sorted by delta_orders descending. Format Δ columns with explicit sign (+ or −). Truncate campaign names to 28 chars.
+
+  | Campaign | Cur $/day | LP $/day | Δ $/day | Δ orders/day |
+  |---|---|---|---|---|
+  | {{campaign_name[:28]}} | {{current_spend:.1f}} | {{lp_spend:.1f}} | {{delta_spend:+.1f}} | {{delta_orders:+.2f}} |
+  ...
+
+  After the table write ONE sentence bridging to the actions below:
+  'Shifting ${{abs(sum(negative deltas)):.0f}}/day from [top 1–2 losers by |delta_spend|] to [top 1–2 gainers by delta_orders] drives +{{sum(positive delta_orders):.1f}} of the projected +{{order_gap}} orders/day — see Action #N for execution steps.'
+  *Source: lp_reallocation_table (delta_orders sum ≈ order_gap={{val}})*
+
   ### Top 5 Prioritised Actions (most impactful first)
 
-  For each action use this sub-structure:
+  **Ranking rule**: Each action slot's rank = sum of |delta_orders| across all members (for grouped actions) or the single item's |delta_orders| (for individual actions). Sort all slots descending by this value — a group of 4 small pauses ranks against a single large bid increase on the same metric.
+
+  **Two formats — choose based on group size:**
+
+  ─── FORMAT A: Individual action (1–2 items of same type) ───
 
   > **Action #N**: [Specific action with concrete numbers, e.g., increase TOS modifier from 10% → 30%]
   > - **Rationale**: [1-2 sentences with data citations]
-  >   *Evidence: placement_performance.TOS.acos=$val, spend_share=$val%*
-  > - **Expected impact**: [Quantified estimate] *(assuming CVR and CTR remain stable)*
-  > - **Risks / caveats**: [What to monitor; set a time-box, e.g., 7 days. NEVER write 'None' — every action carries monitoring risk. For pause_keyword or decrease_bid: always note search-term coverage gap risk and recommend a review window. For hold_keyword: note that this is an opportunity-cost item, not a problem — recommend monitoring once budget increases. For increase_budget or increase_bid: always note ACOS drift risk and a time-box.]
-  > - **Reference change attribution**: [Cite a past change_attribution entry if a similar action was taken; include the consensus confidence level. If none exists, write 'No historical reference available.']
+  >   *Evidence: field=$val, field=$val*
+  > - **Expected impact**: [Quantified: Δ orders/day and Δ spend/day] *(assuming CVR and CTR remain stable)*
+  > - **Risks / caveats**: [What to monitor; include a time-box. NEVER write 'None'. pause_keyword/decrease_bid: note search-term coverage gap + review window. hold_keyword: opportunity-cost item — monitor once budget increases. increase_budget/increase_bid: ACOS drift risk + time-box.]
+  > - **Reference change attribution**: [Cite a matching change_attribution entry with consensus level; or 'No historical reference available.']
+
+  ─── FORMAT B: Grouped action (≥ 3 items of same action type) ───
+
+  > **Action #N**: [Action type in one line, e.g., "Pause 5 inefficient keywords (ACOS > {{target_acos_applied}}% target)"]
+  > - **Rationale**: [1 sentence covering the group's common logic with key metric cited]
+  > - **Total expected impact**: [Sum of Δ orders/day and Δ spend/day across all rows] *(assuming CVR and CTR remain stable)*
+  > - **Risks / caveats**: [Group-level risk note — applies to all rows. NEVER write 'None'. Same type-specific rules as Format A apply here at the group level.]
+  >
+  > [Table immediately below — raw markdown, bare pipe syntax, NO code fences]
+  >
+  > Keyword action groups (pause_keyword / decrease_bid / hold_keyword / increase_bid):
+  >
+  > | Keyword (Match) | Campaign | ACOS% | Δ orders/day | Δ spend/day | Attribution |
+  > |---|---|---|---|---|---|
+  > | keyword1 (BROAD) | B0X-mr-0.67 | 52% | −0.20 | −$1.50 | 2026-04-15 bid cut (Mod) |
+  > | keyword2 (PHRASE) | B0X-BO-0.54 | 38% | −0.10 | −$0.80 | — |
+  > ...
+  >
+  > Campaign action groups (increase_budget / decrease_budget / review_bids):
+  >
+  > | Campaign | Cur $/day | LP $/day | Δ orders/day | Attribution |
+  > |---|---|---|---|---|
+  > | B0X-mr-0.67 | 14.2 | 28.6 | +3.2 | — |
+  > ...
+  >
+  > Column rules:
+  > - Keyword (Match): keyword_text + match_type in parentheses. Truncate keyword_text to 22 chars.
+  > - Campaign: campaign name truncated to 20 chars. Campaign ID goes in the *Evidence* source line below the table, NOT in the table itself.
+  > - ACOS%: keyword_acos_pct. For increase_bid replace Δ orders/day value with 'est. +{{estimated_order_uplift_per_10pct_bid}}/10% bid'.
+  > - Δ orders/day and Δ spend/day: expected_order_delta / expected_spend_delta (pre-computed); explicit sign (+ or −).
+  > - Attribution: date + change_type + consensus abbreviation (Strong/Mod/Weak/Conflict) truncated to ≤ 28 chars, or '—'. OMIT this column entirely if all rows are '—'.
+  > - After the table: one *Evidence* line listing campaign_id(s) for programmatic lookup, e.g. *campaign_ids: 138780191814422, 61852701766988*
 
   ### Account Health Summary
 
