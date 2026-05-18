@@ -1162,8 +1162,11 @@ def _compute_daily_budget_metrics(
 
     utilizations = [v / daily_budget_cap for v in active_vals]
     exhausted = sum(1 for u in utilizations if u >= exhaustion_threshold)
+    overdelivery_days = sum(1 for u in utilizations if u > 1.0)
     avg_util = sum(utilizations) / len(utilizations)
-    p90_util = sorted(utilizations)[int(len(utilizations) * 0.9)]
+    sorted_utils = sorted(utilizations)
+    p90_util = sorted_utils[int(len(sorted_utils) * 0.9)]
+    max_util = sorted_utils[-1]
     exhausted_pct = round(exhausted / active_days * 100, 1)
 
     if exhausted_pct >= 75:
@@ -1179,8 +1182,10 @@ def _compute_daily_budget_metrics(
         "budget_active_days":          active_days,
         "budget_exhausted_days":       exhausted,
         "budget_exhausted_days_pct":   exhausted_pct,
+        "overdelivery_days":           overdelivery_days,
         "avg_daily_utilization_pct":   round(avg_util * 100, 1),
         "p90_daily_utilization_pct":   round(p90_util * 100, 1),
+        "max_daily_utilization_pct":   round(max_util * 100, 1),
         "budget_pressure":             pressure,
     }
 
@@ -1393,16 +1398,18 @@ def _classify_lp_keywords(
     zero_kws: List[str] = []
     for kw in kw_perf:
         composed = f"{kw['keyword_text']}|{kw['match_type']}|{kw.get('campaign_id', '')}"
-        if composed not in alloc_names and kw.get("avg_cpc") and composed not in seen_zero:
-            seen_zero.add(composed)
+        display_key = (kw['keyword_text'], kw['match_type'])
+        if composed not in alloc_names and kw.get("avg_cpc") and display_key not in seen_zero:
+            seen_zero.add(display_key)
             zero_kws.append(f"{kw['keyword_text']} ({kw['match_type']})")
     seen_maxed: set = set()
     maxed_kws: List[str] = []
     for a in alloc:
         cap = kw_map.get(a["keyword"], {}).get("max_daily_clicks", 0)
-        if cap and a["optimized_clicks"] >= cap * 0.95 and a["keyword"] not in seen_maxed:
-            seen_maxed.add(a["keyword"])
-            parts = a["keyword"].split("|")
+        parts = a["keyword"].split("|")
+        display_key = (parts[0], parts[1]) if len(parts) > 1 else (parts[0],)
+        if cap and a["optimized_clicks"] >= cap * 0.95 and display_key not in seen_maxed:
+            seen_maxed.add(display_key)
             maxed_kws.append(f"{parts[0]} ({parts[1]})" if len(parts) > 1 else parts[0])
     return zero_kws, maxed_kws
 
@@ -1953,6 +1960,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         # not the raw snapshot, so that budget-change periods are handled correctly).
         budget_metrics = _compute_daily_budget_metrics(asin_daily, daily_budget, days)
         item.update(budget_metrics)
+        item["budget_source"] = budget_source  # "campaign_snapshot" or "historical_avg_spend"
 
         # Per-campaign intraday budget coverage: did each campaign last through the day?
         # Uses BUDGET_AMOUNT change-history events to reconstruct historical caps so
@@ -4092,7 +4100,10 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "budget_exhausted_days":    "active days where daily spend ≥ 85% of campaign daily budget cap",
     "budget_exhausted_days_pct":"budget_exhausted_days ÷ budget_active_days × 100",
     "avg_daily_utilization_pct":"mean(daily_spend ÷ campaign_daily_budget) × 100 across active days",
-    "p90_daily_utilization_pct":"90th-percentile daily utilization across active days",
+    "p90_daily_utilization_pct":"90th-percentile daily utilization across active days; >100% means actual spend exceeded cap on that day",
+    "max_daily_utilization_pct":"peak single-day utilization; useful for diagnosing extreme over-delivery",
+    "overdelivery_days":        "days where actual spend exceeded the daily budget cap (utilization > 100%); caused by Amazon pacing (≤25% above cap) or historical spend pre-dating a mid-period budget reduction",
+    "budget_source":            "how daily_budget_cap was determined: 'campaign_snapshot' (current Ads API snapshot, overage ≤25%) or 'historical_avg_spend' (snapshot understated capacity, cap reconciled to hist_avg×0.90)",
     "budget_pressure":          "chronic ≥75% / moderate 30-74% / light 10-29% / none <10% of active days at cap",
     "budget_starved_campaigns": "campaigns with exhausted_pct ≥ 30% (daily spend ≥ 85% of cap on ≥ 30% of active days — budget likely runs out mid-day); see campaign_budget_coverage in _summary_json for per-campaign breakdown",
     "keyword_count":            "Ads API keyword list — matched campaigns (current config)",
@@ -4219,6 +4230,9 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "budget_exhausted_days_pct":   item.get("budget_exhausted_days_pct"),
         "avg_daily_utilization_pct":   item.get("avg_daily_utilization_pct"),
         "p90_daily_utilization_pct":   item.get("p90_daily_utilization_pct"),
+        "max_daily_utilization_pct":   item.get("max_daily_utilization_pct"),
+        "overdelivery_days":           item.get("overdelivery_days"),
+        "budget_source":               item.get("budget_source"),
         "budget_pressure":             item.get("budget_pressure"),
         "keyword_count":             item.get("keyword_count"),
         "avg_bid":                   item.get("avg_bid"),
@@ -4548,17 +4562,27 @@ def _chart_interpretation(item: Dict, name: str) -> str:
                 f"Blue bar = LP target; grey = budget cap. Organic orders not included.")
 
     if name == "budget_utilization":
-        pressure  = item.get("budget_pressure") or "unknown"
-        exh_days  = item.get("budget_exhausted_days")
-        act_days  = item.get("budget_active_days")
-        avg_util  = item.get("avg_daily_utilization_pct")
-        p90_util  = item.get("p90_daily_utilization_pct")
-        cap       = item.get("total_daily_budget") or 0
+        pressure       = item.get("budget_pressure") or "unknown"
+        exh_days       = item.get("budget_exhausted_days")
+        act_days       = item.get("budget_active_days")
+        avg_util       = item.get("avg_daily_utilization_pct")
+        p90_util       = item.get("p90_daily_utilization_pct")
+        max_util       = item.get("max_daily_utilization_pct")
+        overdeliv_days = item.get("overdelivery_days") or 0
+        budget_source  = item.get("budget_source") or "campaign_snapshot"
+        cap            = item.get("total_daily_budget") or 0
         exh_s = (f"{exh_days}/{act_days}d hit the 85 % cap"
                  if exh_days is not None and act_days else "")
-        util_s = (f"avg {avg_util:.0f}%, p90 {p90_util:.0f}%"
-                  if avg_util is not None and p90_util is not None else "")
-        parts = [p for p in [exh_s, util_s] if p]
+        util_s = (f"avg {avg_util:.0f}%, p90 {p90_util:.0f}%, max {max_util:.0f}%"
+                  if avg_util is not None and p90_util is not None and max_util is not None else "")
+        overdeliv_s = ""
+        if overdeliv_days > 0:
+            if (p90_util is not None and p90_util > 125) or budget_source == "historical_avg_spend":
+                overdeliv_s = (f"{overdeliv_days}d spend exceeded cap — budget reduced mid-period "
+                               f"(budget_source={budget_source}); historical spend pre-dates the reduction.")
+            else:
+                overdeliv_s = f"{overdeliv_days}d spend exceeded cap — Amazon ±25% pacing allowance."
+        parts = [p for p in [exh_s, util_s, overdeliv_s] if p]
         return (f"Budget pressure = {pressure} (cap ${cap:.0f}/day). "
                 + ("; ".join(parts) + ". " if parts else "")
                 + "Red bars = exhausted days (≥ 85 % of cap); "
