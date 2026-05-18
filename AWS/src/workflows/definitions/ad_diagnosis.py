@@ -1427,26 +1427,49 @@ def _build_lp_input(
 
 
 def _classify_lp_keywords(
-    kw_perf: List[Dict], alloc: List[Dict], kw_map: Dict[str, Dict]
-) -> Tuple[List[str], List[str]]:
+    kw_perf: List[Dict],
+    alloc: List[Dict],
+    kw_map: Dict[str, Dict],
+    camp_meta: Dict[str, Dict] = {},
+) -> Tuple[List[Dict], List[Dict]]:
     alloc_names = {a["keyword"] for a in alloc}
     seen_zero: set = set()
-    zero_kws: List[str] = []
+    zero_kws: List[Dict] = []
     for kw in kw_perf:
         composed = f"{kw['keyword_text']}|{kw['match_type']}|{kw.get('campaign_id', '')}"
         display_key = (kw['keyword_text'], kw['match_type'])
         if composed not in alloc_names and kw.get("avg_cpc") and display_key not in seen_zero:
             seen_zero.add(display_key)
-            zero_kws.append(f"{kw['keyword_text']} ({kw['match_type']})")
+            cid = str(kw.get("campaign_id", ""))
+            zero_kws.append({
+                "keyword":       f"{kw['keyword_text']} ({kw['match_type']})",
+                "campaign_id":   cid,
+                "campaign_name": (camp_meta.get(cid, {}).get("name") or
+                                  camp_meta.get(cid, {}).get("campaign_name") or cid)[:40],
+                "acos_pct":      kw.get("acos"),
+            })
+    # Build kw_perf lookup for ACOS on maxed keywords
+    _kw_acos: Dict[tuple, Optional[float]] = {
+        (kw["keyword_text"], kw["match_type"], str(kw.get("campaign_id", ""))): kw.get("acos")
+        for kw in kw_perf
+    }
     seen_maxed: set = set()
-    maxed_kws: List[str] = []
+    maxed_kws: List[Dict] = []
     for a in alloc:
         cap = kw_map.get(a["keyword"], {}).get("max_daily_clicks", 0)
         parts = a["keyword"].split("|")
         display_key = (parts[0], parts[1]) if len(parts) > 1 else (parts[0],)
         if cap and a["optimized_clicks"] >= cap * 0.95 and display_key not in seen_maxed:
             seen_maxed.add(display_key)
-            maxed_kws.append(f"{parts[0]} ({parts[1]})" if len(parts) > 1 else parts[0])
+            cid = parts[2] if len(parts) > 2 else ""
+            acos_pct = _kw_acos.get((parts[0], parts[1] if len(parts) > 1 else "", cid))
+            maxed_kws.append({
+                "keyword":       f"{parts[0]} ({parts[1]})" if len(parts) > 1 else parts[0],
+                "campaign_id":   cid,
+                "campaign_name": (camp_meta.get(cid, {}).get("name") or
+                                  camp_meta.get(cid, {}).get("campaign_name") or cid)[:40],
+                "acos_pct":      acos_pct,
+            })
     return zero_kws, maxed_kws
 
 
@@ -2133,7 +2156,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 if str(r.get("campaign_id", "")) in lp_scoped_cids) / days, 2
         ) if days > 0 else 0.0
         non_lp_scope_hist_spend = round(max(0.0, historical_daily_spend - lp_scope_hist_spend), 2)
-        zero_kws, maxed_kws = _classify_lp_keywords(kw_perf, alloc, kw_map)
+        zero_kws, maxed_kws = _classify_lp_keywords(kw_perf, alloc, kw_map, camp_meta)
         kw_id_map           = _build_lp_kw_id_map(ctx, campaign_ids)
 
         # ── Inventory gate ────────────────────────────────────────────────
@@ -2272,16 +2295,23 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         # lp_orders_cvr_matched / order_gap — so per-campaign deltas sum to ≈ order_gap.
         # Sorted by delta_orders descending (biggest gainers first); capped at 8 rows.
         if days > 0:
-            # Current spend & orders per campaign (LP scope, keyword-attributed)
+            # Current spend, orders, sales per campaign (LP scope, keyword-attributed)
             _camp_cur_spend: Dict[str, float] = {}
             _camp_cur_orders: Dict[str, float] = {}
+            _camp_cur_sales: Dict[str, float] = {}
             for r in perf_records_all:
                 cid = str(r.get("campaign_id", ""))
                 if cid in lp_scoped_cids:
                     _camp_cur_spend[cid]  = _camp_cur_spend.get(cid, 0.0)  + float(r.get("spend",  0) or 0)
                     _camp_cur_orders[cid] = _camp_cur_orders.get(cid, 0.0) + float(r.get("orders", 0) or 0)
+                    _camp_cur_sales[cid]  = _camp_cur_sales.get(cid, 0.0)  + float(r.get("sales",  0) or 0)
             _camp_cur_spend_d  = {k: round(v / days, 2) for k, v in _camp_cur_spend.items()}
             _camp_cur_orders_d = {k: round(v / days, 2) for k, v in _camp_cur_orders.items()}
+            _camp_acos: Dict[str, Optional[float]] = {
+                cid: round(_camp_cur_spend[cid] / _camp_cur_sales[cid] * 100, 1)
+                if _camp_cur_sales.get(cid, 0) > 0 else None
+                for cid in _camp_cur_spend
+            }
             # LP optimal orders per campaign (raw CVR, consistent with order_gap)
             _camp_lp_orders: Dict[str, float] = {}
             for a in alloc:
@@ -2300,6 +2330,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 name = (camp_meta.get(cid) or {}).get("name") or cid
                 _realloc.append({
                     "campaign_name":  name,
+                    "campaign_acos":  _camp_acos.get(cid),
                     "current_spend":  cur_spend,
                     "lp_spend":       lp_spend_v,
                     "delta_spend":    round(lp_spend_v - cur_spend, 2),
@@ -2309,6 +2340,33 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 })
             # Sort by delta_orders descending — biggest order gainers first
             _realloc.sort(key=lambda x: x["delta_orders"], reverse=True)
+
+            # Attach keyword-level FROM/TO to each campaign row so the LLM can
+            # render a structured transfer table without doing multi-table joins.
+            _target_acos_pct = round((target_acos or 0) * 100, 1)
+            _zero_by_cid: Dict[str, List[Dict]] = {}
+            for z in zero_kws:
+                _zero_by_cid.setdefault(z["campaign_id"], []).append(z)
+            _maxed_by_cid: Dict[str, List[Dict]] = {}
+            for m in maxed_kws:
+                _maxed_by_cid.setdefault(m["campaign_id"], []).append(m)
+            for row in _realloc:
+                cid_r = str(
+                    next((c["campaign_id"] for c in campaigns
+                          if (c.get("name") or "") == row["campaign_name"]), "")
+                )
+                # cut_keywords: above-target ACOS zeros in this campaign (budget source)
+                row["cut_keywords"] = [
+                    {"keyword": z["keyword"], "acos_pct": z["acos_pct"]}
+                    for z in _zero_by_cid.get(cid_r, [])
+                    if z.get("acos_pct") is not None and z["acos_pct"] > _target_acos_pct
+                ][:5]
+                # receive_keywords: maxed keywords in this campaign (budget destination)
+                row["receive_keywords"] = [
+                    {"keyword": m["keyword"], "acos_pct": m.get("acos_pct")}
+                    for m in _maxed_by_cid.get(cid_r, [])
+                ][:5]
+
             item["lp_reallocation_table"] = _realloc[:8]
 
         # Conflict suppression: a campaign-level increase_budget directly contradicts a
@@ -4197,8 +4255,8 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "max_bid":                  "Ads API keyword list — matched campaigns (current config)",
     "match_type_dist":          "Ads API keyword list — matched campaigns (current config)",
     "kw_performance_count":     "spSearchTerm report rows with ≥ min_clicks_for_cvr clicks",
-    "lp_zero_keywords":         "LP optimal plan assigns 0 clicks — TWO causes: (1) keyword_acos_pct > target_acos_applied → genuinely inefficient, LP correctly excluded; (2) keyword_acos_pct ≤ target_acos_applied AND budget_binding=True → efficient but crowded out by higher-ROI keywords consuming the full budget. Check keyword_acos_pct vs target_acos_applied to distinguish.",
-    "lp_maxed_keywords":        "LP — keywords at click ceiling (high-ROI; reallocate budget here)",
+    "lp_zero_keywords_count":   "count of keywords LP assigned 0 clicks (detail list in LP Budget Redistribution section)",
+    "lp_maxed_keywords_count":  "count of keywords LP hit click ceiling (detail list in LP Budget Redistribution section)",
     "ad_traffic_ratio":         "Xiyouzhaoci traffic score API (latest snapshot)",
     "organic_traffic_ratio":    "Xiyouzhaoci traffic score API (latest snapshot)",
     "traffic_growth_7d":        "Xiyouzhaoci traffic score API (latest snapshot)",
@@ -4225,6 +4283,7 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
 _SNAPSHOT_SKIP_FIELDS: frozenset = frozenset({
     "asin",
     "lp_summary", "lp_top_allocations", "lp_reallocation_table",
+    "lp_zero_keywords", "lp_maxed_keywords",  # lists — rendered in LP Budget Redistribution section
     "campaign_actions", "keyword_actions",
     "auto_mining_summary", "auto_mining_beta_prior",
     "auto_mining_negatives", "auto_mining_harvest",
@@ -4325,8 +4384,10 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "kw_performance_count":      len(item.get("keyword_performance", [])),
         "lp_summary":                item.get("lp_summary"),
         "lp_top_allocations":        (item.get("lp_top_allocations") or [])[:3],
-        "lp_zero_keywords":          (item.get("lp_zero_keywords") or [])[:5],
-        "lp_maxed_keywords":         (item.get("lp_maxed_keywords") or [])[:5],
+        "lp_zero_keywords":          (item.get("lp_zero_keywords") or [])[:10],
+        "lp_maxed_keywords":         (item.get("lp_maxed_keywords") or [])[:10],
+        "lp_zero_keywords_count":    len(item.get("lp_zero_keywords") or []),
+        "lp_maxed_keywords_count":   len(item.get("lp_maxed_keywords") or []),
         "lp_reallocation_table":     item.get("lp_reallocation_table") or [],
         "campaign_actions":          (item.get("campaign_actions") or [])[:5],
         "keyword_actions":           (item.get("keyword_actions") or [])[:10],
