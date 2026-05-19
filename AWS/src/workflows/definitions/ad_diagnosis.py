@@ -1632,6 +1632,16 @@ def _build_campaign_actions(
                     f"Campaign is PAUSED; LP saturates budget (needs ${lp_spend:.0f}/day vs ${camp_budget:.0f} cap); "
                     f"ACOS {camp_acos}% ≤ target {target_acos_pct:.0f}% — re-enable then raise budget to ${suggested:.0f}"
                 )
+            elif lp_spend <= actual_spend:
+                # LP saturates its cap but still allocates LESS than historical spend.
+                # Raising the cap won't help — the global optimizer already de-prioritised
+                # this campaign in favour of higher-CVR alternatives.
+                action, priority = "maintain", "P2"
+                rationale = (
+                    f"LP near cap (${lp_spend:.0f}/day ≥ 90% of ${camp_budget:.0f}) but "
+                    f"reduces vs historical ${actual_spend:.1f}/day — global budget routes "
+                    f"marginal spend to higher-CVR campaigns; no cap increase needed"
+                )
             else:
                 action, priority = "increase_budget", "P0"
                 rationale = (
@@ -1726,7 +1736,10 @@ def _build_campaign_actions(
             entry["prerequisite"] = prerequisite
         actions.append(entry)
 
-    actions.sort(key=lambda x: PRIORITY_SORT.index(x["priority"]))
+    actions.sort(key=lambda x: (
+        PRIORITY_SORT.index(x["priority"]),
+        -abs(x.get("expected_order_delta") or 0),
+    ))
     return actions
 
 
@@ -1903,7 +1916,10 @@ def _build_keyword_actions(
                         ),
                     })
 
-    actions.sort(key=lambda x: PRIORITY_SORT.index(x["priority"]))
+    actions.sort(key=lambda x: (
+        PRIORITY_SORT.index(x["priority"]),
+        -abs(x.get("expected_order_delta") or 0),
+    ))
     return actions
 
 
@@ -2339,6 +2355,9 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 _ca_cid = str(_ca.get("campaign_id", ""))
                 if _ca_cid in _lp_delta_by_cid:
                     _ca["lp_delta_orders"] = _lp_delta_by_cid[_ca_cid]
+                    # Null out CPO estimate so LLM cannot accidentally use it
+                    # instead of lp_delta_orders for LP-scope campaigns.
+                    _ca["expected_order_delta"] = None
 
         # Conflict suppression: a campaign-level increase_budget directly contradicts a
         # keyword-level decrease_bid on the same campaign — the extra budget would flow
@@ -4168,9 +4187,8 @@ def _causal_reliability_tier(
     AND at least one event being statistically significant in this run.
     'low' sub-cases:
       A: hit_rate not None and < 70 (calibrated but near-random)
-      B: hit_rate None and events_significant_pct == 0 (no calibration, no significance)
-      C: hit_rate None and events_significant_pct > 0 (significant results, no backtest)
-    'none': no backtest data and no significant events at all.
+      B: hit_rate None and events_significant_pct > 0 (significant results, no backtest)
+    'none': hit_rate None/0 AND events_significant_pct 0/None — no calibration and no significance.
     """
     has_calibration  = (backtest_hit_rate or 0) >= 70
     has_significance = (events_significant_pct is not None) and events_significant_pct > 0
@@ -4228,7 +4246,9 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "max_bid":                  "Ads API keyword list — matched campaigns (current config)",
     "match_type_dist":          "Ads API keyword list — matched campaigns (current config)",
     "kw_performance_count":     "spSearchTerm report rows with ≥ min_clicks_for_cvr clicks",
-    "lp_zero_keywords_count":   "count of keywords LP assigned 0 clicks (detail list in LP Budget Redistribution section)",
+    "lp_zero_keywords_count":       "total keywords LP assigned 0 clicks (= lp_pause_candidates_count + lp_hold_keywords_count + unknown-ACOS; detail in LP Budget Redistribution section)",
+    "lp_pause_candidates_count":    "pause_keyword actions with computed ACOS > target — genuinely inefficient (LP assigned 0 clicks, keyword_acos_pct computed from CPC/CVR/price); recommend pausing",
+    "lp_hold_keywords_count":       "hold_keyword actions — EFFICIENT (ACOS ≤ target) but crowded out by budget; do NOT pause, do NOT call inefficient",
     "lp_maxed_keywords_count":  "count of keywords LP hit click ceiling (detail list in LP Budget Redistribution section)",
     "ad_traffic_ratio":         "Xiyouzhaoci traffic score API (latest snapshot)",
     "organic_traffic_ratio":    "Xiyouzhaoci traffic score API (latest snapshot)",
@@ -4339,6 +4359,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "total_spend":               item.get("total_spend"),
         "total_sales":               item.get("total_sales"),
         "total_orders":              item.get("total_orders"),
+        "total_clicks":              item.get("total_clicks"),
         "account_acos":              item.get("account_acos"),
         "budget_active_days":          item.get("budget_active_days"),
         "budget_exhausted_days":       item.get("budget_exhausted_days"),
@@ -4350,6 +4371,8 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "budget_pressure":             item.get("budget_pressure"),
         "keyword_count":             item.get("keyword_count"),
         "avg_bid":                   item.get("avg_bid"),
+        "min_bid":                   item.get("min_bid"),
+        "max_bid":                   item.get("max_bid"),
         "match_type_dist":           item.get("match_type_dist"),
         "kw_performance_count":      len(item.get("keyword_performance", [])),
         "lp_summary":                item.get("lp_summary"),
@@ -4358,6 +4381,22 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "lp_maxed_keywords":         (item.get("lp_maxed_keywords") or [])[:10],
         "lp_zero_keywords_count":    len(item.get("lp_zero_keywords") or []),
         "lp_maxed_keywords_count":   len(item.get("lp_maxed_keywords") or []),
+        # Derive pause/hold counts from keyword_actions, not lp_zero_keywords, because
+        # lp_zero_keywords[].acos_pct uses the raw report field (often None) while
+        # keyword_actions[].keyword_acos_pct is independently computed from CPC/CVR/price.
+        # Using keyword_actions keeps these counts in sync with what the action list contains.
+        # pause_keyword with keyword_acos_pct not None → genuinely inefficient (above target).
+        # pause_keyword with keyword_acos_pct None     → insufficient data; NOT a confirmed pause candidate.
+        # hold_keyword                                 → efficient but budget-constrained.
+        "lp_pause_candidates_count": sum(
+            1 for ka in (item.get("keyword_actions") or [])
+            if ka.get("action") == "pause_keyword"
+            and ka.get("keyword_acos_pct") is not None
+        ),
+        "lp_hold_keywords_count": sum(
+            1 for ka in (item.get("keyword_actions") or [])
+            if ka.get("action") == "hold_keyword"
+        ),
         "lp_reallocation_table":     item.get("lp_reallocation_table") or [],
         "lp_reallocation_net":       item.get("lp_reallocation_net"),
         "campaign_actions":          (item.get("campaign_actions") or [])[:5],
@@ -4365,6 +4404,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "competitor_price_meta":      item.get("competitor_price_meta"),
         "ad_traffic_ratio":          item.get("ad_traffic_ratio"),
         "organic_traffic_ratio":     item.get("organic_traffic_ratio"),
+        "traffic_growth_7d":         item.get("traffic_growth_7d"),
         "rank_tracked_keywords":     item.get("rank_tracked_keywords"),
         "rank_series_days":          sum(
             1 for d in next(iter(rank_series.values()), {})
