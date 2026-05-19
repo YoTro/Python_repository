@@ -1156,27 +1156,21 @@ def _p90_headroom(daily_perf: List[Dict], fallback: float) -> float:
 
 def _compute_daily_budget_metrics(
     asin_daily: List[Dict],
-    daily_budget_cap: float,
+    cap_by_date: Dict[str, float],
     days: int,
     exhaustion_threshold: float = 0.85,
 ) -> Dict:
     """
     Compute day-level budget utilization metrics from spAdvertisedProduct daily records.
 
-    Why this is more trustworthy than budget_exhaustion_pct:
-    - budget_exhaustion_pct = total_spend / (snapshot_budget × days): the denominator
-      uses the CURRENT budget snapshot, not the budget at each historical day.  If the
-      budget was raised or cut mid-period the aggregate is misleading.
-    - More importantly, the average masks distribution: 85% average could mean the
-      budget was hit every single day (chronic constraint) or that it was idle for
-      20 days then hit cap 10 days (campaign was paused).  These require different actions.
-    - Amazon allows ≤25% daily overspend for pacing, so a threshold of 0.85 (not 1.0)
-      correctly identifies days where the budget was effectively the binding constraint.
+    Uses per-day effective budget caps (reconstructed from BUDGET_AMOUNT change history)
+    so utilization is accurate even when budgets changed mid-period.  The denominator on
+    each date reflects the cap that was actually active on that date, not the current
+    snapshot — eliminating the previous budget_overage_ratio heuristic entirely.
 
-    asin_daily records (spAdvertisedProduct) are already filtered to the target ASIN,
-    so we sum all records per date without further campaign filtering.
+    cap_by_date: {date_str: total_effective_cap} — built by _compute_campaign_budget_coverage.
     """
-    if not asin_daily or daily_budget_cap <= 0:
+    if not asin_daily or not cap_by_date:
         return {}
 
     from collections import defaultdict
@@ -1190,18 +1184,22 @@ def _compute_daily_budget_metrics(
         return {}
 
     sorted_dates = sorted(raw_by_date.keys())[-days:]
-    daily_vals = [raw_by_date[d] for d in sorted_dates]
-    active_vals = [v for v in daily_vals if v > 0]
-    active_days = len(active_vals)
-    if active_days == 0:
+    # Only include dates that have both spend > 0 and a known cap
+    active_pairs = [
+        (raw_by_date[d], cap_by_date[d])
+        for d in sorted_dates
+        if raw_by_date[d] > 0 and cap_by_date.get(d, 0) > 0
+    ]
+    if not active_pairs:
         return {}
 
-    utilizations = [v / daily_budget_cap for v in active_vals]
+    active_days = len(active_pairs)
+    utilizations = [s / c for s, c in active_pairs]
     exhausted = sum(1 for u in utilizations if u >= exhaustion_threshold)
     overdelivery_days = sum(1 for u in utilizations if u > 1.0)
-    avg_util = sum(utilizations) / len(utilizations)
+    avg_util = sum(utilizations) / active_days
     sorted_utils = sorted(utilizations)
-    p90_util = sorted_utils[int(len(sorted_utils) * 0.9)]
+    p90_util = sorted_utils[int(active_days * 0.9)]
     max_util = sorted_utils[-1]
     exhausted_pct = round(exhausted / active_days * 100, 1)
 
@@ -1232,22 +1230,24 @@ def _compute_campaign_budget_coverage(
     change_events: List[Dict],
     days: int,
     exhaustion_threshold: float = 0.85,
-) -> List[Dict]:
+) -> Tuple[List[Dict], Dict[str, float]]:
     """
-    Per-campaign intraday budget coverage: did each campaign's daily budget
-    last through the full day?
+    Per-campaign intraday budget coverage + account-level per-day cap dict.
 
     Algorithm:
     1. Reconstruct the effective budget cap for each historical date using
-       BUDGET_AMOUNT change-history events (walk backwards from current snapshot).
+       BUDGET_AMOUNT change-history events.  Each change carries (prev, new) so
+       _cap_on_date uses prev_value directly — no longer approximating via an
+       adjacent change's new_value (fixes the single-change-event bug).
     2. For each (campaign, date), compare daily spend vs. effective cap.
-    3. If spend ≥ 85% of cap the budget was binding that day — the campaign
-       likely stopped serving ads before midnight (mid-day exhaustion).
+       Spend ≥ 85% of cap → campaign likely exhausted budget before midnight.
+    3. Accumulate per-date total effective cap across campaigns (cap_by_date),
+       used by _compute_daily_budget_metrics for correct per-day utilization.
 
-    Returns one dict per campaign, sorted by exhausted_pct descending.
+    Returns (per_campaign_coverage, cap_by_date).
     """
     if not asin_daily or not camp_meta:
-        return []
+        return [], {}
 
     # Build per-campaign daily spend: {cid: {date: spend}}
     daily_by_cid: Dict[str, Dict[str, float]] = {}
@@ -1260,29 +1260,33 @@ def _compute_campaign_budget_coverage(
         daily_by_cid[cid][dt] = daily_by_cid[cid].get(dt, 0.0) + float(r.get("spend") or 0)
 
     # Reconstruct historical budget caps from BUDGET_AMOUNT change events.
-    # Change events are stored oldest-first after sorting; each event records
-    # the budget transition (previousValue → newValue) at changed_at (epoch ms).
-    # Walking the events forward lets us know what budget was active on each date.
-    budget_changes: Dict[str, List[Tuple[str, float]]] = {}  # cid → [(date, new_budget)]
+    # Store (ev_date, prev_budget, new_budget) so _cap_on_date can use prev_budget
+    # directly instead of inferring it from an adjacent change's new_budget.
+    budget_changes: Dict[str, List[Tuple[str, float, float]]] = {}
     for ev in sorted(change_events, key=lambda e: e.get("changed_at") or 0):
         if ev.get("change_type") != "BUDGET_AMOUNT":
             continue
         cid  = str(ev.get("campaign_id") or "")
         ts   = ev.get("changed_at")
         nval = ev.get("new_value")
-        if not cid or not ts or nval is None:
+        pval = ev.get("old_value")
+        if not cid or not ts or nval is None or pval is None:
             continue
         try:
-            epoch_s  = int(ts) / 1000
-            ev_date  = datetime.fromtimestamp(epoch_s, tz=timezone.utc).strftime("%Y-%m-%d")
-            budget_changes.setdefault(cid, []).append((ev_date, float(nval)))
+            epoch_s = int(ts) / 1000
+            ev_date = datetime.fromtimestamp(epoch_s, tz=timezone.utc).strftime("%Y-%m-%d")
+            budget_changes.setdefault(cid, []).append(
+                (ev_date, float(pval), float(nval))
+            )
         except (TypeError, ValueError, OSError):
             continue
 
+    cap_by_date: Dict[str, float] = {}
     results = []
+
     for cid, meta in camp_meta.items():
-        cid_str      = str(cid)
-        current_cap  = float(meta.get("daily_budget") or 0)
+        cid_str     = str(cid)
+        current_cap = float(meta.get("daily_budget") or 0)
         if current_cap <= 0:
             continue
         camp_daily   = daily_by_cid.get(cid_str, {})
@@ -1290,28 +1294,22 @@ def _compute_campaign_budget_coverage(
         if not sorted_dates:
             continue
 
-        # Reconstruct effective cap per date.  Strategy: start with current_cap,
-        # then for each date scan budget_changes for events that occurred AFTER
-        # that date — if any exist, the cap on that date was previousValue, not
-        # current_cap. We approximate by using the snapshot before that event.
         changes_for_cid = sorted(budget_changes.get(cid_str, []), key=lambda x: x[0])
 
-        def _cap_on_date(dt: str) -> float:
-            # Walk changes forward; the cap on `dt` is the value that was active
-            # just before or at the most recent change on/before `dt`.
-            cap = current_cap
-            for ev_date, new_budget in reversed(changes_for_cid):
+        def _cap_on_date(dt: str, _changes=changes_for_cid, _cur=current_cap) -> float:
+            # Walk in reverse (newest → oldest).  For each change that occurred
+            # AFTER dt, the cap active on dt was that change's prev_budget.
+            # The innermost such change (earliest post-dt event) gives the cap.
+            cap = _cur
+            for ev_date, prev_budget, _new in reversed(_changes):
                 if ev_date > dt:
-                    # This change happened after `dt`, so on `dt` the cap was
-                    # the previousValue.  We don't have previousValue here, but
-                    # we can use the new_budget of the next-earlier change.
-                    cap = new_budget
+                    cap = prev_budget
                 else:
                     break
-            return cap if cap > 0 else current_cap
+            return cap if cap > 0 else _cur
 
-        exhausted = 0
-        active    = 0
+        exhausted   = 0
+        active      = 0
         total_spend = 0.0
         for dt in sorted_dates:
             spend = camp_daily.get(dt, 0.0)
@@ -1320,6 +1318,8 @@ def _compute_campaign_budget_coverage(
             active += 1
             total_spend += spend
             cap = _cap_on_date(dt)
+            # Accumulate into account-level per-day cap for utilization denominator
+            cap_by_date[dt] = cap_by_date.get(dt, 0.0) + cap
             if cap > 0 and spend / cap >= exhaustion_threshold:
                 exhausted += 1
 
@@ -1341,7 +1341,7 @@ def _compute_campaign_budget_coverage(
         })
 
     results.sort(key=lambda x: x["exhausted_pct"], reverse=True)
-    return results
+    return results, cap_by_date
 
 
 _MIN_KWS_FOR_STRATUM = 3   # min keyword count for a match-type-specific μ
@@ -1680,7 +1680,9 @@ def _build_campaign_actions(
                     "can_sell_days":        inv_gate["can_sell_days"],
                     "inbound_receiving":    inv_gate["inbound_receiving"],
                     "inbound_shipped":      inv_gate["inbound_shipped"],
+                    "catchable_shipped":    inv_gate["catchable_shipped"],
                     "inbound_lead_days":    inv_gate["inbound_lead_days"],
+                    "inbound_lead_source":  inv_gate["inbound_lead_source"],
                     "note": (
                         f"Current stock ~{inv_gate['can_sell_days']}d + confirmed inbound = {eff}d effective. "
                         f"Increasing spend now risks stockout before restock arrives. "
@@ -1829,7 +1831,9 @@ def _build_keyword_actions(
                             "can_sell_days":        inv_gate["can_sell_days"],
                             "inbound_receiving":    inv_gate["inbound_receiving"],
                             "inbound_shipped":      inv_gate["inbound_shipped"],
+                            "catchable_shipped":    inv_gate["catchable_shipped"],
                             "inbound_lead_days":    inv_gate["inbound_lead_days"],
+                            "inbound_lead_source":  inv_gate["inbound_lead_source"],
                             "note": (
                                 f"Current stock ~{inv_gate['can_sell_days']}d + confirmed inbound = {eff}d effective. "
                                 f"Raising bids accelerates spend and risks stockout. "
@@ -1945,16 +1949,6 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         daily_budget = item.get("total_daily_budget", 0) or 0
         campaign_ids = set(item.get("campaign_ids", []))
 
-        # ── Reconcile budget snapshot vs historical spend ─────────────────
-        # total_daily_budget = ENABLED campaigns only (current snapshot).
-        # During the period, campaigns may have been PAUSED or had budgets
-        # changed, so historical spend can exceed the snapshot.
-        # Amazon also allows up to 25% daily budget overage for traffic spikes.
-        #
-        # Strategy:
-        #   discrepancy ≤ 25% → Amazon pacing; keep snapshot, expose ratio.
-        #   discrepancy > 25% → structural (budget changed / campaigns paused);
-        #                        use historical_daily_spend × 0.90 as LP budget.
         perf_records_all = item.get("performance_records") or []
         historical_spend_total = sum(
             float(r.get("spend", 0) or 0)
@@ -1962,23 +1956,6 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             if str(r.get("campaign_id")) in campaign_ids
         )
         historical_daily_spend = round(historical_spend_total / days, 2) if days > 0 else 0.0
-        # Amazon's pacing ceiling: campaigns can overspend by up to this factor per day
-        _AMAZON_PACING_MAX = 0.25
-        if daily_budget > 0:
-            budget_overage_ratio = round(historical_daily_spend / daily_budget, 3)
-            if budget_overage_ratio > 1 + _AMAZON_PACING_MAX:
-                # Structural mismatch: budget snapshot understates real capacity
-                daily_budget = round(historical_daily_spend * 0.90, 2)
-                budget_source = "historical_avg_spend"
-            else:
-                budget_source = "campaign_snapshot"
-        else:
-            budget_overage_ratio = None
-            budget_source = "campaign_snapshot"
-            # Fall back: if current snapshot is 0 but account was actually spending, use history
-            if historical_daily_spend > 0:
-                daily_budget = round(historical_daily_spend * 0.90, 2)
-                budget_source = "historical_avg_spend"
 
         if not kw_perf or daily_budget <= 0:
             item["lp_summary"] = {"skipped": True, "reason": "no keyword data or zero budget",
@@ -2015,20 +1992,19 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 if str(r.get("campaign_id", "")) in _cid_strs
             ]
 
-        # Day-level budget pressure metrics (must use reconciled daily_budget from above,
-        # not the raw snapshot, so that budget-change periods are handled correctly).
-        budget_metrics = _compute_daily_budget_metrics(asin_daily, daily_budget, days)
-        item.update(budget_metrics)
-        item["budget_source"] = budget_source  # "campaign_snapshot" or "historical_avg_spend"
-
-        # Per-campaign intraday budget coverage: did each campaign last through the day?
-        # Uses BUDGET_AMOUNT change-history events to reconstruct historical caps so
-        # comparisons aren't skewed by mid-period budget increases.
-        item["campaign_budget_coverage"] = _compute_campaign_budget_coverage(
+        # Per-campaign intraday coverage + account-level per-day cap dict.
+        # cap_by_date is used as the per-day denominator for utilization metrics,
+        # replacing the single-scalar budget cap and the budget_overage_ratio heuristic.
+        coverage, cap_by_date = _compute_campaign_budget_coverage(
             camp_meta, asin_daily,
             item.get("change_events") or [],
             days,
         )
+        item["campaign_budget_coverage"] = coverage
+
+        # Day-level budget pressure metrics with per-day effective cap denominators.
+        budget_metrics = _compute_daily_budget_metrics(asin_daily, cap_by_date, days)
+        item.update(budget_metrics)
 
         mu_by_mt, global_mu = _compute_cvr_prior(kw_perf)
         lp_input = _build_lp_input(
@@ -2056,22 +2032,15 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             for cid in lp_scope_cids_pre
             if cid in camp_meta and (camp_meta[cid].get("state") or "").upper() == "ENABLED"
         )
-        # Reconcile LP-scope budget against LP-scope historical spend (same logic
-        # as the account-level reconciliation above).
         lp_scope_hist_spend_total = sum(
             float(r.get("spend", 0) or 0)
             for r in perf_records_all
             if str(r.get("campaign_id", "")) in lp_scope_cids_pre
         )
         lp_scope_hist_daily = round(lp_scope_hist_spend_total / days, 2) if days > 0 else 0.0
-        if lp_scope_campaign_budget_raw > 0:
-            lp_scope_budget_ratio = round(lp_scope_hist_daily / lp_scope_campaign_budget_raw, 3)
-            if lp_scope_budget_ratio > 1 + _AMAZON_PACING_MAX:
-                lp_budget = round(lp_scope_hist_daily * 0.90, 2)
-            else:
-                lp_budget = lp_scope_campaign_budget_raw
-        else:
-            lp_budget = lp_scope_hist_daily * 0.90 if lp_scope_hist_daily > 0 else daily_budget
+        # LP budget = current campaign snapshot (forward-looking; per-day cap reconstruction
+        # makes the old budget_overage_ratio heuristic unnecessary here too).
+        lp_budget = lp_scope_campaign_budget_raw if lp_scope_campaign_budget_raw > 0 else daily_budget
 
         # ── CVR deflation: correct for cross-keyword attribution overlap ──────
         # item["total_orders"] = spAdvertisedProduct groupBy=advertiser (ASIN-level,
@@ -2173,10 +2142,11 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         inbound_receiving = item.get("inbound_receiving") or 0
         inbound_shipped   = item.get("inbound_shipped") or 0
         effective_stock_days: Optional[int] = None
+        catchable_shipped = 0
         if can_sell_days and daily_sales_val > 0:
             # inbound_shipped only "catches" the stockout if it arrives before current stock runs out
-            catchable = inbound_shipped if inbound_lead_days < can_sell_days else 0
-            eff_units = total_available + inbound_receiving + catchable
+            catchable_shipped = inbound_shipped if inbound_lead_days < can_sell_days else 0
+            eff_units = total_available + inbound_receiving + catchable_shipped
             effective_stock_days = round(eff_units / daily_sales_val)
         inv_gate: Optional[Dict] = (
             {
@@ -2185,6 +2155,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 "can_sell_days":        can_sell_days,
                 "inbound_receiving":    inbound_receiving,
                 "inbound_shipped":      inbound_shipped,
+                "catchable_shipped":    catchable_shipped,
                 "inbound_lead_days":    inbound_lead_days,
                 "inbound_lead_source":  _lt_src,
             }
@@ -2267,10 +2238,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             # < 1.0 means cross-keyword / cross-match-type overlap was corrected.
             "cvr_deflation":                round(cvr_deflation, 3),
             "cvr_deflation_source":         "asin_vs_keyword_orders",
-            # Budget reconciliation
+            # Historical spend (informational; utilization metrics use per-day caps)
             "historical_daily_spend":       historical_daily_spend,
-            "budget_overage_ratio":         budget_overage_ratio,
-            "budget_source":                budget_source,
             # LP scope vs non-LP spend split:
             # lp_optimal_spend covers only lp_scope keywords; non_lp_scope_daily_spend
             # explains why total_historical_daily_spend >> lp_optimal_spend.
@@ -2291,11 +2260,15 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         item["lp_maxed_keywords"] = maxed_kws[:10]
 
         # ── LP reallocation table: per-campaign current vs optimal (spend + orders) ──
-        # delta_orders uses raw_cvr_map (un-deflated) on the LP side — same basis as
-        # lp_orders_cvr_matched / order_gap — so per-campaign deltas sum to ≈ order_gap.
-        # Sorted by delta_orders descending (biggest gainers first); capped at 8 rows.
+        # LP is a global optimiser — it does not "take from A and give to B".
+        # Each campaign receives an independently computed optimal allocation.
+        # delta_spend = lp_optimal_spend − historical_actual_spend (NOT budget_cap − budget_cap).
+        # Σ delta_spend ≠ 0 whenever campaigns historically underspent their budget caps:
+        #   sum(lp_optimal_spend) ≤ lp_budget (cap constraint)
+        #   sum(cur_spend) ≤ lp_budget (but typically < cap when utilisation < 100%)
+        #   Net > 0 means LP plans to deploy budget that was previously unspent.
+        # delta_orders uses raw_cvr_map (un-deflated) — same basis as order_gap.
         if days > 0:
-            # Current spend, orders, sales per campaign (LP scope, keyword-attributed)
             _camp_cur_spend: Dict[str, float] = {}
             _camp_cur_orders: Dict[str, float] = {}
             _camp_cur_sales: Dict[str, float] = {}
@@ -2307,12 +2280,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                     _camp_cur_sales[cid]  = _camp_cur_sales.get(cid, 0.0)  + float(r.get("sales",  0) or 0)
             _camp_cur_spend_d  = {k: round(v / days, 2) for k, v in _camp_cur_spend.items()}
             _camp_cur_orders_d = {k: round(v / days, 2) for k, v in _camp_cur_orders.items()}
-            _camp_acos: Dict[str, Optional[float]] = {
-                cid: round(_camp_cur_spend[cid] / _camp_cur_sales[cid] * 100, 1)
-                if _camp_cur_sales.get(cid, 0) > 0 else None
-                for cid in _camp_cur_spend
-            }
-            # LP optimal orders per campaign (raw CVR, consistent with order_gap)
+
             _camp_lp_orders: Dict[str, float] = {}
             for a in alloc:
                 cid = str(a.get("campaign_id", ""))
@@ -2320,6 +2288,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                     _camp_lp_orders.get(cid, 0.0)
                     + a["optimized_clicks"] * raw_cvr_map.get(a["keyword"], 0.0)
                 )
+
             _all_cids = lp_scoped_cids | set(camp_spend.keys())
             _realloc: List[Dict] = []
             for cid in _all_cids:
@@ -2327,10 +2296,13 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 lp_spend_v  = round(camp_spend.get(cid, 0.0), 2)
                 cur_orders  = _camp_cur_orders_d.get(cid, 0.0)
                 lp_orders_v = round(_camp_lp_orders.get(cid, 0.0), 2)
+                cur_sales   = _camp_cur_sales.get(cid, 0.0)
+                camp_acos   = round((_camp_cur_spend.get(cid, 0.0) / cur_sales * 100), 1) \
+                              if cur_sales > 0 else None
                 name = (camp_meta.get(cid) or {}).get("name") or cid
                 _realloc.append({
                     "campaign_name":  name,
-                    "campaign_acos":  _camp_acos.get(cid),
+                    "acos_pct":       camp_acos,
                     "current_spend":  cur_spend,
                     "lp_spend":       lp_spend_v,
                     "delta_spend":    round(lp_spend_v - cur_spend, 2),
@@ -2338,36 +2310,35 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                     "lp_orders":      lp_orders_v,
                     "delta_orders":   round(lp_orders_v - cur_orders, 2),
                 })
-            # Sort by delta_orders descending — biggest order gainers first
-            _realloc.sort(key=lambda x: x["delta_orders"], reverse=True)
+            # Gainers first (delta_orders desc), then losers (delta_orders asc within negatives)
+            _realloc.sort(key=lambda x: (-x["delta_orders"], -abs(x["delta_spend"])))
 
-            # Attach keyword-level FROM/TO to each campaign row so the LLM can
-            # render a structured transfer table without doing multi-table joins.
-            _target_acos_pct = round((target_acos or 0) * 100, 1)
-            _zero_by_cid: Dict[str, List[Dict]] = {}
-            for z in zero_kws:
-                _zero_by_cid.setdefault(z["campaign_id"], []).append(z)
-            _maxed_by_cid: Dict[str, List[Dict]] = {}
-            for m in maxed_kws:
-                _maxed_by_cid.setdefault(m["campaign_id"], []).append(m)
-            for row in _realloc:
-                cid_r = str(
-                    next((c["campaign_id"] for c in campaigns
-                          if (c.get("name") or "") == row["campaign_name"]), "")
-                )
-                # cut_keywords: above-target ACOS zeros in this campaign (budget source)
-                row["cut_keywords"] = [
-                    {"keyword": z["keyword"], "acos_pct": z["acos_pct"]}
-                    for z in _zero_by_cid.get(cid_r, [])
-                    if z.get("acos_pct") is not None and z["acos_pct"] > _target_acos_pct
-                ][:5]
-                # receive_keywords: maxed keywords in this campaign (budget destination)
-                row["receive_keywords"] = [
-                    {"keyword": m["keyword"], "acos_pct": m.get("acos_pct")}
-                    for m in _maxed_by_cid.get(cid_r, [])
-                ][:5]
+            # Net across ALL LP-scoped campaigns.
+            # delta_spend = lp_optimal_spend − cur_spend; > 0 when campaigns underspent budgets.
+            item["lp_reallocation_net"] = {
+                "delta_spend":  round(sum(r["delta_spend"]  for r in _realloc), 2),
+                "delta_orders": round(sum(r["delta_orders"] for r in _realloc), 2),
+                "n_total":      len(_realloc),
+            }
 
-            item["lp_reallocation_table"] = _realloc[:8]
+            # Show all significant movers: |delta_spend| ≥ $1 or |delta_orders| ≥ 0.1
+            item["lp_reallocation_table"] = [
+                r for r in _realloc
+                if abs(r["delta_spend"]) >= 1.0 or abs(r["delta_orders"]) >= 0.1
+            ]
+
+            # Back-fill lp_delta_orders onto campaign_actions so the action group table
+            # uses the same LP-projected delta as lp_reallocation_table, not the
+            # (suggested_budget − camp_budget) / camp_cpo estimate which only captures
+            # the marginal budget-increment effect and diverges from the LP reallocation gain.
+            _lp_delta_by_cid: Dict[str, float] = {
+                cid: round(_camp_lp_orders.get(cid, 0.0) - _camp_cur_orders_d.get(cid, 0.0), 2)
+                for cid in _all_cids
+            }
+            for _ca in item.get("campaign_actions", []):
+                _ca_cid = str(_ca.get("campaign_id", ""))
+                if _ca_cid in _lp_delta_by_cid:
+                    _ca["lp_delta_orders"] = _lp_delta_by_cid[_ca_cid]
 
         # Conflict suppression: a campaign-level increase_budget directly contradicts a
         # keyword-level decrease_bid on the same campaign — the extra budget would flow
@@ -3166,6 +3137,9 @@ def _chart_campaign_budget_coverage(item: Dict) -> Optional[bytes]:
     Each bar = active_days split into: all-day (green) vs exhausted (red/orange).
     Right-hand side: spend vs. budget cap comparison bars.
     """
+    if not (item.get("budget_starved_campaigns") or 0):
+        return None  # all campaigns had full-day coverage — chart adds no signal
+
     coverage: List[Dict] = item.get("campaign_budget_coverage") or []
     coverage = [c for c in coverage if c.get("active_days", 0) > 0]
     if not coverage:
@@ -3212,7 +3186,8 @@ def _chart_campaign_budget_coverage(item: Dict) -> Optional[bytes]:
     ax_days.set_xlabel("Active days", fontsize=9)
     ax_days.set_title("Budget Coverage\n(green = full day | colored = ran dry)",
                       fontsize=9, pad=6)
-    ax_days.legend(fontsize=7.5, loc="lower right", framealpha=0.5)
+    ax_days.legend(fontsize=7.5, loc="upper center",
+                   bbox_to_anchor=(0.5, -0.12), ncol=2, framealpha=0.5)
 
     # ── Right: spend vs cap comparison ────────────────────────────────────
     ax_spend.set_facecolor(_C["bg"])
@@ -3234,11 +3209,12 @@ def _chart_campaign_budget_coverage(item: Dict) -> Optional[bytes]:
     ax_spend.set_xlabel("Daily Spend ($)", fontsize=9)
     ax_spend.set_title("Avg Spend vs Cap\n(grey = cap | colored = avg spend)",
                        fontsize=9, pad=6)
-    ax_spend.legend(fontsize=7.5, loc="lower right", framealpha=0.5)
+    ax_spend.legend(fontsize=7.5, loc="upper center",
+                    bbox_to_anchor=(0.5, -0.12), ncol=2, framealpha=0.5)
 
     fig.suptitle(f"{item.get('asin','?')} — Campaign Intraday Budget Coverage",
                  fontsize=10, y=1.01)
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0.1, 1, 1.0])
     return _fig_to_png(fig)
 
 
@@ -4237,16 +4213,13 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "total_orders":             "Ads API spCampaigns — AD-ATTRIBUTED orders only (organic excluded)",
     "total_clicks":             "Ads API spCampaigns — ad-attributed clicks, data_start_date → data_end_date",
     "account_acos":             "total_spend ÷ total_sales × 100",
-    "budget_exhaustion_pct":    "DEPRECATED — total_spend ÷ (snapshot_budget × days); prefer budget_pressure",
-    "budget_likely_exhausted":  "DEPRECATED — derived from budget_exhaustion_pct > 90%",
     "budget_active_days":       "days with non-zero spend in lookback window",
-    "budget_exhausted_days":    "active days where daily spend ≥ 85% of campaign daily budget cap",
+    "budget_exhausted_days":    "active days where daily spend ≥ 85% of per-day effective cap (proxy — Amazon does not expose intraday OUT_OF_BUDGET events via the Ads History API); denominator uses cap reconstructed from BUDGET_AMOUNT change history, not current snapshot",
     "budget_exhausted_days_pct":"budget_exhausted_days ÷ budget_active_days × 100",
-    "avg_daily_utilization_pct":"mean(daily_spend ÷ campaign_daily_budget) × 100 across active days",
-    "p90_daily_utilization_pct":"90th-percentile daily utilization across active days; >100% means actual spend exceeded cap on that day",
-    "max_daily_utilization_pct":"peak single-day utilization; useful for diagnosing extreme over-delivery",
-    "overdelivery_days":        "days where actual spend exceeded the daily budget cap (utilization > 100%); caused by Amazon pacing (≤25% above cap) or historical spend pre-dating a mid-period budget reduction",
-    "budget_source":            "how daily_budget_cap was determined: 'campaign_snapshot' (current Ads API snapshot, overage ≤25%) or 'historical_avg_spend' (snapshot understated capacity, cap reconciled to hist_avg×0.90)",
+    "avg_daily_utilization_pct":"mean(daily_spend ÷ per-day effective cap) × 100 across active days",
+    "p90_daily_utilization_pct":"90th-percentile daily utilization across active days; with per-day caps, >100% reflects genuine Amazon pacing (≤25%) only — mid-period budget changes no longer inflate this figure",
+    "max_daily_utilization_pct":"peak single-day utilization",
+    "overdelivery_days":        "days where spend exceeded the per-day effective cap; caused solely by Amazon pacing (≤25% allowance) — mid-period budget-change artifact eliminated by per-day cap reconstruction",
     "budget_pressure":          "chronic ≥75% / moderate 30-74% / light 10-29% / none <10% of active days at cap",
     "budget_starved_campaigns": "campaigns with exhausted_pct ≥ 30% (daily spend ≥ 85% of cap on ≥ 30% of active days — budget likely runs out mid-day); see campaign_budget_coverage in _summary_json for per-campaign breakdown",
     "keyword_count":            "Ads API keyword list — matched campaigns (current config)",
@@ -4282,7 +4255,7 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
 # Fields that are dicts/lists with dedicated report sections — omit from the table.
 _SNAPSHOT_SKIP_FIELDS: frozenset = frozenset({
     "asin",
-    "lp_summary", "lp_top_allocations", "lp_reallocation_table",
+    "lp_summary", "lp_top_allocations", "lp_reallocation_table", "lp_reallocation_net",
     "lp_zero_keywords", "lp_maxed_keywords",  # lists — rendered in LP Budget Redistribution section
     "campaign_actions", "keyword_actions",
     "auto_mining_summary", "auto_mining_beta_prior",
@@ -4343,7 +4316,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     data_start_date = (today - timedelta(days=days)).isoformat()
     active_campaign_count = sum(1 for c in campaigns if c.get("state") == "ENABLED")
     paused_campaign_count = sum(1 for c in campaigns if c.get("state") == "PAUSED")
-    return {
+    summary = {
         "asin":                      item.get("asin"),
         "title":                     item.get("title"),
         "brand":                     item.get("brand"),
@@ -4367,8 +4340,6 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "total_sales":               item.get("total_sales"),
         "total_orders":              item.get("total_orders"),
         "account_acos":              item.get("account_acos"),
-        "budget_exhaustion_pct":       item.get("budget_exhaustion_pct"),    # legacy avg; prefer daily metrics below
-        "budget_likely_exhausted":     item.get("budget_likely_exhausted"),  # legacy bool; prefer budget_pressure
         "budget_active_days":          item.get("budget_active_days"),
         "budget_exhausted_days":       item.get("budget_exhausted_days"),
         "budget_exhausted_days_pct":   item.get("budget_exhausted_days_pct"),
@@ -4376,7 +4347,6 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "p90_daily_utilization_pct":   item.get("p90_daily_utilization_pct"),
         "max_daily_utilization_pct":   item.get("max_daily_utilization_pct"),
         "overdelivery_days":           item.get("overdelivery_days"),
-        "budget_source":               item.get("budget_source"),
         "budget_pressure":             item.get("budget_pressure"),
         "keyword_count":             item.get("keyword_count"),
         "avg_bid":                   item.get("avg_bid"),
@@ -4389,6 +4359,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "lp_zero_keywords_count":    len(item.get("lp_zero_keywords") or []),
         "lp_maxed_keywords_count":   len(item.get("lp_maxed_keywords") or []),
         "lp_reallocation_table":     item.get("lp_reallocation_table") or [],
+        "lp_reallocation_net":       item.get("lp_reallocation_net"),
         "campaign_actions":          (item.get("campaign_actions") or [])[:5],
         "keyword_actions":           (item.get("keyword_actions") or [])[:10],
         "competitor_price_meta":      item.get("competitor_price_meta"),
@@ -4448,6 +4419,14 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         # Shipment lead-time distribution (store-wide, from Lingxing ERP)
         "shipment_lead_time": _summarise_lead_time(item.get("shipment_lead_time")),
     }
+    # Suppress model-infrastructure metrics from the snapshot when every event is
+    # Conflicting — high backtest numbers alongside a Conflicting verdict imply a
+    # confidence that does not exist and confuse readers.
+    if (summary.get("causal_consensus_sample") or "").startswith("Conflicting"):
+        for _f in ("causal_reliability", "backtest_hit_rate",
+                   "backtest_strong_hit_rate", "backtest_total"):
+            summary.pop(_f, None)
+    return summary
 
 
 def _trim_keyword_performance(item: Dict) -> None:
@@ -4716,19 +4695,16 @@ def _chart_interpretation(item: Dict, name: str) -> str:
         p90_util       = item.get("p90_daily_utilization_pct")
         max_util       = item.get("max_daily_utilization_pct")
         overdeliv_days = item.get("overdelivery_days") or 0
-        budget_source  = item.get("budget_source") or "campaign_snapshot"
         cap            = item.get("total_daily_budget") or 0
-        exh_s = (f"{exh_days}/{act_days}d hit the 85 % cap"
+        exh_s = (f"{exh_days}/{act_days}d hit the 85% cap"
                  if exh_days is not None and act_days else "")
         util_s = (f"avg {avg_util:.0f}%, p90 {p90_util:.0f}%, max {max_util:.0f}%"
                   if avg_util is not None and p90_util is not None and max_util is not None else "")
         overdeliv_s = ""
         if overdeliv_days > 0:
-            if (p90_util is not None and p90_util > 125) or budget_source == "historical_avg_spend":
-                overdeliv_s = (f"{overdeliv_days}d spend exceeded cap — budget reduced mid-period "
-                               f"(budget_source={budget_source}); historical spend pre-dates the reduction.")
-            else:
-                overdeliv_s = f"{overdeliv_days}d spend exceeded cap — Amazon ±25% pacing allowance."
+            # With per-day cap reconstruction, overdelivery_days reflects genuine Amazon
+            # pacing (≤25%) only — mid-period budget changes no longer inflate this count.
+            overdeliv_s = f"{overdeliv_days}d spend exceeded per-day cap — Amazon ±25% pacing allowance."
         parts = [p for p in [exh_s, util_s, overdeliv_s] if p]
         return (f"Budget pressure = {pressure} (cap ${cap:.0f}/day). "
                 + ("; ".join(parts) + ". " if parts else "")
@@ -4739,17 +4715,19 @@ def _chart_interpretation(item: Dict, name: str) -> str:
     if name == "campaign_budget_cov":
         starved = item.get("budget_starved_campaigns") or 0
         cov     = item.get("campaign_budget_coverage") or []
-        if starved > 0 and cov:
-            worst = cov[0]
-            return (
-                f"{starved} campaign(s) exhaust budget mid-day. "
-                f"Worst: '{worst['campaign_name']}' ran dry on {worst['exhausted_days']}/{worst['active_days']} days "
-                f"({worst['exhausted_pct']:.0f}%). "
-                f"Left panel: green = full-day coverage, red/orange = mid-day exhaustion. "
-                f"Right panel: avg spend vs. daily cap."
-            )
-        return ("All campaigns maintained full-day budget coverage. "
-                "Left panel: green bars = budget lasted all day. Right panel: avg spend vs. cap.")
+        if not starved or not cov:
+            return ""
+        worst = cov[0]
+        others = [c for c in cov[1:4] if c.get("exhausted_pct", 0) >= 30]
+        other_str = (
+            "; ".join(f"'{c['campaign_name']}' {c['exhausted_pct']:.0f}%" for c in others)
+        )
+        return (
+            f"{starved} campaign(s) ran dry before midnight. "
+            f"Worst: '{worst['campaign_name']}' — {worst['exhausted_days']}/{worst['active_days']} days "
+            f"({worst['exhausted_pct']:.0f}% exhausted)."
+            + (f" Also starved: {other_str}." if other_str else "")
+        )
 
     if name == "rank_trend":
         n = len(item.get("natural_rank_series") or {})

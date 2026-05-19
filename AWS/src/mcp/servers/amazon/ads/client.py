@@ -626,7 +626,10 @@ class AmazonAdsClient:
             "Accept": "application/vnd.historyresponse.v1.1+json" if needs_v11 else "application/json",
         }
 
-        # Default event types. IN_BUDGET excluded — auto-generated, dominates volume.
+        # Default event types. IN_BUDGET excluded — Amazon fires it automatically at midnight US
+        # time on every budget-reset, making it equivalent to spend≈100%-of-cap; it carries no
+        # intraday exhaustion timestamp and adds no signal beyond the 85%-threshold proxy already
+        # used in _compute_campaign_budget_coverage. OUT_OF_BUDGET does not exist in this API.
         default_et: Dict[str, Any] = {
             "CAMPAIGN": {"filters": ["SMART_BIDDING_STRATEGY", "PLACEMENT_GROUP",
                                      "BUDGET_AMOUNT", "STATUS"]},
