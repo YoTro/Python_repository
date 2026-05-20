@@ -1592,8 +1592,19 @@ def _build_campaign_actions(
             rationale = f"Campaign is PAUSED; LP projects ${lp_spend:.0f}/day potential — evaluate re-enabling after bid review"
         elif lp_spend < camp_budget * 0.10:
             if is_paused:
-                action, priority = "archive_candidate", "P2"
-                rationale = f"Campaign is PAUSED and LP allocates only ${lp_spend:.0f}/day — consider archiving"
+                if camp_acos is not None and camp_acos <= target_acos_pct:
+                    # Efficient when active — LP crowd-out under budget constraint, NOT inefficiency.
+                    # Don't recommend archiving; keep paused until budget increases.
+                    action, priority = "maintain", "P2"
+                    rationale = (
+                        f"Campaign is PAUSED; LP allocates only ${lp_spend:.0f}/day (< 10% of "
+                        f"${camp_budget:.0f} budget) — likely crowded out by higher-ROI campaigns "
+                        f"under current budget constraint. Historical ACOS {camp_acos}% ≤ target "
+                        f"{target_acos_pct:.0f}% — keep paused; do NOT archive."
+                    )
+                else:
+                    action, priority = "archive_candidate", "P2"
+                    rationale = f"Campaign is PAUSED and LP allocates only ${lp_spend:.0f}/day — consider archiving"
             elif camp_acos is not None and camp_acos <= target_acos_pct:
                 # LP has no click data for this campaign's keywords (filtered out),
                 # but historical ACOS is efficient — do not pause, flag for bid review.
@@ -1688,11 +1699,13 @@ def _build_campaign_actions(
                     "condition":            f"effective_stock_days >= {gate}",
                     "effective_stock_days": eff,
                     "can_sell_days":        inv_gate["can_sell_days"],
+                    "total_available":      inv_gate["total_available"],
                     "inbound_receiving":    inv_gate["inbound_receiving"],
                     "inbound_shipped":      inv_gate["inbound_shipped"],
                     "catchable_shipped":    inv_gate["catchable_shipped"],
                     "inbound_lead_days":    inv_gate["inbound_lead_days"],
                     "inbound_lead_source":  inv_gate["inbound_lead_source"],
+                    "daily_sales":          inv_gate["daily_sales"],
                     "note": (
                         f"Current stock ~{inv_gate['can_sell_days']}d + confirmed inbound = {eff}d effective. "
                         f"Increasing spend now risks stockout before restock arrives. "
@@ -1842,11 +1855,13 @@ def _build_keyword_actions(
                             "condition":            f"effective_stock_days >= {gate}",
                             "effective_stock_days": eff,
                             "can_sell_days":        inv_gate["can_sell_days"],
+                            "total_available":      inv_gate["total_available"],
                             "inbound_receiving":    inv_gate["inbound_receiving"],
                             "inbound_shipped":      inv_gate["inbound_shipped"],
                             "catchable_shipped":    inv_gate["catchable_shipped"],
                             "inbound_lead_days":    inv_gate["inbound_lead_days"],
                             "inbound_lead_source":  inv_gate["inbound_lead_source"],
+                            "daily_sales":          inv_gate["daily_sales"],
                             "note": (
                                 f"Current stock ~{inv_gate['can_sell_days']}d + confirmed inbound = {eff}d effective. "
                                 f"Raising bids accelerates spend and risks stockout. "
@@ -2169,14 +2184,22 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 "stock_gate_days":      stock_gate_days,
                 "effective_stock_days": effective_stock_days,
                 "can_sell_days":        can_sell_days,
+                "total_available":      total_available,
                 "inbound_receiving":    inbound_receiving,
                 "inbound_shipped":      inbound_shipped,
                 "catchable_shipped":    catchable_shipped,
                 "inbound_lead_days":    inbound_lead_days,
                 "inbound_lead_source":  _lt_src,
+                # daily_sales_val pinned at computation time so gate calc cites the
+                # exact denominator used — avoids snapshot/items_json value divergence.
+                "daily_sales":          round(daily_sales_val, 2),
             }
             if effective_stock_days is not None else None
         )
+        # Expose effective_stock_days on item so _build_item_summary can surface it
+        # in the Quick Metrics Snapshot without re-computing.
+        if effective_stock_days is not None:
+            item["effective_stock_days"] = effective_stock_days
 
         order_gap = lp_raw_orders - actual_daily_ad_orders
         campaign_actions = _build_campaign_actions(
@@ -2209,15 +2232,19 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         organic_daily  = max(0.0, daily_consumption - actual_daily_ad_orders)
         lp_total_daily = organic_daily + lp_raw_orders
         recommended_stock = round(lp_total_daily * stock_gate_days)
-        # Inbound inventory offsets the procurement need:
-        #   receiving = at FC, available 1-2 days (certain)
-        #   shipped   = in transit from seller (10-30d ETA depending on route)
-        #   working   = NOT counted — plan only, not yet handed to carrier
-        inbound_recv    = item.get("inbound_receiving") or 0
-        inbound_ship    = item.get("inbound_shipped") or 0
-        inbound_work    = item.get("inbound_working") or 0
-        confirmed_inbound = inbound_recv + inbound_ship
-        stock_shortfall = max(0, recommended_stock - total_available - confirmed_inbound)
+        # Inbound inventory offsets the procurement need using the SAME timing rule as the
+        # effective_stock_days gate: inbound_shipped only counts if it arrives before
+        # the stockout window closes (inbound_lead_days < can_sell_days).
+        # inv_gate already captured catchable_shipped at computation time; fall back to
+        # full inbound_shipped only when lead-time data is unavailable (inv_gate=None).
+        inbound_recv   = item.get("inbound_receiving") or 0
+        catchable_ship = (
+            inv_gate["catchable_shipped"]
+            if inv_gate is not None
+            else (item.get("inbound_shipped") or 0)
+        )
+        effective_inbound = inbound_recv + catchable_ship
+        stock_shortfall = max(0, recommended_stock - total_available - effective_inbound)
 
         item["lp_summary"] = {
             # lp_scope_campaign_daily_budget: sum of LP-scope campaign budgets only.
@@ -4213,6 +4240,11 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "lookback_days":            "days config (default 30); period: data_start_date → data_end_date",
     "data_start_date":          "reporting window start (today − lookback_days)",
     "data_end_date":            "reporting window end (yesterday)",
+    "daily_sales":              "total units sold ÷ lookback_days (ad + organic); source priority: order_metrics > ad_orders_only",
+    "daily_sales_source":       "order_metrics = SP-API getOrderMetrics (ad+organic, most accurate); ad_orders_only = ad-attributed only (lower bound)",
+    "ad_daily_orders":          "lp_summary.actual_daily_ad_orders — spCampaigns ad-attributed orders ÷ days (ad only; organic excluded)",
+    "organic_daily":            "daily_consumption − lp_orders_cvr_matched — estimated organic orders/day (= daily_sales − ad_daily_orders approximately)",
+    "effective_stock_days":     "(total_available + inbound_receiving + catchable_shipped) ÷ daily_sales — near-term runway for LP gate (catchable_shipped = inbound_shipped only when inbound arrives before stockout)",
     "total_available":          "FBA Inventory API — fulfillable units (point-in-time)",
     "inbound_receiving":        "FBA inbound — at FC being checked in (1-2d, certain)",
     "inbound_shipped":          "FBA inbound — in transit from seller (10-30d ETA)",
@@ -4348,6 +4380,9 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "inbound_shipped":           item.get("inbound_shipped"),
         "inbound_working":           item.get("inbound_working"),
         "total_inbound":             item.get("total_inbound"),
+        "daily_sales":               item.get("daily_sales"),
+        "daily_sales_source":        item.get("daily_sales_source"),
+        "effective_stock_days":      item.get("effective_stock_days"),
         "can_sell_days":             item.get("can_sell_days"),
         "inventory_risk":            item.get("inventory_risk"),
         "campaign_count":            len(campaigns),
@@ -4375,16 +4410,29 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "max_bid":                   item.get("max_bid"),
         "match_type_dist":           item.get("match_type_dist"),
         "kw_performance_count":      len(item.get("keyword_performance", [])),
+        # Inventory consumption decomposition — surfaced in Quick Metrics Snapshot so readers
+        # can verify the daily_sales figure used in the effective_stock_days gate calc.
+        "ad_daily_orders":           round(
+            (item.get("lp_summary") or {}).get("actual_daily_ad_orders") or 0, 2
+        ) or None,
+        "organic_daily":             round(max(0.0,
+            ((item.get("lp_summary") or {}).get("daily_consumption") or 0)
+            - ((item.get("lp_summary") or {}).get("lp_orders_cvr_matched") or 0)
+        ), 2) or None,
         "lp_summary":                item.get("lp_summary"),
         "lp_top_allocations":        (item.get("lp_top_allocations") or [])[:3],
         "lp_zero_keywords":          (item.get("lp_zero_keywords") or [])[:10],
         "lp_maxed_keywords":         (item.get("lp_maxed_keywords") or [])[:10],
-        "lp_zero_keywords_count":    len(item.get("lp_zero_keywords") or []),
+        # All three LP-zero counts are derived from keyword_actions (per keyword-campaign pair)
+        # so they share the same basis and lp_zero_keywords_count = pause_candidates + hold + insufficient.
+        # lp_zero_keywords[] is deduplicated by (text, match_type) for display purposes — its
+        # length must NOT be used as the count because the same keyword in N campaigns
+        # generates N actions but only 1 display entry.
+        "lp_zero_keywords_count": sum(
+            1 for ka in (item.get("keyword_actions") or [])
+            if ka.get("action") in ("pause_keyword", "hold_keyword")
+        ),
         "lp_maxed_keywords_count":   len(item.get("lp_maxed_keywords") or []),
-        # Derive pause/hold counts from keyword_actions, not lp_zero_keywords, because
-        # lp_zero_keywords[].acos_pct uses the raw report field (often None) while
-        # keyword_actions[].keyword_acos_pct is independently computed from CPC/CVR/price.
-        # Using keyword_actions keeps these counts in sync with what the action list contains.
         # pause_keyword with keyword_acos_pct not None → genuinely inefficient (above target).
         # pause_keyword with keyword_acos_pct None     → insufficient data; NOT a confirmed pause candidate.
         # hold_keyword                                 → efficient but budget-constrained.
@@ -4633,10 +4681,19 @@ def _chart_interpretation(item: Dict, name: str) -> str:
         kwd = [k for k in kw_perf if k.get("acos") is not None and k.get("total_orders") is not None]
         if kwd:
             mid = float(np.median([k["total_orders"] for k in kwd]))
-            pause = sum(1 for k in kwd if k["acos"] > acos_warn and k["total_orders"] < mid)
-            scale = sum(1 for k in kwd if k["acos"] <= acos_warn and k["total_orders"] >= mid)
-            return (f"{pause} pause candidates (top-right: high ACOS + low vol); "
-                    f"{scale} scale candidates (bottom-right: efficient + high vol). Bubble = spend.")
+            quad_pause = sum(1 for k in kwd if k["acos"] > acos_warn and k["total_orders"] < mid)
+            scale      = sum(1 for k in kwd if k["acos"] <= acos_warn and k["total_orders"] >= mid)
+            # LP-confirmed pause candidates: action=pause_keyword with computed ACOS > target.
+            # Differs from quad_pause (raw visual filter on keyword_performance, not LP-derived).
+            lp_pause = sum(
+                1 for ka in (item.get("keyword_actions") or [])
+                if ka.get("action") == "pause_keyword" and ka.get("keyword_acos_pct") is not None
+            )
+            return (
+                f"{quad_pause} in pause quadrant (raw: ACOS>target + low vol — visual filter only); "
+                f"LP-confirmed pause candidates: {lp_pause} (matches lp_pause_candidates_count); "
+                f"{scale} scale candidates (efficient + high vol). Bubble = spend."
+            )
         return "Keyword ACOS vs orders quadrant. Bubble size = spend."
 
     if name == "placement_donut":

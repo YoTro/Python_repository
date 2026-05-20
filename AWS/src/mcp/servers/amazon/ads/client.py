@@ -572,6 +572,225 @@ class AmazonAdsClient:
         raw = gzip.decompress(resp.content)
         return json.loads(raw.decode("utf-8"))
 
+    # ── Ad-type config ────────────────────────────────────────────────────
+    # Each entry describes how to construct a /reporting/reports request for
+    # one sponsored-product type.  spend/orders/sales field names differ per type.
+    _AD_TYPE_CONFIG: Dict[str, Dict] = {
+        "SP": {
+            "adProduct":    "SPONSORED_PRODUCTS",
+            "reportTypeId": "spCampaigns",
+            "groupBy":      ["campaign"],
+            "metrics":      ["spend", "clicks", "impressions", "purchases7d", "sales7d"],
+            "spend_field":  "spend",
+            "orders_field": "purchases7d",
+            "sales_field":  "sales7d",
+        },
+        "SB": {
+            "adProduct":    "SPONSORED_BRANDS",
+            "reportTypeId": "sbCampaigns",
+            "groupBy":      ["campaign"],
+            "metrics":      ["cost", "clicks", "impressions", "purchases14d", "sales14d"],
+            "spend_field":  "cost",
+            "orders_field": "purchases14d",
+            "sales_field":  "sales14d",
+        },
+        "SD": {
+            "adProduct":    "SPONSORED_DISPLAY",
+            "reportTypeId": "sdCampaigns",
+            "groupBy":      ["campaign"],
+            "metrics":      ["cost", "clicks", "impressions", "purchases14d", "sales14d"],
+            "spend_field":  "cost",
+            "orders_field": "purchases14d",
+            "sales_field":  "sales14d",
+        },
+        "STV": {
+            "adProduct":    "SPONSORED_TELEVISION",
+            "reportTypeId": "stvCampaigns",
+            "groupBy":      ["campaign"],
+            # STV reports no direct purchase attribution; omit orders/sales fields.
+            "metrics":      ["cost", "impressions"],
+            "spend_field":  "cost",
+            "orders_field": None,
+            "sales_field":  None,
+        },
+    }
+
+    # ── Per-type summary report ────────────────────────────────────────────
+
+    async def _fetch_ad_type_records(
+        self,
+        ad_type: str,
+        start_date: str,
+        end_date: str,
+    ) -> List[Dict]:
+        """
+        Create, poll, and download a SUMMARY campaign-level report for one ad type.
+        Returns raw parsed records from the gzip-JSON payload.
+        Raises on API failure; caller should catch and record the error per type.
+        """
+        cfg = self._AD_TYPE_CONFIG[ad_type]
+        url = f"{self.base_url}/reporting/reports"
+        headers = {
+            "Authorization": f"Bearer {self.auth.get_access_token()}",
+            "Amazon-Advertising-API-ClientId": self.auth.client_id,
+            "Amazon-Advertising-API-Scope": self.auth.get_profile_id(),
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        ts = int(time.time())
+        body = {
+            "name": f"{ad_type}_summary_{start_date}_{end_date}_{ts}",
+            "startDate": start_date,
+            "endDate":   end_date,
+            "configuration": {
+                "adProduct":    cfg["adProduct"],
+                "reportTypeId": cfg["reportTypeId"],
+                "groupBy":      cfg["groupBy"],
+                "columns":      cfg["metrics"],
+                "timeUnit":     "SUMMARY",
+                "format":       "GZIP_JSON",
+            },
+        }
+        resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
+        if not resp.ok:
+            logger.warning(f"[{ad_type}] report creation failed {resp.status_code}: {resp.text[:300]}")
+            resp.raise_for_status()
+        report_id = resp.json().get("reportId")
+        if not report_id:
+            raise ValueError(f"[{ad_type}] no reportId in response: {resp.text[:200]}")
+        logger.info(f"[{ad_type}] created report {report_id} ({start_date}→{end_date})")
+        download_url = await self._poll_report(report_id)
+        return await self._download_report(download_url)
+
+    async def get_ad_type_summary(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        days: int = 30,
+        ad_types: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch campaign-level SUMMARY reports for each ad type and compute
+        cross-type spend share, clicks, ACOS, CTR, orders, sales.
+
+        Args:
+            start_date: "YYYY-MM-DD"; defaults to today − days.
+            end_date:   "YYYY-MM-DD"; defaults to yesterday.
+            days:       Lookback window when start/end not supplied (default 30).
+            ad_types:   Subset of ["SP","SB","SD","STV"] to fetch.
+                        Defaults to SP + SB + SD (STV optional, often not enabled).
+
+        Returns:
+        {
+          "period": {"start_date": ..., "end_date": ...},
+          "by_type": {
+            "SP": {
+              "spend": float,
+              "clicks": int,
+              "impressions": int,
+              "orders": int,
+              "sales": float,
+              "acos_pct": float | None,
+              "ctr_pct":  float | None,
+              "cpc":      float | None,
+              "spend_share_pct": float,
+              "clicks_share_pct": float,
+              "campaign_count": int,
+            },
+            ...
+          },
+          "total": {
+            "spend": float, "clicks": int, "impressions": int,
+            "orders": int, "sales": float,
+            "acos_pct": float | None, "ctr_pct": float | None,
+          },
+          "errors": {"STV": "report creation failed 403: ...", ...},
+        }
+        """
+        today = datetime.utcnow().date()
+        end   = end_date   or str(today - timedelta(days=1))
+        start = start_date or str(today - timedelta(days=days))
+
+        types = [t.upper() for t in (ad_types or ["SP", "SB", "SD"])]
+        unknown = [t for t in types if t not in self._AD_TYPE_CONFIG]
+        if unknown:
+            raise ValueError(f"Unknown ad_types: {unknown}. Valid: {list(self._AD_TYPE_CONFIG)}")
+
+        # Fetch all types in parallel; capture per-type errors so one failure
+        # doesn't abort the whole call.
+        async def _fetch_safe(ad_type: str):
+            try:
+                records = await self._fetch_ad_type_records(ad_type, start, end)
+                return ad_type, records, None
+            except Exception as exc:
+                logger.warning(f"[{ad_type}] fetch failed: {exc}")
+                return ad_type, [], str(exc)
+
+        results = await asyncio.gather(*(_fetch_safe(t) for t in types))
+
+        by_type: Dict[str, Dict] = {}
+        errors:  Dict[str, str]  = {}
+
+        for ad_type, records, error in results:
+            if error:
+                errors[ad_type] = error
+                continue
+            cfg = self._AD_TYPE_CONFIG[ad_type]
+            sf  = cfg["spend_field"]
+            of  = cfg["orders_field"]
+            vf  = cfg["sales_field"]
+
+            spend  = sum(float(r.get(sf)  or 0) for r in records)
+            clicks = sum(int(r.get("clicks")      or 0) for r in records)
+            impr   = sum(int(r.get("impressions")  or 0) for r in records)
+            orders = sum(int(r.get(of) or 0) for r in records) if of else 0
+            sales  = sum(float(r.get(vf) or 0) for r in records) if vf else 0.0
+
+            by_type[ad_type] = {
+                "spend":       round(spend,  2),
+                "clicks":      clicks,
+                "impressions": impr,
+                "orders":      orders,
+                "sales":       round(sales, 2),
+                "acos_pct":    round(spend / sales * 100, 2) if sales > 0 else None,
+                "ctr_pct":     round(clicks / impr  * 100, 4) if impr  > 0 else None,
+                "cpc":         round(spend / clicks,        2) if clicks > 0 else None,
+                # share fields filled in below after totals are known
+                "spend_share_pct":  0.0,
+                "clicks_share_pct": 0.0,
+                "campaign_count": len(records),
+            }
+
+        # Totals
+        total_spend  = sum(v["spend"]  for v in by_type.values())
+        total_clicks = sum(v["clicks"] for v in by_type.values())
+        total_impr   = sum(v["impressions"] for v in by_type.values())
+        total_orders = sum(v["orders"] for v in by_type.values())
+        total_sales  = sum(v["sales"]  for v in by_type.values())
+
+        # Back-fill share percentages
+        for v in by_type.values():
+            v["spend_share_pct"]  = round(v["spend"]  / total_spend  * 100, 2) if total_spend  > 0 else 0.0
+            v["clicks_share_pct"] = round(v["clicks"] / total_clicks * 100, 2) if total_clicks > 0 else 0.0
+
+        total: Dict[str, Any] = {
+            "spend":       round(total_spend,  2),
+            "clicks":      total_clicks,
+            "impressions": total_impr,
+            "orders":      total_orders,
+            "sales":       round(total_sales,  2),
+            "acos_pct":    round(total_spend / total_sales  * 100, 2) if total_sales  > 0 else None,
+            "ctr_pct":     round(total_clicks / total_impr  * 100, 4) if total_impr  > 0 else None,
+            "cpc":         round(total_spend  / total_clicks, 2)      if total_clicks > 0 else None,
+        }
+
+        return {
+            "period":   {"start_date": start, "end_date": end},
+            "by_type":  by_type,
+            "total":    total,
+            "errors":   errors,
+        }
+
     # ── Change History ─────────────────────────────────────────────────────
 
     _CH_BATCH_SIZE   = 10   # max campaign IDs per history request (API limit)
