@@ -170,6 +170,8 @@ template: |
   - Scalar values only: `field=value`. Nested dicts: `object.field=value`.
   - If a field is an array, write `field_count=$n` and name the top-1 to top-3 items inline.
 
+  [CHART:daily_trend]
+
   - **Budget**: [Insight] — open with '$X/day budget; budget_pressure=$val — {{budget_exhausted_days}}/{{budget_active_days}} days ({{budget_exhausted_days_pct}}%) hit the cap; avg {{avg_daily_utilization_pct}}%, p90 {{p90_daily_utilization_pct}}%.' Then insert `budget_pressure_interpretation` verbatim (pre-computed pressure label with recommendation). If `budget_overdelivery_note` is non-empty, append it. If `budget_starved_campaigns_note` is non-empty, append it on a new line.
     [CHART:budget_utilization]
     *Source: budget_pressure=$val, budget_exhausted_days=$val/$budget_active_days d, overdelivery_days=$val, avg_daily_utilization_pct=$val, p90=$val, max=$max_daily_utilization_pct, budget_starved_campaigns=$n*
@@ -185,7 +187,7 @@ template: |
     SHIPMENT LEAD-TIME GUIDANCE — if shipment_lead_time is present AND data_source ≠ 'none': check data_source first. If data_source='lingxing_erp': report all three phases — (1) sea transit (China→3PL, median & p75), (2) local warehouse→FBA (3PL→FBA, median & p75), (3) FBA processing (median). State total planning buffer = sea p75 + local p75 + fba p75. If any quarterly p75 rising, flag as lead-time inflation risk. If data_source='sp_api_plans': report sea_transit_p75 as total-lead-time proxy with explicit caveat '(SP-API proxy: plan creation → FBA receive; may overestimate by ~2 weeks — use as conservative upper bound)'; do NOT report fba_processing or local_to_fba (not available from this source). Use `[CHART:lead_time_dist]` when data_source='lingxing_erp' only (SP-API has no per-phase breakdown for the chart).
     *Source: shipment_lead_time.sea_transit_overall.{{median,p75}}, shipment_lead_time.local_to_fba_overall.{{median,p75}}, shipment_lead_time.fba_processing_overall.{{median,p75}}, shipment_lead_time.by_quarter*
   - **Profitability**: [Insight] — *Source: account_acos=$val%, TACOS=$val% (if tacos available), net_profit_after_ads=$val (if cogs+price provided)*
-  - **LP Budget Optimisation**: Output the pre-computed validation table (`lp_validation_table` — raw markdown, bare pipe syntax, already formatted — do NOT add code fences or modify any values). Then write `lp_order_gap_narrative` verbatim (it already distinguishes NARRATIVE A from NARRATIVE B). If `lp_scope_note` is non-empty, append it as a separate sentence.
+  - **LP Budget Optimisation**: Output the pre-computed validation table (`lp_validation_table` — raw markdown, bare pipe syntax, already formatted — do NOT add code fences or modify any values). Then, BELOW the table as prose (NOT as a table row), write `lp_order_gap_narrative` verbatim (it already distinguishes NARRATIVE A from NARRATIVE B). If `lp_scope_note` is non-empty, append it as a separate prose sentence below the narrative.
     ACOS% interpretation for loser rows: when a loser row has ACOS% > target_acos_applied, note that both ACOS and LP efficiency support the reduction. When ACOS% ≤ target_acos_applied, note: 'ACOS is healthy — LP reallocates to higher-CVR alternatives, not due to poor campaign performance.'
     Interpreting Net delta_spend: Net ≈ 0 → purely redistributing within existing spend. Net > 0 → 'LP plans to use $X/day more than current operations — campaigns were historically spending below their budget caps; this is within the existing LP-scope cap, not a budget increase request.' Net < 0 → CVR has fallen or LP scope has shrunk. Do NOT write "Campaign A gave budget to Campaign B" — LP allocates each campaign independently.
     *Source: order_gap=$val, actual_daily_ad_orders=$val, lp_orders_cvr_matched=$val, budget=$lp_scope_campaign_daily_budget, lp_optimal_spend=$val, zero_kws=$lp_zero_keywords_count, maxed_kws=$lp_maxed_keywords_count, budget_binding=T/F*
@@ -194,8 +196,7 @@ template: |
 
   Render this section ONLY when `lp_reallocation_table_md` is non-empty (the pipeline has already checked all three conditions: order_gap > 0, ≥ 3 rows, any |delta_orders| ≥ 0.5). If `lp_reallocation_table_md` is empty, omit this section entirely — do NOT output the heading.
 
-  Output `lp_reallocation_table_md` verbatim (it is already formatted markdown — do NOT add code fences or modify values). Then write `lp_top_gainer_sentence` verbatim.
-  *Source: lp_reallocation_table, lp_reallocation_net.delta_orders ≈ order_gap={{val}}*
+  Output `lp_reallocation_table_md` verbatim (it is already formatted markdown — do NOT add code fences or modify values). Then write `lp_top_gainer_sentence` as a prose sentence below the table (NOT as a table row). Then write the Source line below as plain text (NOT as a table row): *Source: lp_reallocation_table, lp_reallocation_net.delta_orders ≈ order_gap={{val}}*
 
   - **Change Attribution (past actions)**:
     - ✅ Positive: $change_type on $date → Δ orders = +$x (consensus: Strong/Moderate evidence, causal_reliability=high)
@@ -230,7 +231,7 @@ template: |
     4. delta_orders (campaign-level window) may still be present on duplicate entries when kpi_level='campaign'; it reflects that specific campaign's window shift, which is independent — you may cite it with that qualification.
     5. If shared_effect is absent, the event is unique on its date and the rule does not apply.
 
-  ### Top 5 Prioritised Actions (most impactful first)
+  ### Top {n_top_actions} Prioritised Actions (most impactful first)
 
   The pipeline has pre-sorted and deduplicated all actions into `top5_actions` (from the item summary). Render them in the order given — do NOT re-rank or re-sort. For each entry, choose Format A or Format B below based on group size.
 
@@ -347,8 +348,8 @@ template: |
   8. Statistical sufficiency: when orders_reliability = 'low' (<30 orders total), mark ACOS and CVR estimates as 'statistically preliminary — results may shift significantly with more data' and display the ACOS 95% CI (acos_ci_lo%–acos_ci_hi%) alongside the point estimate in the Snapshot table. When orders_reliability = 'medium' (30–99 orders), add a note that conclusions should be validated over a longer window before committing to large bid or budget changes (risk of regression-to-the-mean).
   9. **Auto/PT search-term mining** (auto_mining_negatives / auto_mining_harvest):
      - If auto_mining_summary.skipped == true: omit this section entirely.
-     - If `auto_mining_negatives_md` is non-empty: add a sub-section 'Auto Campaign Negative Keywords'. Write `auto_mining_negatives_intro` as the opening line (wasted spend total), then output `auto_mining_negatives_md` verbatim (already sorted P0 first; expected impact strings are pre-computed using expected_order_delta — do NOT substitute expected_orders_eb). Add `rationale` from each raw entry as a prose note after each table row.
-     - If `auto_mining_harvest_md` is non-empty: add a sub-section 'Search Terms Ready for Manual Harvest'. Output `auto_mining_harvest_md` verbatim (P0 first). Add `rationale` from each raw entry as a prose note after each table row.
+     - If `auto_mining_negatives_md` is non-empty: add a sub-section 'Auto Campaign Negative Keywords'. Write `auto_mining_negatives_intro` as the opening line (wasted spend total), then output `auto_mining_negatives_md` verbatim (already sorted P0 first; expected impact strings are pre-computed using expected_order_delta — do NOT substitute expected_orders_eb). Add `rationale` from each raw entry as a prose note after each table row. 'Risks / caveats', 'Evidence', and 'Reference change attribution' may appear as a brief prose paragraph after the full table if genuinely relevant — do NOT add them as per-row sub-fields inside the table.
+     - If `auto_mining_harvest_md` is non-empty: add a sub-section 'Search Terms Ready for Manual Harvest'. Output `auto_mining_harvest_md` verbatim (P0 first). Add `rationale` from each raw entry as a prose note after each table row. 'Risks / caveats', 'Evidence', and 'Reference change attribution' may appear as a brief prose paragraph after the full table if genuinely relevant — do NOT add them as per-row sub-fields inside the table.
      - Do NOT surface auto_mining_beta_prior — internal model metadata.
      - auto_mining candidates are independent of LP keyword_actions — do NOT compare bids or budgets across the two sections.
   10. **LP-vs-causal action conflicts** (action_conflicts field, only non-empty when causal_reliability='high'):
@@ -356,7 +357,7 @@ template: |
      - If action_conflicts is non-empty: for each conflict entry, locate the matching campaign_action or keyword_action in the Top 5 list. Demote its priority by one tier (P0→P1, P1→P2, P2→omit from Top 5). Under that action's 'Risks / caveats' add: '⚠ Historical conflict ({{conflict_change_type}} on {{conflict_event_date}}): a similar {{action}} event previously correlated with an order decline ({{conflict_delta_orders}}/day, {{conflict_consensus}}). Validate this action against the historical pattern before executing.' Do NOT remove the action from the report — demotion + caveat is the correct response. Do NOT apply this rule when causal_reliability is 'low' or 'none' — conflict detection is gated on reliable causal models.
   11. **Chart placeholders**: Diagnostic charts will be injected after the report is generated. Place each marker at the most relevant position inside the matching section. Do NOT write URLs or image syntax — just the marker text. Omit a marker if that data is unavailable (e.g. no change events → omit `[CHART:its_causal]`).
      Available markers:
-     - `[CHART:daily_trend]` — daily orders/ACOS time series; place in Quick Metrics Snapshot or Overview
+     - `[CHART:daily_trend]` — daily orders/ACOS time series; place between the Diagnostic Findings heading and the Budget bullet (i.e., after the source-line rules block, before the first bullet point)
      - `[CHART:its_causal]` — ITS/CausalImpact causal chart; place in Causal Confidence Assessment
      - `[CHART:kw_quadrant]` — keyword ACOS × orders quadrant; place in Diagnostic Findings / Keywords. The pipeline pre-generates the chart caption (it includes both the raw quadrant count and the LP-confirmed lp_pause_candidates_count) — do NOT write a separate caption for this chart. In your narrative, cite lp_pause_candidates_count from Quick Metrics as the authoritative LP-derived figure; refer to the chart caption for the raw quadrant count.
      - `[CHART:placement_donut]` — placement spend share (donut) + ACOS vs bid adjustment table; place in Diagnostic Findings / Placement

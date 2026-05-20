@@ -4245,7 +4245,7 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "daily_sales":              "total units sold ÷ lookback_days (ad + organic); source priority: order_metrics > ad_orders_only",
     "daily_sales_source":       "order_metrics = SP-API getOrderMetrics (ad+organic, most accurate); ad_orders_only = ad-attributed only (lower bound)",
     "ad_daily_orders":          "lp_summary.actual_daily_ad_orders — spCampaigns ad-attributed orders ÷ days (ad only; organic excluded)",
-    "organic_daily":            "daily_consumption − lp_orders_cvr_matched — estimated organic orders/day (= daily_sales − ad_daily_orders approximately)",
+    "organic_daily":            "daily_sales − actual_daily_ad_orders — organic (non-ad-attributed) orders/day",
     "effective_stock_days":     "(total_available + inbound_receiving + catchable_shipped) ÷ daily_sales — near-term runway for LP gate (catchable_shipped = inbound_shipped only when inbound arrives before stockout)",
     "total_available":          "FBA Inventory API — fulfillable units (point-in-time)",
     "inbound_receiving":        "FBA inbound — at FC being checked in (1-2d, certain)",
@@ -4384,6 +4384,13 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "total_inbound":             item.get("total_inbound"),
         "daily_sales":               item.get("daily_sales"),
         "daily_sales_source":        item.get("daily_sales_source"),
+        "ad_daily_orders":           round(
+            (item.get("lp_summary") or {}).get("actual_daily_ad_orders") or 0, 2
+        ) or None,
+        "organic_daily":             round(max(0.0,
+            float(item.get("daily_sales") or 0)
+            - float(((item.get("lp_summary") or {}).get("actual_daily_ad_orders")) or 0)
+        ), 2) or None,
         "effective_stock_days":      item.get("effective_stock_days"),
         "can_sell_days":             item.get("can_sell_days"),
         "inventory_risk":            item.get("inventory_risk"),
@@ -4391,13 +4398,14 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "campaign_match_strategy":   item.get("campaign_match_strategy", "unknown"),
         "active_campaign_count":     active_campaign_count,
         "paused_campaign_count":     paused_campaign_count,
-        "total_daily_budget":        item.get("total_daily_budget"),
         "bidding_strategies":        item.get("bidding_strategies"),
         "total_spend":               item.get("total_spend"),
         "total_sales":               item.get("total_sales"),
         "total_orders":              item.get("total_orders"),
         "total_clicks":              item.get("total_clicks"),
         "account_acos":              item.get("account_acos"),
+        "total_daily_budget":          item.get("total_daily_budget"),
+        "budget_pressure":             item.get("budget_pressure"),
         "budget_active_days":          item.get("budget_active_days"),
         "budget_exhausted_days":       item.get("budget_exhausted_days"),
         "budget_exhausted_days_pct":   item.get("budget_exhausted_days_pct"),
@@ -4405,22 +4413,16 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "p90_daily_utilization_pct":   item.get("p90_daily_utilization_pct"),
         "max_daily_utilization_pct":   item.get("max_daily_utilization_pct"),
         "overdelivery_days":           item.get("overdelivery_days"),
-        "budget_pressure":             item.get("budget_pressure"),
+        "budget_starved_campaigns": sum(
+            1 for c in (item.get("campaign_budget_coverage") or [])
+            if c.get("exhausted_pct", 0) >= 30
+        ),
         "keyword_count":             item.get("keyword_count"),
         "avg_bid":                   item.get("avg_bid"),
         "min_bid":                   item.get("min_bid"),
         "max_bid":                   item.get("max_bid"),
         "match_type_dist":           item.get("match_type_dist"),
         "kw_performance_count":      len(item.get("keyword_performance", [])),
-        # Inventory consumption decomposition — surfaced in Quick Metrics Snapshot so readers
-        # can verify the daily_sales figure used in the effective_stock_days gate calc.
-        "ad_daily_orders":           round(
-            (item.get("lp_summary") or {}).get("actual_daily_ad_orders") or 0, 2
-        ) or None,
-        "organic_daily":             round(max(0.0,
-            ((item.get("lp_summary") or {}).get("daily_consumption") or 0)
-            - ((item.get("lp_summary") or {}).get("lp_orders_cvr_matched") or 0)
-        ), 2) or None,
         "lp_summary":                item.get("lp_summary"),
         "lp_top_allocations":        (item.get("lp_top_allocations") or [])[:3],
         "lp_zero_keywords":          (item.get("lp_zero_keywords") or [])[:10],
@@ -4502,10 +4504,6 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "auto_mining_harvest":   (item.get("auto_mining") or {}).get("harvest", [])[:20],
         # Per-campaign intraday budget coverage (full list in _summary_json)
         "campaign_budget_coverage": item.get("campaign_budget_coverage") or [],
-        "budget_starved_campaigns": sum(
-            1 for c in (item.get("campaign_budget_coverage") or [])
-            if c.get("exhausted_pct", 0) >= 30
-        ),
         # Shipment lead-time distribution (store-wide, from Lingxing ERP)
         "shipment_lead_time": _summarise_lead_time(item.get("shipment_lead_time")),
     }
@@ -4529,7 +4527,9 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     )
 
     # Item 3: pre-sorted, deduped top-5 action list
-    summary["top5_actions"] = _build_top5_actions(item)
+    _top5 = _build_top5_actions(item)
+    summary["top5_actions"] = _top5
+    summary["n_top_actions"] = _count_action_groups(_top5)
 
     # Item 1: LP narrative strings (pre-computed; LLM inserts verbatim)
     _lp = _build_lp_narrative(item)
@@ -4755,9 +4755,13 @@ def _build_causal_caveat_text(
         )
     # causal_reliability == "low": evaluate A → B → C
     # Sub-condition A: hit_rate present and below threshold
-    if backtest_hit_rate is not None and backtest_hit_rate < 70:
+    try:
+        _bhr = float(backtest_hit_rate) if backtest_hit_rate is not None else None
+    except (TypeError, ValueError):
+        _bhr = None
+    if _bhr is not None and _bhr < 70:
         return (
-            f"Causal model directional accuracy {backtest_hit_rate:.1f}% (threshold 70%) — "
+            f"Causal model directional accuracy {_bhr:.1f}% (threshold 70%) — "
             "change_attribution evidence is near-random; all consensus labels downgraded one tier. "
             "LP budget recommendations remain valid (independent of causal models)."
         )
@@ -4857,6 +4861,23 @@ def _build_top5_actions(item: Dict) -> List[Dict]:
     return result
 
 
+def _count_action_groups(top5: List[Dict]) -> int:
+    """Count how many distinct numbered action blocks the LLM will render.
+    Adjacent same-(action_type, action, gated) items are collapsed into one
+    Format-B group, matching the LLM's grouping heuristic.
+    """
+    if not top5:
+        return 0
+    count = 1
+    prev = (top5[0].get("action_type"), top5[0].get("action"), top5[0].get("gated", False))
+    for a in top5[1:]:
+        key = (a.get("action_type"), a.get("action"), a.get("gated", False))
+        if key != prev:
+            count += 1
+            prev = key
+    return count
+
+
 # ---------------------------------------------------------------------------
 # Item 1 — LP narrative pre-computation (LLM inserts verbatim strings)
 # ---------------------------------------------------------------------------
@@ -4867,7 +4888,7 @@ def _render_lp_reallocation_table(item: Dict) -> str:
     """
     rows      = item.get("lp_reallocation_table") or []
     net       = item.get("lp_reallocation_net") or {}
-    order_gap = (item.get("lp_summary") or {}).get("order_gap") or 0
+    order_gap = float((item.get("lp_summary") or {}).get("order_gap") or 0)
 
     if order_gap <= 0 or len(rows) < 3:
         return ""
@@ -4887,23 +4908,34 @@ def _render_lp_reallocation_table(item: Dict) -> str:
         d_o      = r.get("delta_orders") or 0
         lines.append(f"| {name} | {acos_str} | {cur_s:.1f} | {lp_s:.1f} | {d_s:+.1f} | {d_o:+.2f} |")
 
-    n_total = net.get("n_total", len(rows))
-    net_ds  = net.get("delta_spend") or 0
-    net_do  = net.get("delta_orders") or 0
-    lines.append(
-        f"| **Net ({n_total} campaigns)** | | | | **{net_ds:+.1f}** | **{net_do:+.2f}** |"
-    )
+    n_total   = net.get("n_total", len(rows))
+    n_shown   = len(rows)
+    net_ds    = net.get("delta_spend") or 0
+    net_do    = net.get("delta_orders") or 0
+    if n_shown < n_total:
+        net_label = f"**Net ({n_total} campaigns; showing top {n_shown} by |Δ orders/day|)**"
+    else:
+        net_label = f"**Net ({n_total} campaigns)**"
+    lines.append(f"| {net_label} | | | | **{net_ds:+.1f}** | **{net_do:+.2f}** |")
+
+    residual = order_gap - net_do
+    if abs(residual) > 0.05:
+        lines.append(
+            f"\n*Note: LP model order_gap ({order_gap:+.2f}) − table net ({net_do:+.2f}) = {residual:+.2f} orders/day. "
+            "Residual comes from LP-scope campaigns whose spend delta falls below the redistribution threshold (included in the LP model total but not redistributed in this table).*"
+        )
+
     return "\n".join(lines)
 
 
 def _build_lp_narrative(item: Dict) -> Dict[str, str]:
     """Pre-compute LP Budget Optimisation section strings (item 1)."""
     lp               = item.get("lp_summary") or {}
-    order_gap        = lp.get("order_gap") or 0.0
-    lp_orders        = lp.get("lp_orders_cvr_matched") or 0.0
-    actual_orders    = lp.get("actual_daily_ad_orders") or 0.0
-    lp_optimal_spend = lp.get("lp_optimal_spend") or 0.0
-    lp_scope_budget  = lp.get("lp_scope_campaign_daily_budget") or 0.0
+    order_gap        = float(lp.get("order_gap") or 0)
+    lp_orders        = float(lp.get("lp_orders_cvr_matched") or 0)
+    actual_orders    = float(lp.get("actual_daily_ad_orders") or 0)
+    lp_optimal_spend = float(lp.get("lp_optimal_spend") or 0)
+    lp_scope_budget  = float(lp.get("lp_scope_campaign_daily_budget") or 0)
     budget_binding   = lp.get("budget_binding", False)
     budget_pressure  = item.get("budget_pressure") or "none"
     budget_exh_d     = item.get("budget_exhausted_days") or 0
@@ -4958,10 +4990,14 @@ def _build_lp_narrative(item: Dict) -> Dict[str, str]:
             f"(gap={order_gap:+.2f}); no reallocation opportunity identified within current budget."
         )
 
-    scope_note = ""
+    scope_note = (
+        "LP model scope: keyword-targeting campaigns only — "
+        "auto campaigns and product-targeting (PT) campaigns are excluded from LP optimisation "
+        "and are handled separately via ACOS-based rules."
+    )
     if budget_binding and budget_pressure in ("none", "light"):
-        scope_note = (
-            f"Note: budget_binding=true applies to LP-scoped campaigns only "
+        scope_note += (
+            f" Note: budget_binding=true applies to LP-scoped campaigns only "
             f"(${lp_scope_budget:.2f}/day); account-wide budget_pressure={budget_pressure} "
             f"({budget_exh_d}/{budget_active_d}d) reflects ALL campaigns "
             "including non-LP-scoped auto/PT campaigns."
@@ -5013,10 +5049,10 @@ def _build_lp_narrative(item: Dict) -> Dict[str, str]:
 def _build_budget_interpretation(item: Dict) -> Dict[str, str]:
     """Pre-compute budget bullet strings (item 6)."""
     pressure  = item.get("budget_pressure") or "none"
-    p90       = item.get("p90_daily_utilization_pct") or 0.0
-    exh_d     = item.get("budget_exhausted_days") or 0
-    act_d     = item.get("budget_active_days") or 1
-    exh_pct   = item.get("budget_exhausted_days_pct") or 0.0
+    p90       = float(item.get("p90_daily_utilization_pct") or 0)
+    exh_d     = int(item.get("budget_exhausted_days") or 0)
+    act_d     = int(item.get("budget_active_days") or 1)
+    exh_pct   = float(item.get("budget_exhausted_days_pct") or 0)
     overdeliv = item.get("overdelivery_days") or 0
     coverage  = item.get("campaign_budget_coverage") or []
 
@@ -5119,8 +5155,8 @@ def _render_auto_mining_tables(item: Dict) -> Dict[str, str]:
             orders = n.get("orders") or 0
             sd     = abs(n.get("expected_spend_delta") or 0)
             od     = n.get("expected_order_delta") or 0.0
-            if orders == 0:
-                impact = f"Saves ${sd:.2f}/day; order impact = 0 (zero observed conversions)"
+            if abs(od) < 0.005:
+                impact = f"Saves ${sd:.2f}/day; order impact = 0 (zero estimated impact)"
             else:
                 impact = f"Saves ${sd:.2f}/day; order impact = {od:.2f}/day (converting term — monitor closely)"
             lines.append(f"| {n.get('priority','P1')} | {kw} | {cid} | {match} | ${spend:.2f} | {orders} | {impact} |")
@@ -5160,8 +5196,11 @@ def _build_traffic_divergence_label(item: Dict) -> str:
     Cause check order: (a) promotion → (b) bid/budget decrease → (c) budget exhaustion
     → (d) organic share shift → (e) unclear.
     """
-    traffic_growth_7d = item.get("traffic_growth_7d")
-    if traffic_growth_7d is None or traffic_growth_7d >= 0:
+    try:
+        traffic_growth_7d = float(item.get("traffic_growth_7d") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if traffic_growth_7d >= 0:
         return ""
 
     # Demand rising: any tracked keyword shows higher weekly_searches (or lower SFR) recently
@@ -5522,6 +5561,9 @@ def _export_report(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         text = _STATIC_PLACEHOLDER_RE.sub(
             lambda m: _STATIC_BLOCKS.get(m.group(1), ""), text
         )
+
+        # Prepend SP-scope disclaimer unconditionally — LLM never outputs the marker
+        text = _SCOPE_DISCLAIMER + "\n\n" + text
 
         chart_urls: dict = item.get("chart_urls") or {}
         if chart_urls:
