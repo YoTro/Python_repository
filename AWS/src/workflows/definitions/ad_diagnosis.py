@@ -4539,6 +4539,21 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     summary["lp_reallocation_table_md"] = _lp["lp_reallocation_table_md"]
     summary["lp_top_gainer_sentence"]   = _lp["lp_top_gainer_sentence"]
 
+    # Item 6: budget interpretation strings
+    _bgt = _build_budget_interpretation(item)
+    summary["budget_pressure_interpretation"] = _bgt["budget_pressure_interpretation"]
+    summary["budget_overdelivery_note"]       = _bgt["budget_overdelivery_note"]
+    summary["budget_starved_campaigns_note"]  = _bgt["budget_starved_campaigns_note"]
+
+    # Item 9: auto-mining tables (pre-rendered; expected_order_delta enforced)
+    _am = _render_auto_mining_tables(item)
+    summary["auto_mining_negatives_intro"] = _am["auto_mining_negatives_intro"]
+    summary["auto_mining_negatives_md"]    = _am["auto_mining_negatives_md"]
+    summary["auto_mining_harvest_md"]      = _am["auto_mining_harvest_md"]
+
+    # Item 8: traffic divergence label
+    summary["traffic_divergence_label"] = _build_traffic_divergence_label(item)
+
     return summary
 
 
@@ -4989,6 +5004,241 @@ def _build_lp_narrative(item: Dict) -> Dict[str, str]:
         "lp_reallocation_table_md": _render_lp_reallocation_table(item),
         "lp_top_gainer_sentence":   top_gainer_sentence,
     }
+
+
+# ---------------------------------------------------------------------------
+# Item 6 — Budget interpretation strings (pre-computed; LLM inserts verbatim)
+# ---------------------------------------------------------------------------
+
+def _build_budget_interpretation(item: Dict) -> Dict[str, str]:
+    """Pre-compute budget bullet strings (item 6)."""
+    pressure  = item.get("budget_pressure") or "none"
+    p90       = item.get("p90_daily_utilization_pct") or 0.0
+    exh_d     = item.get("budget_exhausted_days") or 0
+    act_d     = item.get("budget_active_days") or 1
+    exh_pct   = item.get("budget_exhausted_days_pct") or 0.0
+    overdeliv = item.get("overdelivery_days") or 0
+    coverage  = item.get("campaign_budget_coverage") or []
+
+    if pressure == "chronic":
+        pressure_interp = (
+            f"Budget is a systemic constraint — cap hit on {exh_d}/{act_d} days ({exh_pct:.1f}%); "
+            "increasing total daily budget is the primary lever."
+        )
+    elif pressure == "moderate":
+        head = max(0.0, p90 - 100)
+        pressure_interp = (
+            f"Budget constrains delivery on most active days ({exh_d}/{act_d} days at cap); "
+            f"consider raising daily cap by ~{head:.0f}% (p90={p90:.1f}%) to ensure all-day delivery."
+        )
+    elif pressure == "light":
+        pressure_interp = (
+            f"Budget constrains delivery occasionally ({exh_d}/{act_d} days at cap); "
+            "focus on bids and keyword quality — budget is not the primary bottleneck."
+        )
+    else:
+        pressure_interp = (
+            "Budget is not the binding constraint (<10% of active days at cap); "
+            "focus on bids and keyword quality."
+        )
+
+    if p90 > 125:
+        overdeliv_note = (
+            f"p90={p90:.1f}% — Amazon exceeded its own pacing limit on {overdeliv}d; "
+            "unusual, monitor for sustained pattern."
+        )
+    elif overdeliv > 0:
+        overdeliv_note = (
+            f"p90={p90:.1f}% reflects Amazon's ±25% pacing allowance on {overdeliv}d — not a concern."
+        )
+    else:
+        overdeliv_note = ""
+
+    starved = sorted(
+        [c for c in coverage if (c.get("exhausted_pct") or 0) >= 30],
+        key=lambda c: -(c.get("exhausted_pct") or 0),
+    )
+    if not starved:
+        starved_note = ""
+    else:
+        lines = []
+        for c in starved[:5]:
+            name  = (c.get("campaign_name") or str(c.get("campaign_id", "")))[:30]
+            ep    = c.get("exhausted_pct") or 0
+            ap    = c.get("all_day_pct") or 0
+            avg_s = c.get("avg_daily_spend") or 0
+            rec   = round(avg_s * 1.20, 2)
+            lines.append(
+                f"  • {name}: exhausted {ep:.0f}% of days, all-day coverage {ap:.0f}% "
+                f"— raise budget to ≥${rec:.2f}/day (avg spend ${avg_s:.2f}/day × 1.20)"
+            )
+        starved_note = (
+            f"{len(starved)} campaign(s) run dry mid-day "
+            "(ACOS may look healthy but afternoon/evening impressions are zero — volume structurally capped):\n"
+            + "\n".join(lines)
+        )
+
+    return {
+        "budget_pressure_interpretation": pressure_interp,
+        "budget_overdelivery_note":       overdeliv_note,
+        "budget_starved_campaigns_note":  starved_note,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Item 9 — Auto-mining tables (pre-rendered; expected_order_delta enforced)
+# ---------------------------------------------------------------------------
+
+def _render_auto_mining_tables(item: Dict) -> Dict[str, str]:
+    """Pre-render auto-mining negative and harvest tables (item 9).
+    Uses expected_order_delta exclusively — never expected_orders_eb.
+    """
+    am      = (item.get("auto_mining") or {})
+    summary = am.get("summary") or {}
+    negs    = am.get("negatives") or []
+    harvest = am.get("harvest") or []
+    empty   = {"auto_mining_negatives_intro": "", "auto_mining_negatives_md": "", "auto_mining_harvest_md": ""}
+
+    if summary.get("skipped"):
+        return empty
+
+    daily_wasted = summary.get("daily_wasted_spend") or 0.0
+    intro = f"Est. ${daily_wasted:.2f}/day wasted on zero-order terms (Gate A/B)." if daily_wasted > 0 else ""
+
+    neg_md = ""
+    if negs:
+        lines = [
+            "| Priority | Keyword | Campaign | Match | Spend | Orders | Expected Impact |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for n in negs[:30]:
+            kw     = (n.get("keyword_text") or "")[:30]
+            cid    = str(n.get("campaign_id") or "")[:20]
+            match  = n.get("suggested_match", "PHRASE")
+            spend  = n.get("spend_total") or 0
+            orders = n.get("orders") or 0
+            sd     = abs(n.get("expected_spend_delta") or 0)
+            od     = n.get("expected_order_delta") or 0.0
+            if orders == 0:
+                impact = f"Saves ${sd:.2f}/day; order impact = 0 (zero observed conversions)"
+            else:
+                impact = f"Saves ${sd:.2f}/day; order impact = {od:.2f}/day (converting term — monitor closely)"
+            lines.append(f"| {n.get('priority','P1')} | {kw} | {cid} | {match} | ${spend:.2f} | {orders} | {impact} |")
+        neg_md = "\n".join(lines)
+
+    harv_md = ""
+    if harvest:
+        lines = [
+            "| Priority | Keyword | Campaign | Match | Suggested Bid | Orders | ACOS% |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for h in harvest[:20]:
+            kw    = (h.get("keyword_text") or "")[:30]
+            cid   = str(h.get("campaign_id") or "")[:20]
+            bid   = h.get("suggested_bid") or 0
+            ords  = h.get("orders") or 0
+            acos  = h.get("acos_pct")
+            acos_s = f"{acos:.1f}" if acos is not None else "—"
+            lines.append(f"| {h.get('priority','P1')} | {kw} | {cid} | EXACT | ${bid:.2f} | {ords} | {acos_s} |")
+        harv_md = "\n".join(lines)
+
+    return {
+        "auto_mining_negatives_intro": intro,
+        "auto_mining_negatives_md":    neg_md,
+        "auto_mining_harvest_md":      harv_md,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Item 8 — Traffic divergence label (pre-computed; eliminates rule-5a branching)
+# ---------------------------------------------------------------------------
+
+def _build_traffic_divergence_label(item: Dict) -> str:
+    """Pre-compute the demand-vs-traffic divergence explanation (item 8).
+    Returns a pre-written cause label when traffic_growth_7d < 0 AND market_trends
+    shows rising demand; returns empty string when no divergence is detected.
+    Cause check order: (a) promotion → (b) bid/budget decrease → (c) budget exhaustion
+    → (d) organic share shift → (e) unclear.
+    """
+    traffic_growth_7d = item.get("traffic_growth_7d")
+    if traffic_growth_7d is None or traffic_growth_7d >= 0:
+        return ""
+
+    # Demand rising: any tracked keyword shows higher weekly_searches (or lower SFR) recently
+    market_trends: Dict = item.get("market_trends") or {}
+    demand_rising = False
+    for kw_data in market_trends.values():
+        if not isinstance(kw_data, dict):
+            continue
+        weeks = sorted(kw_data.keys())
+        if len(weeks) < 2:
+            continue
+        last_w = kw_data[weeks[-1]]
+        prev_w = kw_data[weeks[-2]]
+        last_s = last_w.get("weekly_searches") or 0
+        prev_s = prev_w.get("weekly_searches") or 0
+        last_sfr = last_w.get("sfr")
+        prev_sfr = prev_w.get("sfr")
+        if last_s and prev_s and last_s > prev_s:
+            demand_rising = True
+            break
+        if last_sfr and prev_sfr and last_sfr < prev_sfr:
+            demand_rising = True
+            break
+
+    if not demand_rising:
+        return ""
+
+    attributions    = item.get("change_attributions") or []
+    budget_pressure = item.get("budget_pressure") or "none"
+
+    # (a) Promotion — check had_promotion on any attribution entry
+    if any(a.get("had_promotion") for a in attributions):
+        return (
+            "Rising demand coincides with active promotion/price cut — "
+            "higher CVR compensates for lower click volume; "
+            "verify whether orders hold when promotion ends."
+        )
+
+    # (b) Bid or budget decrease event
+    for a in attributions:
+        ct  = a.get("change_type") or ""
+        old = a.get("old_value")
+        new = a.get("new_value")
+        if ct in ("BID_AMOUNT", "BUDGET_AMOUNT") and old and new:
+            try:
+                if float(new) < float(old):
+                    return (
+                        f"Click decline follows {ct} on {a.get('changed_at', 'unknown date')} — "
+                        "intentional bid/budget cut reduced impression share; "
+                        "seasonal demand rising but not captured due to lower bids."
+                    )
+            except (ValueError, TypeError):
+                pass
+
+    # (c) Budget exhaustion
+    if budget_pressure in ("chronic", "moderate"):
+        exh_d = item.get("budget_exhausted_days") or 0
+        act_d = item.get("budget_active_days") or 1
+        pct   = item.get("budget_exhausted_days_pct") or 0
+        return (
+            f"Budget cap reached on {exh_d}/{act_d} days ({pct:.0f}%) — "
+            "rising demand is constrained by ad budget, not bid level; "
+            "impression share limited by spend ceiling."
+        )
+
+    # (d) High organic share (ad traffic declining as organic captures demand)
+    if (item.get("organic_traffic_ratio") or 0) > 0.5:
+        return (
+            "Organic captures >50% of traffic — ad traffic declining as organic "
+            "absorbs the demand increase; verify organic rank trend."
+        )
+
+    # (e) Unclear
+    return (
+        "Root cause of traffic decline vs rising demand is unclear from available data — "
+        "check search term report for impression share loss and competitor activity."
+    )
 
 
 def _chart_interpretation(item: Dict, name: str) -> str:
