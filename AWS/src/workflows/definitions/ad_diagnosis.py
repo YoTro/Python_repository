@@ -1706,6 +1706,7 @@ def _build_campaign_actions(
                     "inbound_lead_days":    inv_gate["inbound_lead_days"],
                     "inbound_lead_source":  inv_gate["inbound_lead_source"],
                     "daily_sales":          inv_gate["daily_sales"],
+                    "gate_calc_string":     _build_gate_calc_string(inv_gate),
                     "note": (
                         f"Current stock ~{inv_gate['can_sell_days']}d + confirmed inbound = {eff}d effective. "
                         f"Increasing spend now risks stockout before restock arrives. "
@@ -1862,6 +1863,7 @@ def _build_keyword_actions(
                             "inbound_lead_days":    inv_gate["inbound_lead_days"],
                             "inbound_lead_source":  inv_gate["inbound_lead_source"],
                             "daily_sales":          inv_gate["daily_sales"],
+                            "gate_calc_string":     _build_gate_calc_string(inv_gate),
                             "note": (
                                 f"Current stock ~{inv_gate['can_sell_days']}d + confirmed inbound = {eff}d effective. "
                                 f"Raising bids accelerates spend and risks stockout. "
@@ -4514,6 +4516,29 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         for _f in ("causal_reliability", "backtest_hit_rate",
                    "backtest_strong_hit_rate", "backtest_total"):
             summary.pop(_f, None)
+
+    # Item 2: causal caveat text (pre-computed; LLM inserts verbatim in Caveats section)
+    _tier = _causal_reliability_tier(
+        backtest_hit_rate      = item.get("backtest_hit_rate"),
+        events_significant_pct = item.get("events_significant_pct"),
+    )
+    summary["causal_caveat_text"] = _build_causal_caveat_text(
+        causal_reliability     = _tier,
+        backtest_hit_rate      = item.get("backtest_hit_rate"),
+        events_significant_pct = item.get("events_significant_pct"),
+    )
+
+    # Item 3: pre-sorted, deduped top-5 action list
+    summary["top5_actions"] = _build_top5_actions(item)
+
+    # Item 1: LP narrative strings (pre-computed; LLM inserts verbatim)
+    _lp = _build_lp_narrative(item)
+    summary["lp_validation_table"]      = _lp["lp_validation_table"]
+    summary["lp_order_gap_narrative"]   = _lp["lp_order_gap_narrative"]
+    summary["lp_scope_note"]            = _lp["lp_scope_note"]
+    summary["lp_reallocation_table_md"] = _lp["lp_reallocation_table_md"]
+    summary["lp_top_gainer_sentence"]   = _lp["lp_top_gainer_sentence"]
+
     return summary
 
 
@@ -4636,6 +4661,334 @@ _CHART_META: Dict[str, str] = {
 
 # Matches [CHART:chart_name] anywhere in the text (LLM-inserted placeholder)
 _CHART_PLACEHOLDER_RE = re.compile(r'\[CHART:(\w+)\]')
+
+# ---------------------------------------------------------------------------
+# Static boilerplate blocks (item 10) — injected post-LLM, never in prompt
+# ---------------------------------------------------------------------------
+_STATIC_PLACEHOLDER_RE = re.compile(r'\[STATIC:(\w+)\]')
+
+_SCOPE_DISCLAIMER = (
+    "> **Scope disclaimer:** This report covers **Sponsored Products (SP)** campaigns only. "
+    "Sponsored Brands (SB), Sponsored Display (SD), Sponsored TV (STV), and DSP data are not included. "
+    "All spend, ACOS, budget, and keyword metrics refer exclusively to SP campaign activity."
+)
+
+_METHODOLOGY_BLOCK = """\
+### Statistical Methodology
+
+| Method | Citation | Role in this report |
+| --- | --- | --- |
+| ITS | Linden (2015), *Stata J.* 15(2):480–500 | Piecewise OLS: y=α+β·t+γ·D+δ·(t−T₀)·D+ε; γ=level_shift (immediate step); 95% CI from OLS t-distribution SE |
+| CausalImpact | Brodersen et al. (2015), *Ann. Appl. Stat.* 9(1):247–274 | BSTS counterfactual; point_effect=actual−predicted; 95% posterior credible interval |
+| DML | Chernozhukov et al. (2018), *Econometrics J.* 21(1):C1–C68 | Frisch–Waugh–Lovell with RF residualisation; θ=clean causal effect; 95% CI from heteroscedasticity-robust sandwich SE |
+| LP | Dantzig (1963), *Linear Programming & Extensions* / OR-Tools | max Σorders_i·x_i s.t. Σx_i≤daily_budget, x_i≤headroom·clicks_i·bid_i |
+| ACOS CI | Wilson (1927), *JASA* 22:209–212 | 95% CI on CVR (Wilson score) propagated: ACOS_CI = ACOS_point × CVR_point / CVR_CI |
+
+*All CIs at 95% (α=0.05). Two significance thresholds are used for different purposes — this is intentional, not an inconsistency: (1) **Consensus voting** (ITS/DML direction votes in `_build_consensus`): p ≤ 0.10 one-sided — lenient so that weak signals still contribute a direction vote; the per-event ITS p-value shown in Causal Confidence Assessment uses this threshold. (2) **Backtest event significance** (`events_significant_pct`, `causal_reliability` gate): p < 0.05 AND 95% CI not crossing zero — strict; only events meeting both criteria count toward backtest_hit_rate calibration and the causal_reliability='high' AND-gate. When you see 'p < 0.10' in the ITS section it refers to threshold (1); when you see 'p < 0.05 + CI not crossing zero' in causal_reliability it refers to threshold (2).*\
+"""
+
+_STATIC_BLOCKS: Dict[str, str] = {
+    "scope_disclaimer": _SCOPE_DISCLAIMER,
+    "methodology":      _METHODOLOGY_BLOCK,
+}
+
+
+def _build_gate_calc_string(inv_gate: Dict) -> str:
+    """Pre-compute the human-readable gate calc string for prerequisite dicts (item 7)."""
+    ta   = inv_gate.get("total_available", 0)
+    recv = inv_gate.get("inbound_receiving", 0)
+    cs   = inv_gate.get("catchable_shipped", 0)
+    ds   = inv_gate.get("daily_sales", 0)
+    eff  = round((ta + recv + cs) / ds) if ds else "?"
+    lead = inv_gate.get("inbound_lead_days")
+    src  = inv_gate.get("inbound_lead_source", "unknown")
+    csd  = inv_gate.get("can_sell_days")
+    shipped = inv_gate.get("inbound_shipped", 0)
+    excl = (
+        f" | {shipped} inbound_shipped units excluded — "
+        f"inbound_lead_days {lead}d (source: {src}) ≥ can_sell_days {csd}d, "
+        f"arrives too late to prevent stockout"
+        if cs == 0 and shipped > 0 and lead is not None and csd is not None
+        else ""
+    )
+    return (
+        f"(total_available [{ta}] + inbound_receiving [{recv}] + catchable_shipped [{cs}]) "
+        f"÷ daily_sales [{ds:.2f}] = {eff} d{excl}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Item 2 — Causal caveat text (pre-computed; LLM inserts verbatim)
+# ---------------------------------------------------------------------------
+
+def _build_causal_caveat_text(
+    causal_reliability: str,
+    backtest_hit_rate: Optional[float],
+    events_significant_pct: Optional[float],
+) -> str:
+    """Return the mandatory causal-reliability caveat for the Caveats section.
+    Returns empty string when causal_reliability='high' (no caveat needed).
+    Sub-conditions A→B→C are mutually exclusive and evaluated in order.
+    backtest_hit_rate is a 0–100 percentage (e.g. 65.0 = 65%).
+    """
+    if causal_reliability == "high":
+        return ""
+    if causal_reliability == "none":
+        return (
+            "Causal analysis has no calibration data and no significant results — "
+            "all change_attribution evidence is unvalidated; treat as exploratory."
+        )
+    # causal_reliability == "low": evaluate A → B → C
+    # Sub-condition A: hit_rate present and below threshold
+    if backtest_hit_rate is not None and backtest_hit_rate < 70:
+        return (
+            f"Causal model directional accuracy {backtest_hit_rate:.1f}% (threshold 70%) — "
+            "change_attribution evidence is near-random; all consensus labels downgraded one tier. "
+            "LP budget recommendations remain valid (independent of causal models)."
+        )
+    # Sub-condition B: no hit_rate AND no significant events
+    if backtest_hit_rate is None and not (events_significant_pct or 0) > 0:
+        return (
+            "No change event in this run produced a statistically significant causal estimate "
+            "(p≥0.05 or CI crosses zero across all models). "
+            "Causal labels are descriptive only — do not use them to justify P0 actions."
+        )
+    # Sub-condition C: no hit_rate but some significant events
+    pct_str = f"{events_significant_pct:.1f}" if events_significant_pct is not None else "0.0"
+    return (
+        "Causal model has no historical calibration data (backtest_hit_rate unavailable) — "
+        "directional accuracy across past events is unverified. "
+        f"This run produced statistically significant estimates ({pct_str}% of events, p<0.05), "
+        "but reliability cannot be confirmed without backtest history. "
+        "Treat causal labels as preliminary — use consensus and CI width, not causal_reliability, "
+        "to judge strength."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Item 3 — Top-5 action pre-sort + dedup (LLM renders prose only)
+# ---------------------------------------------------------------------------
+
+_PRIORITY_RANK: Dict[str, int] = {"P0": 0, "P1": 1, "P2": 2}
+_SPEND_UP_ACTIONS = frozenset({
+    "increase_budget", "increase_bid",
+    "enable_and_increase_budget", "enable_and_review_bids",
+})
+_SKIP_PAUSED_ACTIONS = frozenset({"decrease_budget", "pause_candidate"})
+
+
+def _build_top5_actions(item: Dict) -> List[Dict]:
+    """Pre-sort and deduplicate campaign + keyword actions into a ranked top-5 list.
+
+    Rules:
+    1. If inventory_risk=True and gated spend-up actions exist: inject exactly one
+       P0 inventory_gate entry first — never a 'Clear Inventory Gate' meta-action.
+    2. Actions with prerequisite dicts get gated=True (LLM appends the gate note).
+    3. Remaining slots sorted by (priority_rank ASC, |best_delta| DESC).
+    4. Cap at 5 total entries.
+    """
+    campaign_actions     = item.get("campaign_actions") or []
+    keyword_actions      = item.get("keyword_actions") or []
+    lp_summary           = item.get("lp_summary") or {}
+    inventory_risk       = item.get("inventory_risk", False)
+    effective_stock_days = item.get("effective_stock_days")
+    stock_gate_days      = lp_summary.get("stock_gate_days") or 21
+
+    gated_spend_ups = [
+        a for a in (campaign_actions + keyword_actions)
+        if a.get("prerequisite") and a.get("action") in _SPEND_UP_ACTIONS
+    ]
+
+    result: List[Dict] = []
+
+    if (
+        inventory_risk
+        and gated_spend_ups
+        and effective_stock_days is not None
+        and effective_stock_days < stock_gate_days
+    ):
+        result.append({
+            "action_type":             "inventory_gate",
+            "priority":                "P0",
+            "action":                  "replenish_inventory",
+            "effective_stock_days":    effective_stock_days,
+            "stock_gate_days":         stock_gate_days,
+            "can_sell_days":           item.get("can_sell_days"),
+            "daily_sales":             item.get("daily_sales"),
+            "order_gap":               lp_summary.get("order_gap"),
+            "n_gated_actions":         len(gated_spend_ups),
+            "stock_shortfall":         lp_summary.get("stock_shortfall"),
+            "recommended_stock_units": lp_summary.get("recommended_stock_units"),
+            "inbound_working":         item.get("inbound_working"),
+        })
+
+    def _best_delta(a: Dict) -> float:
+        return abs(a.get("lp_delta_orders") or a.get("expected_order_delta") or 0)
+
+    all_actions: List[Dict] = []
+    for ca in campaign_actions:
+        # Skip data artefacts: paused campaigns already have no active spend
+        if ca.get("campaign_state") == "PAUSED" and ca.get("action") in _SKIP_PAUSED_ACTIONS:
+            continue
+        all_actions.append({**ca, "action_type": "campaign", "gated": bool(ca.get("prerequisite"))})
+    for ka in keyword_actions:
+        all_actions.append({**ka, "action_type": "keyword", "gated": bool(ka.get("prerequisite"))})
+
+    all_actions.sort(
+        key=lambda a: (_PRIORITY_RANK.get(a.get("priority", "P2"), 3), -_best_delta(a))
+    )
+
+    result.extend(all_actions[: 5 - len(result)])
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Item 1 — LP narrative pre-computation (LLM inserts verbatim strings)
+# ---------------------------------------------------------------------------
+
+def _render_lp_reallocation_table(item: Dict) -> str:
+    """Pre-render the Budget Redistribution markdown table.
+    Returns empty string when the three visibility conditions are not met.
+    """
+    rows      = item.get("lp_reallocation_table") or []
+    net       = item.get("lp_reallocation_net") or {}
+    order_gap = (item.get("lp_summary") or {}).get("order_gap") or 0
+
+    if order_gap <= 0 or len(rows) < 3:
+        return ""
+    if not any(abs(r.get("delta_orders") or 0) >= 0.5 for r in rows):
+        return ""
+
+    lines = [
+        "| Campaign | ACOS% | Cur $/day | LP $/day | Δ $/day | Δ orders/day |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        name     = (r.get("campaign_name") or "")[:28]
+        acos_str = f"{r['acos_pct']:.1f}" if r.get("acos_pct") is not None else "—"
+        cur_s    = r.get("current_spend") or 0
+        lp_s     = r.get("lp_spend") or 0
+        d_s      = r.get("delta_spend") or 0
+        d_o      = r.get("delta_orders") or 0
+        lines.append(f"| {name} | {acos_str} | {cur_s:.1f} | {lp_s:.1f} | {d_s:+.1f} | {d_o:+.2f} |")
+
+    n_total = net.get("n_total", len(rows))
+    net_ds  = net.get("delta_spend") or 0
+    net_do  = net.get("delta_orders") or 0
+    lines.append(
+        f"| **Net ({n_total} campaigns)** | | | | **{net_ds:+.1f}** | **{net_do:+.2f}** |"
+    )
+    return "\n".join(lines)
+
+
+def _build_lp_narrative(item: Dict) -> Dict[str, str]:
+    """Pre-compute LP Budget Optimisation section strings (item 1)."""
+    lp               = item.get("lp_summary") or {}
+    order_gap        = lp.get("order_gap") or 0.0
+    lp_orders        = lp.get("lp_orders_cvr_matched") or 0.0
+    actual_orders    = lp.get("actual_daily_ad_orders") or 0.0
+    lp_optimal_spend = lp.get("lp_optimal_spend") or 0.0
+    lp_scope_budget  = lp.get("lp_scope_campaign_daily_budget") or 0.0
+    budget_binding   = lp.get("budget_binding", False)
+    budget_pressure  = item.get("budget_pressure") or "none"
+    budget_exh_d     = item.get("budget_exhausted_days") or 0
+    budget_active_d  = item.get("budget_active_days") or 1
+
+    keyword_actions = item.get("keyword_actions") or []
+    hold_keywords   = [ka for ka in keyword_actions if ka.get("action") == "hold_keyword"]
+
+    validation_table = (
+        "| | Orders/day | Budget/day |\n"
+        "|---|---|---|\n"
+        f"| Current allocation (LP scope) | {actual_orders:.2f} | ${lp_scope_budget:.2f} |\n"
+        f"| LP optimal allocation | {lp_orders:.2f} | ${lp_optimal_spend:.2f} |\n"
+        f"| Gap | {order_gap:+.2f} | — |"
+    )
+
+    narrative_parts: List[str] = []
+    if order_gap > 0:
+        lp_zero_count  = sum(
+            1 for ka in keyword_actions
+            if ka.get("action") in ("pause_keyword", "hold_keyword")
+        )
+        lp_maxed_count = len(item.get("lp_maxed_keywords") or [])
+        narrative_parts.append(
+            f"Reallocating the current ${lp_scope_budget:.2f}/day budget per LP plan could yield "
+            f"+{order_gap:.2f} orders/day (allocation fix — same total budget, different distribution); "
+            f"lp_zero_keywords_count={lp_zero_count} keywords cut, "
+            f"lp_maxed_keywords_count={lp_maxed_count} keywords scaled — "
+            "see Budget Redistribution table below for the full per-campaign LP delta."
+        )
+
+    if hold_keywords and budget_binding:
+        top_hold = hold_keywords[0]
+        kw_text  = top_hold.get("keyword_text", "")
+        kw_acos  = top_hold.get("keyword_acos_pct")
+        kw_camp  = top_hold.get("campaign_id", "")
+        target   = lp.get("target_acos_applied")
+        acos_str = (
+            f"ACOS {kw_acos:.1f}% < target {target:.1f}%"
+            if kw_acos is not None and target is not None
+            else "ACOS below target"
+        )
+        narrative_parts.append(
+            f"Additionally, '{kw_text}' (campaign {kw_camp}) is efficient ({acos_str}) "
+            "but budget-constrained — total budget is exhausted; "
+            "increasing total budget unlocks this keyword."
+        )
+
+    if not narrative_parts:
+        narrative_parts.append(
+            f"LP order estimate: {lp_orders:.2f} orders/day vs current {actual_orders:.2f}/day "
+            f"(gap={order_gap:+.2f}); no reallocation opportunity identified within current budget."
+        )
+
+    scope_note = ""
+    if budget_binding and budget_pressure in ("none", "light"):
+        scope_note = (
+            f"Note: budget_binding=true applies to LP-scoped campaigns only "
+            f"(${lp_scope_budget:.2f}/day); account-wide budget_pressure={budget_pressure} "
+            f"({budget_exh_d}/{budget_active_d}d) reflects ALL campaigns "
+            "including non-LP-scoped auto/PT campaigns."
+        )
+
+    # Top-gainer sentence for Budget Redistribution
+    rows    = item.get("lp_reallocation_table") or []
+    gainers = [r for r in rows if (r.get("delta_orders") or 0) > 0]
+    top_gainer_sentence = ""
+    if gainers and order_gap > 0:
+        top    = max(gainers, key=lambda r: r.get("delta_orders") or 0)
+        share  = top["delta_orders"] / order_gap * 100
+        n_gain = len(gainers)
+        name   = (top.get("campaign_name") or "")[:28]
+        d_s    = top.get("delta_spend") or 0
+        d_o    = top.get("delta_orders") or 0
+        if share >= 50:
+            top_gainer_sentence = (
+                f"LP plan increases {name} by ${d_s:.1f}/day for +{d_o:.2f} orders/day "
+                f"({share:.0f}% of the projected +{order_gap:.2f} orders/day) — "
+                "see Top 5 Actions below for execution steps."
+            )
+        elif share >= 20:
+            top_gainer_sentence = (
+                f"LP plan increases {name} by ${d_s:.1f}/day for +{d_o:.2f} orders/day "
+                f"({share:.0f}% of the projected +{order_gap:.2f} orders/day, "
+                f"spread across {n_gain} campaigns) — see Top 5 Actions below for execution steps."
+            )
+        else:
+            top_gainer_sentence = (
+                f"The projected +{order_gap:.2f} orders/day is distributed across {n_gain} campaigns; "
+                f"the top single gainer is {name} at +{d_o:.2f} orders/day ({share:.0f}%) — "
+                "see Top 5 Actions below for execution steps."
+            )
+
+    return {
+        "lp_validation_table":      validation_table,
+        "lp_order_gap_narrative":   " ".join(narrative_parts),
+        "lp_scope_note":            scope_note,
+        "lp_reallocation_table_md": _render_lp_reallocation_table(item),
+        "lp_top_gainer_sentence":   top_gainer_sentence,
+    }
 
 
 def _chart_interpretation(item: Dict, name: str) -> str:
@@ -4801,13 +5154,14 @@ def _chart_interpretation(item: Dict, name: str) -> str:
         if overdeliv_days > 0:
             # With per-day cap reconstruction, overdelivery_days reflects genuine Amazon
             # pacing (≤25%) only — mid-period budget changes no longer inflate this count.
-            overdeliv_s = f"{overdeliv_days}d spend exceeded per-day cap — Amazon ±25% pacing allowance."
+            # No trailing period — the join below adds "; " between parts and ". " at the end.
+            overdeliv_s = f"{overdeliv_days}d spend exceeded per-day cap — Amazon ±25% pacing allowance"
         parts = [p for p in [exh_s, util_s, overdeliv_s] if p]
-        return (f"Budget pressure = {pressure} (cap ${cap:.0f}/day). "
-                + ("; ".join(parts) + ". " if parts else "")
-                + "Red bars = exhausted days (≥ 85 % of cap); "
-                "orange = high utilization (60–84 %); blue = healthy. "
-                "Orange dashed lines = change events.")
+        return (f"Budget pressure = {pressure} (cap ${cap:.0f}/day); "
+                + ("; ".join(parts) + "; " if parts else "")
+                + "Red bars = exhausted days (≥85% of cap); "
+                "orange = high utilization (60–84%); blue = healthy; "
+                "orange dashed lines = change events.")
 
     if name == "campaign_budget_cov":
         starved = item.get("budget_starved_campaigns") or 0
@@ -4913,6 +5267,11 @@ def _export_report(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             )
             continue
         asin = (item.get("asin") or "unknown").upper()
+
+        # Item 10: inject static boilerplate blocks ([STATIC:name] → fixed text)
+        text = _STATIC_PLACEHOLDER_RE.sub(
+            lambda m: _STATIC_BLOCKS.get(m.group(1), ""), text
+        )
 
         chart_urls: dict = item.get("chart_urls") or {}
         if chart_urls:
