@@ -978,6 +978,7 @@ def _parse_campaign(c: Dict) -> Dict[str, Any]:
         "campaign_id": c.get("campaignId"),
         "name": c.get("name"),
         "state": c.get("state"),
+        "targeting_type": c.get("targetingType"),  # "AUTO" | "MANUAL"
         "daily_budget": c.get("budget", {}).get("budget"),
         "budget_type": c.get("budget", {}).get("budgetType"),
         "start_date": c.get("startDate"),

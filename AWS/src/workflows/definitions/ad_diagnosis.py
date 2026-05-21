@@ -4259,6 +4259,7 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "active_campaign_count":    "campaigns with state=ENABLED",
     "paused_campaign_count":    "campaigns with state=PAUSED",
     "total_daily_budget":       "sum of ENABLED campaign daily budgets (Ads API, current config)",
+    "budget_by_targeting_type": "ENABLED budget by targetingType: KW=LP-scoped (keyword), Auto=AUTO campaigns, PT=non-LP MANUAL (product/category)",
     "bidding_strategies":       "Ads API campaigns — {strategy: campaign_count}; e.g. AUTO_FOR_SALES ×2, LEGACY_FOR_SALES ×1",
     "total_spend":              "Ads API spCampaigns — ad-attributed spend, data_start_date → data_end_date",
     "total_sales":              "Ads API spCampaigns — ad-attributed sales, data_start_date → data_end_date",
@@ -4320,6 +4321,29 @@ _SNAPSHOT_SKIP_FIELDS: frozenset = frozenset({
 })
 
 
+def _compute_budget_by_targeting(item: Dict, lp_summary: Dict) -> Dict[str, float]:
+    """Break total_daily_budget into KW / Auto / PT buckets.
+
+    KW  = LP-scoped campaigns (keyword targeting, manual bids with click data).
+    Auto = campaigns whose targetingType == 'AUTO'.
+    PT  = ENABLED MANUAL campaigns outside LP scope (product/category targeting).
+    """
+    lp_scoped = {str(c) for c in (lp_summary.get("lp_scoped_cids") or [])}
+    result: Dict[str, float] = {"KW": 0.0, "Auto": 0.0, "PT": 0.0}
+    for c in (item.get("campaigns") or []):
+        if c.get("state") != "ENABLED":
+            continue
+        budget = c.get("daily_budget") or 0
+        cid = str(c.get("campaign_id", ""))
+        if cid in lp_scoped:
+            result["KW"] += budget
+        elif c.get("targeting_type") == "AUTO":
+            result["Auto"] += budget
+        else:
+            result["PT"] += budget
+    return {k: round(v, 2) for k, v in result.items() if v > 0}
+
+
 def _render_snapshot_table(summary: Dict) -> str:
     """
     Pre-render the Quick Metrics Snapshot as a fixed three-column markdown table.
@@ -4338,6 +4362,10 @@ def _render_snapshot_table(summary: Dict) -> str:
         if isinstance(value, dict):
             if field == "bidding_strategies" and value:
                 val_str = ", ".join(f"{s} ×{n}" for s, n in sorted(value.items()))
+            elif field == "budget_by_targeting_type" and value:
+                val_str = " / ".join(
+                    f"{k} ${v:.2f}" for k, v in value.items() if v
+                )
             else:
                 continue  # safety net for other unexpected nested dicts
         elif value is None:
@@ -4405,6 +4433,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "total_clicks":              item.get("total_clicks"),
         "account_acos":              item.get("account_acos"),
         "total_daily_budget":          item.get("total_daily_budget"),
+        "budget_by_targeting_type":    _compute_budget_by_targeting(item, item.get("lp_summary") or {}),
         "budget_pressure":             item.get("budget_pressure"),
         "budget_active_days":          item.get("budget_active_days"),
         "budget_exhausted_days":       item.get("budget_exhausted_days"),
@@ -4649,11 +4678,12 @@ def _prepare_for_llm(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                                    count, hard-capped at 300).
     """
     import json as _json
-    _STRIP_FIELDS = ("performance_records", "auto_mining")
+    _STRIP_FIELDS = ("performance_records", "auto_mining", "keywords")
     for item in items:
         summary = _build_item_summary(item, ctx)
         item["_summary_json"]    = _json.dumps(summary, ensure_ascii=False, default=str)
         item["_snapshot_table"]  = _render_snapshot_table(summary)
+        item["n_top_actions"]    = summary.get("n_top_actions", 5)
         for f in _STRIP_FIELDS:
             item.pop(f, None)
         _trim_keyword_performance(item)
@@ -5064,7 +5094,7 @@ def _build_budget_interpretation(item: Dict) -> Dict[str, str]:
     elif pressure == "moderate":
         head = max(0.0, p90 - 100)
         pressure_interp = (
-            f"Budget constrains delivery on most active days ({exh_d}/{act_d} days at cap); "
+            f"Budget constrains delivery on a recurring portion of active days ({exh_d}/{act_d} days, {exh_pct:.1f}% at cap); "
             f"consider raising daily cap by ~{head:.0f}% (p90={p90:.1f}%) to ensure all-day delivery."
         )
     elif pressure == "light":
