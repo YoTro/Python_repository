@@ -1073,15 +1073,19 @@ async def _enrich_change_history(item: Dict, ctx: WorkflowContext) -> Dict:
             except (TypeError, ValueError):
                 pass
 
+        _changed_at = ev.get("changedAt") or ev.get("timestamp")
+        _eid_raw = ev.get("eventId") or hashlib.sha256(
+            f"{cid}|{ev.get('entityType')}|{ev.get('entityId')}|{change_type}|{_changed_at}".encode()
+        ).hexdigest()[:12]
         relevant.append({
-            "event_id":     ev.get("eventId"),
+            "event_id":     _eid_raw,
             "campaign_id":  cid,
             "entity_type":  ev.get("entityType"),
             "entity_id":    ev.get("entityId"),
             "change_type":  change_type,
             "old_value":    old_val,
             "new_value":    new_val,
-            "changed_at":   ev.get("changedAt") or ev.get("timestamp"),
+            "changed_at":   _changed_at,
             "priority":     _CHANGE_PRIORITY.get(change_type, 0),
             "low_weight":   is_low_weight,
             "keyword":      meta.get("keyword"),
@@ -4382,6 +4386,143 @@ def _render_snapshot_table(summary: Dict) -> str:
     return "\n".join(rows)
 
 
+def _render_change_attribution_table(item: Dict) -> str:
+    """Pre-render the combined Change Attribution + Causal Confidence table."""
+    attributions = item.get("change_attributions") or []
+    if not attributions:
+        return ""
+
+    causal_reliability = item.get("causal_reliability") or _causal_reliability_tier(
+        backtest_hit_rate=item.get("backtest_hit_rate"),
+        events_significant_pct=item.get("events_significant_pct"),
+    )
+
+    # Deduplicate: keep first (highest-priority) entry per (keyword, campaign, date, change_type)
+    seen: set = set()
+    deduped: List[Dict] = []
+    for a in attributions:
+        key = (
+            str(a.get("keyword") or a.get("entity_id") or ""),
+            str(a.get("campaign_id") or ""),
+            str(a.get("changed_at") or ""),
+            str(a.get("change_type") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(a)
+
+    def _short_consensus(full: str) -> str:
+        if not full:
+            return "—"
+        if full.startswith("Strong evidence"):
+            return "Strong"
+        if full.startswith("Weak evidence"):
+            return "Weak"
+        if full.startswith("Conflicting"):
+            return "Conflicting"
+        if "No significant" in full:
+            return "No effect"
+        if full.startswith("Insufficient") or "skipped" in full.lower():
+            return "Skipped"
+        return full[:18]
+
+    def _fmt_its(its: Dict) -> str:
+        if its.get("skipped"):
+            return "Skipped"
+        ls = its.get("level_shift")
+        lo = its.get("level_shift_ci_lo")
+        hi = its.get("level_shift_ci_hi")
+        p  = its.get("p_level")
+        if ls is None:
+            return "—"
+        p_str = "p<0.001" if p is not None and p < 0.001 else f"p={p:.2f}"
+        return f"{ls:+.2f} [{lo:.1f}–{hi:.1f}] {p_str}"
+
+    def _fmt_ci(ci: Dict, is_dup: bool) -> str:
+        if ci.get("skipped"):
+            return "Skipped"
+        if is_dup:
+            return "shared (→ primary)"
+        pe  = ci.get("point_effect")
+        lo  = ci.get("ci_lo")
+        hi  = ci.get("ci_hi")
+        if pe is None:
+            return "—"
+        return f"{pe:+.2f} [{lo:.1f}–{hi:.1f}]"
+
+    def _fmt_dml(dml: Dict) -> str:
+        if dml.get("skipped"):
+            return "Skipped"
+        theta = dml.get("theta")
+        lo    = dml.get("theta_ci_lo")
+        hi    = dml.get("theta_ci_hi")
+        if theta is None:
+            return "—"
+        return f"{theta:+.2f} [{lo:.1f}–{hi:.1f}]"
+
+    def _icon(a: Dict, consensus_short: str) -> str:
+        if a.get("had_promotion") or a.get("compound"):
+            return "⚠️"
+        if consensus_short in ("Strong", "Weak") and causal_reliability == "high":
+            d = a.get("direction", "neutral")
+            if d == "improved":
+                return "✅"
+            if d == "worsened":
+                return "❌"
+        return "⚠️"
+
+    header = "| Date | Type | Entity | Campaign | Δ orders | Consensus | ITS | CausalImpact | DML | Note |"
+    sep    = "|---|---|---|---|---|---|---|---|---|---|"
+    rows   = [header, sep]
+
+    for a in deduped:
+        date        = str(a.get("changed_at") or "")
+        chg_type    = str(a.get("change_type") or "")
+        entity_type = str(a.get("entity_type") or "")
+        kw          = a.get("keyword") or a.get("entity_id") or ""
+        entity_cell = f"{entity_type} — {kw}" if kw else entity_type
+        campaign    = str(a.get("campaign_id") or "")
+
+        consensus_full  = a.get("consensus") or ""
+        consensus_short = _short_consensus(consensus_full)
+        icon            = _icon(a, consensus_short)
+        delta           = a.get("delta_orders")
+        delta_cell      = f"{icon} {delta:+.2f}" if delta is not None else f"{icon} —"
+
+        is_dup = a.get("shared_effect") == "duplicate"
+
+        its_cell = _fmt_its(a.get("its") or {})
+        ci_cell  = _fmt_ci(a.get("causal_impact") or {}, is_dup)
+        dml_cell = _fmt_dml(a.get("dml") or {})
+
+        note_parts: List[str] = []
+        if a.get("had_promotion"):
+            note_parts.append("confounded: promo")
+        if a.get("compound"):
+            note_parts.append("compound")
+        if a.get("attribution_suspect"):
+            note_parts.append("suspect Δ")
+        if is_dup:
+            note_parts.append("shared effect")
+        if consensus_short == "Conflicting":
+            note_parts.append("direction unreliable")
+        note_cell = "; ".join(note_parts) if note_parts else "—"
+
+        rows.append(
+            f"| {date} | {chg_type} | {entity_cell} | {campaign} "
+            f"| {delta_cell} | {consensus_short} | {its_cell} | {ci_cell} | {dml_cell} | {note_cell} |"
+        )
+
+    footnote = (
+        "*ITS: level_shift [95% CI] p=; "
+        "CausalImpact: point_effect [95% CI]; "
+        "DML: θ [95% CI]. "
+        "All effects in orders/day vs counterfactual.*"
+    )
+    return "\n".join(rows) + "\n\n" + footnote + "\n\n[CHART:its_causal]"
+
+
 def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     """
     Pre-compute a flat highlights dict from a fully enriched item.
@@ -4565,8 +4706,12 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     summary["lp_validation_table"]      = _lp["lp_validation_table"]
     summary["lp_order_gap_narrative"]   = _lp["lp_order_gap_narrative"]
     summary["lp_scope_note"]            = _lp["lp_scope_note"]
+    summary["lp_section_body"]          = _lp["lp_section_body"]
     summary["lp_reallocation_table_md"] = _lp["lp_reallocation_table_md"]
-    summary["lp_top_gainer_sentence"]   = _lp["lp_top_gainer_sentence"]
+    _n = summary["n_top_actions"]
+    summary["lp_top_gainer_sentence"]   = _lp["lp_top_gainer_sentence"].replace(
+        "Top {N} Actions", f"Top {_n} Actions"
+    )
 
     # Item 6: budget interpretation strings
     _bgt = _build_budget_interpretation(item)
@@ -4582,6 +4727,9 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
 
     # Item 8: traffic divergence label
     summary["traffic_divergence_label"] = _build_traffic_divergence_label(item)
+
+    # Combined Change Attribution + Causal Confidence table (pre-rendered)
+    summary["change_attribution_table_md"] = _render_change_attribution_table(item)
 
     return summary
 
@@ -4943,7 +5091,7 @@ def _render_lp_reallocation_table(item: Dict) -> str:
     net_ds    = net.get("delta_spend") or 0
     net_do    = net.get("delta_orders") or 0
     if n_shown < n_total:
-        net_label = f"**Net ({n_total} campaigns; showing top {n_shown} by |Δ orders/day|)**"
+        net_label = f"**Net ({n_total} campaigns; showing top {n_shown} by \\|Δ orders/day\\|)**"
     else:
         net_label = f"**Net ({n_total} campaigns)**"
     lines.append(f"| {net_label} | | | | **{net_ds:+.1f}** | **{net_do:+.2f}** |")
@@ -5048,25 +5196,29 @@ def _build_lp_narrative(item: Dict) -> Dict[str, str]:
             top_gainer_sentence = (
                 f"LP plan increases {name} by ${d_s:.1f}/day for +{d_o:.2f} orders/day "
                 f"({share:.0f}% of the projected +{order_gap:.2f} orders/day) — "
-                "see Top 5 Actions below for execution steps."
+                "see Top {N} Actions below for execution steps."
             )
         elif share >= 20:
             top_gainer_sentence = (
                 f"LP plan increases {name} by ${d_s:.1f}/day for +{d_o:.2f} orders/day "
                 f"({share:.0f}% of the projected +{order_gap:.2f} orders/day, "
-                f"spread across {n_gain} campaigns) — see Top 5 Actions below for execution steps."
+                f"spread across {n_gain} campaigns) — see Top {N} Actions below for execution steps."
             )
         else:
             top_gainer_sentence = (
                 f"The projected +{order_gap:.2f} orders/day is distributed across {n_gain} campaigns; "
                 f"the top single gainer is {name} at +{d_o:.2f} orders/day ({share:.0f}%) — "
-                "see Top 5 Actions below for execution steps."
+                "see Top {N} Actions below for execution steps."
             )
+
+    narrative = " ".join(narrative_parts)
+    lp_section_body = f"{validation_table}\n\n{narrative} {scope_note}".strip()
 
     return {
         "lp_validation_table":      validation_table,
-        "lp_order_gap_narrative":   " ".join(narrative_parts),
+        "lp_order_gap_narrative":   narrative,
         "lp_scope_note":            scope_note,
+        "lp_section_body":          lp_section_body,
         "lp_reallocation_table_md": _render_lp_reallocation_table(item),
         "lp_top_gainer_sentence":   top_gainer_sentence,
     }
