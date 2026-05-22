@@ -122,10 +122,12 @@ class ProcessStep(Step):
             try:
                 import json as _json
                 import datetime as _dt
+                _today = _dt.date.today()
                 prompt = self.prompt_template.format(
                     count=len(items),
                     items_json=_json.dumps(items, ensure_ascii=False, default=str),
-                    report_date=_dt.date.today().isoformat(),
+                    report_date=_today.isoformat(),
+                    _example_date=(_today - _dt.timedelta(days=10)).isoformat(),
                     **{k: v for k, v in item.items() if isinstance(v, (str, int, float, bool, type(None)))},
                 )
                 prompts_to_process.append(prompt)

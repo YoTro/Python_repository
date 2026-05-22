@@ -433,6 +433,7 @@ def _parse_inventory_summary(s: Dict) -> Dict[str, Any]:
         "available_quantity": fulfillable,
         "total_available": fulfillable,
         "reserved_quantity":  reserved.get("totalReservedQuantity", 0) if isinstance(reserved, dict) else reserved,
+        "fc_transfer":        reserved.get("pendingTransshipmentQuantity", 0) if isinstance(reserved, dict) else 0,
         # Split inbound tiers — reliability differs significantly:
         #   receiving  : already at FC, available in 1-2 days (certain)
         #   shipped    : in transit from seller, ETA 10-30 days (certain but timing varies)

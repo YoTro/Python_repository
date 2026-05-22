@@ -40,6 +40,10 @@ Config keys (with defaults):
   stock_gate_days         int   21       min effective stock days before spend-up actions are P0/P1
   inbound_lead_days       int   30       assumed transit days for inbound_shipped; overridden by actual
                                          sea-transit p75 from Lingxing when enable_lingxing=True
+  fc_transfer_lead_days   int   3        fallback lead days for FC-to-FC transfers when Lingxing
+                                         fba_processing p75 is unavailable; overridden by actual p75
+  available_gate_days     int   7        yellow-line gate: on-shelf stock below this threshold
+                                         downgrades all scale-up actions to P2 (delivery-date CVR risk)
   enable_lingxing         bool  auto     fetch shipment lead-time from Lingxing ERP; defaults to True
                                          when LINGXING_ACCOUNT env var is set, False otherwise
   keyword_max_results     int   10000    max configured keywords to fetch per ASIN campaign set
@@ -473,23 +477,31 @@ async def _enrich_inventory(item: Dict, ctx: WorkflowContext) -> Dict:
         inbound_receiving  = sum(r.get("inbound_receiving",  0)  for r in matched)
         inbound_shipped    = sum(r.get("inbound_shipped",    0)  for r in matched)
         inbound_working    = sum(r.get("inbound_working",    0)  for r in matched)
+        fc_transfer        = sum(r.get("fc_transfer",        0)  for r in matched)
         total_inbound      = inbound_receiving + inbound_shipped  # confirmed in-transit only
         # Estimate can-sell days using item daily sales if provided
         daily_sales = item.get("daily_sales") or 0
         can_sell_days = (
             round(total_available / daily_sales) if daily_sales > 0 else None
         )
+        # Red-line: total Amazon-network inventory (Available + FC_Transfer).
+        # inventory_risk = True only when even this optimistic total runs below threshold.
+        total_inventory_days = (
+            round((total_available + fc_transfer) / daily_sales) if daily_sales > 0 else None
+        )
         return {
-            "inventory_records":  matched,
-            "total_available":    total_available,
-            "inbound_receiving":  inbound_receiving,
-            "inbound_shipped":    inbound_shipped,
-            "inbound_working":    inbound_working,
-            "total_inbound":      total_inbound,
-            "can_sell_days":      can_sell_days,
-            "inventory_risk":     (
-                can_sell_days is not None
-                and can_sell_days < ctx.config.get("inventory_risk_days", 30)
+            "inventory_records":    matched,
+            "total_available":      total_available,
+            "inbound_receiving":    inbound_receiving,
+            "inbound_shipped":      inbound_shipped,
+            "inbound_working":      inbound_working,
+            "fc_transfer":          fc_transfer,
+            "total_inbound":        total_inbound,
+            "can_sell_days":        can_sell_days,
+            "total_inventory_days": total_inventory_days,
+            "inventory_risk":       (
+                total_inventory_days is not None
+                and total_inventory_days < ctx.config.get("inventory_risk_days", 30)
             ),
         }
     except Exception as e:
@@ -662,14 +674,18 @@ async def _enrich_order_metrics(item: Dict, ctx: WorkflowContext) -> Dict:
                 "total_units_ordered": total_units,
             }
             if total_available > 0:
-                can_sell_days = round(total_available / daily_sales)
-                result["can_sell_days"]   = can_sell_days
-                result["inventory_risk"]  = (
-                    can_sell_days < ctx.config.get("inventory_risk_days", 30)
+                fc_transfer_val      = item.get("fc_transfer") or 0
+                can_sell_days        = round(total_available / daily_sales)
+                total_inventory_days = round((total_available + fc_transfer_val) / daily_sales)
+                result["can_sell_days"]          = can_sell_days
+                result["total_inventory_days"]   = total_inventory_days
+                result["inventory_risk"]         = (
+                    total_inventory_days < ctx.config.get("inventory_risk_days", 30)
                 )
                 logger.info(
                     f"[order_metrics] {asin}: units={total_units}/{days}d "
-                    f"→ daily_sales={daily_sales}, can_sell_days={can_sell_days}"
+                    f"→ daily_sales={daily_sales}, can_sell_days={can_sell_days}, "
+                    f"total_inventory_days={total_inventory_days}"
                 )
 
         _l2_set(ctx, result, "order_metrics", asin, days)
@@ -847,19 +863,22 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
         # inventory_risk is only set True when even this optimistic upper bound is below
         # the threshold (definite risk). When the upper bound looks safe, inventory_risk
         # is left unset (unknown) — never assert False on an unreliable estimate.
-        daily_sales_ad = total_orders / days
+        daily_sales_ad  = total_orders / days
         total_available = item.get("total_available") or 0
         if total_available > 0:
-            can_sell_days = round(total_available / daily_sales_ad)
-            result["daily_sales"]        = round(daily_sales_ad, 2)
-            result["daily_sales_source"] = "ad_orders_only"
-            result["can_sell_days"]      = can_sell_days
-            result["can_sell_days_note"] = (
+            fc_transfer_val      = item.get("fc_transfer") or 0
+            can_sell_days        = round(total_available / daily_sales_ad)
+            total_inventory_days = round((total_available + fc_transfer_val) / daily_sales_ad)
+            result["daily_sales"]          = round(daily_sales_ad, 2)
+            result["daily_sales_source"]   = "ad_orders_only"
+            result["can_sell_days"]        = can_sell_days
+            result["total_inventory_days"] = total_inventory_days
+            result["can_sell_days_note"]   = (
                 "upper_bound — derived from ad-attributed orders only (organic excluded); "
                 "true daily unit consumption (ad + organic) is higher, "
                 "so actual stockout will occur SOONER than can_sell_days suggests"
             )
-            if can_sell_days < ctx.config.get("inventory_risk_days", 30):
+            if total_inventory_days < ctx.config.get("inventory_risk_days", 30):
                 result["inventory_risk"] = True
             # else: leave unset — upper-bound safety does not confirm no risk
             logger.info(
@@ -1692,30 +1711,56 @@ def _build_campaign_actions(
             action, priority = "maintain", "P2"
             rationale = f"Budget util {budget_util:.1f}%, ACOS {camp_acos}% — within healthy range"
 
-        # Inventory gate: downgrade spend-increasing actions when effective stock < threshold
+        # Inventory gate: downgrade spend-increasing actions on either red or yellow trigger.
+        # Red (stock_gate): effective_stock_days < stock_gate_days — stockout risk.
+        # Yellow (available_low): on-shelf stock < available_gate_days — delivery-date CVR risk.
         prerequisite: Optional[Dict] = None
         if inv_gate and action in _CAMP_SPEND_UP:
-            eff = inv_gate["effective_stock_days"]
-            gate = inv_gate["stock_gate_days"]
-            if eff is not None and eff < gate:
+            eff               = inv_gate["effective_stock_days"]
+            gate              = inv_gate["stock_gate_days"]
+            avail_low         = inv_gate.get("available_low", False)
+            avail_gate        = inv_gate["available_gate_days"]
+            stock_gate_hit    = eff is not None and eff < gate
+            if stock_gate_hit or avail_low:
                 priority = "P2"
-                prerequisite = {
-                    "condition":            f"effective_stock_days >= {gate}",
-                    "effective_stock_days": eff,
-                    "can_sell_days":        inv_gate["can_sell_days"],
-                    "total_available":      inv_gate["total_available"],
-                    "inbound_receiving":    inv_gate["inbound_receiving"],
-                    "inbound_shipped":      inv_gate["inbound_shipped"],
-                    "catchable_shipped":    inv_gate["catchable_shipped"],
-                    "inbound_lead_days":    inv_gate["inbound_lead_days"],
-                    "inbound_lead_source":  inv_gate["inbound_lead_source"],
-                    "daily_sales":          inv_gate["daily_sales"],
-                    "gate_calc_string":     _build_gate_calc_string(inv_gate),
-                    "note": (
+                if stock_gate_hit:
+                    _cond = f"effective_stock_days >= {gate}"
+                    _note = (
                         f"Current stock ~{inv_gate['can_sell_days']}d + confirmed inbound = {eff}d effective. "
                         f"Increasing spend now risks stockout before restock arrives. "
                         f"Activate after stock reaches {gate}+ days."
-                    ),
+                    )
+                else:
+                    _cond = f"can_sell_days >= {avail_gate}"
+                    _note = (
+                        f"On-shelf stock is tight (can_sell_days={inv_gate['can_sell_days']}d "
+                        f"< available_gate_days={avail_gate}d). "
+                        f"FC-transfer units releasing linearly "
+                        f"(fc_transfer_contribution={inv_gate['fc_transfer_contribution']:.0f} units). "
+                        f"Scaling spend risks extended delivery dates → CVR decline. "
+                        f"Activate once can_sell_days >= {avail_gate}d."
+                    )
+                prerequisite = {
+                    "condition":                _cond,
+                    "gate_trigger":             "stock_gate" if stock_gate_hit else "available_low",
+                    "effective_stock_days":     eff,
+                    "can_sell_days":            inv_gate["can_sell_days"],
+                    "total_inventory_days":     inv_gate["total_inventory_days"],
+                    "available_low":            avail_low,
+                    "available_gate_days":      avail_gate,
+                    "total_available":          inv_gate["total_available"],
+                    "inbound_receiving":        inv_gate["inbound_receiving"],
+                    "inbound_shipped":          inv_gate["inbound_shipped"],
+                    "catchable_shipped":        inv_gate["catchable_shipped"],
+                    "fc_transfer":              inv_gate["fc_transfer"],
+                    "fc_transfer_contribution": inv_gate["fc_transfer_contribution"],
+                    "fc_transfer_lead_days":    inv_gate["fc_transfer_lead_days"],
+                    "fc_transfer_lead_source":  inv_gate["fc_transfer_lead_source"],
+                    "inbound_lead_days":        inv_gate["inbound_lead_days"],
+                    "inbound_lead_source":      inv_gate["inbound_lead_source"],
+                    "daily_sales":              inv_gate["daily_sales"],
+                    "gate_calc_string":         _build_gate_calc_string(inv_gate),
+                    "note":                     _note,
                 }
 
         _order_delta = None
@@ -1852,27 +1897,51 @@ def _build_keyword_actions(
                 kw_priority = "P1"
                 kw_prerequisite: Optional[Dict] = None
                 if inv_gate:
-                    eff  = inv_gate["effective_stock_days"]
-                    gate = inv_gate["stock_gate_days"]
-                    if eff is not None and eff < gate:
+                    eff            = inv_gate["effective_stock_days"]
+                    gate           = inv_gate["stock_gate_days"]
+                    avail_low      = inv_gate.get("available_low", False)
+                    avail_gate     = inv_gate["available_gate_days"]
+                    stock_gate_hit = eff is not None and eff < gate
+                    if stock_gate_hit or avail_low:
                         kw_priority = "P2"
-                        kw_prerequisite = {
-                            "condition":            f"effective_stock_days >= {gate}",
-                            "effective_stock_days": eff,
-                            "can_sell_days":        inv_gate["can_sell_days"],
-                            "total_available":      inv_gate["total_available"],
-                            "inbound_receiving":    inv_gate["inbound_receiving"],
-                            "inbound_shipped":      inv_gate["inbound_shipped"],
-                            "catchable_shipped":    inv_gate["catchable_shipped"],
-                            "inbound_lead_days":    inv_gate["inbound_lead_days"],
-                            "inbound_lead_source":  inv_gate["inbound_lead_source"],
-                            "daily_sales":          inv_gate["daily_sales"],
-                            "gate_calc_string":     _build_gate_calc_string(inv_gate),
-                            "note": (
+                        if stock_gate_hit:
+                            _kw_cond = f"effective_stock_days >= {gate}"
+                            _kw_note = (
                                 f"Current stock ~{inv_gate['can_sell_days']}d + confirmed inbound = {eff}d effective. "
                                 f"Raising bids accelerates spend and risks stockout. "
                                 f"Activate after stock reaches {gate}+ days."
-                            ),
+                            )
+                        else:
+                            _kw_cond = f"can_sell_days >= {avail_gate}"
+                            _kw_note = (
+                                f"On-shelf stock is tight (can_sell_days={inv_gate['can_sell_days']}d "
+                                f"< available_gate_days={avail_gate}d). "
+                                f"FC-transfer units releasing linearly "
+                                f"(fc_transfer_contribution={inv_gate['fc_transfer_contribution']:.0f} units). "
+                                f"Higher bids risk extended delivery dates → CVR decline. "
+                                f"Activate once can_sell_days >= {avail_gate}d."
+                            )
+                        kw_prerequisite = {
+                            "condition":                _kw_cond,
+                            "gate_trigger":             "stock_gate" if stock_gate_hit else "available_low",
+                            "effective_stock_days":     eff,
+                            "can_sell_days":            inv_gate["can_sell_days"],
+                            "total_inventory_days":     inv_gate["total_inventory_days"],
+                            "available_low":            avail_low,
+                            "available_gate_days":      avail_gate,
+                            "total_available":          inv_gate["total_available"],
+                            "inbound_receiving":        inv_gate["inbound_receiving"],
+                            "inbound_shipped":          inv_gate["inbound_shipped"],
+                            "catchable_shipped":        inv_gate["catchable_shipped"],
+                            "fc_transfer":              inv_gate["fc_transfer"],
+                            "fc_transfer_contribution": inv_gate["fc_transfer_contribution"],
+                            "fc_transfer_lead_days":    inv_gate["fc_transfer_lead_days"],
+                            "fc_transfer_lead_source":  inv_gate["fc_transfer_lead_source"],
+                            "inbound_lead_days":        inv_gate["inbound_lead_days"],
+                            "inbound_lead_source":      inv_gate["inbound_lead_source"],
+                            "daily_sales":              inv_gate["daily_sales"],
+                            "gate_calc_string":         _build_gate_calc_string(inv_gate),
+                            "note":                     _kw_note,
                         }
                 kw_entry: Dict = {
                     "action":                               "increase_bid",
@@ -2175,37 +2244,73 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         inbound_lead_days = int(
             _lt_sea.get("p75") or ctx.config.get("inbound_lead_days", 30)
         )
-        daily_sales_val   = item.get("daily_sales") or 0
-        inbound_receiving = item.get("inbound_receiving") or 0
-        inbound_shipped   = item.get("inbound_shipped") or 0
+        daily_sales_val      = item.get("daily_sales") or 0
+        inbound_receiving    = item.get("inbound_receiving") or 0
+        inbound_shipped      = item.get("inbound_shipped") or 0
+        fc_transfer          = item.get("fc_transfer") or 0
+        # fc_transfer_lead_days priority:
+        #   (1) Lingxing ERP fba_processing p75 — measures actual overseas_arrival→fba_received
+        #       duration, which captures Q4 congestion automatically.
+        #   (2) config default (fc_transfer_lead_days, fallback 3d) — used when Lingxing data
+        #       is absent or data_source != 'lingxing_erp' (SP-API plans have no FBA-processing phase).
+        _lt_fba_proc = (_lt.get("overseas_to_fba") or {}).get("overall") or {}
+        _fba_proc_p75 = _lt_fba_proc.get("p75") if _lt_src == "lingxing_erp" else None
+        fc_transfer_lead_days = int(_fba_proc_p75 or ctx.config.get("fc_transfer_lead_days", 3))
+        fc_transfer_lead_source = "lingxing_erp" if _fba_proc_p75 else "config_default"
+        available_gate_days  = ctx.config.get("available_gate_days", 7)
         effective_stock_days: Optional[int] = None
-        catchable_shipped = 0
+        catchable_shipped        = 0
+        fc_transfer_contribution = 0.0
         if can_sell_days and daily_sales_val > 0:
-            # inbound_shipped only "catches" the stockout if it arrives before current stock runs out
+            # inbound_shipped: binary catchable — arrives as a batch before/after stockout
             catchable_shipped = inbound_shipped if inbound_lead_days < can_sell_days else 0
-            eff_units = total_available + inbound_receiving + catchable_shipped
+            # fc_transfer: linear release model — units drip into Available over lead_time days.
+            # Only the fraction that arrives before on-shelf stock runs out is counted:
+            #   contribution = fc_transfer × min(can_sell_days, lead_time) / lead_time
+            if fc_transfer > 0 and fc_transfer_lead_days > 0:
+                fc_transfer_contribution = (
+                    fc_transfer
+                    * min(can_sell_days, fc_transfer_lead_days)
+                    / fc_transfer_lead_days
+                )
+            eff_units = total_available + inbound_receiving + fc_transfer_contribution + catchable_shipped
             effective_stock_days = round(eff_units / daily_sales_val)
+        # Red line: total Amazon-network inventory regardless of transfer speed
+        total_inventory_days = (
+            round((total_available + fc_transfer) / daily_sales_val)
+            if daily_sales_val > 0 else None
+        )
+        # Yellow line: on-shelf only — tight available stock risks extended delivery dates → CVR drop
+        available_low = can_sell_days is not None and can_sell_days < available_gate_days
         inv_gate: Optional[Dict] = (
             {
-                "stock_gate_days":      stock_gate_days,
-                "effective_stock_days": effective_stock_days,
-                "can_sell_days":        can_sell_days,
-                "total_available":      total_available,
-                "inbound_receiving":    inbound_receiving,
-                "inbound_shipped":      inbound_shipped,
-                "catchable_shipped":    catchable_shipped,
-                "inbound_lead_days":    inbound_lead_days,
-                "inbound_lead_source":  _lt_src,
-                # daily_sales_val pinned at computation time so gate calc cites the
-                # exact denominator used — avoids snapshot/items_json value divergence.
-                "daily_sales":          round(daily_sales_val, 2),
+                "stock_gate_days":          stock_gate_days,
+                "available_gate_days":      available_gate_days,
+                "effective_stock_days":     effective_stock_days,
+                "can_sell_days":            can_sell_days,
+                "total_inventory_days":     total_inventory_days,
+                "available_low":            available_low,
+                "total_available":          total_available,
+                "inbound_receiving":        inbound_receiving,
+                "inbound_shipped":          inbound_shipped,
+                "catchable_shipped":        catchable_shipped,
+                "fc_transfer":              fc_transfer,
+                "fc_transfer_contribution": round(fc_transfer_contribution, 1),
+                "fc_transfer_lead_days":    fc_transfer_lead_days,
+                "fc_transfer_lead_source":  fc_transfer_lead_source,
+                "inbound_lead_days":        inbound_lead_days,
+                "inbound_lead_source":      _lt_src,
+                # daily_sales_val pinned at computation time — avoids snapshot divergence.
+                "daily_sales":              round(daily_sales_val, 2),
             }
             if effective_stock_days is not None else None
         )
-        # Expose effective_stock_days on item so _build_item_summary can surface it
-        # in the Quick Metrics Snapshot without re-computing.
+        # Expose computed fields on item so _build_item_summary can surface them.
         if effective_stock_days is not None:
-            item["effective_stock_days"] = effective_stock_days
+            item["effective_stock_days"]     = effective_stock_days
+            item["fc_transfer_contribution"] = round(fc_transfer_contribution, 1)
+            item["total_inventory_days"]     = total_inventory_days
+            item["available_low"]            = available_low
 
         order_gap = lp_raw_orders - actual_daily_ad_orders
         campaign_actions = _build_campaign_actions(
@@ -2249,7 +2354,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             if inv_gate is not None
             else (item.get("inbound_shipped") or 0)
         )
-        effective_inbound = inbound_recv + catchable_ship
+        catchable_fct  = inv_gate["fc_transfer_contribution"] if inv_gate is not None else 0
+        effective_inbound = inbound_recv + catchable_fct + catchable_ship
         stock_shortfall = max(0, recommended_stock - total_available - effective_inbound)
 
         item["lp_summary"] = {
@@ -4250,11 +4356,15 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "daily_sales_source":       "order_metrics = SP-API getOrderMetrics (ad+organic, most accurate); ad_orders_only = ad-attributed only (lower bound)",
     "ad_daily_orders":          "lp_summary.actual_daily_ad_orders — spCampaigns ad-attributed orders ÷ days (ad only; organic excluded)",
     "organic_daily":            "daily_sales − actual_daily_ad_orders — organic (non-ad-attributed) orders/day",
-    "effective_stock_days":     "(total_available + inbound_receiving + catchable_shipped) ÷ daily_sales — near-term runway for LP gate (catchable_shipped = inbound_shipped only when inbound arrives before stockout)",
+    "effective_stock_days":     "(total_available + inbound_receiving + fc_transfer_contribution + catchable_shipped) ÷ daily_sales — near-term runway for LP gate",
     "total_available":          "FBA Inventory API — fulfillable units (point-in-time)",
     "inbound_receiving":        "FBA inbound — at FC being checked in (1-2d, certain)",
     "inbound_shipped":          "FBA inbound — in transit from seller (10-30d ETA)",
     "inbound_working":          "FBA inbound — shipment plan not yet shipped (uncertain ETA)",
+    "fc_transfer":              "FBA reservedQuantity.pendingTransshipmentQuantity — units in transit between FCs (already in Amazon network; lead time varies seasonally)",
+    "fc_transfer_contribution": "linear release portion of fc_transfer counted in effective_stock_days — fc_transfer × min(can_sell_days, fc_transfer_lead_days) / fc_transfer_lead_days",
+    "total_inventory_days":     "(total_available + fc_transfer) ÷ daily_sales — red-line: total Amazon-network inventory runway (ignores release timing)",
+    "available_low":            "can_sell_days < available_gate_days (default 7d) — yellow-line: on-shelf stock tight, delivery-date CVR risk if spend is scaled up",
     "total_inbound":            "inbound_receiving + inbound_shipped (confirmed in-transit only)",
     "can_sell_days":            "total_available ÷ daily_sales (null if daily_sales unavailable)",
     "inventory_risk":           "can_sell_days < inventory_risk_days (default 30d)",
@@ -4550,6 +4660,10 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "inbound_receiving":         item.get("inbound_receiving"),
         "inbound_shipped":           item.get("inbound_shipped"),
         "inbound_working":           item.get("inbound_working"),
+        "fc_transfer":               item.get("fc_transfer"),
+        "fc_transfer_contribution":  item.get("fc_transfer_contribution"),
+        "total_inventory_days":      item.get("total_inventory_days"),
+        "available_low":             item.get("available_low"),
         "total_inbound":             item.get("total_inbound"),
         "daily_sales":               item.get("daily_sales"),
         "daily_sales_source":        item.get("daily_sales_source"),
@@ -4888,25 +5002,36 @@ _STATIC_BLOCKS: Dict[str, str] = {
 
 def _build_gate_calc_string(inv_gate: Dict) -> str:
     """Pre-compute the human-readable gate calc string for prerequisite dicts (item 7)."""
-    ta   = inv_gate.get("total_available", 0)
-    recv = inv_gate.get("inbound_receiving", 0)
-    cs   = inv_gate.get("catchable_shipped", 0)
-    ds   = inv_gate.get("daily_sales", 0)
-    eff  = round((ta + recv + cs) / ds) if ds else "?"
-    lead = inv_gate.get("inbound_lead_days")
-    src  = inv_gate.get("inbound_lead_source", "unknown")
-    csd  = inv_gate.get("can_sell_days")
+    ta      = inv_gate.get("total_available", 0)
+    recv    = inv_gate.get("inbound_receiving", 0)
+    fct_c   = inv_gate.get("fc_transfer_contribution", 0.0)
+    cs      = inv_gate.get("catchable_shipped", 0)
+    ds      = inv_gate.get("daily_sales", 0)
+    eff     = round((ta + recv + fct_c + cs) / ds) if ds else "?"
+    lead    = inv_gate.get("inbound_lead_days")
+    src     = inv_gate.get("inbound_lead_source", "unknown")
+    csd     = inv_gate.get("can_sell_days")
     shipped = inv_gate.get("inbound_shipped", 0)
+    fct     = inv_gate.get("fc_transfer", 0)
+    ft_lead = inv_gate.get("fc_transfer_lead_days")
+    ft_src  = inv_gate.get("fc_transfer_lead_source", "config_default")
+    # Linear release annotation — always shown when fc_transfer > 0
+    fc_note = (
+        f" [fc_transfer linear: {fct} × min({csd}d,{ft_lead}d)/{ft_lead}d"
+        f" (source: {ft_src}) = {fct_c:.1f} units]"
+        if fct > 0 and ft_lead and csd is not None
+        else ""
+    )
     excl = (
-        f" | {shipped} inbound_shipped units excluded — "
+        f" | {shipped} inbound_shipped excluded — "
         f"inbound_lead_days {lead}d (source: {src}) ≥ can_sell_days {csd}d, "
         f"arrives too late to prevent stockout"
         if cs == 0 and shipped > 0 and lead is not None and csd is not None
         else ""
     )
     return (
-        f"(total_available [{ta}] + inbound_receiving [{recv}] + catchable_shipped [{cs}]) "
-        f"÷ daily_sales [{ds:.2f}] = {eff} d{excl}"
+        f"(total_available [{ta}] + inbound_receiving [{recv}] + fc_transfer_contribution [{fct_c:.1f}] + catchable_shipped [{cs}]) "
+        f"÷ daily_sales [{ds:.2f}] = {eff} d{fc_note}{excl}"
     )
 
 
