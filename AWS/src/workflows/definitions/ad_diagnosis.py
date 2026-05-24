@@ -95,6 +95,7 @@ _KEY_COVARIATES       = "ad_diag:covariates"
 _KEY_YOY_PERF         = "ad_diag:yoy_perf"        # ERP YoY post-window (364d back)
 _KEY_TRAILING_EXT     = "ad_diag:trailing_ext"     # ERP trailing 3M extension
 _KEY_LEAD_TIME        = "ad_diag:lead_time"        # Lingxing shipment lead-time (store-wide)
+_KEY_NON_SP_ORDERS    = "ad_diag:non_sp_orders"    # SB/SD per-ASIN orders (purchases14d)
 
 # ── Action priority tiers ────────────────────────────────────────────────────
 # Used by campaign_actions, keyword_actions, and mining_actions alike.
@@ -403,6 +404,36 @@ async def _ensure_placement_performance(ctx: WorkflowContext) -> List[Dict]:
 
 
 @_l2_cached(
+    l1_key_fn   = lambda ctx, asin: f"{_KEY_NON_SP_ORDERS}:{asin}",
+    l2_ttl      = _TTL_PERF,
+    l2_parts_fn = lambda ctx, asin: ("non_sp_orders", asin, ctx.config.get("days", 30)),
+)
+async def _ensure_non_sp_orders(ctx: WorkflowContext, asin: str) -> Dict:
+    """Fetch SB and SD orders attributed to asin via product-level report types.
+
+    Uses purchases14d (14-day attribution window) — wider than SP's 7d.
+    DSP is not supported via this API.
+    """
+    days       = ctx.config.get("days", 30)
+    tz         = _store_tz(ctx)
+    today      = datetime.now(tz=tz).date()
+    end_date   = str(today - timedelta(days=1))
+    start_date = str(today - timedelta(days=days))
+    result = await _ads_client(ctx).get_non_sp_orders_by_asin(
+        asin=asin, start_date=start_date, end_date=end_date,
+    )
+    # If every ad type failed, don't cache — force a re-fetch next run so transient
+    # API errors or stale code configs don't persist across workflow restarts.
+    errors = result.get("errors") or {}
+    if errors and all(
+        result.get(k) is None
+        for k in ("sp_ad_orders_asin", "sb_ad_orders", "sd_ad_orders")
+    ):
+        raise RuntimeError(f"[non_sp_orders] {asin}: all ad-type fetches failed — {errors}")
+    return result
+
+
+@_l2_cached(
     l1_key_fn   = lambda ctx, campaign_ids: f"{_KEY_CHANGE_HISTORY}:{_campaign_ids_hash(list(campaign_ids))}",
     l2_ttl      = _TTL_CHANGE,
     l2_parts_fn = lambda ctx, campaign_ids: ("change_history", ctx.config.get("days", 30),
@@ -440,6 +471,28 @@ async def _ensure_change_history(ctx: WorkflowContext, campaign_ids: List[str]) 
 # ---------------------------------------------------------------------------
 # Per-ASIN enrichers
 # ---------------------------------------------------------------------------
+
+async def _enrich_non_sp_orders(item: Dict, ctx: WorkflowContext) -> Dict:
+    """Fetch SP/SB/SD per-ASIN order counts and store them on item."""
+    asin = (item.get("asin") or "").upper()
+    if not asin:
+        return item
+    try:
+        result = await _ensure_non_sp_orders(ctx, asin)
+        item["sp_ad_orders_asin"] = result.get("sp_ad_orders_asin")
+        item["sp_ad_spend_asin"]  = result.get("sp_ad_spend_asin")
+        item["sb_ad_orders"]      = result.get("sb_ad_orders")
+        item["sb_ad_spend"]       = result.get("sb_ad_spend")
+        item["sd_ad_orders"]      = result.get("sd_ad_orders")
+        item["sd_ad_spend"]       = result.get("sd_ad_spend")
+        non_sp_errors = result.get("errors") or {}
+        if non_sp_errors:
+            logger.warning(f"[non_sp_orders] {asin}: partial errors — {non_sp_errors}")
+            item["non_sp_orders_errors"] = non_sp_errors
+    except Exception as exc:
+        logger.warning(f"[non_sp_orders] {asin}: fetch failed — {exc}")
+    return item
+
 
 async def _enrich_catalog(item: Dict, ctx: WorkflowContext) -> Dict:
     """Fetch product title, brand, size from SP-API Catalog."""
@@ -747,13 +800,13 @@ async def _enrich_campaigns(item: Dict, ctx: WorkflowContext) -> Dict:
         f"[enrich_campaigns] {asin}: no campaigns matched via any strategy. "
         f"Pass campaign_ids in config or ensure spAdvertisedProduct has delivery data."
     )
-    return {"campaigns": [], "campaign_ids": [], "total_daily_budget": 0,
+    return {"campaigns": [], "campaign_ids": [], "sp_daily_budget": 0,
             "bidding_strategies": [], "campaign_match_strategy": "none"}
 
 
 def _build_campaign_result(matched: List[Dict], strategy: str) -> Dict:
     campaign_ids = [str(c["campaign_id"]) for c in matched]
-    total_daily_budget = sum(
+    sp_daily_budget = sum(
         c.get("daily_budget") or 0 for c in matched if c.get("state") == "ENABLED"
     )
     strategy_counts: Dict[str, int] = {}
@@ -764,7 +817,7 @@ def _build_campaign_result(matched: List[Dict], strategy: str) -> Dict:
     return {
         "campaigns":               matched,
         "campaign_ids":            campaign_ids,
-        "total_daily_budget":      total_daily_budget,
+        "sp_daily_budget":      sp_daily_budget,
         "bidding_strategies":      strategy_counts,
         "campaign_match_strategy": strategy,
     }
@@ -787,11 +840,11 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
     all_perf     = await _ensure_performance(ctx)
 
     if not campaign_ids:
-        return {"performance_records": [], "total_spend": 0, "account_acos": None}
+        return {"performance_records": [], "sp_ad_spend": 0, "account_acos": None}
     matched = [r for r in all_perf if str(r.get("campaign_id")) in campaign_ids]
 
     if not matched:
-        return {"performance_records": [], "total_spend": 0, "account_acos": None}
+        return {"performance_records": [], "sp_ad_spend": 0, "account_acos": None}
 
     total_spend  = round(sum(r.get("spend",  0) or 0 for r in matched), 2)
     total_sales  = round(sum(r.get("sales",  0) or 0 for r in matched), 2)
@@ -826,7 +879,7 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
     # Budget exhaustion: spend / (daily_budget * days) > threshold
     days = ctx.config.get("days", 30)
     budget_pct_threshold = ctx.config.get("budget_exhaustion_pct", 0.90)
-    total_budget_capacity = item.get("total_daily_budget", 0) * days
+    total_budget_capacity = item.get("sp_daily_budget", 0) * days
     budget_exhaustion_pct = (
         round(total_spend / total_budget_capacity * 100, 1)
         if total_budget_capacity > 0 else None
@@ -837,10 +890,10 @@ async def _enrich_performance(item: Dict, ctx: WorkflowContext) -> Dict:
     # from ad orders / days (a conservative lower bound — excludes organic orders).
     result: Dict = {
         "performance_records":    matched,
-        "total_spend":            total_spend,
-        "total_sales":            total_sales,
-        "total_orders":           total_orders,
-        "total_clicks":           total_clicks,
+        "sp_ad_spend":            total_spend,
+        "sp_ad_sales":            total_sales,
+        "sp_ad_orders":           total_orders,
+        "sp_ad_clicks":           total_clicks,
         "account_acos":           account_acos,
         "orders_reliability":     orders_reliability,
         "cvr_point":              cvr_point,
@@ -1355,6 +1408,7 @@ def _compute_campaign_budget_coverage(
         results.append({
             "campaign_id":      cid_str,
             "campaign_name":    (meta.get("campaign_name") or meta.get("name") or cid_str)[:40],
+            "campaign_state":   (meta.get("state") or "UNKNOWN").upper(),
             "active_days":      active,
             "exhausted_days":   exhausted,
             "exhausted_pct":    exhausted_pct,
@@ -2052,7 +2106,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
     for item in items:
         campaigns    = item.get("campaigns") or []
         kw_perf      = item.get("keyword_performance", [])
-        daily_budget = item.get("total_daily_budget", 0) or 0
+        daily_budget = item.get("sp_daily_budget", 0) or 0
         campaign_ids = set(item.get("campaign_ids", []))
 
         perf_records_all = item.get("performance_records") or []
@@ -2080,8 +2134,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         placement_perf       = item.get("placement_performance") or {}
         placement_mods       = item.get("placement_configured_pcts") or {}
         placement_multiplier = _compute_placement_multiplier(placement_perf, placement_mods)
-        total_orders    = item.get("total_orders") or 0
-        total_sales     = item.get("total_sales")  or 0
+        total_orders    = item.get("sp_ad_orders") or 0
+        total_sales     = item.get("sp_ad_sales")   or 0
         avg_price       = round(total_sales / total_orders, 2) if total_orders > 0 else None
         can_sell_days   = item.get("can_sell_days")
         total_available = item.get("total_available") or 0
@@ -2149,8 +2203,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         lp_budget = lp_scope_campaign_budget_raw if lp_scope_campaign_budget_raw > 0 else daily_budget
 
         # ── CVR deflation: correct for cross-keyword attribution overlap ──────
-        # item["total_orders"] = spAdvertisedProduct groupBy=advertiser (ASIN-level,
-        #   deduplicated within the ASIN — one purchase counted once across campaigns).
+        # item["sp_ad_orders"] = spCampaigns (campaign-level, ASIN-level aggregate,
+        #   includes keyword + auto + PT; one purchase counted once across campaigns).
         # sum(kw["total_orders"]) = keyword-level report (the same purchase can be
         #   claimed by BROAD, AUTO, and PT simultaneously within the attribution window).
         # Their ratio directly measures the within-LP double-counting factor.
@@ -2188,7 +2242,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         # The auto/PT contribution is surfaced separately as auto_pt_daily_orders
         # so the LLM can still reason about the full picture.
         kw_scope_orders       = kw_attributed_orders          # spSearchTerm, keyword scope
-        actual_daily_ad_orders = round(kw_scope_orders / days, 2)
+        sp_kw_daily_orders = round(kw_scope_orders / days, 2)
         # auto_pt_daily_orders: orders from auto / product-targeting (not in LP scope).
         # Clamped to ≥ 0: if kw_scope > total_orders it means keyword-level report
         # double-counts across match types within the same purchase.
@@ -2262,19 +2316,43 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         catchable_shipped        = 0
         fc_transfer_contribution = 0.0
         if can_sell_days and daily_sales_val > 0:
-            # inbound_shipped: binary catchable — arrives as a batch before/after stockout
-            catchable_shipped = inbound_shipped if inbound_lead_days < can_sell_days else 0
-            # fc_transfer: linear release model — units drip into Available over lead_time days.
-            # Only the fraction that arrives before on-shelf stock runs out is counted:
-            #   contribution = fc_transfer × min(can_sell_days, lead_time) / lead_time
-            if fc_transfer > 0 and fc_transfer_lead_days > 0:
-                fc_transfer_contribution = (
-                    fc_transfer
-                    * min(can_sell_days, fc_transfer_lead_days)
-                    / fc_transfer_lead_days
-                )
-            eff_units = total_available + inbound_receiving + fc_transfer_contribution + catchable_shipped
-            effective_stock_days = round(eff_units / daily_sales_val)
+            # Solve effective_stock_days T analytically, accounting for the circular dependency:
+            #   T = (A + S(T) + F × min(T, L) / L) / d
+            # where S(T) = inbound_shipped iff inbound_lead_days < T  (binary step).
+            #
+            # When T < L: T = (A + S) / (d − F/L)  [closed-form]
+            # When T ≥ L: T = (A + S + F) / d
+            # fc_transfer release rate F/L ≥ d means stock never exhausts → use full-F formula.
+            #
+            # Two-step: solve without S first to determine whether shipped arrives, then re-solve.
+            _A  = float(total_available + inbound_receiving)
+            _F  = float(fc_transfer)
+            _L  = float(fc_transfer_lead_days) if fc_transfer_lead_days > 0 else 1.0
+            _d  = float(daily_sales_val)
+            _Fs = float(inbound_shipped)
+
+            def _solve(base: float) -> float:
+                """Solve T = (base + F×min(T,L)/L) / d for T."""
+                if _F <= 0:
+                    return base / _d
+                release_rate = _F / _L
+                if _d <= release_rate:
+                    # fc_transfer replenishes as fast as consumption → include full F
+                    return (base + _F) / _d
+                T_finite = base / (_d - release_rate)  # T < L branch
+                if T_finite >= _L:                     # actually T ≥ L → all F arrives
+                    return (base + _F) / _d
+                return T_finite
+
+            # Step 1: estimate T without catchable_shipped to test the binary condition
+            T0 = _solve(_A)
+            # Step 2: include inbound_shipped if its lead time < T0
+            catchable_shipped = int(_Fs) if inbound_lead_days < T0 else 0
+            # Step 3: re-solve with catchable_shipped
+            T = _solve(_A + catchable_shipped)
+
+            fc_transfer_contribution = _F * min(T, _L) / _L if _F > 0 else 0.0
+            effective_stock_days = round(T)
         # Red line: total Amazon-network inventory regardless of transfer speed
         total_inventory_days = (
             round((total_available + fc_transfer) / daily_sales_val)
@@ -2312,7 +2390,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             item["total_inventory_days"]     = total_inventory_days
             item["available_low"]            = available_low
 
-        order_gap = lp_raw_orders - actual_daily_ad_orders
+        order_gap = lp_raw_orders - sp_kw_daily_orders
         campaign_actions = _build_campaign_actions(
             camp_meta, camp_spend, item.get("performance_records") or [], days, target_acos,
             inv_gate=inv_gate,
@@ -2337,11 +2415,12 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         # ── Stock recommendation (replaces LP inventory cap) ──────────────
         # Use total daily consumption (ad + organic) when available via order_metrics;
         # fall back to ad-orders-only (underestimates consumption → optimistic).
-        daily_consumption     = item.get("daily_sales") or actual_daily_ad_orders
+        daily_consumption     = item.get("daily_sales") or sp_kw_daily_orders
         daily_consumption_src = item.get("daily_sales_source") or "ad_orders_only"
-        # LP adds lp_raw_orders ad orders/day on top of organic baseline
-        organic_daily  = max(0.0, daily_consumption - actual_daily_ad_orders)
-        lp_total_daily = organic_daily + lp_raw_orders
+        # LP adds lp_raw_orders ad orders/day on top of non-SP-keyword baseline
+        # (non_sp_kw_daily includes organic + auto/PT/SB/SD/DSP — everything except SP keywords)
+        non_sp_kw_daily = max(0.0, daily_consumption - sp_kw_daily_orders)
+        lp_total_daily  = non_sp_kw_daily + lp_raw_orders
         recommended_stock = round(lp_total_daily * stock_gate_days)
         # Inbound inventory offsets the procurement need using the SAME timing rule as the
         # effective_stock_days gate: inbound_shipped only counts if it arrives before
@@ -2369,7 +2448,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             "lp_optimal_spend":              lp_spend_total,
             "lp_orders_bbs_estimate":  summary["total_expected_orders"],
             "lp_orders_cvr_matched":   lp_raw_orders,
-            "actual_daily_ad_orders":        round(actual_daily_ad_orders, 2),
+            "sp_kw_daily_orders":        round(sp_kw_daily_orders, 2),
             "auto_pt_daily_orders":          round(auto_pt_daily_orders, 2),
             "order_gap":                     round(order_gap, 2),
             "spend_ceiling_bound":           spend_ceiling_bound,
@@ -3181,8 +3260,8 @@ def _mine_auto_campaigns(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             if kw.get("keyword_text")
         }
 
-        total_orders = item.get("total_orders") or 0
-        total_sales  = item.get("total_sales")  or 0
+        total_orders = item.get("sp_ad_orders") or 0
+        total_sales  = item.get("sp_ad_sales")  or 0
         avg_price    = round(total_sales / total_orders, 2) if total_orders > 0 else 0.0
 
         # Filter raw records to this ASIN's campaigns (avoids passing full account data)
@@ -3388,7 +3467,7 @@ def _chart_budget_utilization(item: Dict, daily_perf: List[Dict]) -> Optional[by
     if not daily_perf:
         return None
 
-    budget_cap = float(item.get("total_daily_budget") or 0)
+    budget_cap = float(item.get("sp_daily_budget") or 0)
     if budget_cap <= 0:
         return None
 
@@ -4354,8 +4433,8 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "data_end_date":            "reporting window end (yesterday)",
     "daily_sales":              "total units sold ÷ lookback_days (ad + organic); source priority: order_metrics > ad_orders_only",
     "daily_sales_source":       "order_metrics = SP-API getOrderMetrics (ad+organic, most accurate); ad_orders_only = ad-attributed only (lower bound)",
-    "ad_daily_orders":          "lp_summary.actual_daily_ad_orders — spCampaigns ad-attributed orders ÷ days (ad only; organic excluded)",
-    "organic_daily":            "daily_sales − actual_daily_ad_orders — organic (non-ad-attributed) orders/day",
+    "sp_kw_daily_orders":       "lp_summary.sp_kw_daily_orders — spSearchTerm keyword-targeting orders ÷ days (SP keyword only; auto/PT/SB/SD/DSP excluded)",
+    "non_sp_kw_daily":          "daily_sales − sp_kw_daily_orders — orders NOT from SP keyword campaigns (organic + auto/PT + SB/SD/DSP)",
     "effective_stock_days":     "(total_available + inbound_receiving + fc_transfer_contribution + catchable_shipped) ÷ daily_sales — near-term runway for LP gate",
     "total_available":          "FBA Inventory API — fulfillable units (point-in-time)",
     "inbound_receiving":        "FBA inbound — at FC being checked in (1-2d, certain)",
@@ -4367,19 +4446,26 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "available_low":            "can_sell_days < available_gate_days (default 7d) — yellow-line: on-shelf stock tight, delivery-date CVR risk if spend is scaled up",
     "total_inbound":            "inbound_receiving + inbound_shipped (confirmed in-transit only)",
     "can_sell_days":            "total_available ÷ daily_sales (null if daily_sales unavailable)",
-    "inventory_risk":           "can_sell_days < inventory_risk_days (default 30d)",
+    "inventory_risk":           "total_inventory_days < inventory_risk_days (default 30d)",
     "campaign_count":           "count of campaigns matched to this ASIN",
     "campaign_match_strategy":  "matching method: explicit_config / spAdvertisedProduct / name_substring / none",
     "active_campaign_count":    "campaigns with state=ENABLED",
     "paused_campaign_count":    "campaigns with state=PAUSED",
-    "total_daily_budget":       "sum of ENABLED campaign daily budgets (Ads API, current config)",
+    "sp_daily_budget":          "sum of ENABLED SP campaign daily budgets (Ads API, current config; SP only — SB/SD/DSP excluded)",
     "budget_by_targeting_type": "ENABLED budget by targetingType: KW=LP-scoped (keyword), Auto=AUTO campaigns, PT=non-LP MANUAL (product/category)",
     "bidding_strategies":       "Ads API campaigns — {strategy: campaign_count}; e.g. AUTO_FOR_SALES ×2, LEGACY_FOR_SALES ×1",
-    "total_spend":              "Ads API spCampaigns — ad-attributed spend, data_start_date → data_end_date",
-    "total_sales":              "Ads API spCampaigns — ad-attributed sales, data_start_date → data_end_date",
-    "total_orders":             "Ads API spCampaigns — AD-ATTRIBUTED orders only (organic excluded)",
-    "total_clicks":             "Ads API spCampaigns — ad-attributed clicks, data_start_date → data_end_date",
-    "account_acos":             "total_spend ÷ total_sales × 100",
+    "sp_ad_spend":              "Ads API spCampaigns — SP ad-attributed spend (keyword + auto + PT), data_start_date → data_end_date",
+    "sp_ad_sales":              "Ads API spCampaigns — SP ad-attributed sales (keyword + auto + PT), data_start_date → data_end_date",
+    "sp_ad_orders":             "Ads API spCampaigns — SP ad-attributed orders (keyword + auto + PT campaigns; SB/SD/DSP and organic excluded); 7-day attribution window (purchases7d)",
+    "sp_ad_clicks":             "Ads API spCampaigns — SP ad-attributed clicks (keyword + auto + PT), data_start_date → data_end_date",
+    "account_acos":             "sp_ad_spend ÷ sp_ad_sales × 100",
+    "sp_ad_orders_asin":        "Ads API spPurchasedProduct — ASIN-exact SP orders (purchases7d, advertisedAsin filter); more accurate than sp_ad_orders for organic estimation when campaigns span multiple ASINs; null if SP_PRODUCT report unavailable",
+    "sp_ad_spend_asin":         "Ads API spPurchasedProduct — SP spend not available at ASIN level (always None; spPurchasedProduct has no cost column)",
+    "sb_ad_orders":             "Ads API sbPurchasedProduct — SB orders where this ASIN was purchased (purchasedAsin filter); 14-day attribution window (orders14d); null if SB report unavailable",
+    "sb_ad_spend":              "Ads API sbPurchasedProduct — SB spend not available at ASIN level (always None; sbPurchasedProduct has no cost column)",
+    "sd_ad_orders":             "Ads API sdAdvertisedProduct — SD click-attributed orders for this ASIN (purchasesClicks; excludes view-through); null if SD report unavailable",
+    "sd_ad_spend":              "Ads API sdAdvertisedProduct — SD spend for this ASIN (promotedAsin filter), data_start_date → data_end_date",
+    "organic_daily":            "estimated true organic orders/day = (daily_sales × days − sp_ad_orders_asin − sb_ad_orders − sd_ad_orders) ÷ days; clamped to 0; uses sp_ad_orders_asin (ASIN-exact, 7d) when available, falls back to sp_ad_orders; SB/SD use 14d — overlap may cause slight undercount of organic; null when daily_sales or all product-level reports absent; DSP not included",
     "budget_active_days":       "days with non-zero spend in lookback window",
     "budget_exhausted_days":    "active days where daily spend ≥ 85% of per-day effective cap (proxy — Amazon does not expose intraday OUT_OF_BUDGET events via the Ads History API); denominator uses cap reconstructed from BUDGET_AMOUNT change history, not current snapshot",
     "budget_exhausted_days_pct":"budget_exhausted_days ÷ budget_active_days × 100",
@@ -4389,11 +4475,16 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "overdelivery_days":        "days where spend exceeded the per-day effective cap; caused solely by Amazon pacing (≤25% allowance) — mid-period budget-change artifact eliminated by per-day cap reconstruction",
     "budget_pressure":          "chronic ≥75% / moderate 30-74% / light 10-29% / none <10% of active days at cap",
     "budget_starved_campaigns": "campaigns with exhausted_pct ≥ 30% (daily spend ≥ 85% of cap on ≥ 30% of active days — budget likely runs out mid-day); see campaign_budget_coverage in _summary_json for per-campaign breakdown",
+    "budget_starved_active":    "of budget_starved_campaigns — currently ENABLED (active, actionable now)",
+    "budget_starved_paused":    "of budget_starved_campaigns — currently PAUSED (historical; lower urgency)",
     "keyword_count":            "Ads API keyword list — matched campaigns (current config)",
     "avg_bid":                  "Ads API keyword list — matched campaigns (current config)",
     "min_bid":                  "Ads API keyword list — matched campaigns (current config)",
     "max_bid":                  "Ads API keyword list — matched campaigns (current config)",
     "match_type_dist":          "Ads API keyword list — matched campaigns (current config)",
+    "high_acos_campaigns_str":  "top-3 campaigns by ACOS (desc) from spCampaigns — campaign_name(acos%); only includes campaigns with ACOS > acos_warn_threshold (default 30%)",
+    "placement_summary_str":    "per-placement ACOS/spend_share/modifier from spCampaignsPlacement — TOS=PLACEMENT_TOP_OF_SEARCH, PP=PLACEMENT_PRODUCT_PAGE, Other=PLACEMENT_REST_OF_SEARCH",
+    "competitor_price_summary_str": "competitor price sample: n_competitors (distinct ASINs with data) + date range + avg_daily_count; use verbatim when citing sample size",
     "kw_performance_count":     "spSearchTerm report rows with ≥ min_clicks_for_cvr clicks",
     "lp_zero_keywords_count":       "total keywords LP assigned 0 clicks (= lp_pause_candidates_count + lp_hold_keywords_count + unknown-ACOS; detail in LP Budget Redistribution section)",
     "lp_pause_candidates_count":    "pause_keyword actions with computed ACOS > target — genuinely inefficient (LP assigned 0 clicks, keyword_acos_pct computed from CPC/CVR/price); recommend pausing",
@@ -4436,7 +4527,7 @@ _SNAPSHOT_SKIP_FIELDS: frozenset = frozenset({
 
 
 def _compute_budget_by_targeting(item: Dict, lp_summary: Dict) -> Dict[str, float]:
-    """Break total_daily_budget into KW / Auto / PT buckets.
+    """Break sp_daily_budget into KW / Auto / PT buckets.
 
     KW  = LP-scoped campaigns (keyword targeting, manual bids with click data).
     Auto = campaigns whose targetingType == 'AUTO'.
@@ -4633,6 +4724,31 @@ def _render_change_attribution_table(item: Dict) -> str:
     return "\n".join(rows) + "\n\n" + footnote + "\n\n[CHART:its_causal]"
 
 
+def _compute_organic_daily(item: Dict, days: int) -> Optional[float]:
+    """Estimate true organic orders/day: daily_sales − (SP + SB + SD) daily orders.
+
+    Returns None if daily_sales is unavailable (can't compute a meaningful estimate).
+    Returns None if both sb_ad_orders and sd_ad_orders are absent (data not fetched).
+    Clamped to 0 to absorb attribution-window overlap (SB/SD use 14d vs SP's 7d).
+    """
+    daily_sales = item.get("daily_sales")
+    if not daily_sales:
+        return None
+    sb      = item.get("sb_ad_orders")
+    sd      = item.get("sd_ad_orders")
+    sp_asin = item.get("sp_ad_orders_asin")
+    if sb is None and sd is None and sp_asin is None:
+        return None  # non_sp enricher did not run or all calls failed
+    # Prefer ASIN-exact SP count (spPurchasedProduct) to avoid over-counting from
+    # campaigns that span multiple ASINs. Fall back to campaign-aggregate sp_ad_orders.
+    sp_orders    = float(sp_asin if sp_asin is not None else (item.get("sp_ad_orders") or 0))
+    sb_orders    = float(sb or 0)
+    sd_orders    = float(sd or 0)
+    total_orders = float(daily_sales) * float(days)
+    organic = total_orders - sp_orders - sb_orders - sd_orders
+    return round(max(0.0, organic) / float(days), 2)
+
+
 def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     """
     Pre-compute a flat highlights dict from a fully enriched item.
@@ -4667,13 +4783,18 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "total_inbound":             item.get("total_inbound"),
         "daily_sales":               item.get("daily_sales"),
         "daily_sales_source":        item.get("daily_sales_source"),
-        "ad_daily_orders":           round(
-            (item.get("lp_summary") or {}).get("actual_daily_ad_orders") or 0, 2
+        "sp_kw_daily_orders":        round(
+            (item.get("lp_summary") or {}).get("sp_kw_daily_orders") or 0, 2
         ) or None,
-        "organic_daily":             round(max(0.0,
+        "non_sp_kw_daily":           round(max(0.0,
             float(item.get("daily_sales") or 0)
-            - float(((item.get("lp_summary") or {}).get("actual_daily_ad_orders")) or 0)
+            - float(((item.get("lp_summary") or {}).get("sp_kw_daily_orders")) or 0)
         ), 2) or None,
+        # organic_daily: daily_sales minus ALL ad-attributed orders (SP + SB + SD).
+        # Uses purchases14d for SB/SD vs purchases7d for SP — attribution windows differ.
+        # None when daily_sales is unavailable; None (not 0) when sb/sd data absent.
+        # Clamped to 0 to avoid negative values from attribution-window overlap.
+        "organic_daily":             _compute_organic_daily(item, days),
         "effective_stock_days":      item.get("effective_stock_days"),
         "can_sell_days":             item.get("can_sell_days"),
         "inventory_risk":            item.get("inventory_risk"),
@@ -4682,12 +4803,18 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "active_campaign_count":     active_campaign_count,
         "paused_campaign_count":     paused_campaign_count,
         "bidding_strategies":        item.get("bidding_strategies"),
-        "total_spend":               item.get("total_spend"),
-        "total_sales":               item.get("total_sales"),
-        "total_orders":              item.get("total_orders"),
-        "total_clicks":              item.get("total_clicks"),
+        "sp_ad_spend":               item.get("sp_ad_spend"),
+        "sp_ad_sales":               item.get("sp_ad_sales"),
+        "sp_ad_orders":              item.get("sp_ad_orders"),
+        "sp_ad_clicks":              item.get("sp_ad_clicks"),
         "account_acos":              item.get("account_acos"),
-        "total_daily_budget":          item.get("total_daily_budget"),
+        "sp_ad_orders_asin":         item.get("sp_ad_orders_asin"),
+        "sp_ad_spend_asin":          item.get("sp_ad_spend_asin"),
+        "sb_ad_orders":              item.get("sb_ad_orders"),
+        "sb_ad_spend":               item.get("sb_ad_spend"),
+        "sd_ad_orders":              item.get("sd_ad_orders"),
+        "sd_ad_spend":               item.get("sd_ad_spend"),
+        "sp_daily_budget":          item.get("sp_daily_budget"),
         "budget_by_targeting_type":    _compute_budget_by_targeting(item, item.get("lp_summary") or {}),
         "budget_pressure":             item.get("budget_pressure"),
         "budget_active_days":          item.get("budget_active_days"),
@@ -4700,6 +4827,14 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "budget_starved_campaigns": sum(
             1 for c in (item.get("campaign_budget_coverage") or [])
             if c.get("exhausted_pct", 0) >= 30
+        ),
+        "budget_starved_active": sum(
+            1 for c in (item.get("campaign_budget_coverage") or [])
+            if c.get("exhausted_pct", 0) >= 30 and c.get("campaign_state") == "ENABLED"
+        ),
+        "budget_starved_paused": sum(
+            1 for c in (item.get("campaign_budget_coverage") or [])
+            if c.get("exhausted_pct", 0) >= 30 and c.get("campaign_state") == "PAUSED"
         ),
         "keyword_count":             item.get("keyword_count"),
         "avg_bid":                   item.get("avg_bid"),
@@ -4810,6 +4945,47 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         events_significant_pct = item.get("events_significant_pct"),
     )
 
+    # FC transfer linear-release caveat (non-empty when fc_transfer_contribution > 0)
+    _fc_contrib = item.get("fc_transfer_contribution") or 0
+    _fc_total   = item.get("fc_transfer") or 0
+    _fc_lead    = item.get("fc_transfer_lead_days")
+    _fc_src     = item.get("fc_transfer_lead_source", "unknown")
+    if _fc_contrib > 0 and _fc_total > 0 and _fc_lead:
+        summary["fc_transfer_caveat_text"] = (
+            f"FC transfer linear-release model: effective_stock_days credits "
+            f"{_fc_contrib:.0f} of {_fc_total:.0f} FC-transfer units using a linear "
+            f"drip over {_fc_lead}d ({_fc_src}). Actual Amazon FC-to-FC release may "
+            f"be uneven — if units arrive later than the linear estimate, real stockout "
+            f"could be sooner than effective_stock_days implies."
+        )
+    else:
+        summary["fc_transfer_caveat_text"] = ""
+
+    # Budget starved caveat: break down active vs paused
+    _cov = item.get("campaign_budget_coverage") or []
+    _bsc = sum(1 for c in _cov if c.get("exhausted_pct", 0) >= 30)
+    _bsa = sum(1 for c in _cov if c.get("exhausted_pct", 0) >= 30 and c.get("campaign_state") == "ENABLED")
+    _bsp = sum(1 for c in _cov if c.get("exhausted_pct", 0) >= 30 and c.get("campaign_state") == "PAUSED")
+    if _bsc > 0:
+        summary["budget_starved_caveat_text"] = (
+            f"budget_starved_campaigns ({_bsc}) = {_bsa} active (ENABLED) + {_bsp} paused (PAUSED) "
+            f"over the {days}d window. Prioritise the {_bsa} active campaign(s) — "
+            f"paused ones are historical and lower urgency."
+        )
+    else:
+        summary["budget_starved_caveat_text"] = ""
+
+    # Pre-compute attribution_suspect_caveat_text so the LLM receives a reliable
+    # top-level field instead of having to iterate raw change_attributions entries.
+    _suspect_reasons = [
+        a["attribution_suspect_reason"]
+        for a in attributions
+        if a.get("attribution_suspect") and a.get("attribution_suspect_reason")
+    ]
+    summary["attribution_suspect_caveat_text"] = (
+        " | ".join(_suspect_reasons) if _suspect_reasons else ""
+    )
+
     # Item 3: pre-sorted, deduped top-5 action list
     _top5 = _build_top5_actions(item)
     summary["top5_actions"] = _top5
@@ -4844,6 +5020,51 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
 
     # Combined Change Attribution + Causal Confidence table (pre-rendered)
     summary["change_attribution_table_md"] = _render_change_attribution_table(item)
+
+    # Pre-render all-placement summary so prose and Source always cite the same numbers
+    _PLACEMENT_SHORT = {
+        "PLACEMENT_TOP_OF_SEARCH":  "TOS",
+        "PLACEMENT_REST_OF_SEARCH": "Other",
+        "PLACEMENT_PRODUCT_PAGE":   "PP",
+    }
+    _placement_perf = item.get("placement_performance") or {}
+    _placement_mods = item.get("placement_configured_pcts") or {}
+    _p_parts: List[str] = []
+    for _pk, _pv in _placement_perf.items():
+        if _pv.get("acos") is None:
+            continue
+        _short = _PLACEMENT_SHORT.get(_pk, _pk)
+        _mod = _placement_mods.get(_pk)
+        _mod_str = f" mod={_mod:.0f}%" if _mod is not None else ""
+        _p_parts.append(
+            f"{_short}: ACOS={_pv['acos']:.2f}% spend_share={_pv.get('spend_share', 0):.2f}%{_mod_str}"
+        )
+    summary["placement_summary_str"] = " | ".join(_p_parts) if _p_parts else "—"
+
+    # Pre-render competitor price sample metadata so n_competitors/date_from are never confused
+    # with avg_daily_count by the LLM
+    _cpm = item.get("competitor_price_meta") or {}
+    _cpm_n    = _cpm.get("n_competitors")
+    _cpm_from = _cpm.get("date_from", "")
+    _cpm_to   = _cpm.get("date_to", "")
+    _cpm_avg  = _cpm.get("avg_daily_count")
+    if _cpm_n and _cpm_from and _cpm_to:
+        _avg_str = f", avg {_cpm_avg:.1f}/day" if _cpm_avg is not None else ""
+        summary["competitor_price_summary_str"] = (
+            f"{_cpm_n} competitor ASINs, {_cpm_from} – {_cpm_to}{_avg_str}"
+        )
+    else:
+        summary["competitor_price_summary_str"] = "—"
+
+    # Pre-render top-3 high-ACOS campaigns (sorted desc) so LLM prose and Source always agree
+    _hac = sorted(
+        (r for r in (item.get("high_acos_campaigns") or []) if r.get("acos")),
+        key=lambda r: r["acos"], reverse=True
+    )[:3]
+    summary["high_acos_campaigns_str"] = (
+        ", ".join(f"{r.get('campaign_name') or r.get('campaign_id')}({r['acos']:.2f}%)" for r in _hac)
+        if _hac else "—"
+    )
 
     return summary
 
@@ -5147,6 +5368,14 @@ def _build_top5_actions(item: Dict) -> List[Dict]:
     def _best_delta(a: Dict) -> float:
         return abs(a.get("lp_delta_orders") or a.get("expected_order_delta") or 0)
 
+    # Campaigns that LP recommends pausing: keyword actions from these campaigns
+    # are redundant (pausing the campaign already silences all its keywords).
+    pausing_campaign_ids: set = {
+        str(ca.get("campaign_id"))
+        for ca in campaign_actions
+        if ca.get("action") == "pause_candidate" and ca.get("campaign_id")
+    }
+
     all_actions: List[Dict] = []
     for ca in campaign_actions:
         # Skip data artefacts: paused campaigns already have no active spend
@@ -5154,6 +5383,9 @@ def _build_top5_actions(item: Dict) -> List[Dict]:
             continue
         all_actions.append({**ca, "action_type": "campaign", "gated": bool(ca.get("prerequisite"))})
     for ka in keyword_actions:
+        # Skip keywords from campaigns already being paused at the campaign level
+        if str(ka.get("campaign_id", "")) in pausing_campaign_ids:
+            continue
         all_actions.append({**ka, "action_type": "keyword", "gated": bool(ka.get("prerequisite"))})
 
     all_actions.sort(
@@ -5166,19 +5398,23 @@ def _build_top5_actions(item: Dict) -> List[Dict]:
 
 def _count_action_groups(top5: List[Dict]) -> int:
     """Count how many distinct numbered action blocks the LLM will render.
-    Adjacent same-(action_type, action, gated) items are collapsed into one
-    Format-B group, matching the LLM's grouping heuristic.
+
+    Uses global set-based grouping to match the LLM's grouping heuristic:
+    all entries sharing the same (action_type, action, gated) form one block.
+
+    When an inventory_gate entry is present, gated spend-up actions are excluded
+    from the count — they are already covered by Action #1's rationale
+    ("Unblocks N gated spend-up actions") and are not rendered as separate blocks.
     """
     if not top5:
         return 0
-    count = 1
-    prev = (top5[0].get("action_type"), top5[0].get("action"), top5[0].get("gated", False))
-    for a in top5[1:]:
-        key = (a.get("action_type"), a.get("action"), a.get("gated", False))
-        if key != prev:
-            count += 1
-            prev = key
-    return count
+    has_inv_gate = any(a.get("action_type") == "inventory_gate" for a in top5)
+    seen: set = set()
+    for a in top5:
+        if has_inv_gate and a.get("gated") and a.get("action") in _SPEND_UP_ACTIONS:
+            continue
+        seen.add((a.get("action_type"), a.get("action"), a.get("gated", False)))
+    return len(seen)
 
 
 # ---------------------------------------------------------------------------
@@ -5236,7 +5472,7 @@ def _build_lp_narrative(item: Dict) -> Dict[str, str]:
     lp               = item.get("lp_summary") or {}
     order_gap        = float(lp.get("order_gap") or 0)
     lp_orders        = float(lp.get("lp_orders_cvr_matched") or 0)
-    actual_orders    = float(lp.get("actual_daily_ad_orders") or 0)
+    actual_orders    = float(lp.get("sp_kw_daily_orders") or 0)
     lp_optimal_spend = float(lp.get("lp_optimal_spend") or 0)
     lp_scope_budget  = float(lp.get("lp_scope_campaign_daily_budget") or 0)
     budget_binding   = lp.get("budget_binding", False)
@@ -5399,24 +5635,33 @@ def _build_budget_interpretation(item: Dict) -> Dict[str, str]:
 
     starved = sorted(
         [c for c in coverage if (c.get("exhausted_pct") or 0) >= 30],
-        key=lambda c: -(c.get("exhausted_pct") or 0),
+        key=lambda c: (0 if c.get("campaign_state") == "ENABLED" else 1, -(c.get("exhausted_pct") or 0)),
     )
     if not starved:
         starved_note = ""
     else:
+        n_active = sum(1 for c in starved if c.get("campaign_state") == "ENABLED")
+        n_paused = sum(1 for c in starved if c.get("campaign_state") == "PAUSED")
         lines = []
         for c in starved[:5]:
             name  = (c.get("campaign_name") or str(c.get("campaign_id", "")))[:30]
+            state = c.get("campaign_state") or "UNKNOWN"
             ep    = c.get("exhausted_pct") or 0
             ap    = c.get("all_day_pct") or 0
             avg_s = c.get("avg_daily_spend") or 0
             rec   = round(avg_s * 1.20, 2)
-            lines.append(
-                f"  • {name}: exhausted {ep:.0f}% of days, all-day coverage {ap:.0f}% "
-                f"— raise budget to ≥${rec:.2f}/day (avg spend ${avg_s:.2f}/day × 1.20)"
-            )
+            if state == "ENABLED":
+                lines.append(
+                    f"  • [ACTIVE] {name}: exhausted {ep:.0f}% of days, all-day coverage {ap:.0f}% "
+                    f"— raise budget to ≥${rec:.2f}/day (avg spend ${avg_s:.2f}/day × 1.20)"
+                )
+            else:
+                lines.append(
+                    f"  • [PAUSED] {name}: exhausted {ep:.0f}% of days, all-day coverage {ap:.0f}% "
+                    f"— historical only; no budget change until re-enabled"
+                )
         starved_note = (
-            f"{len(starved)} campaign(s) run dry mid-day "
+            f"{len(starved)} campaign(s) run dry mid-day ({n_active} active, {n_paused} paused) "
             "(ACOS may look healthy but afternoon/evening impressions are zero — volume structurally capped):\n"
             + "\n".join(lines)
         )
@@ -5719,17 +5964,17 @@ def _chart_interpretation(item: Dict, name: str) -> str:
                     f"vs budget ${lp.get('lp_scope_campaign_daily_budget',0):.0f}) — "
                     f"expand keyword coverage to unlock remaining budget.")
         if gap >= 0:
-            return (f"Ad order gap +{gap:.1f}/day — rebalancing spend could gain {gap:.1f} ad orders/day. "
+            return (f"SP keyword order gap +{gap:.1f}/day — rebalancing spend could gain {gap:.1f} ad orders/day. "
                     f"Blue bar = LP target; grey = budget cap. Organic orders not included.")
         binding = lp.get("budget_binding", False)
         lp_raw  = lp.get("lp_orders_cvr_matched", 0)
-        actual  = lp.get("actual_daily_ad_orders", 0)
+        actual  = lp.get("sp_kw_daily_orders", 0)
         if binding:
-            return (f"Ad order gap {gap:+.1f}/day (LP-projected {lp_raw:.1f} vs actual {actual:.1f} orders/day). "
+            return (f"SP keyword order gap {gap:+.1f}/day (LP-projected {lp_raw:.1f} vs actual {actual:.1f} orders/day). "
                     f"Negative gap expected under budget constraint — LP click ceiling limits optimised clicks "
                     f"below actual (Amazon 125% pacing + seasonal CVR uplift not captured). "
                     f"Blue bar = LP target; grey = budget cap.")
-        return (f"Ad order gap {gap:+.1f}/day (LP-projected {lp_raw:.1f} vs actual {actual:.1f} orders/day) — "
+        return (f"SP keyword order gap {gap:+.1f}/day (LP-projected {lp_raw:.1f} vs actual {actual:.1f} orders/day) — "
                 f"LP order estimate below actual; review CVR data quality or keyword mix. "
                 f"Blue bar = LP target; grey = budget cap. Organic orders not included.")
 
@@ -5741,7 +5986,7 @@ def _chart_interpretation(item: Dict, name: str) -> str:
         p90_util       = item.get("p90_daily_utilization_pct")
         max_util       = item.get("max_daily_utilization_pct")
         overdeliv_days = item.get("overdelivery_days") or 0
-        cap            = item.get("total_daily_budget") or 0
+        cap            = item.get("sp_daily_budget") or 0
         exh_s = (f"{exh_days}/{act_days}d hit the 85% cap"
                  if exh_days is not None and act_days else "")
         util_s = (f"avg {avg_util:.0f}%, p90 {p90_util:.0f}%, max {max_util:.0f}%"
@@ -5865,9 +6110,29 @@ def _export_report(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         asin = (item.get("asin") or "unknown").upper()
 
         # Item 10: inject static boilerplate blocks ([STATIC:name] → fixed text)
+        # Only scope_disclaimer remains in _STATIC_BLOCKS; methodology is injected below.
         text = _STATIC_PLACEHOLDER_RE.sub(
             lambda m: _STATIC_BLOCKS.get(m.group(1), ""), text
         )
+
+        # Inject _METHODOLOGY_BLOCK unconditionally before "### Top N Prioritised Actions".
+        # This replaces any LLM-written Methodology prose (which is generic and low-value).
+        import re as _re
+        _top_actions_re = _re.compile(r'(###\s+Top\s+\d+\s+Prioritis)', _re.IGNORECASE)
+        _m = _top_actions_re.search(text)
+        if _m:
+            # Remove any LLM-written Methodology section that precedes the injection point
+            _before = text[: _m.start()]
+            _after  = text[_m.start():]
+            # Strip any LLM-written Methodology section (heading + prose) from _before
+            _meth_section_re = _re.compile(
+                r'###\s+(?:Statistical\s+)?Methodology\b.*?(?=\n###|\Z)',
+                _re.IGNORECASE | _re.DOTALL,
+            )
+            _before = _meth_section_re.sub("", _before)
+            text = _before.rstrip() + "\n\n" + _METHODOLOGY_BLOCK + "\n" + _after
+        else:
+            text = text.rstrip() + "\n\n" + _METHODOLOGY_BLOCK
 
         # Prepend SP-scope disclaimer unconditionally — LLM never outputs the marker
         text = _SCOPE_DISCLAIMER + "\n\n" + text
@@ -6004,6 +6269,14 @@ def build_ad_diagnosis(config: dict) -> Workflow:
         ),
 
         # ── Stage 3: performance + keywords (depend on campaign_ids from stage 2) ──
+        # SB/SD orders: fetched in parallel with SP performance; independent of campaign_ids
+        # (product-level report types filter by ASIN, not campaign_id).
+        EnrichStep(
+            name="fetch_non_sp_orders",
+            extractor_fn=_enrich_non_sp_orders,
+            parallel=True,
+            concurrency=3,
+        ),
         EnrichStep(
             name="fetch_performance",
             extractor_fn=_enrich_performance,

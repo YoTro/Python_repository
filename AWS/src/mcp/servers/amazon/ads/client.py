@@ -605,13 +605,65 @@ class AmazonAdsClient:
         },
         "STV": {
             "adProduct":    "SPONSORED_TELEVISION",
-            "reportTypeId": "stvCampaigns",
+            "reportTypeId": "stCampaigns",   # API uses "stCampaigns", not "stvCampaigns"
             "groupBy":      ["campaign"],
             # STV reports no direct purchase attribution; omit orders/sales fields.
             "metrics":      ["cost", "impressions"],
             "spend_field":  "cost",
             "orders_field": None,
             "sales_field":  None,
+        },
+        # Product-level report types — used for per-ASIN order attribution.
+        # SP: spPurchasedProduct groups by advertisedAsin.
+        # purchases7d = 7-day attributed purchases for the advertised ASIN only.
+        # Necessary for organic estimation when campaigns span multiple ASINs:
+        # spCampaigns.purchases7d over-counts SP because it includes orders for OTHER
+        # ASINs in the same campaign; spPurchasedProduct is ASIN-exact.
+        # No spend/clicks/impressions columns in this report type.
+        # filters: include all SP targeting types to exclude null/OTHER keywordType rows.
+        "SP_PRODUCT": {
+            "adProduct":    "SPONSORED_PRODUCTS",
+            "reportTypeId": "spPurchasedProduct",
+            "groupBy":      ["asin"],
+            "metrics":      ["advertisedAsin", "campaignId",
+                             "purchases7d", "sales7d"],
+            "filters":      [{"field": "keywordType", "values": [
+                                "BROAD", "EXACT", "PHRASE",
+                                "TARGETING_EXPRESSION",
+                                "TARGETING_EXPRESSION_PREDEFINED",
+                             ]}],
+            "spend_field":  None,
+            "orders_field": "purchases7d",
+            "sales_field":  "sales7d",
+            "asin_field":   "advertisedAsin",
+        },
+        # SB: sbPurchasedProduct groups by purchasedAsin (product actually bought).
+        # orders14d = 14-day attribution window (click + view-through).
+        # No spend column in this report type.
+        "SB_PRODUCT": {
+            "adProduct":    "SPONSORED_BRANDS",
+            "reportTypeId": "sbPurchasedProduct",
+            "groupBy":      ["purchasedAsin"],
+            "metrics":      ["purchasedAsin", "campaignId", "orders14d", "sales14d"],
+            "spend_field":  None,
+            "orders_field": "orders14d",
+            "sales_field":  "sales14d",
+            "asin_field":   "purchasedAsin",
+        },
+        # SD advertised product: reportTypeId=sdAdvertisedProduct, groupBy=["advertiser"].
+        # ASIN field is "promotedAsin"; purchases are not broken out by attribution window
+        # (no purchases14d) — "purchases" covers all attribution (click + view, ~14d).
+        # Use "purchasesClicks" for click-only attribution comparable to SP's purchases7d.
+        "SD_PRODUCT": {
+            "adProduct":    "SPONSORED_DISPLAY",
+            "reportTypeId": "sdAdvertisedProduct",
+            "groupBy":      ["advertiser"],
+            "metrics":      ["promotedAsin", "cost", "clicks", "impressions",
+                             "purchases", "purchasesClicks", "sales", "salesClicks"],
+            "spend_field":  "cost",
+            "orders_field": "purchasesClicks",
+            "sales_field":  "salesClicks",
+            "asin_field":   "promotedAsin",
         },
     }
 
@@ -637,21 +689,28 @@ class AmazonAdsClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        ts = int(time.time())
-        body = {
-            "name": f"{ad_type}_summary_{start_date}_{end_date}_{ts}",
-            "startDate": start_date,
-            "endDate":   end_date,
-            "configuration": {
-                "adProduct":    cfg["adProduct"],
-                "reportTypeId": cfg["reportTypeId"],
-                "groupBy":      cfg["groupBy"],
-                "columns":      cfg["metrics"],
-                "timeUnit":     "SUMMARY",
-                "format":       "GZIP_JSON",
-            },
+        report_cfg: Dict[str, Any] = {
+            "adProduct":    cfg["adProduct"],
+            "reportTypeId": cfg["reportTypeId"],
+            "groupBy":      cfg["groupBy"],
+            "columns":      cfg["metrics"],
+            "timeUnit":     "SUMMARY",
+            "format":       "GZIP_JSON",
         }
-        resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
+        if cfg.get("filters"):
+            report_cfg["filters"] = cfg["filters"]
+
+        @exponential_backoff(max_retries=4, base_delay=5.0, max_delay=60.0)
+        async def _post() -> requests.Response:
+            body = {
+                "name": f"{ad_type}_summary_{start_date}_{end_date}_{int(time.time())}",
+                "startDate": start_date,
+                "endDate":   end_date,
+                "configuration": report_cfg,
+            }
+            return await asyncio.to_thread(requests.post, url, json=body, headers=headers)
+
+        resp = await _post()
         if not resp.ok:
             logger.warning(f"[{ad_type}] report creation failed {resp.status_code}: {resp.text[:300]}")
             resp.raise_for_status()
@@ -740,9 +799,9 @@ class AmazonAdsClient:
             of  = cfg["orders_field"]
             vf  = cfg["sales_field"]
 
-            spend  = sum(float(r.get(sf)  or 0) for r in records)
-            clicks = sum(int(r.get("clicks")      or 0) for r in records)
-            impr   = sum(int(r.get("impressions")  or 0) for r in records)
+            spend  = sum(float(r.get(sf) or 0) for r in records) if sf else 0.0
+            clicks = sum(int(r.get("clicks")     or 0) for r in records)
+            impr   = sum(int(r.get("impressions") or 0) for r in records)
             orders = sum(int(r.get(of) or 0) for r in records) if of else 0
             sales  = sum(float(r.get(vf) or 0) for r in records) if vf else 0.0
 
@@ -790,6 +849,83 @@ class AmazonAdsClient:
             "total":    total,
             "errors":   errors,
         }
+
+    async def get_non_sp_orders_by_asin(
+        self,
+        asin: str,
+        start_date: str,
+        end_date: str,
+        ad_types: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch per-ASIN SP, SB, and SD order counts using product-level report types.
+
+        SP: spPurchasedProduct (purchases7d, 7-day attribution, advertisedAsin-exact).
+            More accurate than spCampaigns for organic estimation when campaigns span
+            multiple ASINs; spCampaigns includes orders for other ASINs in the same
+            campaign.  No spend column in spPurchasedProduct.
+        SB: sbPurchasedProduct (orders14d, 14-day attribution, purchasedAsin filter).
+            No spend column.
+        SD: sdAdvertisedProduct (purchasesClicks, click-attributed, promotedAsin filter).
+        DSP: separate DSP seat API, not integrated.
+
+        Returns:
+        {
+          "sp_ad_orders_asin": int,    # spPurchasedProduct purchases7d for advertisedAsin
+          "sp_ad_spend_asin":  None,   # not available in spPurchasedProduct
+          "sb_ad_orders":      int,    # sbPurchasedProduct orders14d for purchasedAsin
+          "sb_ad_spend":       None,   # not available in sbPurchasedProduct
+          "sd_ad_orders":      int,    # sdAdvertisedProduct purchasesClicks for promotedAsin
+          "sd_ad_spend":       float,
+          "errors":            {"SP_PRODUCT": "...", ...},
+        }
+        """
+        types = [t.upper() for t in (ad_types or ["SP_PRODUCT", "SB_PRODUCT", "SD_PRODUCT"])]
+
+        async def _fetch_safe(ad_type: str):
+            try:
+                records = await self._fetch_ad_type_records(ad_type, start_date, end_date)
+                return ad_type, records, None
+            except Exception as exc:
+                logger.warning(f"[{ad_type}] non-SP orders fetch failed: {exc}")
+                return ad_type, [], str(exc)
+
+        results = await asyncio.gather(*(_fetch_safe(t) for t in types))
+
+        out: Dict[str, Any] = {
+            "sp_ad_orders_asin": None, "sp_ad_spend_asin": None,
+            "sb_ad_orders":      None, "sb_ad_spend":      None,
+            "sd_ad_orders":      None, "sd_ad_spend":      None,
+            "errors": {},
+        }
+        for ad_type, records, error in results:
+            if error:
+                out["errors"][ad_type] = error
+                continue
+            cfg          = self._AD_TYPE_CONFIG[ad_type]
+            asin_field   = cfg["asin_field"]
+            orders_field = cfg["orders_field"]
+            spend_field  = cfg["spend_field"]
+            asin_upper   = asin.upper()
+            matched = [r for r in records if (r.get(asin_field) or "").upper() == asin_upper]
+            orders  = sum(int(r.get(orders_field) or 0) for r in matched) if orders_field else 0
+            spend   = round(sum(float(r.get(spend_field) or 0) for r in matched), 2) if spend_field else None
+            if ad_type == "SP_PRODUCT":
+                out["sp_ad_orders_asin"] = orders
+                out["sp_ad_spend_asin"]  = spend
+            elif ad_type == "SB_PRODUCT":
+                out["sb_ad_orders"] = orders
+                out["sb_ad_spend"]  = spend
+            elif ad_type == "SD_PRODUCT":
+                out["sd_ad_orders"] = orders
+                out["sd_ad_spend"]  = spend
+
+        logger.info(
+            f"[non_sp_orders] {asin} ({start_date}→{end_date}): "
+            f"SP(asin)={out['sp_ad_orders_asin']} "
+            f"SB={out['sb_ad_orders']} SD={out['sd_ad_orders']} orders"
+        )
+        return out
 
     # ── Change History ─────────────────────────────────────────────────────
 
