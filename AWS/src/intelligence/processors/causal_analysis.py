@@ -65,6 +65,9 @@ TRAILING_MIN_DAYS = 14    # min days of trailing data required
 _ITS_MIN_PRE  = 7    # pre-period rows for reliable ITS
 _ITS_MIN_POST = 5    # post-period rows
 _CI_MIN_PRE   = 14   # pre-period rows for BSTS
+# If |point_effect| exceeds this multiple of the pre-period series scale the BSTS
+# state-space model diverged (degenerate counterfactual).  Treat as skipped.
+_CI_OUTLIER_MULT = 100
 
 
 # ── Covariate alignment ────────────────────────────────────────────────────────
@@ -600,9 +603,25 @@ def _causal_impact_analyze(
             except (KeyError, TypeError):
                 return None
 
+        pe = _loc("abs_effect")
+        # Guard: BSTS occasionally diverges (degenerate state-space) when the
+        # pre-period has near-zero variance, producing a counterfactual near
+        # ±millions even though actual orders are in the single digits.
+        # Reject if |point_effect| > _CI_OUTLIER_MULT × pre-period scale.
+        if pe is not None:
+            pre_scale = max(float(np.abs(series[:intervention_idx]).max()), 1.0)
+            if abs(pe) > _CI_OUTLIER_MULT * pre_scale:
+                logger.warning(
+                    f"CausalImpact outlier rejected: |point_effect|={pe:.1f} "
+                    f"> {_CI_OUTLIER_MULT}×pre_scale={pre_scale:.1f}"
+                )
+                return {
+                    "skipped": True,
+                    "reason":  f"outlier: |effect|={pe:.1f} >> pre_scale={pre_scale:.1f}",
+                }
         return {
             "skipped":         False,
-            "point_effect":    _loc("abs_effect"),
+            "point_effect":    pe,
             "relative_effect": _loc("rel_effect"),
             "p_value":         round(float(ci.p_value), 4) if ci.p_value is not None else None,
             "ci_lo":           _loc("abs_effect_lower"),
