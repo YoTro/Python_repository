@@ -613,30 +613,13 @@ class AmazonAdsClient:
             "orders_field": None,
             "sales_field":  None,
         },
-        # Product-level report types — used for per-ASIN order attribution.
-        # SP: spPurchasedProduct groups by advertisedAsin.
-        # purchases7d = 7-day attributed purchases for the advertised ASIN only.
-        # Necessary for organic estimation when campaigns span multiple ASINs:
-        # spCampaigns.purchases7d over-counts SP because it includes orders for OTHER
-        # ASINs in the same campaign; spPurchasedProduct is ASIN-exact.
-        # No spend/clicks/impressions columns in this report type.
-        # filters: include all SP targeting types to exclude null/OTHER keywordType rows.
-        "SP_PRODUCT": {
-            "adProduct":    "SPONSORED_PRODUCTS",
-            "reportTypeId": "spPurchasedProduct",
-            "groupBy":      ["asin"],
-            "metrics":      ["advertisedAsin", "campaignId",
-                             "purchases7d", "sales7d"],
-            "filters":      [{"field": "keywordType", "values": [
-                                "BROAD", "EXACT", "PHRASE",
-                                "TARGETING_EXPRESSION",
-                                "TARGETING_EXPRESSION_PREDEFINED",
-                             ]}],
-            "spend_field":  None,
-            "orders_field": "purchases7d",
-            "sales_field":  "sales7d",
-            "asin_field":   "advertisedAsin",
-        },
+        # Product-level report types — used for per-ASIN order attribution (SB + SD).
+        # SP is intentionally excluded: spPurchasedProduct groups by purchasedAsin
+        # (the product actually bought), where advertisedAsin is a dimension column.
+        # Filtering by advertisedAsin == target gives cross-ASIN purchases (other
+        # products bought after clicking target's ad), NOT purchases of target itself.
+        # Purchases of the advertised ASIN are in spCampaigns (sp_ad_orders field).
+        #
         # SB: sbPurchasedProduct groups by purchasedAsin (product actually bought).
         # orders14d = 14-day attribution window (click + view-through).
         # No spend column in this report type.
@@ -858,12 +841,11 @@ class AmazonAdsClient:
         ad_types: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Fetch per-ASIN SP, SB, and SD order counts using product-level report types.
+        Fetch SB and SD order counts for a specific ASIN using product-level reports.
 
-        SP: spPurchasedProduct (purchases7d, 7-day attribution, advertisedAsin-exact).
-            More accurate than spCampaigns for organic estimation when campaigns span
-            multiple ASINs; spCampaigns includes orders for other ASINs in the same
-            campaign.  No spend column in spPurchasedProduct.
+        SP orders are sourced from spCampaigns (sp_ad_orders) — spPurchasedProduct
+        groups by purchasedAsin and filtering by advertisedAsin gives cross-ASIN
+        purchases (other products bought after clicking the ad), not same-ASIN SP orders.
         SB: sbPurchasedProduct (orders14d, 14-day attribution, purchasedAsin filter).
             No spend column.
         SD: sdAdvertisedProduct (purchasesClicks, click-attributed, promotedAsin filter).
@@ -871,16 +853,14 @@ class AmazonAdsClient:
 
         Returns:
         {
-          "sp_ad_orders_asin": int,    # spPurchasedProduct purchases7d for advertisedAsin
-          "sp_ad_spend_asin":  None,   # not available in spPurchasedProduct
-          "sb_ad_orders":      int,    # sbPurchasedProduct orders14d for purchasedAsin
-          "sb_ad_spend":       None,   # not available in sbPurchasedProduct
-          "sd_ad_orders":      int,    # sdAdvertisedProduct purchasesClicks for promotedAsin
-          "sd_ad_spend":       float,
-          "errors":            {"SP_PRODUCT": "...", ...},
+          "sb_ad_orders": int,    # sbPurchasedProduct orders14d for purchasedAsin
+          "sb_ad_spend":  None,   # not available in sbPurchasedProduct
+          "sd_ad_orders": int,    # sdAdvertisedProduct purchasesClicks for promotedAsin
+          "sd_ad_spend":  float,
+          "errors":       {"SB_PRODUCT": "...", ...},
         }
         """
-        types = [t.upper() for t in (ad_types or ["SP_PRODUCT", "SB_PRODUCT", "SD_PRODUCT"])]
+        types = [t.upper() for t in (ad_types or ["SB_PRODUCT", "SD_PRODUCT"])]
 
         async def _fetch_safe(ad_type: str):
             try:
@@ -893,9 +873,8 @@ class AmazonAdsClient:
         results = await asyncio.gather(*(_fetch_safe(t) for t in types))
 
         out: Dict[str, Any] = {
-            "sp_ad_orders_asin": None, "sp_ad_spend_asin": None,
-            "sb_ad_orders":      None, "sb_ad_spend":      None,
-            "sd_ad_orders":      None, "sd_ad_spend":      None,
+            "sb_ad_orders": None, "sb_ad_spend": None,
+            "sd_ad_orders": None, "sd_ad_spend": None,
             "errors": {},
         }
         for ad_type, records, error in results:
@@ -910,10 +889,7 @@ class AmazonAdsClient:
             matched = [r for r in records if (r.get(asin_field) or "").upper() == asin_upper]
             orders  = sum(int(r.get(orders_field) or 0) for r in matched) if orders_field else 0
             spend   = round(sum(float(r.get(spend_field) or 0) for r in matched), 2) if spend_field else None
-            if ad_type == "SP_PRODUCT":
-                out["sp_ad_orders_asin"] = orders
-                out["sp_ad_spend_asin"]  = spend
-            elif ad_type == "SB_PRODUCT":
+            if ad_type == "SB_PRODUCT":
                 out["sb_ad_orders"] = orders
                 out["sb_ad_spend"]  = spend
             elif ad_type == "SD_PRODUCT":
@@ -922,7 +898,6 @@ class AmazonAdsClient:
 
         logger.info(
             f"[non_sp_orders] {asin} ({start_date}→{end_date}): "
-            f"SP(asin)={out['sp_ad_orders_asin']} "
             f"SB={out['sb_ad_orders']} SD={out['sd_ad_orders']} orders"
         )
         return out

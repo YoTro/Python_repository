@@ -427,7 +427,7 @@ async def _ensure_non_sp_orders(ctx: WorkflowContext, asin: str) -> Dict:
     errors = result.get("errors") or {}
     if errors and all(
         result.get(k) is None
-        for k in ("sp_ad_orders_asin", "sb_ad_orders", "sd_ad_orders")
+        for k in ("sb_ad_orders", "sd_ad_orders")
     ):
         raise RuntimeError(f"[non_sp_orders] {asin}: all ad-type fetches failed — {errors}")
     return result
@@ -473,18 +473,15 @@ async def _ensure_change_history(ctx: WorkflowContext, campaign_ids: List[str]) 
 # ---------------------------------------------------------------------------
 
 async def _enrich_non_sp_orders(item: Dict, ctx: WorkflowContext) -> Dict:
-    """Fetch SP/SB/SD per-ASIN order counts and store them on item."""
+    """Fetch SB/SD per-ASIN order counts and store them on item."""
     asin = (item.get("asin") or "").upper()
     if not asin:
         return item
     try:
         result = await _ensure_non_sp_orders(ctx, asin)
-        item["sp_ad_orders_asin"] = result.get("sp_ad_orders_asin")
-        item["sp_ad_spend_asin"]  = result.get("sp_ad_spend_asin")
-        item["sb_ad_orders"]      = result.get("sb_ad_orders")
-        item["sb_ad_spend"]       = result.get("sb_ad_spend")
-        item["sd_ad_orders"]      = result.get("sd_ad_orders")
-        item["sd_ad_spend"]       = result.get("sd_ad_spend")
+        item["sb_ad_orders"] = result.get("sb_ad_orders")
+        item["sd_ad_orders"] = result.get("sd_ad_orders")
+        item["sd_ad_spend"]  = result.get("sd_ad_spend")
         non_sp_errors = result.get("errors") or {}
         if non_sp_errors:
             logger.warning(f"[non_sp_orders] {asin}: partial errors — {non_sp_errors}")
@@ -4459,13 +4456,10 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "sp_ad_orders":             "Ads API spCampaigns — SP ad-attributed orders (keyword + auto + PT campaigns; SB/SD/DSP and organic excluded); 7-day attribution window (purchases7d)",
     "sp_ad_clicks":             "Ads API spCampaigns — SP ad-attributed clicks (keyword + auto + PT), data_start_date → data_end_date",
     "account_acos":             "sp_ad_spend ÷ sp_ad_sales × 100",
-    "sp_ad_orders_asin":        "Ads API spPurchasedProduct — ASIN-exact SP orders (purchases7d, advertisedAsin filter); more accurate than sp_ad_orders for organic estimation when campaigns span multiple ASINs; null if SP_PRODUCT report unavailable",
-    "sp_ad_spend_asin":         "Ads API spPurchasedProduct — SP spend not available at ASIN level (always None; spPurchasedProduct has no cost column)",
     "sb_ad_orders":             "Ads API sbPurchasedProduct — SB orders where this ASIN was purchased (purchasedAsin filter); 14-day attribution window (orders14d); null if SB report unavailable",
-    "sb_ad_spend":              "Ads API sbPurchasedProduct — SB spend not available at ASIN level (always None; sbPurchasedProduct has no cost column)",
     "sd_ad_orders":             "Ads API sdAdvertisedProduct — SD click-attributed orders for this ASIN (purchasesClicks; excludes view-through); null if SD report unavailable",
     "sd_ad_spend":              "Ads API sdAdvertisedProduct — SD spend for this ASIN (promotedAsin filter), data_start_date → data_end_date",
-    "organic_daily":            "estimated true organic orders/day = (daily_sales × days − sp_ad_orders_asin − sb_ad_orders − sd_ad_orders) ÷ days; clamped to 0; uses sp_ad_orders_asin (ASIN-exact, 7d) when available, falls back to sp_ad_orders; SB/SD use 14d — overlap may cause slight undercount of organic; null when daily_sales or all product-level reports absent; DSP not included",
+    "organic_daily":            "estimated organic orders/day = (daily_sales × days − sp_ad_orders − sb_ad_orders − sd_ad_orders) ÷ days; null when days < 14, SB/SD absent, or ad_orders ≥ total_orders; SP from spCampaigns (campaign-level, may include other ASINs); SB from sbPurchasedProduct (14d window, one click can attribute to multiple ASINs); when sp+sb+sd ≥ total, attribution metrics are incomparable — null is returned instead of 0 to avoid implying no organic traffic; DSP not included",
     "budget_active_days":       "days with non-zero spend in lookback window",
     "budget_exhausted_days":    "active days where daily spend ≥ 85% of per-day effective cap (proxy — Amazon does not expose intraday OUT_OF_BUDGET events via the Ads History API); denominator uses cap reconstructed from BUDGET_AMOUNT change history, not current snapshot",
     "budget_exhausted_days_pct":"budget_exhausted_days ÷ budget_active_days × 100",
@@ -4727,26 +4721,44 @@ def _render_change_attribution_table(item: Dict) -> str:
 def _compute_organic_daily(item: Dict, days: int) -> Optional[float]:
     """Estimate true organic orders/day: daily_sales − (SP + SB + SD) daily orders.
 
-    Returns None if daily_sales is unavailable (can't compute a meaningful estimate).
-    Returns None if both sb_ad_orders and sd_ad_orders are absent (data not fetched).
-    Clamped to 0 to absorb attribution-window overlap (SB/SD use 14d vs SP's 7d).
+    Attribution metrics used:
+      sp_ad_orders  — spCampaigns purchases7d  (7d click window, 30d campaign period)
+      sb_ad_orders  — sbPurchasedProduct orders14d (14d click window, 30d period)
+      sd_ad_orders  — sdAdvertisedProduct purchasesClicks (click-attributed)
+
+    Known limitations:
+    1. Window boundary bleed: SP/SB counts include purchases that fall outside [start,end]
+       (late-period clicks attribute forward past end). In steady state the bleed-out
+       (clicks near end) and bleed-in (pre-period clicks landing in window) roughly cancel
+       for days >= 14. For days < 14 the SB 14d window dominates the lookback — unreliable.
+    2. Cross-type double attribution: a single purchase can be counted by both SP and SB
+       when a buyer engaged with both ad types. This makes sp+sb+sd > total_orders possible
+       and organic = 0 (clamped). This reflects ad-dominated traffic, not a formula error.
+
+    Returns None when days < 14 or daily_sales / SB+SD data absent.
+    Clamped to 0 to absorb double-attribution overlap.
     """
+    if days < 14:
+        return None  # SB orders14d window exceeds lookback
     daily_sales = item.get("daily_sales")
     if not daily_sales:
         return None
-    sb      = item.get("sb_ad_orders")
-    sd      = item.get("sd_ad_orders")
-    sp_asin = item.get("sp_ad_orders_asin")
-    if sb is None and sd is None and sp_asin is None:
+    sb = item.get("sb_ad_orders")
+    sd = item.get("sd_ad_orders")
+    if sb is None and sd is None:
         return None  # non_sp enricher did not run or all calls failed
-    # Prefer ASIN-exact SP count (spPurchasedProduct) to avoid over-counting from
-    # campaigns that span multiple ASINs. Fall back to campaign-aggregate sp_ad_orders.
-    sp_orders    = float(sp_asin if sp_asin is not None else (item.get("sp_ad_orders") or 0))
+    sp_orders    = float(item.get("sp_ad_orders") or 0)
     sb_orders    = float(sb or 0)
     sd_orders    = float(sd or 0)
     total_orders = float(daily_sales) * float(days)
-    organic = total_orders - sp_orders - sb_orders - sd_orders
-    return round(max(0.0, organic) / float(days), 2)
+    ad_orders    = sp_orders + sb_orders + sd_orders
+    # When ad attribution exceeds total sales, SP campaign-level over-count or
+    # SB multi-ASIN click attribution has made the numbers incomparable.
+    # Return None rather than 0 to avoid falsely implying "no organic traffic".
+    if ad_orders >= total_orders:
+        return None
+    organic = total_orders - ad_orders
+    return round(organic / float(days), 2)
 
 
 def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
@@ -4808,10 +4820,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "sp_ad_orders":              item.get("sp_ad_orders"),
         "sp_ad_clicks":              item.get("sp_ad_clicks"),
         "account_acos":              item.get("account_acos"),
-        "sp_ad_orders_asin":         item.get("sp_ad_orders_asin"),
-        "sp_ad_spend_asin":          item.get("sp_ad_spend_asin"),
         "sb_ad_orders":              item.get("sb_ad_orders"),
-        "sb_ad_spend":               item.get("sb_ad_spend"),
         "sd_ad_orders":              item.get("sd_ad_orders"),
         "sd_ad_spend":               item.get("sd_ad_spend"),
         "sp_daily_budget":          item.get("sp_daily_budget"),
@@ -5039,7 +5048,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         _p_parts.append(
             f"{_short}: ACOS={_pv['acos']:.2f}% spend_share={_pv.get('spend_share', 0):.2f}%{_mod_str}"
         )
-    summary["placement_summary_str"] = " | ".join(_p_parts) if _p_parts else "—"
+    summary["placement_summary_str"] = " \\| ".join(_p_parts) if _p_parts else "—"
 
     # Pre-render competitor price sample metadata so n_competitors/date_from are never confused
     # with avg_daily_count by the LLM
