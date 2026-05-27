@@ -7,6 +7,28 @@ from typing import Optional
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as _fm
+
+def _first_available_font(names: list[str]) -> str | None:
+    """Return the first font name that matplotlib can resolve on this system."""
+    for name in names:
+        try:
+            _fm.findfont(_fm.FontProperties(family=name), fallback_to_default=False)
+            return name
+        except Exception:
+            continue
+    return None
+
+# Prefer a Unicode font that covers both ASCII and CJK; fall back to DejaVu Sans.
+# Arial Unicode MS (macOS), WenQuanYi / Noto CJK (Linux) cover the ideographic range.
+_cjk_font = _first_available_font([
+    "Arial Unicode MS", "PingFang HK", "Hiragino Sans GB",
+    "WenQuanYi Micro Hei", "Noto Sans CJK SC",
+])
+plt.rcParams["font.sans-serif"] = (
+    [_cjk_font, "DejaVu Sans"] if _cjk_font else ["DejaVu Sans"]
+)
+plt.rcParams["axes.unicode_minus"] = False
 
 logger = logging.getLogger(__name__)
 

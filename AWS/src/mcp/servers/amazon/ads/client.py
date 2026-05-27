@@ -1,3 +1,4 @@
+import re as _re
 import requests
 import logging
 import time
@@ -8,9 +9,39 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 from .auth import AmazonAdsAuth
-from src.core.utils.decorators import exponential_backoff
+from src.core.utils.decorators import exponential_backoff, EARLY_RETURN
 
 logger = logging.getLogger(__name__)
+
+
+def _is_report_425(resp: requests.Response) -> bool:
+    """True for HTTP 425 OR HTTP 200 with body {"code":"425"} (Amazon Ads quirk)."""
+    if resp.status_code == 425:
+        return True
+    if resp.ok:
+        try:
+            return str(resp.json().get("code", "")) == "425"
+        except Exception:
+            pass
+    return False
+
+
+def _make_report_425_hook(label: str, start_date: str, end_date: str):
+    """Return a response_hook that extracts a duplicate reportId from a 425 body."""
+    def _hook(resp: requests.Response):
+        if not _is_report_425(resp):
+            return EARLY_RETURN
+        try:
+            detail = resp.json().get("detail", "")
+        except Exception:
+            return EARLY_RETURN
+        m = _re.search(r"duplicate of\s*:\s*([0-9a-f\-]{30,})", detail, _re.I)
+        if m:
+            dup_id = m.group(1).strip()
+            logger.info(f"[{label}] 425 duplicate — reusing report {dup_id} ({start_date}→{end_date})")
+            return dup_id
+        return EARLY_RETURN
+    return _hook
 
 class AmazonAdsClient:
     """
@@ -434,55 +465,21 @@ class AmazonAdsClient:
             "endDate": end_date,
             "configuration": configuration,
         }
-        import re as _re
-        from src.core.utils.decorators import exponential_backoff, EARLY_RETURN
-
-        def _is_425(resp: requests.Response) -> bool:
-            """True for HTTP 425 OR HTTP 200 with body {"code":"425"}."""
-            if resp.status_code == 425:
-                return True
-            if resp.ok:
-                try:
-                    return str(resp.json().get("code", "")) == "425"
-                except Exception:
-                    pass
-            return False
-
-        def _hook(resp: requests.Response):
-            """
-            On 425: if Amazon included the duplicate reportId in detail, return
-            it immediately so the caller can poll without waiting.
-            Otherwise return EARLY_RETURN to let the decorator handle the retry.
-            """
-            if not _is_425(resp):
-                return EARLY_RETURN
-            try:
-                detail = resp.json().get("detail", "")
-            except Exception:
-                return EARLY_RETURN
-            m = _re.search(r"duplicate of\s*:\s*([0-9a-f\-]{30,})", detail, _re.I)
-            if m:
-                dup_id = m.group(1).strip()
-                logger.info(
-                    f"Report 425: reusing existing report {dup_id} "
-                    f"({report_type} {start_date}→{end_date})"
-                )
-                return dup_id
-            return EARLY_RETURN  # no ID found — let decorator retry with backoff
+        _hook = _make_report_425_hook(report_type, start_date, end_date)
 
         @exponential_backoff(
             max_retries=5,
             base_delay=30.0,
             max_delay=180.0,
             jitter=False,
-            is_retryable=_is_425,
+            is_retryable=_is_report_425,
             response_hook=_hook,
         )
         async def _post() -> requests.Response:
             nonlocal body
             body["name"] = f"{report_type}_{start_date}_{end_date}_{int(time.time())}"
             resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
-            if not resp.ok and not _is_425(resp):
+            if not resp.ok and not _is_report_425(resp):
                 logger.error(f"Report creation failed {resp.status_code}: {resp.text[:500]}")
             return resp
 
@@ -683,7 +680,15 @@ class AmazonAdsClient:
         if cfg.get("filters"):
             report_cfg["filters"] = cfg["filters"]
 
-        @exponential_backoff(max_retries=4, base_delay=5.0, max_delay=60.0)
+        _hook = _make_report_425_hook(ad_type, start_date, end_date)
+
+        @exponential_backoff(
+            max_retries=4,
+            base_delay=5.0,
+            max_delay=60.0,
+            is_retryable=_is_report_425,
+            response_hook=_hook,
+        )
         async def _post() -> requests.Response:
             body = {
                 "name": f"{ad_type}_summary_{start_date}_{end_date}_{int(time.time())}",
@@ -693,13 +698,16 @@ class AmazonAdsClient:
             }
             return await asyncio.to_thread(requests.post, url, json=body, headers=headers)
 
-        resp = await _post()
-        if not resp.ok:
-            logger.warning(f"[{ad_type}] report creation failed {resp.status_code}: {resp.text[:300]}")
-            resp.raise_for_status()
-        report_id = resp.json().get("reportId")
-        if not report_id:
-            raise ValueError(f"[{ad_type}] no reportId in response: {resp.text[:200]}")
+        result = await _post()
+        if isinstance(result, str):
+            report_id = result  # dup_id extracted from 425 body by _hook
+        else:
+            if not result.ok:
+                logger.warning(f"[{ad_type}] report creation failed {result.status_code}: {result.text[:300]}")
+                result.raise_for_status()
+            report_id = result.json().get("reportId")
+            if not report_id:
+                raise ValueError(f"[{ad_type}] no reportId in response: {result.text[:200]}")
         logger.info(f"[{ad_type}] created report {report_id} ({start_date}→{end_date})")
         download_url = await self._poll_report(report_id)
         return await self._download_report(download_url)

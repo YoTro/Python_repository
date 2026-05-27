@@ -42,7 +42,7 @@ class XiyouZhaociAPI:
         
         self.token_file = token_file or os.path.join(config_dir, f"xiyou_{tenant_id}_token.json")
         self.session = requests.Session(impersonate="chrome")
-        self.base_url = "https://api.xiyouzhaoci.com"
+        self.base_url = "https://api.xydc.com"
         self.auth_token = self._load_token()
 
         self.common_headers = {

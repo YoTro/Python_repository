@@ -422,14 +422,11 @@ async def _ensure_non_sp_orders(ctx: WorkflowContext, asin: str) -> Dict:
     result = await _ads_client(ctx).get_non_sp_orders_by_asin(
         asin=asin, start_date=start_date, end_date=end_date,
     )
-    # If every ad type failed, don't cache — force a re-fetch next run so transient
-    # API errors or stale code configs don't persist across workflow restarts.
+    # Any per-type error (e.g. 429) must not be cached — raise so the decorator
+    # skips L2 write and the next run retries the live API call.
     errors = result.get("errors") or {}
-    if errors and all(
-        result.get(k) is None
-        for k in ("sb_ad_orders", "sd_ad_orders")
-    ):
-        raise RuntimeError(f"[non_sp_orders] {asin}: all ad-type fetches failed — {errors}")
+    if errors:
+        raise RuntimeError(f"[non_sp_orders] {asin}: ad-type fetch errors — {errors}")
     return result
 
 
@@ -1612,6 +1609,7 @@ def _build_campaign_actions(
 
         target_acos_pct = (target_acos or 0.30) * 100
         suggested = None
+        review_reason: Optional[str] = None
 
         # ── Auto / Product-Targeting campaigns: LP allocates $0 (not in scope) ──
         # Applying LP-allocation thresholds to these campaigns produces false
@@ -1620,8 +1618,12 @@ def _build_campaign_actions(
             if camp_acos is None:
                 # Spending but zero orders → conversion failure
                 action, priority = "pause_candidate", "P1"
+                _cal_saving = round(camp_spend_total / days, 2) if days > 0 else 0
                 rationale = (
-                    f"No conversions in period (spend ${camp_spend_total:.0f} total, 0 orders) — "
+                    f"No conversions in period (spend ${camp_spend_total:.2f} total "
+                    f"over {_active_d} active day(s), ${actual_spend:.2f}/active-day run rate, "
+                    f"0 orders); expected saving if paused: ${_cal_saving:.2f}/day "
+                    f"(${camp_spend_total:.2f} ÷ {days}d calendar average) — "
                     f"add negative targets or pause (auto/PT, outside LP scope)"
                 )
             elif camp_acos > target_acos_pct * 1.3:
@@ -1633,6 +1635,7 @@ def _build_campaign_actions(
                 )
             elif camp_acos > target_acos_pct:
                 action, priority = "review_bids", "P1"
+                review_reason = "high_acos"
                 rationale = (
                     f"ACOS {camp_acos}% above target {target_acos_pct:.0f}% — "
                     f"lower bids or add negatives (auto/PT, outside LP scope)"
@@ -1687,6 +1690,7 @@ def _build_campaign_actions(
                 # LP has no click data for this campaign's keywords (filtered out),
                 # but historical ACOS is efficient — do not pause, flag for bid review.
                 action, priority = "review_bids", "P1"
+                review_reason = "low_lp_allocation"
                 rationale = (
                     f"LP allocates only ${lp_spend:.0f}/day (keywords lack click data for LP model), "
                     f"but campaign ACOS {camp_acos}% ≤ target {target_acos_pct:.0f}% — "
@@ -1704,6 +1708,7 @@ def _build_campaign_actions(
             #   current allocation outperforms LP.  Allow increase_budget when ACOS is healthy.
             if spend_ceiling_bound or (order_gap < 0 and not budget_binding):
                 action, priority = "review_bids", "P1"
+                review_reason = "lp_ceiling"
                 if spend_ceiling_bound:
                     reason = "click ceilings are the binding constraint"
                 else:
@@ -1761,6 +1766,7 @@ def _build_campaign_actions(
                 )
             else:
                 action, priority = "review_bids", "P1"
+                review_reason = "high_acos"
                 rationale = f"ACOS {camp_acos}% above target — lower bids on high-ACOS keywords before scaling"
         else:
             action, priority = "maintain", "P2"
@@ -1822,7 +1828,10 @@ def _build_campaign_actions(
         _spend_delta = None
         if action in ("pause_candidate", "archive_candidate"):
             _order_delta = -round(camp_daily_orders, 2)
-            _spend_delta = -round(actual_spend, 2)
+            # Use calendar-day average (total ÷ lookback window) so "saves $X/day" means
+            # per calendar day — consistent with daily_sales and other per-day metrics.
+            # actual_spend (per active day) is surfaced in the rationale for run-rate context.
+            _spend_delta = -round(camp_spend_total / days, 2) if days > 0 else None
         elif action in ("increase_budget", "enable_and_increase_budget") and suggested and camp_cpo:
             delta_budget = suggested - camp_budget
             _order_delta = round(delta_budget / camp_cpo, 2)
@@ -1848,6 +1857,8 @@ def _build_campaign_actions(
             "expected_order_delta": _order_delta,
             "expected_spend_delta": _spend_delta,
         }
+        if review_reason is not None:
+            entry["review_reason"] = review_reason
         if suggested is not None:
             entry["suggested_budget"] = suggested
         if prerequisite is not None:
@@ -1937,6 +1948,7 @@ def _build_keyword_actions(
                     "keyword_id":           kw_id,
                     "current_bid":          cur_bid,
                     "keyword_acos_pct":     kw_acos_pct,
+                    "acos_pct":             kw_acos_pct,
                     "expected_order_delta": -round(cur_clicks * raw_cvr, 2),
                     "expected_spend_delta": -round(cur_clicks * avg_cpc, 2),
                     "rationale": _rationale,
@@ -2007,6 +2019,7 @@ def _build_keyword_actions(
                     "keyword_id":                           kw_id,
                     "current_bid":                          cur_bid,
                     "keyword_acos_pct":                     kw_acos_pct,
+                    "acos_pct":                             kw_acos_pct,
                     "estimated_order_uplift_per_10pct_bid": order_per_10pct_bid,
                     "expected_spend_per_10pct_bid":         round(opt_clicks * 0.10 * avg_cpc, 2),
                     "rationale": (
@@ -2032,6 +2045,7 @@ def _build_keyword_actions(
                         "keyword_id":           kw_id,
                         "current_bid":          cur_bid,
                         "keyword_acos_pct":     kw_acos_pct,
+                        "acos_pct":             kw_acos_pct,
                         "expected_order_delta": round(delta_clicks * raw_cvr, 2),
                         "expected_spend_delta": round(delta_clicks * avg_cpc, 2),
                         "rationale": (
@@ -2051,6 +2065,7 @@ def _build_keyword_actions(
                         "keyword_id":           kw_id,
                         "current_bid":          cur_bid,
                         "keyword_acos_pct":     kw_acos_pct,
+                        "acos_pct":             kw_acos_pct,
                         "expected_order_delta": round(delta_clicks * raw_cvr, 2),
                         "expected_spend_delta": round(delta_clicks * avg_cpc, 2),
                         "rationale": (
@@ -2639,6 +2654,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 ca["action"] = "review_bids" if original_action == "increase_budget" \
                     else "enable_and_review_bids"
                 ca["priority"] = "P1"
+                ca["review_reason"] = "bid_conflict"
                 ca["rationale"] = (
                     f"[Conflict resolved] {ca['rationale']} — "
                     f"however, keyword_actions include decrease_bid for this campaign's keywords; "
@@ -4487,7 +4503,7 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "inbound_shipped":          "FBA inbound — in transit from seller (10-30d ETA)",
     "inbound_working":          "FBA inbound — shipment plan not yet shipped (uncertain ETA)",
     "fc_transfer":              "FBA reservedQuantity.pendingTransshipmentQuantity — units in transit between FCs (already in Amazon network; lead time varies seasonally)",
-    "fc_transfer_contribution": "linear release portion of fc_transfer counted in effective_stock_days — fc_transfer × min(can_sell_days, fc_transfer_lead_days) / fc_transfer_lead_days",
+    "fc_transfer_contribution": "linear release portion of fc_transfer counted in effective_stock_days — fc_transfer × min(effective_stock_days, fc_transfer_lead_days) / fc_transfer_lead_days",
     "total_inventory_days":     "(total_available + fc_transfer) ÷ daily_sales — red-line: total Amazon-network inventory runway (ignores release timing)",
     "available_low":            "can_sell_days < available_gate_days (default 7d) — yellow-line: on-shelf stock tight, delivery-date CVR risk if spend is scaled up",
     "total_inbound":            "inbound_receiving + inbound_shipped (confirmed in-transit only)",
@@ -4566,6 +4582,7 @@ _SNAPSHOT_SKIP_FIELDS: frozenset = frozenset({
     "action_conflicts", "competitor_price_meta",
     "campaign_budget_coverage",   # rendered as derived scalar below; full list in _summary_json
     "shipment_lead_time",         # nested dict — full data in _summary_json; snapshot uses scalar below
+    "placement_modifier_note",    # prose note — appears in _summary_json for LLM; not a snapshot metric
 })
 
 
@@ -4678,9 +4695,14 @@ def _render_change_attribution_table(item: Dict) -> str:
         lo = its.get("level_shift_ci_lo")
         hi = its.get("level_shift_ci_hi")
         p  = its.get("p_level")
-        if ls is None:
+        if ls is None or lo is None or hi is None:
             return "—"
-        p_str = "p<0.001" if p is not None and p < 0.001 else f"p={p:.2f}"
+        if p is None:
+            p_str = "p=n/a"
+        elif p < 0.001:
+            p_str = "p<0.001"
+        else:
+            p_str = f"p={p:.2f}"
         return f"{ls:+.2f} [{lo:.1f}–{hi:.1f}] {p_str}"
 
     def _fmt_ci(ci: Dict, is_dup: bool) -> str:
@@ -4691,7 +4713,7 @@ def _render_change_attribution_table(item: Dict) -> str:
         pe  = ci.get("point_effect")
         lo  = ci.get("ci_lo")
         hi  = ci.get("ci_hi")
-        if pe is None:
+        if pe is None or lo is None or hi is None:
             return "—"
         # Defense-in-depth: reject values that survived serialisation from
         # a pre-fix run (BSTS divergence → degenerate counterfactual).
@@ -4705,7 +4727,7 @@ def _render_change_attribution_table(item: Dict) -> str:
         theta = dml.get("theta")
         lo    = dml.get("theta_ci_lo")
         hi    = dml.get("theta_ci_hi")
-        if theta is None:
+        if theta is None or lo is None or hi is None:
             return "—"
         return f"{theta:+.2f} [{lo:.1f}–{hi:.1f}]"
 
@@ -5084,6 +5106,12 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     summary["change_attribution_table_md"] = _render_change_attribution_table(item)
 
     # Pre-render all-placement summary so prose and Source always cite the same numbers
+    _PLACEMENT_LABEL = {
+        "PLACEMENT_TOP_OF_SEARCH":  "Top of Search on-Amazon",
+        "PLACEMENT_REST_OF_SEARCH": "Other on-Amazon",
+        "PLACEMENT_PRODUCT_PAGE":   "Detail Page on-Amazon",
+        "OFF_AMAZON":               "Off Amazon",
+    }
     _PLACEMENT_SHORT = {
         "PLACEMENT_TOP_OF_SEARCH":  "TOS",
         "PLACEMENT_REST_OF_SEARCH": "Other",
@@ -5103,6 +5131,23 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         )
     summary["placement_summary_str"] = " \\| ".join(_p_parts) if _p_parts else "—"
 
+    # Pre-compute placement modifier note so the LLM never has to infer modifier status.
+    # placement_configured_pcts is empty when the campaign API returned no modifier data
+    # (field absent or None for all campaigns) — that means "unknown", NOT "confirmed 0%".
+    if _placement_mods:
+        _mod_parts = [
+            f"{_PLACEMENT_LABEL.get(_pk, _pk)} {_mv:.0f}% boost"
+            for _pk, _mv in _placement_mods.items()
+        ]
+        summary["placement_modifier_note"] = (
+            "Configured modifiers: " + "; ".join(_mod_parts) + "."
+        )
+    else:
+        summary["placement_modifier_note"] = (
+            "Placement bid modifier data not available in campaign API response — "
+            "modifier status unknown (do not assume 0%)."
+        )
+
     # Pre-render competitor price sample metadata so n_competitors/date_from are never confused
     # with avg_daily_count by the LLM
     _cpm = item.get("competitor_price_meta") or {}
@@ -5118,9 +5163,19 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     else:
         summary["competitor_price_summary_str"] = "—"
 
-    # Pre-render top-3 high-ACOS campaigns (sorted desc) so LLM prose and Source always agree
+    # Pre-render top-3 high-ACOS campaigns (sorted desc) so LLM prose and Source always agree.
+    # Filter to ENABLED campaigns only: paused campaigns are not "operating" and their high
+    # historical ACOS has no current actionable path (they would receive maintain/P2 in
+    # campaign_actions), so including them creates a false "3 high-ACOS campaigns" signal
+    # that doesn't match the action items.
+    _enabled_cids = {
+        str(c.get("campaign_id", ""))
+        for c in (item.get("campaigns") or [])
+        if (c.get("state") or "").upper() == "ENABLED"
+    }
     _hac = sorted(
-        (r for r in (item.get("high_acos_campaigns") or []) if r.get("acos")),
+        (r for r in (item.get("high_acos_campaigns") or [])
+         if r.get("acos") and str(r.get("campaign_id", "")) in _enabled_cids),
         key=lambda r: r["acos"], reverse=True
     )[:3]
     summary["high_acos_campaigns_str"] = (
@@ -5293,16 +5348,17 @@ def _build_gate_calc_string(inv_gate: Dict) -> str:
     eff     = round((ta + recv + fct_c + cs) / ds) if ds else "?"
     lead    = inv_gate.get("inbound_lead_days")
     src     = inv_gate.get("inbound_lead_source", "unknown")
-    csd     = inv_gate.get("can_sell_days")
-    shipped = inv_gate.get("inbound_shipped", 0)
-    fct     = inv_gate.get("fc_transfer", 0)
-    ft_lead = inv_gate.get("fc_transfer_lead_days")
-    ft_src  = inv_gate.get("fc_transfer_lead_source", "config_default")
+    csd      = inv_gate.get("can_sell_days")
+    eff_days = inv_gate.get("effective_stock_days")
+    shipped  = inv_gate.get("inbound_shipped", 0)
+    fct      = inv_gate.get("fc_transfer", 0)
+    ft_lead  = inv_gate.get("fc_transfer_lead_days")
+    ft_src   = inv_gate.get("fc_transfer_lead_source", "config_default")
     # Linear release annotation — always shown when fc_transfer > 0
     fc_note = (
-        f" [fc_transfer linear: {fct} × min({csd}d,{ft_lead}d)/{ft_lead}d"
+        f" [fc_transfer linear: {fct} × min({eff_days}d,{ft_lead}d)/{ft_lead}d"
         f" (source: {ft_src}) = {fct_c:.1f} units]"
-        if fct > 0 and ft_lead and csd is not None
+        if fct > 0 and ft_lead and eff_days is not None
         else ""
     )
     excl = (
@@ -5430,6 +5486,9 @@ def _build_top5_actions(item: Dict) -> List[Dict]:
     def _best_delta(a: Dict) -> float:
         return abs(a.get("lp_delta_orders") or a.get("expected_order_delta") or 0)
 
+    def _spend_delta(a: Dict) -> float:
+        return abs(a.get("expected_spend_delta") or 0)
+
     # Campaigns that LP recommends pausing: keyword actions from these campaigns
     # are redundant (pausing the campaign already silences all its keywords).
     pausing_campaign_ids: set = {
@@ -5451,12 +5510,35 @@ def _build_top5_actions(item: Dict) -> List[Dict]:
         all_actions.append({**ka, "action_type": "keyword", "gated": bool(ka.get("prerequisite"))})
 
     all_actions.sort(
-        key=lambda a: (_PRIORITY_RANK.get(a.get("priority", "P2"), 3), -_best_delta(a))
+        key=lambda a: (
+            _PRIORITY_RANK.get(a.get("priority", "P2"), 3),
+            -_best_delta(a),    # primary: order impact (descending)
+            -_spend_delta(a),   # secondary tiebreaker: spend impact (descending)
+        )
     )
 
     result.extend(all_actions[: 5 - len(result)])
     _annotate_top5_groups(result)
     return result
+
+
+def _format_impact_line(total_spend: float, total_order: float) -> str:
+    """Return a human-readable impact summary with correct sign semantics.
+
+    "Saves" implies a positive saving, so the dollar amount must be unsigned.
+    Keeps the signed Δ for order deltas to convey direction explicitly.
+    """
+    parts: List[str] = []
+    if total_spend < -0.004:
+        parts.append(f"saves ${abs(total_spend):.2f} spend/day")
+    elif total_spend > 0.004:
+        parts.append(f"adds +${total_spend:.2f} spend/day")
+
+    if abs(total_order) >= 0.005:
+        sign = "+" if total_order > 0 else "−"
+        parts.append(f"{sign}{abs(total_order):.2f} orders/day")
+
+    return (", ".join(parts) + " *(assuming CVR and CTR remain stable)*") if parts else "no measurable expected impact"
 
 
 def _annotate_top5_groups(top5: List[Dict]) -> None:
@@ -5479,10 +5561,12 @@ def _annotate_top5_groups(top5: List[Dict]) -> None:
         total_spend = round(
             sum((e.get("expected_spend_delta") or 0) for e in entries), 2
         )
+        impact_line = _format_impact_line(total_spend, total_order)
         for e in entries:
             e["group_count"]               = count
             e["group_total_order_delta"]   = total_order
             e["group_total_spend_delta"]   = total_spend
+            e["group_impact_line"]         = impact_line
 
 
 def _count_action_groups(top5: List[Dict]) -> int:
@@ -5553,10 +5637,29 @@ def _render_lp_reallocation_table(item: Dict) -> str:
 
     residual = order_gap - net_do
     if abs(residual) > 0.05:
-        lines.append(
-            f"\n*Note: LP model order_gap ({order_gap:+.2f}) − table net ({net_do:+.2f}) = {residual:+.2f} orders/day. "
-            "Residual comes from LP-scope campaigns whose spend delta falls below the redistribution threshold (included in the LP model total but not redistributed in this table).*"
-        )
+        # Explain the source of the residual honestly.
+        # order_gap uses max(active_days) across LP-scope campaigns as the denominator for the
+        # current-orders baseline; per-campaign delta_orders use each campaign's own active_days.
+        # Short-lived campaigns have higher per-day current-order rates under their own denominator
+        # than under the aggregate max-active-days, so sum(delta_orders) diverges from order_gap.
+        if n_shown >= n_total:
+            residual_note = (
+                f"Note: order_gap ({order_gap:+.2f}) uses max campaign active days as the current-orders "
+                f"denominator; Δ ord/d column uses each campaign's own active days. Campaigns with fewer "
+                f"active days have higher per-day baselines, which widens the table net ({net_do:+.2f}) "
+                f"away from order_gap. This {residual:+.2f} discrepancy is a denominator-normalisation "
+                f"artefact — not from hidden campaigns (all {n_total} are shown)."
+            )
+        else:
+            n_hidden = n_total - n_shown
+            residual_note = (
+                f"Note: order_gap ({order_gap:+.2f}) − table net ({net_do:+.2f}) = {residual:+.2f} "
+                f"orders/day. Residual has two components: ({n_hidden} campaigns not shown because "
+                f"|Δ spend| < $1 and |Δ orders| < 0.1/day) plus a denominator-normalisation difference "
+                f"(order_gap uses max campaign active days; Δ ord/d uses per-campaign active days — "
+                f"short-lived campaigns have higher per-day baselines under their own denominator)."
+            )
+        lines.append(f"\n*{residual_note}*")
 
     return "\n".join(lines)
 
@@ -5577,12 +5680,16 @@ def _build_lp_narrative(item: Dict) -> Dict[str, str]:
     keyword_actions = item.get("keyword_actions") or []
     hold_keywords   = [ka for ka in keyword_actions if ka.get("action") == "hold_keyword"]
 
+    _denom = int(lp.get("sp_kw_daily_orders_denom") or 30)
     validation_table = (
         "| | Orders/day | Budget/day |\n"
         "|---|---|---|\n"
         f"| Current allocation (LP scope) | {actual_orders:.2f} | ${lp_scope_budget:.2f} |\n"
         f"| LP optimal allocation | {lp_orders:.2f} | ${lp_optimal_spend:.2f} |\n"
-        f"| Gap | {order_gap:+.2f} | — |"
+        f"| Gap | {order_gap:+.2f} | — |\n\n"
+        f"*Orders/day normalised by {_denom}d (max active days across LP-scope campaigns). "
+        f"The Budget Redistribution table below uses per-campaign active days as its denominator — "
+        f"its net Δ ord/d will differ from the Gap above due to this denominator difference.*"
     )
 
     narrative_parts: List[str] = []
@@ -5660,29 +5767,34 @@ def _build_lp_narrative(item: Dict) -> Dict[str, str]:
     )
 
     if gainers and order_gap > 0:
-        top    = max(gainers, key=lambda r: r.get("delta_orders") or 0)
-        share  = top["delta_orders"] / order_gap * 100
-        n_gain = len(gainers)
-        name   = (top.get("campaign_name") or "")[:28]
-        d_s    = top.get("delta_spend") or 0
-        d_o    = top.get("delta_orders") or 0
+        top        = max(gainers, key=lambda r: r.get("delta_orders") or 0)
+        n_gain     = len(gainers)
+        name       = (top.get("campaign_name") or "")[:28]
+        d_s        = top.get("delta_spend") or 0
+        d_o        = top.get("delta_orders") or 0
+        # Share is computed against the sum of table gainers (not order_gap) because
+        # order_gap uses max-campaign active days as its denominator while per-campaign
+        # delta_orders use per-campaign active days — the two totals differ by normalisation,
+        # so claiming "X% of order_gap" or "order_gap distributed across N campaigns" is wrong.
+        gainer_sum = round(sum(r.get("delta_orders") or 0 for r in gainers), 2)
+        share      = d_o / gainer_sum * 100 if gainer_sum > 0 else 0
         if share >= 50:
             top_gainer_sentence = (
                 f"LP plan increases {name} by ${d_s:.1f}/day for +{d_o:.2f} orders/day "
-                f"({share:.0f}% of the projected +{order_gap:.2f} orders/day) — "
-                + _action_suffix
+                f"({share:.0f}% of the +{gainer_sum:.2f} orders/day gain across {n_gain} "
+                f"gaining campaigns in the reallocation table) — " + _action_suffix
             )
         elif share >= 20:
             top_gainer_sentence = (
                 f"LP plan increases {name} by ${d_s:.1f}/day for +{d_o:.2f} orders/day "
-                f"({share:.0f}% of the projected +{order_gap:.2f} orders/day, "
-                f"spread across {n_gain} campaigns) — " + _action_suffix
+                f"({share:.0f}% of the +{gainer_sum:.2f} table gain, spread across {n_gain} "
+                f"campaigns) — " + _action_suffix
             )
         else:
             top_gainer_sentence = (
-                f"The projected +{order_gap:.2f} orders/day is distributed across {n_gain} campaigns; "
-                f"the top single gainer is {name} at +{d_o:.2f} orders/day ({share:.0f}%) — "
-                + _action_suffix
+                f"The +{gainer_sum:.2f} orders/day table gain is spread across {n_gain} campaigns; "
+                f"the top single gainer is {name} at +{d_o:.2f} orders/day ({share:.0f}% of table "
+                f"gain) — " + _action_suffix
             )
 
     narrative = " ".join(narrative_parts)
@@ -5760,6 +5872,14 @@ def _build_budget_interpretation(item: Dict) -> Dict[str, str]:
             for ca in (item.get("campaign_actions") or [])
             if ca.get("action") in ("pause_candidate", "archive_candidate", "decrease_budget")
         }
+        # Campaigns the LP plan cuts spend on — raising their budget contradicts the LP reallocation.
+        # LP reallocation table has campaign_name but no campaign_id; match by name (truncated to 40 chars
+        # for consistency with budget_coverage which also stores names at 40 chars).
+        _lp_cut_by_name: Dict[str, float] = {
+            r["campaign_name"][:40]: r["lp_spend"]
+            for r in (item.get("lp_reallocation_table") or [])
+            if r.get("delta_spend", 0) < 0
+        }
 
         n_active = sum(1 for c in starved if c.get("campaign_state") == "ENABLED")
         n_paused = sum(1 for c in starved if c.get("campaign_state") == "PAUSED")
@@ -5768,6 +5888,7 @@ def _build_budget_interpretation(item: Dict) -> Dict[str, str]:
             name   = (c.get("campaign_name") or str(c.get("campaign_id", "")))[:30]
             state  = c.get("campaign_state") or "UNKNOWN"
             cid    = str(c.get("campaign_id", ""))
+            cname  = (c.get("campaign_name") or "")
             ep     = c.get("exhausted_pct") or 0
             ap     = c.get("all_day_pct") or 0
             avg_s  = c.get("avg_daily_spend") or 0
@@ -5780,6 +5901,14 @@ def _build_budget_interpretation(item: Dict) -> Dict[str, str]:
                         f"  • [ACTIVE] {name}: exhausted {ep:.0f}% of active days, "
                         f"all-day coverage {ap:.0f}% on {act_d} active days "
                         f"— ACOS exceeds target; flagged for pause/reduction in campaign_actions "
+                        f"(do not raise budget)"
+                    )
+                elif cname in _lp_cut_by_name:
+                    # LP plan cuts this campaign's spend — raising budget contradicts LP reallocation.
+                    lp_s = _lp_cut_by_name[cname]
+                    lines.append(
+                        f"  • [ACTIVE] {name}: exhausted {ep:.0f}% of days, all-day coverage {ap:.0f}% "
+                        f"— LP plan reallocates spend to ${lp_s:.2f}/day; follow LP reallocation "
                         f"(do not raise budget)"
                     )
                 else:
