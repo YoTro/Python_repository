@@ -371,6 +371,8 @@ class AmazonAdsClient:
                 "keyword", "matchType", "keywordBid",
                 "campaignId", "adGroupId",
             ]
+            if time_unit == "DAILY":
+                metrics.append("date")
             type_filters = [{"field": "keywordType", "values": ["BROAD", "EXACT", "PHRASE"]}]
         elif report_type == "spCampaignsPlacement":
             # groupBy=["campaign","campaignPlacement"] + placementClassification column

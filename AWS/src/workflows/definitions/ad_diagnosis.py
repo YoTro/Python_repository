@@ -308,14 +308,14 @@ async def _ensure_performance(ctx: WorkflowContext) -> List[Dict]:
 @_l2_cached(
     l1_key_fn   = lambda ctx: _KEY_KW_PERFORMANCE,
     l2_ttl      = _TTL_PERF,
-    l2_parts_fn = lambda ctx: ("kw_performance", ctx.config.get("days", 30)),
+    l2_parts_fn = lambda ctx: ("kw_performance_daily_v1", ctx.config.get("days", 30)),
 )
 async def _ensure_keyword_performance(ctx: WorkflowContext) -> List[Dict]:
-    """spSearchTerm groups by search term but includes keywordText+matchType for keyword-level aggregation."""
+    """spSearchTerm daily report; each row is one (keyword, date) so callers can count active days."""
     records = await _ads_client(ctx).get_performance_report(
-        report_type="spSearchTerm", days=ctx.config.get("days", 30)
+        report_type="spSearchTerm", days=ctx.config.get("days", 30), time_unit="DAILY"
     )
-    logger.info(f"Fetched {len(records)} keyword performance records")
+    logger.info(f"Fetched {len(records)} keyword performance records (daily)")
     return records
 
 
@@ -989,21 +989,24 @@ async def _enrich_keyword_performance(item: Dict, ctx: WorkflowContext) -> Dict:
         cid = str(r.get("campaign_id", ""))
         key = (cid, r.get("keyword_text", ""), r.get("match_type", ""))
         if key not in agg:
-            agg[key] = {"spend": 0, "clicks": 0, "orders": 0, "impressions": 0, "sales": 0}
+            agg[key] = {"spend": 0, "clicks": 0, "orders": 0, "impressions": 0, "sales": 0, "active_dates": set()}
         agg[key]["spend"]       += r.get("spend", 0) or 0
         agg[key]["clicks"]      += r.get("clicks", 0) or 0
         agg[key]["orders"]      += r.get("orders", 0) or 0
         agg[key]["impressions"] += r.get("impressions", 0) or 0
         agg[key]["sales"]       += r.get("sales", 0) or 0
+        if r.get("clicks", 0) > 0 and r.get("date"):
+            agg[key]["active_dates"].add(r["date"])
 
     kw_performance = []
     for (cid, kw_text, match_type), v in agg.items():
         clicks = v["clicks"]
         if clicks < min_clicks:
             continue
-        avg_cpc      = round(v["spend"] / clicks, 4)
-        cvr          = round(v["orders"] / clicks, 4)
-        daily_clicks = round(clicks / days, 2)
+        avg_cpc           = round(v["spend"] / clicks, 4)
+        cvr               = round(v["orders"] / clicks, 4)
+        sp_kw_active_days = max(len(v["active_dates"]), 1)
+        daily_clicks      = round(clicks / sp_kw_active_days, 2)
         # ACOS = ad spend / attributed sales revenue (not spend/orders which gives cost/order)
         acos = round(v["spend"] / v["sales"] * 100, 2) if v["sales"] > 0 else None
         kw_performance.append({
@@ -1015,10 +1018,11 @@ async def _enrich_keyword_performance(item: Dict, ctx: WorkflowContext) -> Dict:
             "total_clicks":  clicks,
             "total_orders":  v["orders"],
             "impressions":   v["impressions"],
-            "avg_cpc":       avg_cpc,
-            "cvr":           cvr,
-            "daily_clicks":  daily_clicks,
-            "acos":          acos,
+            "avg_cpc":            avg_cpc,
+            "cvr":                cvr,
+            "daily_clicks":       daily_clicks,
+            "sp_kw_active_days":  sp_kw_active_days,
+            "acos":               acos,
         })
 
     # Sort by spend descending (most important keywords first)
@@ -2268,9 +2272,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         # Fix: use the max active_days across LP-scope campaigns so both sides of
         # order_gap are on the same "per running day" basis.
         # NOTE: this variable is ONLY used for order_gap and lp_summary storage.
-        # Inventory calculations (non_sp_kw_daily, lp_total_daily) keep the
-        # calendar-day sp_kw_daily_orders below to stay consistent with daily_sales
-        # (÷days) and avoid unit mixing in recommended_stock.
+        # lp_total_daily uses calendar-day sp_kw_daily_orders to stay consistent with
+        # daily_sales (÷days) and avoid unit mixing in recommended_stock.
         _lp_active_map = {c["campaign_id"]: c["active_days"]
                           for c in coverage if c.get("active_days")}
         lp_scope_active_days = max(
@@ -2279,7 +2282,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         )
         sp_kw_daily_orders_per_act = round(kw_scope_orders / lp_scope_active_days, 2)
 
-        # Calendar-day version kept for non_sp_kw_daily / inventory below.
+        # Calendar-day version used for lp_total_daily / inventory below.
         sp_kw_daily_orders = round(kw_scope_orders / days, 2)
         # auto_pt_daily_orders: orders from auto / product-targeting (not in LP scope).
         # Clamped to ≥ 0: if kw_scope > total_orders it means keyword-level report
@@ -2463,10 +2466,8 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         # fall back to ad-orders-only (underestimates consumption → optimistic).
         daily_consumption     = item.get("daily_sales") or sp_kw_daily_orders
         daily_consumption_src = item.get("daily_sales_source") or "ad_orders_only"
-        # LP adds lp_raw_orders ad orders/day on top of non-SP-keyword baseline
-        # (non_sp_kw_daily includes organic + auto/PT/SB/SD/DSP — everything except SP keywords)
-        non_sp_kw_daily = max(0.0, daily_consumption - sp_kw_daily_orders)
-        lp_total_daily  = non_sp_kw_daily + lp_raw_orders
+        # lp_total_daily: non-SP-keyword baseline (organic + auto/PT/SB/SD) + LP-projected SP orders
+        lp_total_daily = max(0.0, daily_consumption - sp_kw_daily_orders) + lp_raw_orders
         recommended_stock = round(lp_total_daily * stock_gate_days)
         # Inbound inventory offsets the procurement need using the SAME timing rule as the
         # effective_stock_days gate: inbound_shipped only counts if it arrives before
@@ -2574,6 +2575,16 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                     + a["optimized_clicks"] * raw_cvr_map.get(a["keyword"], 0.0)
                 )
 
+            # Per-campaign keyword-attributed orders from spSearchTerm (same scope as order_gap).
+            # Using _camp_cur_orders (spCampaigns) would include auto/PT orders that are outside
+            # LP scope, making norm_net_do structurally lower than order_gap by ~auto_pt_daily_orders
+            # × lp_scope_active_days.  Summing _camp_kw_orders over all campaigns = kw_scope_orders,
+            # so sum(norm_delta_orders) / lp_scope_active_days = order_gap exactly.
+            _camp_kw_orders: Dict[str, float] = {}
+            for kw in kw_perf:
+                cid = str(kw.get("campaign_id", ""))
+                _camp_kw_orders[cid] = _camp_kw_orders.get(cid, 0.0) + float(kw.get("total_orders", 0) or 0)
+
             _all_cids = lp_scoped_cids | set(camp_spend.keys())
             _realloc: List[Dict] = []
             for cid in _all_cids:
@@ -2593,17 +2604,22 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
                 name = (camp_meta.get(cid) or {}).get("name") or cid
                 active_days = _lp_denom(cid)
                 budget_cap = float((camp_meta.get(cid) or {}).get("daily_budget") or 0)
+                # norm_cur_orders: keyword-attributed orders (spSearchTerm, same scope as order_gap)
+                # divided by lp_scope_active_days (same denominator as order_gap).
+                # Both axes now match order_gap — sum(norm_delta_orders) = order_gap exactly.
+                norm_cur_orders = _camp_kw_orders.get(cid, 0.0) / lp_scope_active_days
                 _realloc.append({
-                    "campaign_name":  name,
-                    "acos_pct":       camp_acos,
-                    "active_days":    active_days,
-                    "budget_cap":     round(budget_cap, 2),
-                    "current_spend":  cur_spend,
-                    "lp_spend":       lp_spend_v,
-                    "delta_spend":    round(lp_spend_v - cur_spend, 2),
-                    "current_orders": cur_orders,
-                    "lp_orders":      lp_orders_v,
-                    "delta_orders":   round(lp_orders_v - cur_orders, 2),
+                    "campaign_name":       name,
+                    "acos_pct":            camp_acos,
+                    "active_days":         active_days,
+                    "budget_cap":          round(budget_cap, 2),
+                    "current_spend":       cur_spend,
+                    "lp_spend":            lp_spend_v,
+                    "delta_spend":         round(lp_spend_v - cur_spend, 2),
+                    "current_orders":      cur_orders,
+                    "lp_orders":           lp_orders_v,
+                    "delta_orders":        round(lp_orders_v - cur_orders, 2),
+                    "norm_delta_orders":   round(lp_orders_v - norm_cur_orders, 2),
                 })
             # Gainers first (delta_orders desc), then losers (delta_orders asc within negatives)
             _realloc.sort(key=lambda x: (-x["delta_orders"], -abs(x["delta_spend"])))
@@ -2611,9 +2627,10 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             # Net across ALL LP-scoped campaigns.
             # delta_spend = lp_optimal_spend − cur_spend; > 0 when campaigns underspent budgets.
             item["lp_reallocation_net"] = {
-                "delta_spend":  round(sum(r["delta_spend"]  for r in _realloc), 2),
-                "delta_orders": round(sum(r["delta_orders"] for r in _realloc), 2),
-                "n_total":      len(_realloc),
+                "delta_spend":       round(sum(r["delta_spend"]       for r in _realloc), 2),
+                "delta_orders":      round(sum(r["delta_orders"]      for r in _realloc), 2),
+                "norm_delta_orders": round(sum(r["norm_delta_orders"] for r in _realloc), 2),
+                "n_total":           len(_realloc),
             }
 
             # Show all significant movers: |delta_spend| ≥ $1 or |delta_orders| ≥ 0.1
@@ -4496,7 +4513,6 @@ _SNAPSHOT_FIELD_SOURCE: Dict[str, str] = {
     "daily_sales":              "total units sold ÷ lookback_days (ad + organic); source priority: order_metrics > ad_orders_only",
     "daily_sales_source":       "order_metrics = SP-API getOrderMetrics (ad+organic, most accurate); ad_orders_only = ad-attributed only (lower bound)",
     "sp_kw_daily_orders":       "lp_summary.sp_kw_daily_orders — spSearchTerm keyword-targeting orders ÷ lp_scope_active_days (per running day of LP-scope campaigns; denominator in lp_summary.sp_kw_daily_orders_denom)",
-    "non_sp_kw_daily":          "daily_sales − sp_kw_daily_orders — orders NOT from SP keyword campaigns (organic + auto/PT + SB/SD/DSP); NOTE: denominators differ (daily_sales ÷ lookback_days, sp_kw_daily_orders ÷ lp_scope_active_days) — use organic_daily for true organic estimate",
     "effective_stock_days":     "(total_available + inbound_receiving + fc_transfer_contribution + catchable_shipped) ÷ daily_sales — near-term runway for LP gate",
     "total_available":          "FBA Inventory API — fulfillable units (point-in-time)",
     "inbound_receiving":        "FBA inbound — at FC being checked in (1-2d, certain)",
@@ -4873,10 +4889,6 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
         "sp_kw_daily_orders":        round(
             (item.get("lp_summary") or {}).get("sp_kw_daily_orders") or 0, 2
         ) or None,
-        "non_sp_kw_daily":           round(max(0.0,
-            float(item.get("daily_sales") or 0)
-            - float(((item.get("lp_summary") or {}).get("sp_kw_daily_orders")) or 0)
-        ), 2) or None,
         # organic_daily: daily_sales minus ALL ad-attributed orders (SP + SB + SD).
         # Uses purchases14d for SB/SD vs purchases7d for SP — attribution windows differ.
         # None when daily_sales is unavailable; None (not 0) when sb/sd data absent.
@@ -5600,7 +5612,9 @@ def _render_lp_reallocation_table(item: Dict) -> str:
     """
     rows      = item.get("lp_reallocation_table") or []
     net       = item.get("lp_reallocation_net") or {}
-    order_gap = float((item.get("lp_summary") or {}).get("order_gap") or 0)
+    lp_sum    = item.get("lp_summary") or {}
+    order_gap = float(lp_sum.get("order_gap") or 0)
+    _norm_d   = int(lp_sum.get("sp_kw_daily_orders_denom") or 30)
 
     if order_gap <= 0 or len(rows) < 3:
         return ""
@@ -5608,56 +5622,54 @@ def _render_lp_reallocation_table(item: Dict) -> str:
         return ""
 
     lines = [
-        "| Campaign | ACOS% | Act.d | Cur $/d | Cap $/d | LP $/d | Δ $/d | Δ ord/d |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Campaign | ACOS% | Act.d | Cur $/d | Cap $/d | LP $/d | Δ $/d | Δ ord/d | Norm Δ ord/d |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
-        name     = (r.get("campaign_name") or "")[:28]
-        acos_str = f"{r['acos_pct']:.1f}" if r.get("acos_pct") is not None else "—"
-        cur_s    = r.get("current_spend") or 0
-        active_d = r.get("active_days") or "—"
-        cap_s    = r.get("budget_cap") or 0
-        lp_s     = r.get("lp_spend") or 0
-        d_s      = r.get("delta_spend") or 0
-        d_o      = r.get("delta_orders") or 0
+        name      = (r.get("campaign_name") or "")[:28]
+        acos_str  = f"{r['acos_pct']:.1f}" if r.get("acos_pct") is not None else "—"
+        cur_s     = r.get("current_spend") or 0
+        active_d  = r.get("active_days") or "—"
+        cap_s     = r.get("budget_cap") or 0
+        lp_s      = r.get("lp_spend") or 0
+        d_s       = r.get("delta_spend") or 0
+        d_o       = r.get("delta_orders") or 0
+        norm_d_o  = r.get("norm_delta_orders") or 0
         lines.append(
             f"| {name} | {acos_str} | {active_d} | {cur_s:.1f} | {cap_s:.1f} | "
-            f"{lp_s:.1f} | {d_s:+.1f} | {d_o:+.2f} |"
+            f"{lp_s:.1f} | {d_s:+.1f} | {d_o:+.2f} | {norm_d_o:+.2f} |"
         )
 
-    n_total   = net.get("n_total", len(rows))
-    n_shown   = len(rows)
-    net_ds    = net.get("delta_spend") or 0
-    net_do    = net.get("delta_orders") or 0
+    n_total      = net.get("n_total", len(rows))
+    n_shown      = len(rows)
+    net_ds       = net.get("delta_spend") or 0
+    net_do       = net.get("delta_orders") or 0
+    norm_net_do  = net.get("norm_delta_orders") or 0
     if n_shown < n_total:
         net_label = f"**Net ({n_total} campaigns; showing top {n_shown} by \\|Δ orders/day\\|)**"
     else:
         net_label = f"**Net ({n_total} campaigns)**"
-    lines.append(f"| {net_label} | | | | | | **{net_ds:+.1f}** | **{net_do:+.2f}** |")
+    lines.append(
+        f"| {net_label} | | | | | | **{net_ds:+.1f}** | **{net_do:+.2f}** | **{norm_net_do:+.2f}** |"
+    )
 
-    residual = order_gap - net_do
-    if abs(residual) > 0.05:
-        # Explain the source of the residual honestly.
-        # order_gap uses max(active_days) across LP-scope campaigns as the denominator for the
-        # current-orders baseline; per-campaign delta_orders use each campaign's own active_days.
-        # Short-lived campaigns have higher per-day current-order rates under their own denominator
-        # than under the aggregate max-active-days, so sum(delta_orders) diverges from order_gap.
+    # Δ ord/d uses per-campaign active days; Norm Δ ord/d uses lp_scope_active_days (_norm_d)
+    # so norm_net_do should reconcile with order_gap.  Any residual reflects hidden campaigns.
+    norm_residual = order_gap - norm_net_do
+    if abs(norm_residual) > 0.05:
         if n_shown >= n_total:
             residual_note = (
-                f"Note: order_gap ({order_gap:+.2f}) uses max campaign active days as the current-orders "
-                f"denominator; Δ ord/d column uses each campaign's own active days. Campaigns with fewer "
-                f"active days have higher per-day baselines, which widens the table net ({net_do:+.2f}) "
-                f"away from order_gap. This {residual:+.2f} discrepancy is a denominator-normalisation "
-                f"artefact — not from hidden campaigns (all {n_total} are shown)."
+                f"Note: Norm Δ ord/d net ({norm_net_do:+.2f}) vs order_gap ({order_gap:+.2f}) "
+                f"= {norm_residual:+.2f} (rounding only; both use {_norm_d}d denominator and "
+                f"spSearchTerm keyword-attributed orders as the baseline)."
             )
         else:
             n_hidden = n_total - n_shown
             residual_note = (
-                f"Note: order_gap ({order_gap:+.2f}) − table net ({net_do:+.2f}) = {residual:+.2f} "
-                f"orders/day. Residual has two components: ({n_hidden} campaigns not shown because "
-                f"|Δ spend| < $1 and |Δ orders| < 0.1/day) plus a denominator-normalisation difference "
-                f"(order_gap uses max campaign active days; Δ ord/d uses per-campaign active days — "
-                f"short-lived campaigns have higher per-day baselines under their own denominator)."
+                f"Note: order_gap ({order_gap:+.2f}) − Norm Δ net ({norm_net_do:+.2f}) = {norm_residual:+.2f} "
+                f"orders/day from {n_hidden} campaigns not shown (|Δ spend| < $1 and |Δ orders| < 0.1/day). "
+                f"Δ ord/d net ({net_do:+.2f}) differs further because it uses per-campaign active days "
+                f"rather than the shared {_norm_d}d denominator."
             )
         lines.append(f"\n*{residual_note}*")
 
@@ -5688,8 +5700,9 @@ def _build_lp_narrative(item: Dict) -> Dict[str, str]:
         f"| LP optimal allocation | {lp_orders:.2f} | ${lp_optimal_spend:.2f} |\n"
         f"| Gap | {order_gap:+.2f} | — |\n\n"
         f"*Orders/day normalised by {_denom}d (max active days across LP-scope campaigns). "
-        f"The Budget Redistribution table below uses per-campaign active days as its denominator — "
-        f"its net Δ ord/d will differ from the Gap above due to this denominator difference.*"
+        f"The Budget Redistribution table below shows two delta columns: Δ ord/d (per-campaign "
+        f"active days) and Norm Δ ord/d (same {_denom}d denominator as the Gap above — use its "
+        f"net row to reconcile with the Gap).*"
     )
 
     narrative_parts: List[str] = []
