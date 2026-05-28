@@ -57,6 +57,7 @@ import logging
 import math
 import os
 import re
+from enum import Enum
 from datetime import datetime, timedelta, date as _date_cls, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -998,11 +999,26 @@ async def _enrich_keyword_performance(item: Dict, ctx: WorkflowContext) -> Dict:
         if r.get("clicks", 0) > 0 and r.get("date"):
             agg[key]["active_dates"].add(r["date"])
 
+    invisible_kws: List[Dict] = []
     kw_performance = []
     for (cid, kw_text, match_type), v in agg.items():
-        clicks = v["clicks"]
+        clicks      = v["clicks"]
+        impressions = v["impressions"]
+
+        readiness = _classify_keyword_readiness(clicks, impressions)
+        if readiness == CampaignReadiness.INVISIBLE:
+            invisible_kws.append({
+                "campaign_id":  cid,
+                "keyword_text": kw_text,
+                "match_type":   match_type,
+                "impressions":  impressions,
+                "readiness":    CampaignReadiness.INVISIBLE,
+            })
+            continue
+
         if clicks < min_clicks:
             continue
+
         avg_cpc           = round(v["spend"] / clicks, 4)
         cvr               = round(v["orders"] / clicks, 4)
         sp_kw_active_days = max(len(v["active_dates"]), 1)
@@ -1028,7 +1044,7 @@ async def _enrich_keyword_performance(item: Dict, ctx: WorkflowContext) -> Dict:
     # Sort by spend descending (most important keywords first)
     kw_performance.sort(key=lambda x: x["total_spend"], reverse=True)
 
-    return {"keyword_performance": kw_performance}
+    return {"keyword_performance": kw_performance, "invisible_keywords": invisible_kws}
 
 
 async def _enrich_placement(item: Dict, ctx: WorkflowContext) -> Dict:
@@ -1419,19 +1435,69 @@ def _compute_campaign_budget_coverage(
     return results, cap_by_date
 
 
-_MIN_KWS_FOR_STRATUM = 3   # min keyword count for a match-type-specific μ
-_MIN_CLICKS_FOR_MU   = 20  # min clicks per keyword to include in μ calculation
+class CampaignReadiness(str, Enum):
+    ACTIVE    = "active"     # has clicks — proceed with CVR estimation
+    NEW       = "new"        # no clicks, impressions below threshold — too early to judge
+    INVISIBLE = "invisible"  # impressions present but no clicks — CTR/bid structural issue
+
+_INVISIBLE_IMPRESSION_FLOOR = 100   # impressions to conclude CTR ≈ 0 (not just unlucky)
+
+_MIN_KWS_FOR_STRATUM = 3    # min keyword count for a match-type-specific μ
+_MIN_CLICKS_FOR_MU   = 20   # min clicks per keyword to include in μ calculation
+_MIN_KWS_EMPIRICAL_K = 5    # min stratum size for reliable K_MAX estimation
+_K_CVR_CEILING       = 20.0 # hard upper bound for empirical K_MAX
 
 
-def _compute_cvr_prior(kw_perf: List[Dict]) -> Tuple[Dict[str, float], float]:
+def _empirical_k(
+    pairs: List[Tuple[int, float]],
+    mu: float,
+    k_ceil: float = _K_CVR_CEILING,
+    min_kws: int  = _MIN_KWS_EMPIRICAL_K,
+) -> float:
     """
-    Compute click-weighted mean CVR (μ) per match type and globally.
+    Stratum-specific k_max from noise-corrected cross-keyword CVR dispersion.
+
+    Higher between-keyword CVR spread → higher k_max → stronger shrinkage →
+    more clicks required before observed CVR is trusted (consistent with
+    BROAD needing more evidence than EXACT before CVR stabilises).
+
+    Normalises signal variance by the maximum possible Bernoulli variance
+    μ(1−μ), giving σ_ratio ∈ [0, 1]:
+      σ²_signal = σ²_observed − μ(1−μ)/n̄_harmonic   (noise correction)
+      σ_ratio   = σ²_signal / μ(1−μ)
+      k_hat     = K_CVR_MIN + σ_ratio × (k_ceil − K_CVR_MIN)
+
+    Falls back to _K_CVR_MAX when stratum is too small or sampling noise
+    dominates (σ²_signal ≤ 0 — true between-keyword dispersion undetectable).
+    """
+    from src.intelligence.processors.optimizer_ad_budget import _K_CVR_MAX, _K_CVR_MIN
+    if len(pairs) < min_kws:
+        return _K_CVR_MAX
+
+    total_n = sum(n for n, _ in pairs)
+    n_harm  = len(pairs) / sum(1.0 / n for n, _ in pairs)
+
+    s2_obs    = sum(n * (r - mu) ** 2 for n, r in pairs) / (total_n - 1)
+    s2_signal = s2_obs - mu * (1.0 - mu) / n_harm
+    if s2_signal <= 0:
+        return _K_CVR_MAX  # noise dominates — true dispersion undetectable, use neutral default
+
+    sigma_ratio = min(s2_signal / (mu * (1.0 - mu)), 1.0)
+    return _K_CVR_MIN + sigma_ratio * (k_ceil - _K_CVR_MIN)
+
+
+def _compute_cvr_prior(
+    kw_perf: List[Dict],
+) -> Tuple[Dict[str, float], Dict[str, float], float, float]:
+    """
+    Compute click-weighted mean CVR (μ) and empirical Beta precision (K_MAX)
+    per match type and globally.
 
     Keywords below _MIN_CLICKS_FOR_MU are excluded — too noisy to anchor the prior.
     Match types with fewer than _MIN_KWS_FOR_STRATUM qualifying keywords fall back
-    to the global μ so small keyword pools don't produce unstable per-stratum priors.
+    to global values so small keyword pools don't produce unstable per-stratum priors.
 
-    Returns (mu_by_match_type, global_mu).
+    Returns (mu_by_match_type, k_by_match_type, global_mu, global_k).
     """
     from collections import defaultdict
     buckets: Dict[str, List[Tuple[int, float]]] = defaultdict(list)
@@ -1452,12 +1518,27 @@ def _compute_cvr_prior(kw_perf: List[Dict]) -> Tuple[Dict[str, float], float]:
         return sum(c * v for c, v in pairs) / total_c if total_c > 0 else None
 
     global_mu = _wmean(all_pairs) or 0.02
+    global_k  = _empirical_k(all_pairs, global_mu)
 
     mu_by_match_type: Dict[str, float] = {}
+    k_by_match_type:  Dict[str, float] = {}
     for mt, pairs in buckets.items():
-        mu_by_match_type[mt] = _wmean(pairs) if len(pairs) >= _MIN_KWS_FOR_STRATUM else global_mu
+        if len(pairs) >= _MIN_KWS_FOR_STRATUM:
+            mu_by_match_type[mt] = _wmean(pairs)
+            k_by_match_type[mt]  = _empirical_k(pairs, mu_by_match_type[mt])
+        else:
+            mu_by_match_type[mt] = global_mu
+            k_by_match_type[mt]  = global_k
 
-    return mu_by_match_type, global_mu
+    return mu_by_match_type, k_by_match_type, global_mu, global_k
+
+
+def _classify_keyword_readiness(clicks: int, impressions: int) -> CampaignReadiness:
+    if clicks > 0:
+        return CampaignReadiness.ACTIVE
+    if impressions >= _INVISIBLE_IMPRESSION_FLOOR:
+        return CampaignReadiness.INVISIBLE
+    return CampaignReadiness.NEW
 
 
 def _build_lp_input(
@@ -1469,9 +1550,13 @@ def _build_lp_input(
     daily_perf: Optional[List[Dict]] = None,
     mu_by_match_type: Optional[Dict[str, float]] = None,
     global_mu: float = 0.02,
+    k_by_match_type: Optional[Dict[str, float]] = None,
+    global_k: Optional[float] = None,
 ) -> List[Dict]:
+    from src.intelligence.processors.optimizer_ad_budget import _K_CVR_MAX
     click_headroom = _p90_headroom(daily_perf or [], headroom)
     mu_map = mu_by_match_type or {}
+    k_map  = k_by_match_type  or {}
     lp_input: List[Dict] = []
     for kw in kw_perf:
         if not kw.get("avg_cpc") or not kw.get("cvr"):
@@ -1483,7 +1568,9 @@ def _build_lp_input(
         is_brand   = kw_text.lower() in {b.lower() for b in brand_kws}
         max_daily  = max(round(kw["daily_clicks"] * click_headroom, 1), 1.0)
         min_daily  = round(kw["daily_clicks"] * 0.3, 1) if is_brand else 0.0
-        prior_mu   = mu_map.get(match_type.upper(), global_mu)
+        mt_upper   = match_type.upper()
+        prior_mu   = mu_map.get(mt_upper, global_mu)
+        k_max      = k_map.get(mt_upper, global_k if global_k is not None else _K_CVR_MAX)
         lp_input.append({
             "name":                f"{kw_text}|{match_type}|{cid}",
             "avg_cpc":             kw["avg_cpc"],
@@ -1491,6 +1578,7 @@ def _build_lp_input(
             "sample_clicks":       kw.get("total_clicks", 0),
             "sample_orders":       kw.get("total_orders", 0),
             "prior_mu":            prior_mu,
+            "k_max":               k_max,
             "daily_clicks":        kw["daily_clicks"],   # historical avg; source of truth for cur_clicks
             "max_daily_clicks":    max_daily,
             "min_daily_clicks":    min_daily,
@@ -2105,9 +2193,9 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
 
       eff_cpc_i  = avg_cpc_i × bidding_strategy_multiplier × placement_multiplier
       pess_cvr_i = (μ_i·s_i + orders_i) / (s_i + clicks_i)   [Beta-Binomial shrinkage]
-      s_i = k / μ_i,   k = _K_CVR_PRIOR ≈ 1.0 expected conversion to trust data
-      μ_i = click-weighted mean CVR for this keyword's match type (falls back to
-            account-level mean when the match-type stratum has < 3 qualifying keywords)
+      s_i = k_i / μ_i,   k_i ∈ [K_min, K_max] driven by posterior variance
+      μ_i = click-weighted mean CVR for this keyword's match type
+      k_i self-calibrates: new campaigns get k ≈ K_min (weak prior), mature k ≈ K_max.
 
     Adds to each item:
       lp_summary, lp_top_allocations, lp_zero_keywords, lp_maxed_keywords,
@@ -2186,12 +2274,14 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         budget_metrics = _compute_daily_budget_metrics(asin_daily, cap_by_date, days)
         item.update(budget_metrics)
 
-        mu_by_mt, global_mu = _compute_cvr_prior(kw_perf)
+        mu_by_mt, k_by_mt, global_mu, global_k = _compute_cvr_prior(kw_perf)
         lp_input = _build_lp_input(
             kw_perf, camp_meta, brand_kws, headroom, placement_multiplier,
             daily_perf=asin_daily,
             mu_by_match_type=mu_by_mt,
             global_mu=global_mu,
+            k_by_match_type=k_by_mt,
+            global_k=global_k,
         )
         lp_scope_cids_pre = {str(kw.get("campaign_id", "")) for kw in lp_input if kw.get("campaign_id")}
         if not lp_input:
@@ -4053,7 +4143,7 @@ def _chart_inventory_burndown(item: Dict, store_today: Optional[str] = None) -> 
     ax.text(can_sell, total * 0.05, f"  Stockout\n  {stockout_date.isoformat()}",
             color=_C["red"], fontsize=8, va="bottom")
     ax.fill_between(x, y, 0, alpha=0.08, color=_C["blue"])
-    risk_flag = "⚠️ " if item.get("inventory_risk") else ""
+    risk_flag = "⚠ " if item.get("inventory_risk") else ""
     ax.set_xlabel("Days from today", fontsize=9)
     ax.set_ylabel("Units available", fontsize=9)
     ax.set_title(f"{item.get('asin','?')} — {risk_flag}Inventory Burn-down  "

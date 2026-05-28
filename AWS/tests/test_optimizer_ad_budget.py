@@ -14,9 +14,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.intelligence.processors.optimizer_ad_budget import (
     AdBudgetOptimizer,
-    _pessimistic_cvr,
+    _beta_cvr,
+    _adaptive_k,
     _STRATEGY_CPC_MULTIPLIER,
-    _CONFIDENCE_PRIOR,
+    _K_CVR_MIN,
+    _K_CVR_MAX,
 )
 
 DEV_JSON = os.path.join(os.path.dirname(__file__), "../../ad-diag-B0FXFGMD7Z-dev.json")
@@ -31,21 +33,28 @@ def _kw(
     max_clicks=50.0,
     min_clicks=0.0,
     sample_clicks=100,
+    prior_mu=0.05,
+    k_max=None,
     campaign_id="C1",
     strategy="Fixed bids",
     placement_mult=1.0,
 ):
-    return {
+    d = {
         "name":                name,
         "avg_cpc":             avg_cpc,
         "estimated_cvr":       cvr,
         "max_daily_clicks":    max_clicks,
         "min_daily_clicks":    min_clicks,
         "sample_clicks":       sample_clicks,
+        "sample_orders":       round(cvr * sample_clicks),  # consistent with estimated_cvr
+        "prior_mu":            prior_mu,
         "campaign_id":         campaign_id,
         "bidding_strategy":    strategy,
         "placement_multiplier": placement_mult,
     }
+    if k_max is not None:
+        d["k_max"] = k_max
+    return d
 
 
 def _solve(keywords, total_budget, **kwargs):
@@ -65,27 +74,106 @@ def _camp_spend(result, cid):
     return result["camp_spend"].get(cid, 0.0)
 
 
-# ─────────────────────────── _pessimistic_cvr ───────────────────────────────
+# ─────────────────────────── _beta_cvr / _adaptive_k ────────────────────────
 
-class TestPessimisticCVR:
-    def test_zero_clicks_handled_by_caller(self):
-        # optimizer itself handles clicks==0 with ×0.5 fallback; test the function directly
-        assert _pessimistic_cvr(0.10, 0) == pytest.approx(0.0)  # sqrt(0/30) = 0
+class TestBetaCVR:
+    def test_zero_clicks_falls_back_to_prior(self):
+        # With no data the estimate collapses to the prior mean μ (not 0)
+        result = _beta_cvr(raw_cvr=0.20, clicks=0, orders=0, prior_mu=0.05)
+        assert result == pytest.approx(0.05, rel=0.05)
 
     def test_high_clicks_approaches_raw(self):
-        # At 10 000 clicks weight ≈ sqrt(10000/10030) ≈ 0.9985
-        result = _pessimistic_cvr(0.10, 10_000)
-        assert result == pytest.approx(0.10, abs=0.001)
+        # With abundant data the estimate converges to the observed CVR
+        result = _beta_cvr(raw_cvr=0.10, clicks=10_000, orders=1_000, prior_mu=0.05)
+        assert result == pytest.approx(0.10, abs=0.005)
 
-    def test_prior_clicks_gives_half_weight(self):
-        # At clicks == CONFIDENCE_PRIOR: weight = sqrt(30/60) = sqrt(0.5) ≈ 0.707
-        result = _pessimistic_cvr(0.10, _CONFIDENCE_PRIOR)
-        assert result == pytest.approx(0.10 * math.sqrt(0.5), rel=1e-6)
+    def test_estimate_between_prior_and_raw(self):
+        # With moderate data the estimate sits between prior (0.05) and raw (0.20)
+        result = _beta_cvr(raw_cvr=0.20, clicks=30, orders=6, prior_mu=0.05)
+        assert 0.05 < result < 0.20
 
     def test_low_clicks_penalised(self):
-        high_sample = _pessimistic_cvr(0.10, 1000)
-        low_sample  = _pessimistic_cvr(0.10, 5)
+        # More data → estimate closer to raw CVR
+        high_sample = _beta_cvr(0.10, clicks=1_000, orders=100, prior_mu=0.05)
+        low_sample  = _beta_cvr(0.10, clicks=5,     orders=0,   prior_mu=0.05)
         assert low_sample < high_sample
+
+    def test_adaptive_k_weak_for_new_campaigns(self):
+        # New campaign with strong CVR signal (far above prior) → k ≈ K_min → weak prior
+        k_new    = _adaptive_k(clicks=5,    orders=1,   prior_mu=0.05)
+        k_mature = _adaptive_k(clicks=1000, orders=200, prior_mu=0.05)
+        assert k_new    == pytest.approx(_K_CVR_MIN, abs=0.5)
+        assert k_mature == pytest.approx(_K_CVR_MAX, abs=0.5)
+        assert k_new < k_mature
+
+    def test_adaptive_k_increases_with_evidence(self):
+        # CVR kept at prior_mu throughout → each batch confirms the prior →
+        # posterior tightens → confidence rises → k grows
+        prior_mu = 0.05
+        k5    = _adaptive_k(clicks=5,    orders=0,   prior_mu=prior_mu)  # CVR≈0%
+        k100  = _adaptive_k(clicks=100,  orders=5,   prior_mu=prior_mu)  # CVR=5%=prior
+        k2000 = _adaptive_k(clicks=2000, orders=100, prior_mu=prior_mu)  # CVR=5%=prior
+        assert k5 < k100 < k2000
+
+
+# ─────────────────────────── k_max per-stratum maturity ─────────────────────
+
+class TestKMax:
+    def test_missing_k_max_uses_default(self):
+        # keyword without k_max field → falls back to _K_CVR_MAX → same as explicit default
+        kw_implicit = _kw("kw|EXACT", cvr=0.10, sample_clicks=50, prior_mu=0.10)
+        kw_explicit = _kw("kw|EXACT", cvr=0.10, sample_clicks=50, prior_mu=0.10, k_max=_K_CVR_MAX)
+        r_implicit = _solve([kw_implicit], 50.0)
+        r_explicit = _solve([kw_explicit], 50.0)
+        assert r_implicit["status"] == "OPTIMAL"
+        assert r_explicit["status"] == "OPTIMAL"
+        assert (
+            r_implicit["allocation"][0]["pessimistic_cvr"]
+            == pytest.approx(r_explicit["allocation"][0]["pessimistic_cvr"], abs=1e-6)
+        )
+
+    def test_high_k_max_means_more_shrinkage(self):
+        # High k_max → prior is "harder" → more shrinkage towards prior_mu (0.05)
+        # when observed CVR (0.20) is well above prior
+        kw_low_k  = _kw("kw|EXACT", cvr=0.20, sample_clicks=50, prior_mu=0.05, k_max=0.5)
+        kw_high_k = _kw("kw|EXACT", cvr=0.20, sample_clicks=50, prior_mu=0.05, k_max=15.0)
+        r_low  = _solve([kw_low_k],  100.0)
+        r_high = _solve([kw_high_k], 100.0)
+        assert r_low["status"] == "OPTIMAL"
+        assert r_high["status"] == "OPTIMAL"
+        # High k_max → more shrinkage → lower pessimistic CVR when raw > prior
+        cvr_low  = r_low["allocation"][0]["pessimistic_cvr"]
+        cvr_high = r_high["allocation"][0]["pessimistic_cvr"]
+        assert cvr_high < cvr_low
+
+    def test_k_max_does_not_affect_spend(self):
+        # k_max changes CVR estimate but optimizer objective is to maximise orders;
+        # budget is the binding constraint (not orders), so total spend stays the same
+        kw_low_k  = _kw("kw|EXACT", avg_cpc=1.0, cvr=0.20, max_clicks=200,
+                         sample_clicks=50, prior_mu=0.05, k_max=0.5)
+        kw_high_k = _kw("kw|EXACT", avg_cpc=1.0, cvr=0.20, max_clicks=200,
+                         sample_clicks=50, prior_mu=0.05, k_max=15.0)
+        r_low  = _solve([kw_low_k],  50.0)
+        r_high = _solve([kw_high_k], 50.0)
+        assert r_low["status"]  == "OPTIMAL"
+        assert r_high["status"] == "OPTIMAL"
+        assert _alloc_spend(r_low)  == pytest.approx(50.0, abs=0.5)
+        assert _alloc_spend(r_high) == pytest.approx(50.0, abs=0.5)
+
+    def test_broad_exact_different_k_max(self):
+        # BROAD keyword with high k_max (noisy match type → needs more data)
+        # vs EXACT keyword with low k_max (stable match type → trusts CVR quickly)
+        # Both have same raw CVR=0.15 but same click count; BROAD gets more shrinkage
+        kw_exact = _kw("kw|EXACT", cvr=0.15, sample_clicks=60, prior_mu=0.05, k_max=1.0)
+        kw_broad = _kw("kw|BROAD", cvr=0.15, sample_clicks=60, prior_mu=0.05, k_max=10.0)
+        r_exact = _solve([kw_exact], 100.0)
+        r_broad = _solve([kw_broad], 100.0)
+        assert r_exact["status"] == "OPTIMAL"
+        assert r_broad["status"] == "OPTIMAL"
+        cvr_exact = r_exact["allocation"][0]["pessimistic_cvr"]
+        cvr_broad = r_broad["allocation"][0]["pessimistic_cvr"]
+        # BROAD k_max=10 → heavier shrinkage → lower pessimistic CVR
+        assert cvr_broad < cvr_exact
 
 
 # ─────────────────────────── C1: Global budget ──────────────────────────────
@@ -147,32 +235,29 @@ class TestC2CampaignBudgets:
 
 class TestC3TargetACOS:
     def test_high_cpc_kw_excluded_when_acos_tight(self):
-        # kw1: cheap, efficient → should be allocated
-        # kw2: expensive, same CVR → ACOS would exceed target, should be zeroed/limited
+        # expensive: eff_cpc=5.00, pess_cvr≈0.27 → ACOS ≈ 93% ✗
+        # cheap: max_clicks=1 so subsidy capacity is negligible (< 0.5 click worth of headroom)
         kws = [
-            _kw("cheap|EXACT",     avg_cpc=0.50, cvr=0.10, max_clicks=200, campaign_id="C1", sample_clicks=500),
-            _kw("expensive|BROAD", avg_cpc=5.00, cvr=0.10, max_clicks=200, campaign_id="C1", sample_clicks=500),
+            _kw("cheap|EXACT",     avg_cpc=0.10, cvr=0.30, max_clicks=1,   campaign_id="C1", sample_clicks=500),
+            _kw("expensive|BROAD", avg_cpc=5.00, cvr=0.30, max_clicks=200, campaign_id="C1", sample_clicks=500),
         ]
-        # avg_price=20, target_acos=0.25 → max spend per order = 20×0.25 = $5
-        # cheap kw: eff_cpc=0.50, order_value=0.10×20=$2 → ACOS=0.50/2=25% ✓ borderline
-        # expensive kw: eff_cpc=5.00, order_value=$2 → ACOS=250% ✗
         r = _solve(kws, total_budget=200.0, target_acos=0.25, avg_price=20.0)
         assert r["status"] == "OPTIMAL"
-        # expensive keyword must be largely excluded
         exp_alloc = next((a for a in r["allocation"] if "expensive" in a["keyword"]), None)
         assert exp_alloc is None or exp_alloc["optimized_clicks"] < 1.0
 
     def test_acos_constraint_satisfied_in_solution(self):
+        # Using high CVR (0.25, 0.35) so Beta-Binomial shrinkage still keeps ACOS < target
         kws = [
-            _kw("kw1|EXACT", avg_cpc=1.0, cvr=0.10, max_clicks=100, sample_clicks=200),
-            _kw("kw2|BROAD", avg_cpc=1.5, cvr=0.15, max_clicks=100, sample_clicks=200),
+            _kw("kw1|EXACT", avg_cpc=1.0, cvr=0.25, max_clicks=100, sample_clicks=200),
+            _kw("kw2|BROAD", avg_cpc=1.5, cvr=0.35, max_clicks=100, sample_clicks=200),
         ]
         target_acos = 0.35
         avg_price   = 30.0
         r = _solve(kws, total_budget=300.0, target_acos=target_acos, avg_price=avg_price)
         assert r["status"] == "OPTIMAL"
-        total_spend  = sum(a["estimated_spend"]          for a in r["allocation"])
-        total_orders = sum(a["contribution_to_orders"]   for a in r["allocation"])
+        total_spend   = sum(a["estimated_spend"]        for a in r["allocation"])
+        total_orders  = sum(a["contribution_to_orders"] for a in r["allocation"])
         total_revenue = total_orders * avg_price
         if total_revenue > 0:
             actual_acos = total_spend / total_revenue
@@ -344,7 +429,7 @@ class TestRealData:
     def test_solves_with_real_keyword_performance(self, dev_item):
         kw_perf = dev_item.get("keyword_performance", [])
         campaigns = dev_item.get("campaigns", [])
-        total_budget = dev_item.get("total_daily_budget", 0) or 0
+        total_budget = dev_item.get("total_daily_budget") or dev_item.get("sp_daily_budget") or 0
 
         camp_meta = {str(c["campaign_id"]): c for c in campaigns if c.get("campaign_id")}
         campaign_budgets = {

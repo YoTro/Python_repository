@@ -19,34 +19,67 @@ _STRATEGY_CPC_MULTIPLIER: Dict[str, float] = {
 }
 _DEFAULT_STRATEGY_MULTIPLIER = 1.20  # unknown strategy — moderate overhead
 
-# CVR shrinkage: Beta-Binomial posterior shrinkage toward the match-type prior mean μ.
-# s = k / μ  — prior strength scales inversely with μ so high-priced (low-CVR) products
-# automatically require more data before the observed CVR is trusted.
-# k = 1.0 means "require ~1 expected conversion before trusting data over the prior."
-_K_CVR_PRIOR = 1.0   # expected-conversion threshold
-_S_MIN       = 5.0   # floor: prevents s from exploding when μ is tiny
-_S_MAX       = 500.0  # cap: prevents over-regularisation on very low-CVR products
+# CVR shrinkage: Beta-Binomial with variance-driven adaptive prior strength k.
+# k ∈ [K_min, K_max] — adapts to data richness via posterior variance, no ramp_n config.
+# s = k / μ  — prior pseudo-observations (scales inversely with μ so low-CVR products
+#               naturally require more data before observed CVR is trusted).
+_K_CVR_MIN = 0.3    # floor: new campaigns get light shrinkage, early signal passes through
+_K_CVR_MAX = 3.0    # ceiling: mature campaigns get 3× more regularisation than floor
+_S_MIN     = 5.0    # prevents s from exploding when μ is tiny
+_S_MAX     = 500.0  # prevents over-regularisation on very low-CVR products
+
+
+def _adaptive_k(
+    clicks: int,
+    orders: int,
+    prior_mu: float,
+    k_max: float = _K_CVR_MAX,
+) -> float:
+    """
+    Variance-driven prior strength.  Returns k ∈ [_K_CVR_MIN, k_max].
+
+    k_max is the empirically calibrated ceiling for this keyword's stratum
+    (match type × account); pass _K_CVR_MAX as the default/fallback.
+
+    Confidence measures how much the Beta posterior variance has shrunk
+    relative to the pure-prior variance (clicks = 0, using k_max as reference).
+
+      confidence → 0  (data contradicts prior, high uncertainty): k → K_min
+      confidence → 1  (data confirms prior, low uncertainty):     k → k_max
+    """
+    alpha_post    = orders + prior_mu * k_max
+    beta_post     = max(clicks - orders, 0) + (1.0 - prior_mu) * k_max
+    n             = alpha_post + beta_post
+    posterior_var = (alpha_post * beta_post) / (n * n * (n + 1.0))
+    var_at_zero   = prior_mu * (1.0 - prior_mu) / (k_max + 1.0)
+    if var_at_zero <= 0:
+        return k_max
+    confidence = 1.0 - min(posterior_var / var_at_zero, 1.0)
+    return _K_CVR_MIN + confidence * (k_max - _K_CVR_MIN)
 
 
 def _beta_cvr(
     raw_cvr: float,
-    sample_clicks: int,
-    sample_orders: int,
+    clicks: int,
+    orders: int,
     prior_mu: float,
-    k: float = _K_CVR_PRIOR,
+    k_max: float = _K_CVR_MAX,
 ) -> float:
     """
-    Beta-Binomial shrinkage estimator.
+    Beta-Binomial shrinkage with adaptive prior strength.
 
     pess_cvr = (μ·s + orders) / (s + clicks)   where s = k / μ
 
-    Behaviour:
-      clicks → 0  :  pess_cvr → μ          (fall back to prior, not to 0)
-      clicks → ∞  :  pess_cvr → raw_cvr    (trust observed data)
+    k_max is the stratum-specific maturity ceiling estimated by _empirical_k
+    in ad_diagnosis.  It controls how many clicks this match type/account
+    needs before CVR is considered fully mature:
+      EXACT (low noise) → small k_max  → reaches maturity quickly
+      BROAD (high noise) → large k_max → needs more data before trusting CVR
     """
     mu = prior_mu if prior_mu > 0 else (raw_cvr or 0.02)
+    k  = _adaptive_k(clicks, orders, mu, k_max=k_max)
     s  = max(_S_MIN, min(k / mu, _S_MAX))
-    return (mu * s + sample_orders) / (s + sample_clicks)
+    return (mu * s + orders) / (s + clicks)
 
 
 class AdBudgetOptimizer:
@@ -96,7 +129,8 @@ class AdBudgetOptimizer:
             estimated_cvr      float historical CVR (point estimate)
             sample_clicks      int   total historical clicks
             sample_orders      int   total historical attributed orders
-            prior_mu           float match-type-specific prior mean CVR (μ)
+            prior_mu           float match-type prior mean CVR (μ); falls back to estimated_cvr
+            k_max              float empirical Beta precision ceiling for this match type (optional)
             max_daily_clicks   float click ceiling (headroom-adjusted)
             min_daily_clicks   float click floor (0 for most; >0 for brand/defense)
             campaign_id        str   owning campaign id
@@ -122,11 +156,12 @@ class AdBudgetOptimizer:
             eff_cpc    = kw["avg_cpc"] * strat_mult * place_mult
             eff_cpcs.append(eff_cpc)
 
-            raw_cvr  = kw.get("estimated_cvr", 0.0)
+            raw_cvr  = kw.get("estimated_cvr") or 0.0
             clicks   = int(kw.get("sample_clicks", 0))
-            orders   = int(kw.get("sample_orders", 0))
+            orders   = int(kw.get("sample_orders", round(raw_cvr * clicks)))
             prior_mu = float(kw.get("prior_mu") or raw_cvr or 0.02)
-            pess_cvr = _beta_cvr(raw_cvr, clicks, orders, prior_mu)
+            k_max    = float(kw.get("k_max", _K_CVR_MAX))
+            pess_cvr = _beta_cvr(raw_cvr, clicks, orders, prior_mu, k_max=k_max)
             pess_cvrs.append(pess_cvr)
 
         # ── Variables ─────────────────────────────────────────────────────
