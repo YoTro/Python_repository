@@ -141,7 +141,7 @@ PRIORITY_SORT = ("P0", "P1", "P2")
 
 _L2_DOMAIN = "ad_diag"
 _TTL_STATIC = 7200    # campaigns, keywords — account config, stable within a session
-_TTL_PERF   = 14400   # performance reports — fetched once per day range
+_TTL_PERF   = 21600   # performance reports — fetched once per day range
 _TTL_CHANGE = 21600   # change history — historical data, 6h TTL to reduce /history API calls
 _TTL_YOY    = 86400   # YoY / trailing-ext ERP data — historical, rarely changes
 _KEYWORD_LIST_MAX_RESULTS = 10000
@@ -1564,6 +1564,8 @@ def _build_lp_input(
         kw_text    = kw["keyword_text"]
         match_type = kw["match_type"]
         cid        = str(kw.get("campaign_id", ""))
+        if (camp_meta.get(cid) or {}).get("state", "").upper() == "PAUSED":
+            continue
         strategy   = camp_meta.get(cid, {}).get("bidding_strategy", "")
         is_brand   = kw_text.lower() in {b.lower() for b in brand_kws}
         max_daily  = max(round(kw["daily_clicks"] * click_headroom, 1), 1.0)
@@ -1760,24 +1762,20 @@ def _build_campaign_actions(
             # No spend at all: inactive campaign outside LP scope — low priority
             action, priority = "maintain", "P2"
             rationale = "No spend recorded in period (auto/PT, outside LP scope)"
-        elif is_paused and lp_spend >= camp_budget * 0.10:
-            action, priority = "enable_and_review_bids", "P1"
-            rationale = f"Campaign is PAUSED; LP projects ${lp_spend:.0f}/day potential — evaluate re-enabling after bid review"
         elif lp_spend < camp_budget * 0.10:
             if is_paused:
+                # LP optimises ENABLED campaigns only — lp_spend=0 for all paused.
+                # Use historical ACOS to classify paused LP-scope campaigns.
                 if camp_acos is not None and camp_acos <= target_acos_pct:
-                    # Efficient when active — LP crowd-out under budget constraint, NOT inefficiency.
-                    # Don't recommend archiving; keep paused until budget increases.
-                    action, priority = "maintain", "P2"
+                    action, priority = "enable_and_review_bids", "P1"
                     rationale = (
-                        f"Campaign is PAUSED; LP allocates only ${lp_spend:.0f}/day (< 10% of "
-                        f"${camp_budget:.0f} budget) — likely crowded out by higher-ROI campaigns "
-                        f"under current budget constraint. Historical ACOS {camp_acos}% ≤ target "
-                        f"{target_acos_pct:.0f}% — keep paused; do NOT archive."
+                        f"Campaign is PAUSED; historical ACOS {camp_acos}% ≤ target "
+                        f"{target_acos_pct:.0f}% — evaluate re-enabling and adjusting bids"
                     )
                 else:
                     action, priority = "archive_candidate", "P2"
-                    rationale = f"Campaign is PAUSED and LP allocates only ${lp_spend:.0f}/day — consider archiving"
+                    acos_str = f"; historical ACOS {camp_acos}% > target {target_acos_pct:.0f}%" if camp_acos else ""
+                    rationale = f"Campaign is PAUSED{acos_str} — consider archiving"
             elif camp_acos is not None and camp_acos <= target_acos_pct:
                 # LP has no click data for this campaign's keywords (filtered out),
                 # but historical ACOS is efficient — do not pause, flag for bid review.
@@ -2283,7 +2281,12 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             k_by_match_type=k_by_mt,
             global_k=global_k,
         )
-        lp_scope_cids_pre = {str(kw.get("campaign_id", "")) for kw in lp_input if kw.get("campaign_id")}
+        # Include paused campaigns with sufficient kw data so they remain "in LP scope"
+        # for action classification, even though LP only optimises ENABLED campaigns.
+        lp_scope_cids_pre = {
+            str(kw.get("campaign_id", "")) for kw in kw_perf
+            if kw.get("campaign_id") and kw.get("avg_cpc") and kw.get("cvr")
+        }
         if not lp_input:
             item["lp_summary"] = {"skipped": True, "reason": "all keywords filtered (insufficient clicks)",
                                   "lp_scoped_cids": sorted(lp_scope_cids_pre)}
@@ -2408,7 +2411,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         budget_binding      = lp_spend_total >= lp_budget * 0.85
         # Campaign IDs that contributed at least one keyword to the LP model.
         # Auto / product-targeting campaigns never appear here.
-        lp_scoped_cids      = {str(kw.get("campaign_id", "")) for kw in lp_input if kw.get("campaign_id")}
+        lp_scoped_cids      = lp_scope_cids_pre  # enabled + paused with kw data
         # Historical spend split: LP-scope keywords vs non-LP (auto/PT + untracked keywords).
         # Explains the gap between lp_optimal_spend and historical_daily_spend to the LLM.
         lp_scope_hist_spend = round(
