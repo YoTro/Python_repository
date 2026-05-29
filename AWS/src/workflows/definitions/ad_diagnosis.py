@@ -2776,7 +2776,106 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
         item["campaign_actions"]  = campaign_actions
         item["keyword_actions"]   = keyword_actions[:30]
 
+        # Build LP-scope pre-period daily kw orders for ITS baseline
+        _kw_day: Dict[str, float] = {}
+        for _r in raw_kw_perf:
+            if str(_r.get("campaign_id", "")) in lp_scoped_cids:
+                _dt = _r.get("date") or ""
+                if _dt:
+                    _kw_day[_dt] = _kw_day.get(_dt, 0.0) + float(_r.get("orders", 0) or 0)
+        _pre_kw_daily = sorted(
+            [{"date": d, "orders": round(o, 4)} for d, o in _kw_day.items()],
+            key=lambda x: x["date"],
+        )
+        _save_lp_snapshot(
+            asin                = asin,
+            run_date            = datetime.now(tz=ZoneInfo("UTC")).date().isoformat(),
+            alloc               = alloc,
+            lp_input            = lp_input,
+            raw_cvr_map         = raw_cvr_map,
+            lp_summary          = item["lp_summary"],
+            camp_spend          = camp_spend,
+            campaign_actions    = campaign_actions,
+            pre_period_kw_daily = _pre_kw_daily,
+            days                = days,
+        )
+
     return items
+
+
+def _save_lp_snapshot(
+    asin: str,
+    run_date: str,
+    alloc: List[Dict],
+    lp_input: List[Dict],
+    raw_cvr_map: Dict[str, float],
+    lp_summary: Dict,
+    camp_spend: Dict[str, float],
+    campaign_actions: List[Dict],
+    pre_period_kw_daily: List[Dict],
+    days: int,
+) -> Optional[str]:
+    """Persist LP optimizer predictions as a validation snapshot.
+
+    Written to data/intelligence/lp_snapshots/{ASIN}/{run_date}.json.
+    Returns the path on success, None on failure (non-fatal).
+    """
+    import json as _json
+    snap_dir = os.path.join("data", "intelligence", "lp_snapshots", asin.upper())
+    os.makedirs(snap_dir, exist_ok=True)
+    snap_path = os.path.join(snap_dir, f"{run_date}.json")
+
+    kw_baseline: Dict[str, float] = {
+        kw["name"]: float(kw.get("daily_clicks", 0)) for kw in lp_input
+    }
+    keywords = []
+    for a in alloc:
+        kw_name  = a["keyword"]
+        raw_cvr  = raw_cvr_map.get(kw_name, 0.0)
+        hist_c   = kw_baseline.get(kw_name, 0.0)
+        keywords.append({
+            "keyword":           kw_name,
+            "campaign_id":       str(a.get("campaign_id", "")),
+            "optimized_clicks":  a["optimized_clicks"],
+            "pessimistic_cvr":   a["pessimistic_cvr"],
+            "raw_cvr":           raw_cvr,
+            "effective_cpc":     a["effective_cpc"],
+            "historical_clicks": hist_c,
+            "predicted_orders":  a["contribution_to_orders"],
+            "baseline_orders":   round(hist_c * raw_cvr, 4),
+        })
+
+    recommended_budget: Dict[str, float] = {}
+    for ca in campaign_actions:
+        cid = str(ca.get("campaign_id", ""))
+        if cid and ca.get("suggested_budget") is not None:
+            recommended_budget[cid] = float(ca["suggested_budget"])
+
+    snapshot = {
+        "schema_version":             1,
+        "asin":                       asin.upper(),
+        "run_date":                   run_date,
+        "pre_period_days":            days,
+        "lp_optimal_spend":           lp_summary.get("lp_optimal_spend", 0),
+        "order_gap":                  lp_summary.get("order_gap", 0),
+        "sp_kw_daily_orders":         lp_summary.get("sp_kw_daily_orders", 0),
+        "sp_kw_daily_orders_denom":   lp_summary.get("sp_kw_daily_orders_denom", days),
+        "lp_scoped_cids":             lp_summary.get("lp_scoped_cids", []),
+        "cvr_deflation":              lp_summary.get("cvr_deflation", 1.0),
+        "lp_spend_per_cid":           {k: round(v, 4) for k, v in camp_spend.items()},
+        "recommended_budget_per_cid": recommended_budget,
+        "keywords":                   keywords,
+        "pre_period_kw_daily":        pre_period_kw_daily,
+        "validation":                 None,
+    }
+    try:
+        with open(snap_path, "w") as _f:
+            _json.dump(snapshot, _f, indent=2)
+        logger.info("LP snapshot → %s (%d keywords)", snap_path, len(keywords))
+        return snap_path
+    except Exception as exc:
+        logger.warning("LP snapshot save failed for %s: %s", asin, exc)
+        return None
 
 
 async def _enrich_covariates(item: Dict, ctx: WorkflowContext) -> Dict:

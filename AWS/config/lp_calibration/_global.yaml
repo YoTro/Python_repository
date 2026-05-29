@@ -1,0 +1,30 @@
+# Global seed parameters for LP Beta-CVR calibration.
+# Per-ASIN overrides are stored alongside this file as {ASIN}.yaml.
+# Fields are loaded by src/intelligence/processors/lp_calibration.py.
+
+# Beta prior strength ceiling — controls how much data is required before
+# the LP trusts observed CVR over the match-type prior.
+# Higher → more shrinkage (pessimistic), slower to trust new data.
+# Lower  → less shrinkage, trusts observed CVR sooner.
+k_cvr_max: 3.0
+
+# Match-type prior mean CVR (mu).  Used as Beta prior location.
+# These are conservative industry averages; override per ASIN as data matures.
+mu_by_match_type:
+  EXACT: 0.12
+  PHRASE: 0.08
+  BROAD: 0.05
+
+# Match-type k_max overrides (leave absent to inherit k_cvr_max above).
+# EXACT keywords are lower-noise → reach maturity faster → smaller k_max.
+# BROAD keywords are higher-noise → need more data → larger k_max.
+k_by_match_type:
+  EXACT: 2.0
+  PHRASE: 3.0
+  BROAD: 4.5
+
+# Global fallback prior mu when match type is unknown.
+global_mu: 0.08
+
+# Global fallback k_max when match type is unknown.
+global_k: 3.0
