@@ -33,15 +33,15 @@ from src.workflows.steps.enrich import EnrichStep
 
 logger = logging.getLogger(__name__)
 
-_SNAP_ROOT      = os.path.join("data", "intelligence", "lp_snapshots")
-_MIN_ITS_PRE    = 7     # minimum pre-period days for ITS trend fit
+_SNAP_ROOT = os.path.join("data", "intelligence", "lp_snapshots")
+_MIN_ITS_PRE = 7  # minimum pre-period days for ITS trend fit
 _DEAD_BAND_BASE = 0.20  # half-width at n_keywords == 10
-_IMPL_WARN_THR  = 0.70  # widen dead band when mean impl_ratio < this
+_IMPL_WARN_THR = 0.70  # widen dead band when mean impl_ratio < this
 # Campaigns whose impl_ratio falls below this are treated as "not implemented":
 # their keywords are excluded from sum_pred_adj (denominator) entirely.
 # A campaign that was blocked by inventory gate or user override will have
 # actual_daily ≈ historical_daily << lp_recommended_daily, giving ir < this.
-_IMPL_FLOOR     = 0.10
+_IMPL_FLOOR = 0.10
 # Maximum absolute daily trend slope as a fraction of pre-period mean.
 # Prevents organic-growth trends (launch phase) from over-extrapolating the
 # ITS counterfactual and biasing the PAS numerator.
@@ -59,7 +59,15 @@ def _snap_path(asin: str, snapshot_date: str) -> str:
 def _load_snap(asin: str, snapshot_date: str) -> Dict:
     path = _snap_path(asin, snapshot_date)
     if not os.path.exists(path):
-        raise FileNotFoundError(f"LP snapshot not found: {path}")
+        asin_dir = os.path.join(_SNAP_ROOT, asin.upper())
+        try:
+            available = sorted(
+                f.stem for f in __import__("pathlib").Path(asin_dir).glob("*.json")
+            )
+        except Exception:
+            available = []
+        hint = f"; available dates: {available}" if available else ""
+        raise FileNotFoundError(f"LP snapshot not found: {path}{hint}")
     with open(path) as f:
         return json.load(f)
 
@@ -88,25 +96,26 @@ def _its_counterfactual(
     unrealistically steep counterfactual that would bias the PAS numerator.
     """
     if len(pre_daily) < _MIN_ITS_PRE:
-        pre_mean = float(np.mean([r["orders"] for r in pre_daily])) if pre_daily else 0.0
+        pre_orders = [r["orders"] for r in pre_daily]
+        pre_mean = float(np.mean(pre_orders)) if pre_orders else 0.0
         return pre_mean, pre_mean, "insufficient_data"
 
     orders = np.array(
         [r["orders"] for r in sorted(pre_daily, key=lambda x: x["date"])],
         dtype=float,
     )
-    T        = len(orders)
-    t        = np.arange(T, dtype=float)
-    b, a     = np.polyfit(t, orders, 1)          # orders ≈ a + b·t
+    T = len(orders)
+    t = np.arange(T, dtype=float)
+    b, a = np.polyfit(t, orders, 1)  # orders ≈ a + b·t
     pre_mean = float(np.mean(orders))
 
     # Cap slope: max daily drift = _MAX_TREND_FRAC × pre_mean / T
     # (i.e., cumulative pre-period drift ≤ _MAX_TREND_FRAC × pre_mean)
-    b_cap     = _MAX_TREND_FRAC * max(pre_mean, 1.0) / T
+    b_cap = _MAX_TREND_FRAC * max(pre_mean, 1.0) / T
     b_clamped = max(min(b, b_cap), -b_cap)
-    clamped   = abs(b) > b_cap
+    clamped = abs(b) > b_cap
 
-    post_t  = np.arange(T, T + n_post, dtype=float)
+    post_t = np.arange(T, T + n_post, dtype=float)
     cf_mean = float(np.mean(a + b_clamped * post_t))
 
     if abs(b_clamped) < 1e-4:
@@ -163,6 +172,92 @@ def _dead_band(n_keywords: int, mean_impl: float) -> Tuple[float, float]:
 
 
 # ---------------------------------------------------------------------------
+# PAS prerequisite warnings (post-validation, from confirmed measurements)
+# ---------------------------------------------------------------------------
+
+def _build_pas_warnings(result: Dict) -> List[str]:
+    """Return warning strings from confirmed post-validation measurements.
+
+    These supplement the ad_diagnosis prerequisite checks, which can only
+    proxy risks from historical data.  Here we have the actual numbers.
+
+    All inputs come from the result dict — no secondary raw-data parameters —
+    so there is a single source of truth and no risk of divergence.
+    """
+    warnings: List[str] = []
+
+    # 1. Low implementation ratio — LP plan was not executed at plan level
+    mean_impl = result.get("mean_impl_ratio", 1.0)
+    if mean_impl < _IMPL_WARN_THR:
+        warnings.append(
+            f"low_impl_ratio: mean_impl_ratio={mean_impl:.2f} < {_IMPL_WARN_THR} — "
+            "LP spend plan was under-executed; PAS reflects partial-execution accuracy, "
+            "not the accuracy of the full LP plan."
+        )
+
+    # 2. ITS insufficient data — confirmed flat-baseline fallback
+    its_status = result.get("its_status")
+    if its_status == "insufficient_data":
+        n_pre = result.get("n_pre_days", 0)
+        warnings.append(
+            f"insufficient_its_data: {n_pre}d pre-period < {_MIN_ITS_PRE}d required — "
+            "ITS counterfactual uses a flat baseline; PAS numerator (its_actual_delta) "
+            "absorbs organic trend noise and is less reliable."
+        )
+
+    # 3. ITS trend clamped — explosive growth biases counterfactual downward
+    elif its_status == "trend_clamped":
+        warnings.append(
+            "trend_clamped: OLS slope exceeded _MAX_TREND_FRAC limit — "
+            "product may be in an explosive growth phase; the truncated counterfactual "
+            "understates the no-ad baseline, making PAS appear more conservative than it is."
+        )
+
+    # 4. PAS indeterminate — denominator collapsed to zero
+    if result.get("pas_status") == "indeterminate":
+        n_excl = result.get("n_keywords_excluded", 0)
+        n_kw = result.get("n_keywords", 0)
+        warnings.append(
+            f"pas_indeterminate: sum_pred_delta_adj ≈ 0 "
+            f"(n_keywords_excluded={n_excl}/{n_kw}) — "
+            "all LP-scope budget was excluded by impl_ratio < _IMPL_FLOOR; "
+            "no valid denominator for PAS computation."
+        )
+
+    # 5. High keyword exclusion rate — denominator based on small subset of LP plan
+    n_excl = result.get("n_keywords_excluded", 0)
+    n_kw = result.get("n_keywords", 0)
+    if n_kw > 0 and result.get("pas_status") != "indeterminate":
+        excl_rate = n_excl / n_kw
+        if excl_rate > 0.30:
+            warnings.append(
+                f"high_exclusion_rate: {n_excl}/{n_kw} keywords excluded "
+                f"({excl_rate:.0%}, impl_ratio < _IMPL_FLOOR={_IMPL_FLOOR}) — "
+                "PAS denominator represents only the delivered fraction of the LP plan."
+            )
+
+    # 6. Partial validation window — PAS based on incomplete post-period
+    n_actual = result.get("n_actual_days", 0)
+    n_post = result.get("n_post_days", 0)
+    if n_post > 0 and n_actual < n_post * 0.70:
+        warnings.append(
+            f"partial_window: {n_actual}d of {n_post}d post-period elapsed ({n_actual/n_post:.0%}) — "
+            "PAS is preliminary; rerun after the full window elapses for a stable score."
+        )
+
+    # 7. Low pre-period base rate — tiny absolute deltas produce unstable PAS
+    pre_mean = result.get("pre_mean_kw_orders_day", 0.0)
+    if pre_mean < 1.0 and result.get("pas_status") == "computed":
+        warnings.append(
+            f"low_base_rate: pre_mean_kw_orders_day={pre_mean:.3f} — "
+            "LP-scope keyword orders are near zero; small absolute its_actual_delta "
+            "values cause PAS to swing widely on noise; treat this score as low-confidence."
+        )
+
+    return warnings
+
+
+# ---------------------------------------------------------------------------
 # PAS computation
 # ---------------------------------------------------------------------------
 
@@ -188,7 +283,7 @@ def _compute_pas(
     if n_actual is None:
         n_actual = n_post
 
-    keywords     = snap.get("keywords") or []
+    keywords = snap.get("keywords") or []
     lp_spend_cid = snap.get("lp_spend_per_cid") or {}
 
     # impl_ratio per campaign — normalise by actual observed days, not configured window
@@ -202,9 +297,9 @@ def _compute_pas(
     cf_mean, pre_mean, its_status = _its_counterfactual(pre_daily, n_post)
 
     # Actual post mean (over observed days only — future zeros already excluded)
-    post_orders      = [r["orders"] for r in post_kw_daily]
+    post_orders = [r["orders"] for r in post_kw_daily]
     actual_post_mean = float(np.mean(post_orders)) if post_orders else 0.0
-    its_delta        = actual_post_mean - cf_mean
+    its_delta = actual_post_mean - cf_mean
 
     # Predicted delta (raw, without impl_ratio) — diagnostic reference only
     sum_pred_raw = sum(
@@ -218,16 +313,16 @@ def _compute_pas(
     # LP-recommended budget was not implemented (e.g., inventory gate blocked the
     # action), so including them would inflate the denominator and falsely pull
     # PAS toward zero ("over-optimistic" misclassification).
-    sum_pred_adj   = 0.0
-    n_excl         = 0
+    sum_pred_adj = 0.0
+    n_excl = 0
     excl_cids: set = set()
 
     for kw in keywords:
         raw_cvr = kw.get("raw_cvr") or 0.0
-        opt_c   = kw.get("optimized_clicks") or 0.0
-        hist_c  = kw.get("historical_clicks") or 0.0
-        cid     = kw.get("campaign_id") or ""
-        ir      = impl_ratio_map.get(cid, 1.0)
+        opt_c = kw.get("optimized_clicks") or 0.0
+        hist_c = kw.get("historical_clicks") or 0.0
+        cid = kw.get("campaign_id") or ""
+        ir = impl_ratio_map.get(cid, 1.0)
 
         # Only exclude when we have an explicit impl measurement showing non-delivery.
         # cid not in impl_ratio_map → no spend data → default 1.0 → include.
@@ -244,7 +339,7 @@ def _compute_pas(
     if abs(sum_pred_adj) < 1e-6:
         pas, pas_status = None, "indeterminate"
     else:
-        pas        = round(its_delta / sum_pred_adj, 4)
+        pas = round(its_delta / sum_pred_adj, 4)
         pas_status = "computed"
 
     lo, hi = _dead_band(n_included, mean_impl)
@@ -257,7 +352,7 @@ def _compute_pas(
     else:
         band = "conservative"
 
-    return {
+    result = {
         "pas":                            pas,
         "pas_status":                     pas_status,
         "band_result":                    band,
@@ -277,7 +372,21 @@ def _compute_pas(
         "n_keywords":                     len(keywords),
         "n_keywords_excluded":            n_excl,
         "excluded_cids":                  list(excl_cids),
+        "warnings":                       _build_pas_warnings(
+            {
+                "pas_status":             pas_status,
+                "its_status":             its_status,
+                "mean_impl_ratio":        round(mean_impl, 4),
+                "n_keywords":             len(keywords),
+                "n_keywords_excluded":    n_excl,
+                "n_actual_days":          n_actual,
+                "n_post_days":            n_post,
+                "n_pre_days":             len(pre_daily),
+                "pre_mean_kw_orders_day": round(pre_mean, 4),
+            },
+        ),
     }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -285,23 +394,24 @@ def _compute_pas(
 # ---------------------------------------------------------------------------
 
 async def _step_load_snapshot(item: Dict, ctx: WorkflowContext) -> Dict:
-    asin          = item["asin"]
-    snapshot_date = item["snapshot_date"]
-    n_days        = item["n_days"]
+    asin = item["asin"]
+    snapshot_date = ctx.config.get("snapshot_date") or ""
+    n_days = int(ctx.config.get("n_days") or 28)
 
-    snap      = _load_snap(asin, snapshot_date)
-    snap_dt   = _date_cls.fromisoformat(snapshot_date)
-    today     = _date_cls.today()
-    elapsed   = (today - snap_dt).days
+    snap = _load_snap(asin, snapshot_date)
+    snap_dt = _date_cls.fromisoformat(snapshot_date)
+    today = _date_cls.today()
+    elapsed = (today - snap_dt).days
 
     if elapsed < n_days:
         logger.warning(
-            "Post-period incomplete for %s: %dd elapsed, need %dd — PAS may be unreliable",
+            "Post-period incomplete for %s: %dd elapsed, need %dd"
+            " — PAS may be unreliable",
             asin, elapsed, n_days,
         )
 
     post_start = str(snap_dt + timedelta(days=1))
-    post_end   = str(snap_dt + timedelta(days=n_days))
+    post_end = str(snap_dt + timedelta(days=n_days))
 
     logger.info(
         "Loaded snapshot %s/%s — %d keywords, order_gap=%.2f, post window %s→%s",
@@ -311,21 +421,27 @@ async def _step_load_snapshot(item: Dict, ctx: WorkflowContext) -> Dict:
         post_start, post_end,
     )
     return {
-        "snapshot":     snap,
+        "snapshot": snap,
         "days_elapsed": elapsed,
-        "post_start":   post_start,
-        "post_end":     post_end,
+        "post_start": post_start,
+        "post_end": post_end,
     }
 
 
 async def _step_fetch_post_period(item: Dict, ctx: WorkflowContext) -> Dict:
+    if "snapshot" not in item:
+        raise RuntimeError(
+            "prerequisite 'snapshot' missing — load_snapshot step did not complete; "
+            "check the snapshot_date and verify the file exists under data/intelligence/lp_snapshots/"
+        )
+
     from src.mcp.servers.amazon.ads.client import AmazonAdsClient
 
-    snap       = item["snapshot"]
-    lp_cids    = set(snap.get("lp_scoped_cids") or [])
+    snap = item["snapshot"]
+    lp_cids = set(snap.get("lp_scoped_cids") or [])
     post_start = item["post_start"]
-    post_end   = item["post_end"]
-    fetch_days = item["days_elapsed"] + 3   # buffer to ensure full API coverage
+    post_end = item["post_end"]
+    fetch_days = item["days_elapsed"] + 3  # buffer to ensure full API coverage
 
     ads = AmazonAdsClient(
         store_id=ctx.config.get("store_id"),
@@ -338,7 +454,7 @@ async def _step_fetch_post_period(item: Dict, ctx: WorkflowContext) -> Dict:
     )
     kw_day: Dict[str, float] = {}
     for r in kw_records:
-        cid  = str(r.get("campaign_id", ""))
+        cid = str(r.get("campaign_id", ""))
         date = r.get("date") or ""
         if cid in lp_cids and post_start <= date <= post_end:
             kw_day[date] = kw_day.get(date, 0.0) + float(r.get("orders", 0) or 0)
@@ -346,14 +462,17 @@ async def _step_fetch_post_period(item: Dict, ctx: WorkflowContext) -> Dict:
     # Fill post-window dates up to yesterday only.
     # Capping at today-1 prevents padding future dates with 0 orders, which would
     # dilute actual_post_mean when validation is run before the full window elapses.
-    today     = _date_cls.today()
-    d         = _date_cls.fromisoformat(post_start)
-    end_cfg   = _date_cls.fromisoformat(post_end)
-    end_data  = min(end_cfg, today - timedelta(days=1))
+    today = _date_cls.today()
+    d = _date_cls.fromisoformat(post_start)
+    end_cfg = _date_cls.fromisoformat(post_end)
+    end_data = min(end_cfg, today - timedelta(days=1))
 
     post_kw_daily: List[Dict] = []
     while d <= end_data:
-        post_kw_daily.append({"date": d.isoformat(), "orders": round(kw_day.get(d.isoformat(), 0.0), 4)})
+        post_kw_daily.append({
+            "date": d.isoformat(),
+            "orders": round(kw_day.get(d.isoformat(), 0.0), 4),
+        })
         d += timedelta(days=1)
 
     # spCampaigns daily — LP-scope spend for impl_ratio
@@ -362,7 +481,7 @@ async def _step_fetch_post_period(item: Dict, ctx: WorkflowContext) -> Dict:
     )
     post_camp_spend: Dict[str, float] = {}
     for r in camp_records:
-        cid  = str(r.get("campaign_id", ""))
+        cid = str(r.get("campaign_id", ""))
         date = r.get("date") or ""
         if cid in lp_cids and post_start <= date <= end_data.isoformat():
             post_camp_spend[cid] = (
@@ -370,23 +489,33 @@ async def _step_fetch_post_period(item: Dict, ctx: WorkflowContext) -> Dict:
             )
 
     logger.info(
-        "Post-period data: %d days (%s→%s, capped at %s), %d LP-scope campaigns with spend",
-        len(post_kw_daily), post_start, post_end, end_data.isoformat(),
-        len(post_camp_spend),
+        "Post-period data: %d days (%s→%s, capped at %s),"
+        " %d LP-scope campaigns with spend",
+        len(post_kw_daily), post_start, post_end,
+        end_data.isoformat(), len(post_camp_spend),
     )
     return {"post_kw_daily": post_kw_daily, "post_camp_spend": post_camp_spend}
 
 
 async def _step_compute_pas(item: Dict, ctx: WorkflowContext) -> Dict:
+    missing = [k for k in ("snapshot", "post_kw_daily", "post_camp_spend") if k not in item]
+    if missing:
+        raise RuntimeError(
+            f"prerequisite keys missing from item: {missing} — "
+            "one or more upstream steps (load_snapshot, fetch_post_period) did not complete"
+        )
+
     from src.intelligence.processors.lp_calibration import record_pas
 
-    snap            = item["snapshot"]
-    post_kw_daily   = item["post_kw_daily"]
+    snap = item["snapshot"]
+    post_kw_daily = item["post_kw_daily"]
     post_camp_spend = item["post_camp_spend"]
-    n_post          = item["n_days"]   # configured window — ITS extrapolation horizon
-    n_actual        = len(post_kw_daily)  # observed days — impl_ratio denominator
+    n_post = int(ctx.config.get("n_days") or 28)  # configured window — ITS extrapolation horizon
+    n_actual = len(post_kw_daily)  # observed days — impl_ratio denominator
 
-    result = _compute_pas(snap, post_kw_daily, post_camp_spend, n_post, n_actual=n_actual)
+    result = _compute_pas(
+        snap, post_kw_daily, post_camp_spend, n_post, n_actual=n_actual
+    )
 
     snap["validation"] = result
     _write_snap(snap)
@@ -403,14 +532,17 @@ async def _step_compute_pas(item: Dict, ctx: WorkflowContext) -> Dict:
         result["its_status"],
     )
 
+    for w in result.get("warnings") or []:
+        logger.warning("PAS prerequisite [%s/%s]: %s", snap["asin"], snap["run_date"], w)
+
     record_pas(
-        asin            = snap["asin"],
-        run_date        = snap["run_date"],
-        pas             = result["pas"],
-        band_result     = result["band_result"],
-        n_keywords      = result["n_keywords"],
-        mean_impl_ratio = result["mean_impl_ratio"],
-        its_status      = result["its_status"],
+        asin=snap["asin"],
+        run_date=snap["run_date"],
+        pas=result["pas"],
+        band_result=result["band_result"],
+        n_keywords=result["n_keywords"],
+        mean_impl_ratio=result["mean_impl_ratio"],
+        its_status=result["its_status"],
     )
     return {"pas_result": result}
 
@@ -426,22 +558,17 @@ def build_lp_validation(config: dict) -> Workflow:
     Required: asin, snapshot_date, store_id
     Optional: n_days (default 28), region (default NA)
     """
-    asin          = (config.get("asin") or "").upper()
+    asin = (config.get("asin") or "").upper()
     snapshot_date = config.get("snapshot_date") or ""
-    n_days        = int(config.get("n_days") or 28)
 
     if not asin or not snapshot_date:
         raise ValueError("lp_validation requires 'asin' and 'snapshot_date' in config")
 
-    items = [{"asin": asin, "snapshot_date": snapshot_date, "n_days": n_days}]
-
     return Workflow(
         name="lp_validation",
-        config=config,
-        items=items,
         steps=[
-            EnrichStep(name="load_snapshot",     extractor_fn=_step_load_snapshot),
+            EnrichStep(name="load_snapshot", extractor_fn=_step_load_snapshot),
             EnrichStep(name="fetch_post_period", extractor_fn=_step_fetch_post_period),
-            EnrichStep(name="compute_pas",       extractor_fn=_step_compute_pas),
+            EnrichStep(name="compute_pas", extractor_fn=_step_compute_pas),
         ],
     )

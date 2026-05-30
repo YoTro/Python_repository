@@ -274,6 +274,65 @@ class AdDiagnosisCommand(BotCommand):
         asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
 
 
+class LpValidationCommand(BotCommand):
+    """
+    Handles '验证LP <ASIN> <YYYY-MM-DD> [<n_days>]' messages.
+
+    Dispatches the lp_validation workflow which compares LP optimizer predictions
+    stored in a snapshot against actual post-period performance to compute PAS.
+
+    Examples:
+        验证LP B0FXFGMD7Z 2026-05-29
+        验证LP B0FXFGMD7Z 2026-05-29 14
+    """
+
+    _PATTERN = re.compile(
+        r"验证LP\s+([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})(?:\s+(\d+))?",
+        re.IGNORECASE,
+    )
+
+    def match(self, text: str) -> bool:
+        return bool(self._PATTERN.search(text))
+
+    def execute(self, text: str, chat_id: str):
+        match = self._PATTERN.search(text)
+        asin = match.group(1).upper()
+        snapshot_date = match.group(2)
+        n_days = int(match.group(3)) if match.group(3) else 28
+
+        feishu_client = FeishuClient(bot_name=self.bot_name)
+        feishu_client.send_text_message(
+            "chat_id", chat_id,
+            f"📐 开始验证 {asin} LP 模型预测准确性...\n"
+            f"　快照日期：{snapshot_date}　验证窗口：{n_days} 天\n"
+            "将拉取广告后验数据并计算 PAS（预测准确率分），请稍候。"
+        )
+
+        async def _dispatch_job():
+            try:
+                from src.gateway import APIGateway
+                import src.workflows.definitions.lp_validation
+
+                params = {"asin": asin, "snapshot_date": snapshot_date, "n_days": n_days}
+                job_id = APIGateway.dispatch_feishu_command(
+                    workflow_name="lp_validation",
+                    params=params,
+                    chat_id=chat_id,
+                    bot_name=self.bot_name,
+                )
+                logger.info(
+                    "LP validation routed to Gateway, job_id=%s, asin=%s, snapshot=%s",
+                    job_id, asin, snapshot_date,
+                )
+            except Exception as e:
+                logger.error("LP validation dispatch failed: %s", e)
+                feishu_client.send_text_message(
+                    "chat_id", chat_id, f"❌ LP 验证任务启动失败: {e}"
+                )
+
+        asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+
+
 class HelpCommand(BotCommand):
     """响应'常用命令'菜单，列出所有可用指令。"""
 
@@ -298,6 +357,11 @@ class HelpCommand(BotCommand):
         "📈 **广告诊断**\n"
         "　触发词：`广告诊断 <ASIN>`\n"
         "　示例：`广告诊断 B0FXFGMD7Z`\n\n"
+        "📐 **LP 模型验证**\n"
+        "　触发词：`验证LP <ASIN> <快照日期> [<天数>]`\n"
+        "　示例：`验证LP B0FXFGMD7Z 2026-05-29`\n"
+        "　　　　`验证LP B0FXFGMD7Z 2026-05-29 14`\n"
+        "　作用：对比 LP 预测与广告后验数据，输出预测准确率（PAS）\n\n"
         "🤖 **智能 Agent（其他问题）**\n"
         "　触发词：任意文本（以上命令未匹配时自动触发）\n"
     )
@@ -343,6 +407,7 @@ class CommandDispatcher:
             AnalyzeCategoryMonopolyCommand(bot_name, loop),
             ProductScreeningCommand(bot_name, loop),
             AdDiagnosisCommand(bot_name, loop),
+            LpValidationCommand(bot_name, loop),
             AgentExploreCommand(bot_name, loop),  # fallback — must stay last
         ]
         
