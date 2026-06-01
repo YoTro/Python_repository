@@ -129,7 +129,88 @@ PYTHONPATH=. python3 tests/test_inventory_gate.py
 PYTHONPATH=. python3 tests/test_summary_snapshot.py
 ```
 
-## 4. Writing New Tests
+## 4. Test File Naming & Structure Standard
+
+### 4.1 File Naming Convention
+
+```
+tests/test_{domain}_{feature}[_{qualifier}].py
+```
+
+| Segment | Rule | Examples |
+|---|---|---|
+| `{domain}` | Matches the `src/` subdirectory or external service | `core`, `workflow`, `agent`, `feishu`, `gemini`, `deepseek`, `xiyou`, `erp`, `rate_limiting` |
+| `{feature}` | The specific capability under test | `models`, `engine`, `session`, `pricing`, `client`, `full_flow` |
+| `{qualifier}` | Optional suffix that describes test scope | `_live` (requires live infra), `_integration` (mocks nothing), `_snapshot` (golden-file comparison) |
+
+**Rules:**
+- No qualifier = unit test; all external I/O is mocked.
+- `_live` suffix = requires real Redis (`REDIS_URL`) or a live API; never run in CI without flags.
+- `_integration` suffix = hits real sub-systems but no external network.
+- One domain/feature concept per file. Split if a file exceeds ~400 lines or covers two unrelated areas.
+
+**Examples:**
+```
+tests/test_core_models.py          # Unit: Pydantic DTO validation
+tests/test_workflow_engine.py      # Unit: WorkflowContext + ActivityRunner
+tests/test_gemini_advanced_pricing.py  # Unit: PriceManager for Gemini
+tests/test_feishu_full_flow.py     # Integration: Gateway → Job → MCP
+tests/test_ad_diagnosis_live.py    # Live: real Redis, real Ads API data
+tests/test_summary_snapshot.py     # Live + snapshot: golden JSON comparison
+```
+
+### 4.2 Internal File Structure
+
+Every test file must follow this order:
+
+```python
+# 1. Standard library imports
+# 2. Third-party imports (pytest, unittest.mock)
+# 3. Project imports (use absolute paths, PYTHONPATH=.)
+
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Shared setup: tempfiles, mock clients, patched singletons
+
+@pytest.fixture
+def mock_data_cache(tmp_path):
+    ...
+
+# ── Test class (group by behaviour, not by method) ───────────────────────────
+class TestFeatureName:
+
+    def setup_method(self):
+        # Reset singletons: RateLimiter._concurrent, AgentSession state, etc.
+        ...
+
+    @pytest.mark.asyncio
+    async def test_happy_path(self, mock_data_cache):
+        ...
+
+    @pytest.mark.asyncio
+    async def test_error_case(self, mock_data_cache):
+        ...
+
+# ── Standalone script (live tests only) ──────────────────────────────────────
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+```
+
+### 4.3 Mocking Rules
+
+| What to mock | How |
+|---|---|
+| `curl_cffi` HTTP requests | `patch("curl_cffi.requests.AsyncSession.get", new_callable=AsyncMock)` |
+| LLM provider responses | `patch.object(GeminiProvider, "generate", return_value=LLMResponse(...))` |
+| `DataCache` | Pass a `tmp_path`-backed instance; never use production Redis in unit tests |
+| `AgentSession` | Use `tempfile.mkdtemp()` as `session_dir`; delete in teardown |
+| Feishu HTTP calls | `patch("src.jobs.callbacks.feishu_callback.send_card_message", new_callable=AsyncMock)` |
+| Singleton state | Reset in `setup_method`; document which fields are reset and why |
+
+### 4.4 Writing New Tests
 
 When adding new capabilities, follow these standards:
 

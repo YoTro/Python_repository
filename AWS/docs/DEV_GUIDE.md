@@ -169,7 +169,115 @@ Config keys for the Lingxing provider:
 
 ---
 
-## 4. Testing Protocols
+## 4. Logging Guidelines
+
+### 4.1 Module Logger Setup
+
+Every module declares its own logger at module scope, using `__name__` as the identifier. This is the **only** logging statement a domain module ever needs:
+
+```python
+import logging
+logger = logging.getLogger(__name__)
+```
+
+**Rules for domain modules** (`src/core/`, `src/mcp/`, `src/intelligence/`, `src/workflows/`, `src/agents/`, `src/jobs/`):
+- Never call `logging.basicConfig()`, `addHandler()`, or `setLevel()`.
+- Never configure the root logger. Configuration is the entry point's responsibility.
+- The `__name__`-based hierarchy (`src.intelligence.providers.gemini`, etc.) makes namespace filtering trivial without any extra setup.
+
+### 4.2 Entry Point Configuration
+
+Only entry points own root logger configuration. Both existing entry points follow this pattern:
+
+```python
+# src/entry/feishu/bot_listener.py  /  src/entry/cli/main.py
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout,
+)
+logger = logging.getLogger("feishu-bot")   # named logger, not __name__
+```
+
+When adding a new entry point (`src/entry/<channel>/`), call `basicConfig` once at startup with an appropriate named logger for the channel. Do not use `__name__` for entry-point loggers — a stable name like `"feishu-bot"` or `"slack-bot"` makes log filtering easier in production.
+
+### 4.3 Level Semantics
+
+| Level | When to use | Examples from codebase |
+|---|---|---|
+| `DEBUG` | Internal state useful only during active development | Batch poll cycle state, tool routing decision, token-bucket token count |
+| `INFO` | Successful operations worth recording in normal runs | Provider initialized with model + token ceiling; batch job submitted; job complete with result count |
+| `WARNING` | Degraded path — operation completed but something was wrong | Response truncated at `max_tokens`; scraper retry attempt N of M; rate-limit token-bucket timeout; cookie data missing |
+| `ERROR` | Operation failed; caller may handle or fall back | API fetch failed after all retries; structured generation failed; batch submission failed |
+| `exception` | ERROR + full traceback | Only in `except` blocks where the stack trace adds diagnostic value and the exception is swallowed |
+| `CRITICAL` | Reserved for process-level failures | Avoid in domain modules; entry points only |
+
+**Correct:**
+```python
+logger.warning(
+    f"[scraper] response truncated at max_tokens={max_tokens}. "
+    "Search logs for 'response truncated at max' to find all occurrences."
+)
+logger.error(f"Failed to fetch content from {url} after {max_retries} attempts.")
+```
+
+**Incorrect:**
+```python
+logger.error("Something went wrong")          # no context
+logger.info(f"Error: {e}")                    # wrong level
+logger.warning(f"Request to {url}: {html}")  # logs raw content
+```
+
+### 4.4 What NOT to Log
+
+Never log the following at any level, even DEBUG:
+
+| Category | Alternatives |
+|---|---|
+| API keys, tokens, cookies | Log presence/absence: `"cookie loaded: %s"`, `bool(cookie)` |
+| Raw HTML / full response body | Log URL, HTTP status code, and byte length |
+| Full LLM prompt text | Log model name, token counts, and cost |
+| Full LLM response text | Log model name, output tokens, `stop_reason` |
+| User PII (names, phone numbers) | Log anonymised identifiers or counts |
+
+### 4.5 Enabling DEBUG for a Specific Namespace
+
+The `__name__` hierarchy means you can enable DEBUG output for one subsystem without noise from others. Do this at the entry point or in a dev script — never commit `setLevel` calls to domain modules:
+
+```python
+# Enable DEBUG for all LLM providers only
+logging.getLogger("src.intelligence.providers").setLevel(logging.DEBUG)
+
+# Enable DEBUG for a single provider
+logging.getLogger("src.intelligence.providers.gemini").setLevel(logging.DEBUG)
+
+# Enable DEBUG for the intelligence router
+logging.getLogger("src.intelligence.router").setLevel(logging.DEBUG)
+```
+
+Equivalent shell one-liner for the CLI entry point — add a `LOG_LEVEL` branch in `src/entry/cli/main.py`:
+
+```bash
+LOG_LEVEL=DEBUG PYTHONPATH=. python main.py --workflow product_screening --params '{...}'
+```
+
+### 4.6 Key Log Patterns for Debugging
+
+These are the search strings to grep in production logs for recurring issues:
+
+| Symptom | Search pattern | Source |
+|---|---|---|
+| Truncated LLM report | `response truncated at max` | `claude.py`, `deepseek.py`, `gemini.py` |
+| Rate-limit token bucket hit | `token-bucket timeout` | `scraper.py` |
+| Scraper retry loop | `Attempt N/` | `scraper.py` |
+| LLM provider init (confirm model + ceiling) | `initialized with model` | `gemini.py`, `claude.py`, `deepseek.py` |
+| Batch job lifecycle | `batch submitted` / `batch complete` | `gemini.py` |
+| ERP auth failure | `Lingxing` / `401` | `src/mcp/servers/erp/` |
+| Cookie missing | `Failed to get cookie data` | `cookie_helper.py` |
+
+---
+
+## 5. Testing Protocols
 
 1.  **Import Integrity**: `pytest tests/test_imports.py` (Prevents circular deps).
 2.  **Logic Validation**: `pytest tests/test_core_utils.py` etc.
@@ -182,7 +290,7 @@ Config keys for the Lingxing provider:
 
 ---
 
-## 5. Directory Mapping (Summary)
+## 6. Directory Mapping (Summary)
 
 *   `src/core/`: Kernel, Models, Telemetry, and shared Utils (Proxy, Cookies, Context).
     *   `src/core/storage/`: **Storage abstraction layer** (Strategy Pattern). Swap backends via `STORAGE_BACKEND` env var — no code changes.
@@ -204,7 +312,7 @@ Config keys for the Lingxing provider:
 *   `src/workflows/`: Sequential, deterministic engine.
 *   `src/agents/`: Autonomous, LLM-driven reasoning.
 
-## 6. Adding a New Storage Backend
+## 7. Adding a New Storage Backend
 
 1. Subclass `StorageBackend` in `src/core/storage/your_backend.py` — implement `upload`, `upload_file`, `delete`.
 2. Add a branch in `src/core/storage/__init__.py` `get_storage_backend()`.

@@ -75,8 +75,9 @@ This document outlines best practices for interacting with the LLMs integrated i
     *   **Tiered Pricing**: Automatic switching between `lte_200k` and `gt_200k` pricing tiers based on the prompt size.
 *   **DeepSeek Pricing Support**: The `PriceManager` handles DeepSeek server-side KV cache billing:
     *   **Cache Hit / Miss split**: `prompt_tokens_details.cached_tokens` is billed at the lower `input_cache_hit` rate; the remainder at the standard `input` rate.
+    *   **Cache hit price reduction** (effective 2026-04-26T12:15Z): `input_cache_hit` for all DeepSeek models was permanently reduced to 1/10 of the original launch cache-hit price (e.g., V4-Flash: $0.0028/1M; V4-Pro undiscounted: $0.003625/1M).
     *   **Reasoning tokens** (`deepseek-v4-flash` thinking mode): already folded into `completion_tokens` by the API — no double-counting.
-    *   **V4-Pro promotion**: Standard tier uses the 75%-off price until 2026-05-05T15:59Z, after which `PriceManager` automatically switches to the `undiscounted` tier.
+    *   **V4-Pro promotion**: Standard tier uses the 75%-off price until 2026-05-31T15:59Z, after which `PriceManager` switches to the `undiscounted` tier. Post-promotion official price = 1/4 of launch price ($0.435/$0.003625/$0.87 per 1M in/cache/out) — numerically identical to the promotion price, so billing is unaffected at the boundary.
 *   **Budget Enforcement**: When cloud tokens exceed the budget, the agent forces a final summary from collected data and notifies the user that remaining work will use batch API. The agent does NOT hard-fail.
 *   **Leverage Local Models for Pre-processing**: For large text inputs (e.g., raw HTML, long customer reviews), use the `IntelligenceRouter` to automatically dispatch simple cleaning or summarization tasks to the local Llama.cpp model first.
 *   **Independent Routing**: Every item in a batch is independently classified and routed, preventing complex tasks from being misrouted to simpler models.
@@ -100,7 +101,7 @@ This document outlines best practices for interacting with the LLMs integrated i
 
 *   **DeepSeek Model Guide**:
     *   `deepseek-v4-flash` — general-purpose, very low cost ($0.14/$0.28 per 1M in/out). Non-thinking and thinking modes share the same model name; pass `{"thinking": true}` in request extras to enable chain-of-thought.
-    *   `deepseek-v4-pro` — highest quality, reasoning-optimised ($0.435/$0.87 per 1M in/out at 75%-off promotion until 2026-05-05). Use for ad diagnosis synthesis and complex causal narratives.
+    *   `deepseek-v4-pro` — highest quality, reasoning-optimised ($0.435/$0.87 per 1M in/out; promotion until 2026-05-31, then permanently set to 1/4 of launch = same price). Use for ad diagnosis synthesis and complex causal narratives.
     *   `deepseek-chat` / `deepseek-reasoner` — deprecated aliases for `deepseek-v4-flash`; billing now uses V4-Flash rates.
 *   **Override**: For specific needs, you can temporarily override the router's decision by explicitly passing a `category` to `route_and_execute`.
 

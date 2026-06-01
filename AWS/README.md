@@ -9,12 +9,25 @@ It employs a **Hybrid Intelligence** model:
 
 ## 📖 Documentation & Guides
 
-*   **[Architecture & Design](docs/ARCHITECTURE.md)**: Deep dive into the Dual-Track and Multi-User Ready system design.
-*   **[Testing Guide](docs/TESTING.md)**: Procedures for unit tests, protocol integrity, and full-flow simulation.
-*   **[Input & Data Schemas](docs/INPUT_SCHEMA.md)**: Guide to Pydantic models and CLI CSV input formats.
-*   **[LLM Usage Guidelines](docs/LLM_GUIDELINES.md)**: Best practices for Prompt Engineering and Model Selection.
-*   **[MCP Protocol Usage](docs/MCP_PROTOCOL.md)**: Guide to extending the Model Context Protocol integration.
-*   **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)**: Solutions for common scraping and LLM issues.
+| Doc | Purpose |
+|---|---|
+| **[Architecture & Design](docs/ARCHITECTURE.md)** | Dual-Track system design, extension points, deployment topology |
+| **[Developer Guide](docs/DEV_GUIDE.md)** | Layer-by-layer walkthrough; how to add workflows, tools, entry points |
+| **[PR Guidelines](docs/PR_GUIDELINES.md)** | Commit format, branch naming, pre-merge checklist, code-to-doc mapping |
+| **[Testing Guide](docs/TESTING.md)** | Test categories, commands, naming & structure standards |
+| **[Input & Data Schemas](docs/INPUT_SCHEMA.md)** | Pydantic models, CLI CSV formats, ad diagnosis field semantics |
+| **[LLM Usage Guidelines](docs/LLM_GUIDELINES.md)** | Prompt engineering, cost control, model selection, pricing |
+| **[MCP Protocol Usage](docs/MCP_PROTOCOL.md)** | Tool catalog, how to add new MCP tools |
+| **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)** | Solutions for scraping, LLM, ERP, and rate-limit errors |
+
+**Reading paths by role:**
+
+```
+New developer:        ARCHITECTURE → DEV_GUIDE → PR_GUIDELINES → TESTING
+Adding a feature:     DEV_GUIDE → MCP_PROTOCOL → INPUT_SCHEMA
+Debugging an issue:   TROUBLESHOOTING → LLM_GUIDELINES
+LLM / cost work:      LLM_GUIDELINES → MCP_PROTOCOL
+```
 
 ---
 
