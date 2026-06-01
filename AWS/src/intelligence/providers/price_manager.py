@@ -126,8 +126,8 @@ class PriceManager:
             import datetime as _dt
             cached_tokens = kwargs.get("cached_tokens", 0) or 0
 
-            # deepseek-v4-pro: 75% discount tier until 2026-05-05T15:59:00Z, full price after.
-            _V4PRO_DISCOUNT_END = _dt.datetime(2026, 5, 5, 15, 59, 0, tzinfo=_dt.timezone.utc)
+            # deepseek-v4-pro: 75% discount until 2026-05-31T15:59:00Z; after that, undiscounted tier = 1/4 of launch price (same value).
+            _V4PRO_DISCOUNT_END = _dt.datetime(2026, 5, 31, 15, 59, 0, tzinfo=_dt.timezone.utc)
             if (
                 canonical_model == "deepseek-v4-pro"
                 and _dt.datetime.now(_dt.timezone.utc) > _V4PRO_DISCOUNT_END

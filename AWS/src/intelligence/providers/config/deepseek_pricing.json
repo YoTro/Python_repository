@@ -1,7 +1,7 @@
 {
   "metadata": {
     "source": "https://api-docs.deepseek.com/quick_start/pricing",
-    "last_verified": "2026-04-27",
+    "last_verified": "2026-06-01",
     "schema_version": "2",
     "conventions": {
       "price_entry_shape": {
@@ -16,7 +16,8 @@
       "cache_note": "Server-side KV cache. Cache hits billed at input_cache_hit price; misses at input price.",
       "batch_note": "Batch API (async) offers 50% discount on input, cache hit, and output.",
       "deprecation_note": "deepseek-chat and deepseek-reasoner are deprecated aliases for deepseek-v4-flash (non-thinking and thinking modes). Their old independent pricing ($0.27/$2.19) is superseded.",
-      "v4_pro_discount_note": "deepseek-v4-pro is at 75% off (standard tier) until 2026-05-05T15:59:00Z. After that, use undiscounted tier prices."
+      "v4_pro_discount_note": "deepseek-v4-pro is at 75% off (standard tier) until 2026-05-31T15:59:00Z. After the promotion ends, the API price is officially set to 1/4 of the original launch price (numerically identical to the promotion price). Undiscounted tier reflects this post-promotion official price.",
+      "cache_hit_reduction_note": "Effective 2026-04-26T12:15Z, input_cache_hit price for all models is set to 1/10 of the pre-reduction launch cache-hit price."
     }
   },
   "model_string_index": {
@@ -101,21 +102,21 @@
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input",
-      "note": "75% off promotion until 2026-05-05T15:59:00Z; full price $1.74"
+      "note": "75% off promotion until 2026-05-31T15:59:00Z; post-promotion official price $0.435 (1/4 of launch $1.74)"
     },
     "deepseek-v4-pro#standard#input_cache_hit": {
       "price": 0.003625,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit",
-      "note": "75% off promotion until 2026-05-05T15:59:00Z; full price $0.0145"
+      "note": "75% off promotion until 2026-05-31T15:59:00Z; cache_hit reduced to 1/10 of launch price effective 2026-04-26T12:15Z; post-promotion official price $0.003625"
     },
     "deepseek-v4-pro#standard#output": {
       "price": 0.87,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
-      "note": "75% off promotion until 2026-05-05T15:59:00Z; full price $3.48"
+      "note": "75% off promotion until 2026-05-31T15:59:00Z; post-promotion official price $0.87 (1/4 of launch $3.48)"
     },
     "deepseek-v4-pro#batch#input": {
       "price": 0.2175,
@@ -142,25 +143,25 @@
       "note": "Based on discounted standard price"
     },
     "deepseek-v4-pro#undiscounted#input": {
-      "price": 1.74,
+      "price": 0.435,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input",
-      "note": "Full price after 2026-05-05T15:59:00Z promotion ends"
+      "note": "Official price after 2026-05-31T15:59:00Z; = 1/4 of launch price $1.74. Numerically identical to promotion price."
     },
     "deepseek-v4-pro#undiscounted#input_cache_hit": {
-      "price": 0.0145,
+      "price": 0.003625,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit",
-      "note": "Full price after 2026-05-05T15:59:00Z promotion ends"
+      "note": "Official price after 2026-05-31T15:59:00Z; = 1/4 of post-April-26 cache_hit price $0.0145. Numerically identical to promotion price."
     },
     "deepseek-v4-pro#undiscounted#output": {
-      "price": 3.48,
+      "price": 0.87,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
-      "note": "Full price after 2026-05-05T15:59:00Z promotion ends"
+      "note": "Official price after 2026-05-31T15:59:00Z; = 1/4 of launch price $3.48. Numerically identical to promotion price."
     }
   },
   "model_limits": {
