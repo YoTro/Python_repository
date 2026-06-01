@@ -57,7 +57,7 @@ class SocialViralityProcessor:
             comments_count = stats.get("commentCount", 0) or v.get("comments", 0)
             shares = stats.get("shareCount", 0) or v.get("shares", 0)
             
-            followers = author_stats.get("followerCount", 1) or 1
+            followers = author_stats.get("followerCount", 0)
             create_time = v.get("createTime", 0)
             
             if followers > 1000000:
