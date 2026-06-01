@@ -198,7 +198,7 @@ async def _enrich_deal_history(item: dict, ctx: WorkflowContext) -> dict:
         return cached
 
     title = item.get("title", "")
-    brand = item.get("brand", "")
+    brand = item.get("brand") or ""
     keyword = brand
     if title:
         title_parts = title.replace(brand, "").strip().split()
