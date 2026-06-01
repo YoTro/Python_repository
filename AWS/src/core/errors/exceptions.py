@@ -1,5 +1,9 @@
 from __future__ import annotations
-from typing import Any
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.core.errors.codes import ErrorCode
+
 """
 Unified exception hierarchy for the AWS project.
 
@@ -13,15 +17,26 @@ Unified exception hierarchy for the AWS project.
   ├── FatalError            Non-recoverable failures
   ├── CheckpointError       Checkpoint save / load failures
   └── JobSuspendedError     Human-in-the-loop suspension
+
+All exceptions accept an optional ``code`` (ErrorCode) that maps the failure
+to a canonical platform error code defined in src/core/errors/codes.py.
+Use codes.is_retryable() / codes.is_auth_error() to drive retry logic instead
+of comparing raw HTTP status codes or provider-specific strings.
 """
 
 
 class AWSBaseError(Exception):
     """Base exception for all AWS project errors."""
 
-    def __init__(self, message: str = "", details: dict = None):
+    def __init__(
+        self,
+        message: str = "",
+        details: dict = None,
+        code: Optional["ErrorCode"] = None,
+    ):
         self.message = message
         self.details = details or {}
+        self.code = code
         super().__init__(self.message)
 
 
@@ -58,11 +73,36 @@ class RetryableError(AWSBaseError):
     """
     Transient failure that can be retried.
     Examples: rate limiting, network timeout, temporary blocking.
+
+    ``http_status`` and ``provider`` are optional; when supplied, ``code`` is
+    auto-derived via classify_http() if not passed explicitly.
+    Use codes.default_retry_after(err.code) as a fallback when no
+    Retry-After header is available.
     """
 
-    def __init__(self, message: str = "", retry_after_seconds: float = 0, **kwargs):
+    def __init__(
+        self,
+        message: str = "",
+        retry_after_seconds: float = 0,
+        http_status: Optional[int] = None,
+        provider: str = "",
+        code: Optional["ErrorCode"] = None,
+        **kwargs,
+    ):
         self.retry_after_seconds = retry_after_seconds
-        super().__init__(message, details={"retry_after_seconds": retry_after_seconds, **kwargs})
+        self.http_status = http_status
+        self.provider = provider
+
+        # Auto-derive canonical code from HTTP status when not explicitly set
+        if code is None and http_status is not None:
+            from src.core.errors.codes import classify_http
+            code = classify_http(http_status, provider)
+
+        super().__init__(
+            message,
+            details={"retry_after_seconds": retry_after_seconds, "http_status": http_status, **kwargs},
+            code=code,
+        )
 
 
 class FatalError(AWSBaseError):
@@ -76,6 +116,7 @@ class FatalError(AWSBaseError):
 class CheckpointError(AWSBaseError):
     """Checkpoint save or load failure."""
     pass
+
 
 class BatchPendingError(AWSBaseError):
     """
@@ -107,13 +148,13 @@ class BatchPendingError(AWSBaseError):
 
 class JobSuspendedError(AWSBaseError):
     """
-    Raised when a job needs to be suspended for human intervention 
+    Raised when a job needs to be suspended for human intervention
     (e.g., waiting for QR code scan).
     """
     def __init__(self, message: str, signal: dict):
         super().__init__(message)
         self.signal = signal
-        
+
         # Dynamically extract timeout from the signal's data payload (default 300s)
         data = signal.get("data", {})
         self.timeout_sec = data.get("expires_in", 300)
