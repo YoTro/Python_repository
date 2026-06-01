@@ -468,19 +468,21 @@ async def _enrich_ad_metrics_xiyou(item: dict, ctx: WorkflowContext) -> dict:
 
 async def _enrich_social_data(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch social media virality data (TikTok/Meta)."""
-    # In a real scenario, this would call a TikTok/Meta scraper or MCP tool.
-    # For now, we simulate social trend data based on category and brand.
     from src.intelligence.processors.social_virality import SocialViralityProcessor
     processor = SocialViralityProcessor()
-    
-    keyword = item.get("category") or item.get("title", "")[:20]
-    # Simulate fetching raw social counts
-    virality = processor.analyze(keyword)
-    
+
+    # No TikTok/Meta scraper is wired up yet; pass an empty video list so
+    # calculate_promotion_strength returns a well-structured zero result.
+    result = processor.calculate_promotion_strength(
+        videos=[],
+        brand=item.get("brand", ""),
+        product_name=item.get("title", ""),
+    )
+
     return {
-        "social_score": virality.get("score", 0),
-        "social_trend": virality.get("trend", "stable"),
-        "is_trending": virality.get("score", 0) > 70
+        "social_score": result.get("strength_score", 0),
+        "social_trend": result.get("verdict", "stable"),
+        "is_trending": result.get("strength_score", 0) > 70,
     }
 
 
@@ -712,10 +714,9 @@ def build_product_screening(config: dict) -> Workflow:
         ),
 
         # ── Stage 8: Social Media Assessment (stub — disabled by default) ──
-        # _enrich_social_data calls SocialViralityProcessor.analyze() which does
-        # not exist yet; social_virality_analysis is a pass-through placeholder.
-        # Set enable_social_analysis=True only after a real TikTok/Meta integration
-        # is wired up, to prevent simulated data from reaching the LLM synthesis.
+        # _enrich_social_data calls calculate_promotion_strength with an empty
+        # video list until a real TikTok/Meta scraper is wired up.
+        # Set enable_social_analysis=True only after real data is available.
         EnrichStep(
             name="enrich_social_data",
             extractor_fn=_enrich_social_data,
