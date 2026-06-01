@@ -119,6 +119,8 @@ class BaseLLMProvider(ABC):
         # 1. Extract optional counts for specialized billing (e.g. Gemini Thinking/Cache)
         thought_tokens = kwargs.get("thought_tokens", 0)
         cached_tokens = kwargs.get("cached_tokens", 0)
+        cache_read_tokens = kwargs.get("cache_read_tokens", 0)
+        cache_creation_tokens = kwargs.get("cache_creation_tokens", 0)
         is_batch = kwargs.pop("is_batch", False)
 
         # 2. Calculate Cost using the shared price manager
@@ -139,6 +141,8 @@ class BaseLLMProvider(ABC):
         }
         if thought_tokens: metadata["thoughts_tokens"] = thought_tokens
         if cached_tokens: metadata["cached_tokens"] = cached_tokens
+        if cache_read_tokens: metadata["cache_read_tokens"] = cache_read_tokens
+        if cache_creation_tokens: metadata["cache_creation_tokens"] = cache_creation_tokens
 
         return LLMResponse(
             text=text,
