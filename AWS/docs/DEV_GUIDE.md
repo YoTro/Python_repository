@@ -277,7 +277,99 @@ These are the search strings to grep in production logs for recurring issues:
 
 ---
 
-## 5. Testing Protocols
+## 5. Error Code Standards
+
+All errors raised in domain modules must carry a canonical `ErrorCode` from `src/core/errors/codes.py`. This keeps retry logic, logging, and error reporting consistent across every API client without scattering provider-specific strings into callers.
+
+### 5.1 Raising Errors
+
+Use the exception hierarchy from `src/core/errors/`:
+
+```python
+from src.core.errors import RetryableError, FatalError, ErrorCode
+
+# Transient — will be retried (rate limit, timeout, token expiry)
+raise RetryableError(
+    "Amazon Ads rate limit",
+    http_status=429,          # code auto-derived → ErrorCode.RATE_LIMITED
+    provider="amazon_ads",
+    retry_after_seconds=60,
+)
+
+# Permanent — do not retry
+raise FatalError(
+    "Invalid API key",
+    code=ErrorCode.AUTH_FAILED,
+)
+```
+
+`RetryableError` auto-derives `code` from `http_status` + `provider` via `classify_http()`. Pass `code` explicitly only when you already know the canonical value without needing to inspect the HTTP status.
+
+### 5.2 Classifying HTTP Responses
+
+Apply the three classifiers in order — each refines the result of the previous one:
+
+```python
+from src.core.errors import (
+    classify_http, classify_api_code, classify_response_message,
+    is_retryable, default_retry_after, ErrorCode,
+)
+
+# Step 1 — map HTTP status (provider-specific overrides checked first)
+code = classify_http(resp.status_code, provider="amazon_ads")
+
+# Step 2 — refine from API-level code in response body (int or str)
+api_code = body.get("code")
+if api_code is not None:
+    refined = classify_api_code(api_code, provider="amazon_ads")
+    if refined != ErrorCode.UNKNOWN:
+        code = refined
+
+# Step 3 — refine from message text (for 401 sub-variants, overloaded 400, etc.)
+if code in (ErrorCode.AUTH_TOKEN_EXPIRED, ErrorCode.INVALID_PARAMS):
+    msg_code = classify_response_message(body.get("message", ""), "amazon_ads")
+    if msg_code != ErrorCode.UNKNOWN:
+        code = refined
+
+# Drive retry and wait logic from the canonical code — no provider-specific checks
+if is_retryable(code):
+    wait = float(resp.headers.get("Retry-After", 0)) or default_retry_after(code)
+    await asyncio.sleep(wait)
+```
+
+### 5.3 Adding a New Provider
+
+When adding a new API client, extend `src/core/errors/codes.py` — do not add error-handling logic to the client itself:
+
+| What to add | Where in `codes.py` | When to add |
+|---|---|---|
+| HTTP status override | `_PROVIDER_HTTP_OVERRIDES["{provider}"]` | Provider reuses standard status codes with non-standard meanings (e.g. 406 = Insufficient Funds) |
+| API response code | `_API_CODE_MAP["{provider}"]` | Provider returns a numeric or string code in the response body |
+| Message pattern | `_API_MESSAGE_MAP["{provider}"]` | Same HTTP status has multiple meanings distinguishable only from response text |
+| New canonical code | `ErrorCode` enum | No existing code covers the failure category |
+
+Always update the `ErrorCode` class docstring's **Sources** block to cite the new provider and its official error reference URL.
+
+### 5.4 Retry Decision Pattern
+
+Never compare raw HTTP status codes or provider strings at the call site:
+
+```python
+# Bad — scatters provider knowledge into every caller
+if resp.status_code == 429 or body.get("code") == -999:
+    retry()
+
+# Good — all provider knowledge lives in codes.py
+code = classify_http(resp.status_code, provider)
+if is_retryable(code):
+    retry()
+```
+
+`is_auth_error(code)` drives re-authentication (token refresh, QR login). `is_retryable(code)` drives backoff loops. `default_retry_after(code)` is the fallback floor when no `Retry-After` header is present.
+
+---
+
+## 6. Testing Protocols
 
 1.  **Import Integrity**: `pytest tests/test_imports.py` (Prevents circular deps).
 2.  **Logic Validation**: `pytest tests/test_core_utils.py` etc.
@@ -290,7 +382,7 @@ These are the search strings to grep in production logs for recurring issues:
 
 ---
 
-## 6. Directory Mapping (Summary)
+## 7. Directory Mapping (Summary)
 
 *   `src/core/`: Kernel, Models, Telemetry, and shared Utils (Proxy, Cookies, Context).
     *   `src/core/storage/`: **Storage abstraction layer** (Strategy Pattern). Swap backends via `STORAGE_BACKEND` env var — no code changes.
@@ -312,7 +404,7 @@ These are the search strings to grep in production logs for recurring issues:
 *   `src/workflows/`: Sequential, deterministic engine.
 *   `src/agents/`: Autonomous, LLM-driven reasoning.
 
-## 7. Adding a New Storage Backend
+## 8. Adding a New Storage Backend
 
 1. Subclass `StorageBackend` in `src/core/storage/your_backend.py` — implement `upload`, `upload_file`, `delete`.
 2. Add a branch in `src/core/storage/__init__.py` `get_storage_backend()`.
