@@ -113,8 +113,11 @@ def _load_pas_log(asin: str) -> List[Dict]:
             if line:
                 try:
                     entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "Skipping unparsable PAS log line for %s: %s — line: %.120r",
+                        asin, exc, line,
+                    )
     return entries
 
 
@@ -153,15 +156,23 @@ def record_pas(
 
 
 def compute_update(asin: str, current_params: Optional[Dict] = None) -> Optional[Dict]:
-    """Check whether the trigger has fired and, if so, return updated params.
+    """Check whether the trigger has fired and return updated params if so.
 
-    Returns the new params dict if an update was computed, else None.
+    Returns updated params dict when:
+      - The trigger fires (k_cvr_max adjusted, last_trigger_at advanced), OR
+      - The evaluated window is mixed-band (last_trigger_at advanced only,
+        k_cvr_max unchanged) — caller must still persist to unblock future calls.
+    Returns None only when fewer than _TRIGGER_WINDOW new observations exist.
     Does NOT persist — caller must call save_calibration() if desired.
 
     Trigger logic: requires _TRIGGER_WINDOW *new* observations since the last
     trigger (tracked via last_trigger_at in the calibration YAML).  This
     prevents runaway drift when the model stays out-of-band for many weeks —
     each trigger fires exactly once per fresh _TRIGGER_WINDOW-observation run.
+
+    Mixed-window advancement: when a window contains mixed band results, the
+    watermark advances past it so future consistent observations are not
+    permanently blocked by stale mixed data anchoring the window at index 0.
     """
     history = _load_pas_log(asin)
     if len(history) < _TRIGGER_WINDOW:
@@ -183,7 +194,15 @@ def compute_update(asin: str, current_params: Optional[Dict] = None) -> Optional
     all_over_optimistic = all(b == "over_optimistic" for b in bands)
 
     if not (all_conservative or all_over_optimistic):
-        return None
+        # Mixed window — advance watermark past it so future consistent
+        # observations are not permanently blocked by stale mixed data.
+        params["last_trigger_at"] = last_trigger_at + _TRIGGER_WINDOW
+        logger.debug(
+            "Calibration window mixed for %s (obs %d–%d) — advancing watermark to %d",
+            asin, last_trigger_at, last_trigger_at + _TRIGGER_WINDOW - 1,
+            last_trigger_at + _TRIGGER_WINDOW,
+        )
+        return params
 
     k_max = float(params.get("k_cvr_max", 3.0))
 

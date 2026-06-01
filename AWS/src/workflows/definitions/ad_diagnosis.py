@@ -2787,6 +2787,7 @@ def _optimize_budget(items: List[Dict], ctx: WorkflowContext) -> List[Dict]:
             [{"date": d, "orders": round(o, 4)} for d, o in _kw_day.items()],
             key=lambda x: x["date"],
         )
+        item["lp_summary"]["pre_period_days_available"] = len(_pre_kw_daily)
         _save_lp_snapshot(
             asin                = asin,
             run_date            = datetime.now(tz=ZoneInfo("UTC")).date().isoformat(),
@@ -5285,6 +5286,7 @@ def _build_item_summary(item: Dict, ctx: WorkflowContext) -> Dict:
     summary["lp_order_gap_narrative"]   = _lp["lp_order_gap_narrative"]
     summary["lp_scope_note"]            = _lp["lp_scope_note"]
     summary["lp_section_body"]          = _lp["lp_section_body"]
+    summary["lp_model_warnings_md"]     = _lp["lp_model_warnings_md"]
     summary["lp_reallocation_table_md"] = _lp["lp_reallocation_table_md"]
     _n = summary["n_top_actions"]
     summary["lp_top_gainer_sentence"]   = _lp["lp_top_gainer_sentence"].replace(
@@ -5868,6 +5870,87 @@ def _render_lp_reallocation_table(item: Dict) -> str:
     return "\n".join(lines)
 
 
+def _build_lp_model_warnings(item: Dict) -> str:
+    """Return a markdown prerequisite-warning block for the LP section.
+
+    Checks five detectable preconditions for LP/PAS accuracy.
+    Returns an empty string when all checks pass so callers can append safely.
+    """
+    lp = item.get("lp_summary") or {}
+    if lp.get("skipped"):
+        return ""
+
+    _ITS_PRE_MIN       = 7     # mirror of lp_validation._MIN_ITS_PRE
+    _CVR_DEFL_WARN     = 0.60
+    _UTIL_WARN         = 0.70
+    _SCOPE_COVERAGE_WARN = 0.40
+
+    warnings: List[str] = []
+
+    # 1. ITS pre-period depth — fewer than 7 days forces flat-baseline fallback
+    pre_days = int(lp.get("pre_period_days_available") or 0)
+    if 0 < pre_days < _ITS_PRE_MIN:
+        warnings.append(
+            f"**ITS pre-period too short** ({pre_days}d < {_ITS_PRE_MIN}d required) — "
+            "ITS counterfactual uses a flat baseline; PAS numerator will be less reliable."
+        )
+    elif pre_days == 0:
+        warnings.append(
+            "**ITS pre-period unavailable** — no LP-scope keyword order history found; "
+            "ITS counterfactual cannot be computed and PAS will be indeterminate."
+        )
+
+    # 2. Thin match-type strata → CVR prior falls back to global mu/k
+    match_type_dist = item.get("match_type_dist") or {}
+    thin = sorted(mt for mt, n in match_type_dist.items() if n < _MIN_KWS_FOR_STRATUM)
+    if thin:
+        warnings.append(
+            f"**Thin keyword strata** ({', '.join(thin)} — each < {_MIN_KWS_FOR_STRATUM} keywords) — "
+            "CVR prior reverts to global defaults for these match types; LP allocations are less precise."
+        )
+
+    # 3. High CVR deflation — severe cross-attribution overlap distorts predictions
+    cvr_defl = float(lp.get("cvr_deflation") or 1.0)
+    if cvr_defl < _CVR_DEFL_WARN:
+        warnings.append(
+            f"**High CVR deflation** (cvr_deflation={cvr_defl:.2f}) — significant cross-keyword "
+            "attribution overlap detected; deflated CVRs reduce LP order estimates and "
+            "predicted PAS deltas may understate actual incremental lift."
+        )
+
+    # 4. Historical budget under-delivery — proxy for future impl_ratio risk
+    lp_spend = float(lp.get("lp_scope_daily_spend") or 0.0)
+    lp_cap = float(lp.get("lp_scope_campaign_daily_budget") or 0.0)
+    if lp_cap > 0:
+        util = lp_spend / lp_cap
+        if util < _UTIL_WARN:
+            warnings.append(
+                f"**Low historical budget utilisation** ({util:.0%} of LP-scope cap) — "
+                f"LP-scope campaigns historically spent ${lp_spend:.1f}/day against a "
+                f"${lp_cap:.1f}/day cap. If scale-up recommendations cannot be executed at "
+                "full budget, impl_ratio will fall below 1.0 and PAS will understate model accuracy."
+            )
+
+    # 5. Low LP-scope spend coverage — long-tail orders outside LP scope inflate actual PAS denominator
+    non_lp_spend = float(lp.get("non_lp_scope_daily_spend") or 0.0)
+    total_spend = lp_spend + non_lp_spend
+    if total_spend > 0:
+        scope_ratio = lp_spend / total_spend
+        if scope_ratio < _SCOPE_COVERAGE_WARN:
+            warnings.append(
+                f"**Low LP-scope coverage** ({scope_ratio:.0%} of total ${total_spend:.1f}/day spend) — "
+                "orders from non-LP-scope campaigns (auto/PT) are excluded from PAS; "
+                "PAS will appear conservative relative to total account performance."
+            )
+
+    if not warnings:
+        return ""
+
+    lines = ["---", "**⚠ LP Model Prerequisite Checks**", ""]
+    lines += [f"- {w}" for w in warnings]
+    return "\n".join(lines)
+
+
 def _build_lp_narrative(item: Dict) -> Dict[str, str]:
     """Pre-compute LP Budget Optimisation section strings (item 1)."""
     lp               = item.get("lp_summary") or {}
@@ -6005,11 +6088,16 @@ def _build_lp_narrative(item: Dict) -> Dict[str, str]:
     narrative = " ".join(narrative_parts)
     lp_section_body = f"{validation_table}\n\n{narrative} {scope_note}".strip()
 
+    lp_model_warnings_md = _build_lp_model_warnings(item)
+    if lp_model_warnings_md:
+        lp_section_body = f"{lp_section_body}\n\n{lp_model_warnings_md}"
+
     return {
         "lp_validation_table":      validation_table,
         "lp_order_gap_narrative":   narrative,
         "lp_scope_note":            scope_note,
         "lp_section_body":          lp_section_body,
+        "lp_model_warnings_md":     lp_model_warnings_md,
         "lp_reallocation_table_md": _render_lp_reallocation_table(item),
         "lp_top_gainer_sentence":   top_gainer_sentence,
     }
