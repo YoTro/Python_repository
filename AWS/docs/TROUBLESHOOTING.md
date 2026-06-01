@@ -285,3 +285,46 @@ This guide provides solutions to common issues you might encounter while develop
 *   **`max_output_tokens` warning appears but report looks complete**:
     *   **Cause**: The model filled exactly `max_output_tokens` tokens and happened to end at a sentence boundary (rare). The `WARNING` is always emitted when `stop_reason == "max_tokens"` regardless of content completeness.
     *   **Solution**: No action required if the content is complete. Consider raising `MAX_LLM_OUTPUT_TOKENS` slightly as a safety margin.
+
+## 11. Canonical Error Code Reference
+
+All platform errors map to a single `ErrorCode` enum (`src/core/errors/codes.py`). When you see an exception with a `.code` attribute in logs, use this table to identify the cause and the correct remediation.
+
+| ErrorCode | Value | Retryable | Typical cause | Remediation |
+|---|---|---|---|---|
+| `AUTH_TOKEN_EXPIRED` | `auth.token_expired` | Yes (after refresh) | HTTP 401; Lingxing codes {401, "401", -1, -999}; Gemini missing private key | Refresh the token / re-authenticate; the client retries automatically |
+| `AUTH_SCOPE_MISSING` | `auth.scope_missing` | No | Amazon Ads: `scope header is missing` in 401 body | Add the `Amazon-Advertising-API-Scope` header; fix in code |
+| `AUTH_SCOPE_INVALID` | `auth.scope_invalid` | No | Amazon Ads: wrong profile ID or account not authorized for scope | Verify `AMAZON_ADS_PROFILE_ID_*` in `.env` matches the authorized account |
+| `AUTH_REQUIRED` | `auth.required` | No | Interactive auth needed (QR scan, SMS OTP) | Follow the `INTERACTION_REQUIRED` signal — scan QR or provide OTP |
+| `AUTH_IP_BLOCKED` | `auth.ip_blocked` | No | HTTP 403 generic; Sellersprite `ERR_GLOBAL_403` | Switch proxy / VPN; wait for IP unblock |
+| `AUTH_FAILED` | `auth.failed` | No | Wrong API key (DeepSeek 401); Gemini Exchange 403 (key missing role) | Fix the API key in `.env`; for Gemini Exchange, add the required key role |
+| `BILLING_INSUFFICIENT` | `billing.insufficient_balance` | No | HTTP 402 (DeepSeek out of credits); Gemini Exchange HTTP 406 (Insufficient Funds) | Top up the account balance for the provider |
+| `RATE_LIMITED` | `rate.limited` | Yes | HTTP 429 from any external API | Back off; use `Retry-After` header; reduce `requests_per_minute` in `config/settings.json` |
+| `NOT_FOUND` | `resource.not_found` | No | HTTP 404 | Verify the resource ID / URL |
+| `DUPLICATE_REQUEST` | `resource.duplicate` | No | Amazon Ads HTTP 200 with `{"code": "425"}` (duplicate report) | Deduplicate the request; check if the report was already submitted |
+| `INVALID_PARAMS` | `validation.invalid_params` | No | HTTP 400/422; Feishu 234001 | Fix the request parameters — check API docs for required fields |
+| `INVALID_HEADER` | `validation.invalid_header` | No | HTTP 406 (Accept) or 415 (Content-Type) — standard providers | Fix the `Content-Type` / `Accept` headers in the client |
+| `FILE_TOO_LARGE` | `validation.file_too_large` | No | Feishu 234006 | Compress or split the file before uploading |
+| `FILE_EMPTY` | `validation.file_empty` | No | Feishu 234010 | Check that the file was written before uploading |
+| `UNAUTHORIZED_APP` | `validation.unauthorized_app` | No | Feishu 234002, 234007 | Grant the Feishu app the required drive/bitable permission in the Open Platform console |
+| `SERVER_ERROR` | `server.error` | Yes | HTTP 500/502/503/504; Gemini Exchange "market not open" | Retry with exponential backoff; log and escalate if persistent |
+| `TIMEOUT` | `server.timeout` | Yes | Request or poll timeout | Retry; check network and increase timeout if the endpoint is reliably slow |
+| `RESPONSE_TRUNCATED` | `content.truncated` | No | LLM `finish_reason == max_tokens` | Raise `MAX_LLM_OUTPUT_TOKENS` or switch to a higher-ceiling model |
+| `PARSE_ERROR` | `content.parse_error` | No | JSON decode failure, malformed response body | Log the raw response; check if the API changed its format |
+| `SOFT_BLOCKED` | `content.soft_blocked` | Yes | Anti-bot / CAPTCHA wall in scraper response | Rotate cookies/proxy; trigger `refresh_amazon_cookies` |
+| `STORAGE_FULL` | `storage.full` | No | Feishu 234042 | Free up Feishu drive space or switch to R2/S3 storage backend |
+| `STORAGE_ERROR` | `storage.error` | No | Feishu 234041, 232096 | Retry; if persistent, check Feishu drive permissions and quota |
+| `UNKNOWN` | `unknown` | No | No mapping matched | Check raw HTTP status and response body; add a mapping to `codes.py` if this recurs |
+
+**Quick grep to find the code in logs:**
+```bash
+grep "ErrorCode\|\.code =\|auth\.\|billing\.\|rate\.\|server\.\|content\." logs/aws.log | tail -50
+```
+
+**Check if a code is retryable at the Python REPL:**
+```python
+from src.core.errors import ErrorCode, is_retryable, is_auth_error, default_retry_after
+code = ErrorCode.AUTH_TOKEN_EXPIRED
+print(is_retryable(code), is_auth_error(code), default_retry_after(code))
+# True True 0.0
+```

@@ -164,8 +164,9 @@ When a PR changes code in these paths, the corresponding doc **must be updated i
 | `config/workflow_defaults.yaml` | `docs/INPUT_SCHEMA.md` |
 | `tests/` (new test files) | `docs/TESTING.md` (Section 3 test categories) |
 | `src/entry/feishu/commands.py` | `docs/DEV_GUIDE.md` (Feishu commands table) |
-| `src/core/storage/` (new backend) | `docs/DEV_GUIDE.md` §7 |
+| `src/core/storage/` (new backend) | `docs/DEV_GUIDE.md` §8 |
 | `src/mcp/servers/erp/` (new provider) | `docs/DEV_GUIDE.md` §2 Layer 4C |
+| `src/core/errors/codes.py` (new provider or code) | `docs/DEV_GUIDE.md` §5, `docs/TROUBLESHOOTING.md` §11 |
 
 ---
 
