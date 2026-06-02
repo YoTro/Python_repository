@@ -1,25 +1,30 @@
 from __future__ import annotations
-import logging
-from typing import List
-from curl_cffi import requests
-from datetime import datetime
-from urllib.parse import quote
+
 import json
+import logging
 import os
 import random
 import time
-from .auth import XiyouZhaociAuth
-from src.gateway.rate_limit import RateLimiter
+from datetime import datetime
+from urllib.parse import quote
+
+from curl_cffi import requests
+
 from src.core.errors.exceptions import RetryableError
+from src.gateway.rate_limit import RateLimiter
+
+from .auth import XiyouZhaociAuth
 
 logger = logging.getLogger(__name__)
 
 
 class XiyouAuthRequiredError(Exception):
     """Exception raised when Xiyouzhaoci token is missing or expired, and SMS auth is needed."""
+
     def __init__(self, message="Xiyouzhaoci token expired or invalid. Re-authentication required."):
         self.message = message
         super().__init__(self.message)
+
 
 class XiyouZhaociAPI:
     """
@@ -28,18 +33,20 @@ class XiyouZhaociAPI:
     """
 
     # Calculate project root relative to this file
-    _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
-    
+    _PROJECT_ROOT = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..")
+    )
+
     # Default paths based on project root
     _DEFAULT_DATA_DIR = os.path.join(_PROJECT_ROOT, "data")
 
     def __init__(self, tenant_id: str = "default", token_file: str = None):
         self.tenant_id = tenant_id
-        
+
         # Identity-based token isolation
         config_dir = os.path.join(self._PROJECT_ROOT, "config", "auth")
         os.makedirs(config_dir, exist_ok=True)
-        
+
         self.token_file = token_file or os.path.join(config_dir, f"xiyou_{tenant_id}_token.json")
         self.session = requests.Session(impersonate="chrome")
         self.base_url = "https://api.xydc.com"
@@ -61,7 +68,7 @@ class XiyouZhaociAPI:
             "sec-fetch-site": "same-site",
             "referrer": "https://www.xiyouzhaoci.com/",
             "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36",
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36",
         }
         if self.auth_token:
             self.common_headers["authorization"] = self.auth_token
@@ -71,7 +78,7 @@ class XiyouZhaociAPI:
     def _load_token(self) -> str:
         if os.path.exists(self.token_file):
             try:
-                with open(self.token_file, "r", encoding="utf-8") as f:
+                with open(self.token_file, encoding="utf-8") as f:
                     data = json.load(f)
                     return data.get("token", "")
             except Exception as e:
@@ -120,7 +127,9 @@ class XiyouZhaociAPI:
                     logger.info("Retrying request with reloaded token.")
                     response = self.session.request(method, url, **kwargs)
                 else:
-                    logger.error("401 Unauthorized: Token is missing or invalid. Please re-authenticate.")
+                    logger.error(
+                        "401 Unauthorized: Token is missing or invalid. Please re-authenticate."
+                    )
                     raise XiyouAuthRequiredError(
                         "Xiyouzhaoci token expired or invalid. Re-authentication required."
                     )
@@ -166,7 +175,6 @@ class XiyouZhaociAPI:
             if self.auth_token:
                 self.common_headers["authorization"] = self.auth_token
         return res
-
 
     @staticmethod
     def _krs_ver() -> str:
@@ -293,16 +301,15 @@ class XiyouZhaociAPI:
             output_dir = self._DEFAULT_DATA_DIR
         elif not os.path.isabs(output_dir):
             output_dir = os.path.join(self._DEFAULT_DATA_DIR, output_dir)
-        
+
         output_dir = os.path.normpath(output_dir)
 
         lookup_result = self.lookup_asin(country, asin)
         if not lookup_result:
             return ""
 
-        resource_id = (
-            lookup_result.get("data", {}).get("resourceId")
-            or lookup_result.get("resourceId")
+        resource_id = lookup_result.get("data", {}).get("resourceId") or lookup_result.get(
+            "resourceId"
         )
         if not resource_id:
             logger.error(f"No resourceId in response for ASIN {asin}: {lookup_result}")
@@ -392,16 +399,15 @@ class XiyouZhaociAPI:
             output_dir = self._DEFAULT_DATA_DIR
         elif not os.path.isabs(output_dir):
             output_dir = os.path.join(self._DEFAULT_DATA_DIR, output_dir)
-        
+
         output_dir = os.path.normpath(output_dir)
 
         analyze_result = self.analyze_keyword(country, keyword)
         if not analyze_result:
             return ""
 
-        resource_id = (
-            analyze_result.get("data", {}).get("resourceId")
-            or analyze_result.get("resourceId")
+        resource_id = analyze_result.get("data", {}).get("resourceId") or analyze_result.get(
+            "resourceId"
         )
         if not resource_id:
             logger.error(f"No resourceId for keyword '{keyword}': {analyze_result}")
@@ -425,7 +431,7 @@ class XiyouZhaociAPI:
 
     # ── Multi-ASIN Comparison (v4) ──────────────────────────────────────
 
-    def compare_asins(self, country: str, asins: List[str], period: str = "last7days") -> dict:
+    def compare_asins(self, country: str, asins: list[str], period: str = "last7days") -> dict:
         """
         Compare multiple ASINs (max 20) for common keywords.
         Period options: 'last7days', 'last30days', etc.
@@ -436,7 +442,7 @@ class XiyouZhaociAPI:
 
         url = f"{self.base_url}/v4/asins/compare/list/resource"
         asins_str = ",".join(asins)
-        
+
         payload = {
             "resource": {"country": country, "asins": asins},
             "asins": asins,
@@ -451,11 +457,11 @@ class XiyouZhaociAPI:
                 "cycle": "daily",
                 "period": period,
                 "startCycle": {"startDate": "", "endDate": ""},
-                "endCycle": {"startDate": "", "endDate": ""}
+                "endCycle": {"startDate": "", "endDate": ""},
             },
-            "tableType": "multiAsinsComparisonList"
+            "tableType": "multiAsinsComparisonList",
         }
-        
+
         headers = self.common_headers.copy()
         headers["request-url"] = f"/detail/asin_compare/look_up/{country}/{asins_str}"
         headers["krs-ver"] = self._krs_ver()
@@ -469,7 +475,9 @@ class XiyouZhaociAPI:
             logger.error(f"Error initiating ASIN comparison: {e}")
             return {}
 
-    def export_compare_data(self, country: str, asins: List[str], period: str = "last7days", output_dir: str = None) -> str:
+    def export_compare_data(
+        self, country: str, asins: list[str], period: str = "last7days", output_dir: str = None
+    ) -> str:
         """
         Full Multi-ASIN comparison export flow: compare → poll → download xlsx.
         Returns path to downloaded file, or empty string on failure.
@@ -478,16 +486,15 @@ class XiyouZhaociAPI:
             output_dir = self._DEFAULT_DATA_DIR
         elif not os.path.isabs(output_dir):
             output_dir = os.path.join(self._DEFAULT_DATA_DIR, output_dir)
-        
+
         output_dir = os.path.normpath(output_dir)
 
         compare_result = self.compare_asins(country, asins, period)
         if not compare_result:
             return ""
 
-        resource_id = (
-            compare_result.get("data", {}).get("resourceId")
-            or compare_result.get("resourceId")
+        resource_id = compare_result.get("data", {}).get("resourceId") or compare_result.get(
+            "resourceId"
         )
         if not resource_id:
             logger.error(f"No resourceId in comparison response: {compare_result}")
@@ -504,25 +511,23 @@ class XiyouZhaociAPI:
                 "resourceId": str(resource_id),
             },
             request_url_header=f"/detail/asin_compare/look_up/{country}/{asins_str}",
-            output_path=os.path.join(output_dir, f"{country}_compare_{asins[0]}_{resource_id}.xlsx"),
+            output_path=os.path.join(
+                output_dir, f"{country}_compare_{asins[0]}_{resource_id}.xlsx"
+            ),
         )
 
     # ── ABA Ranking Data ────────────────────────────────────────────────
 
-    def get_aba_top_asins(self, country: str, search_terms: List[str]) -> dict:
+    def get_aba_top_asins(self, country: str, search_terms: list[str]) -> dict:
         """
         Query top ASINs for the given search terms based on ABA ranking data.
         """
         url = f"{self.base_url}/v2/searchTerms/topAsins"
-        
+
         terms_payload = [{"country": country, "searchTerm": term} for term in search_terms]
-        
-        payload = {
-            "biz": {
-                "searchTerms": terms_payload
-            }
-        }
-        
+
+        payload = {"biz": {"searchTerms": terms_payload}}
+
         headers = self.common_headers.copy()
         headers["request-url"] = "/detail/ranking_list"
         headers["krs-ver"] = self._krs_ver()
@@ -538,12 +543,20 @@ class XiyouZhaociAPI:
             logger.error(f"Error querying ABA top ASINs: {e}")
             return {}
 
-    def get_search_terms_ranking(self, country: str, query: str, page: int = 1, page_size: int = 100, field: str = "week", rank_pattern: str = "aba") -> dict:
+    def get_search_terms_ranking(
+        self,
+        country: str,
+        query: str,
+        page: int = 1,
+        page_size: int = 100,
+        field: str = "week",
+        rank_pattern: str = "aba",
+    ) -> dict:
         """
         Query ranking list for search terms based on a query string.
         """
         url = f"{self.base_url}/v3/rankingList/searchTerms"
-        
+
         payload = {
             "biz": {
                 "country": country,
@@ -551,10 +564,10 @@ class XiyouZhaociAPI:
                 "page": page,
                 "pageSize": page_size,
                 "rankPattern": rank_pattern,
-                "query": query
+                "query": query,
             }
         }
-        
+
         headers = self.common_headers.copy()
         headers["request-url"] = "/detail/ranking_list"
         headers["krs-ver"] = self._krs_ver()
@@ -568,18 +581,15 @@ class XiyouZhaociAPI:
             logger.error(f"Error querying search terms ranking for '{query}': {e}")
             return {}
 
-    def get_traffic_scores(self, country: str, asins: List[str]) -> dict:
+    def get_traffic_scores(self, country: str, asins: list[str]) -> dict:
         """
         Fetch 7-day traffic scores for a list of ASINs.
         Useful fields: advertisingTrafficScoreRatio (Ad dependency), totalTrafficScoreGrowthRate (Growth).
         """
         url = f"{self.base_url}/v4/asins/trafficScore"
-        
-        payload = {
-            "asins": asins,
-            "country": country
-        }
-        
+
+        payload = {"asins": asins, "country": country}
+
         headers = self.common_headers.copy()
         # Use the first ASIN for the request-url header to match Xiyou's behavior
         first_asin = asins[0] if asins else "unknown"
@@ -623,31 +633,31 @@ class XiyouZhaociAPI:
 
         # Use daily cycle to allow precise date ranges without automatic month alignment
         start_cycle = {"startDate": start_date, "endDate": start_date}
-        end_cycle   = {"startDate": end_date,   "endDate": end_date}
+        end_cycle = {"startDate": end_date, "endDate": end_date}
 
         payload = {
             "resource": {"country": country, "asin": asin},
             "biz": {
-                "asin":       asin,
-                "country":    country,
-                "page":       page,
-                "pageSize":   page_size,
-                "query":      "",
-                "orders":     [{"field": "follow", "order": "desc"}],
-                "filters":    [{"field": "asinResearchType", "filter": ["all"]}],
+                "asin": asin,
+                "country": country,
+                "page": page,
+                "pageSize": page_size,
+                "query": "",
+                "orders": [{"field": "follow", "order": "desc"}],
+                "filters": [{"field": "asinResearchType", "filter": ["all"]}],
                 "rangeFilters": [],
                 "cycleFilter": {
-                    "cycle":      "daily",
-                    "period":     "",
+                    "cycle": "daily",
+                    "period": "",
                     "startCycle": start_cycle,
-                    "endCycle":   end_cycle,
+                    "endCycle": end_cycle,
                 },
             },
         }
 
         headers = self.common_headers.copy()
         headers["request-url"] = f"/detail/asin/look_up/{country}/{asin}?listType=dataList"
-        headers["krs-ver"]     = self._krs_ver()
+        headers["krs-ver"] = self._krs_ver()
 
         logger.info(f"[xiyouzhaoci] get_asin_keywords: {asin} {country} {start_date}→{end_date}")
         try:
@@ -658,33 +668,32 @@ class XiyouZhaociAPI:
             logger.error(f"[xiyouzhaoci] get_asin_keywords error for {asin}: {e}")
             return {}
 
-    def get_asin_daily_trends(self, country: str, asin: str, start_date: str, end_date: str) -> dict:
+    def get_asin_daily_trends(
+        self, country: str, asin: str, start_date: str, end_date: str
+    ) -> dict:
         """
         Fetch daily trends (price, ratings, stars) for an ASIN.
-        
+
         :param start_date: YYYY-MM-DD or full ISO string. Earliest: 2023-02-01.
         :param end_date: YYYY-MM-DD or full ISO string. Range limit: ~25 months.
         """
         url = f"{self.base_url}/v2/asins/info/trends/daily"
-        
+
         # Format dates to ISO if only YYYY-MM-DD is provided
-        if len(start_date) == 10: start_date += "T00:00:00.000-07:00"
-        if len(end_date) == 10: end_date += "T00:00:00.000-07:00"
+        if len(start_date) == 10:
+            start_date += "T00:00:00.000-07:00"
+        if len(end_date) == 10:
+            end_date += "T00:00:00.000-07:00"
 
         payload = {
             "resource": {"country": country, "asin": asin},
             "biz": {
                 "entities": [
-                    {
-                        "asin": asin,
-                        "country": country,
-                        "startDate": start_date,
-                        "endDate": end_date
-                    }
+                    {"asin": asin, "country": country, "startDate": start_date, "endDate": end_date}
                 ]
-            }
+            },
         }
-        
+
         headers = self.common_headers.copy()
         headers["request-url"] = f"/detail/asin/look_up/{country}/{asin}"
         headers["krs-ver"] = self._krs_ver()
@@ -698,12 +707,11 @@ class XiyouZhaociAPI:
             logger.error(f"Error querying ASIN daily trends: {e}")
             return {}
 
-
     def get_asin_search_term_rank_trends(
         self,
         country: str,
         asin: str,
-        search_terms: List[str],
+        search_terms: list[str],
         start_date: str,
         end_date: str,
     ) -> dict:
@@ -769,8 +777,8 @@ class XiyouZhaociAPI:
         self,
         country: str,
         search_term: str,
-        weeks: Optional[int] = None,
-        week_interval: Optional[List[str]] = None,
+        weeks: int | None = None,
+        week_interval: list[str] | None = None,
     ) -> dict:
         """
         Fetch weekly historical ABA search-volume trends for a single keyword.
@@ -843,6 +851,7 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     import sys
+
     mode = sys.argv[1] if len(sys.argv) > 1 else "keyword"
 
     if mode == "asin":

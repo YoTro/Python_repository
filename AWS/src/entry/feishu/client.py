@@ -1,19 +1,29 @@
 from __future__ import annotations
-import lark_oapi as lark
-from lark_oapi.api.im.v1 import *
+
+import json
 import logging
 import os
-import json
+
+import lark_oapi as lark
+from lark_oapi.api.im.v1 import (
+    CreateMessageRequest,
+    CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
+)
+
 from src.core.utils.config_helper import ConfigHelper
 from src.core.utils.context import ContextPropagator
 from src.entry.feishu.const import feishu_error_msg
 
 logger = logging.getLogger(__name__)
 
+
 class FeishuClient:
     """
     Feishu (Lark) API client wrapper using lark-oapi.
     """
+
     def __init__(self, bot_name: str = None):
         # Determine which bot to use (default order: explicit arg -> context -> config default)
         resolved_bot_name = bot_name
@@ -25,7 +35,9 @@ class FeishuClient:
         bot_config = ConfigHelper.get_feishu_bot(resolved_bot_name)
 
         if not bot_config:
-            logger.error(f"Feishu bot '{resolved_bot_name}' not configured. Set FEISHU_{resolved_bot_name.upper()}_APP_ID in .env")
+            logger.error(
+                f"Feishu bot '{resolved_bot_name}' not configured. Set FEISHU_{resolved_bot_name.upper()}_APP_ID in .env"
+            )
             self.app_id = ""
             self.app_secret = ""
             self.user_access_token = ""
@@ -35,58 +47,81 @@ class FeishuClient:
             self.app_secret = bot_config["app_secret"]
             self.user_access_token = bot_config["user_access_token"]
             self.webhook_url = bot_config["webhook_url"]
-        
+
         if not self.app_id or not self.app_secret:
             logger.warning(f"Feishu App ID/Secret missing for bot '{resolved_bot_name}'.")
 
-        self.client = lark.Client.builder() \
-            .app_id(self.app_id) \
-            .app_secret(self.app_secret) \
-            .log_level(lark.LogLevel.INFO) \
+        self.client = (
+            lark.Client.builder()
+            .app_id(self.app_id)
+            .app_secret(self.app_secret)
+            .log_level(lark.LogLevel.INFO)
             .build()
-    
-    def _resolve_receive_params(self, receive_id_type: Optional[str], receive_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        )
+
+    def _resolve_receive_params(
+        self, receive_id_type: str | None, receive_id: str | None
+    ) -> tuple[str | None, str | None]:
         """
         Resolves receive_id and receive_id_type, prioritizing explicit arguments,
         then context variables.
         """
         if receive_id and receive_id_type:
             return receive_id_type, receive_id
-        
+
         ctx_chat_id = ContextPropagator.get("feishu_chat_id")
         if ctx_chat_id:
             return "chat_id", ctx_chat_id
-        
+
         return None, None
 
-    def _send_im_message(self, msg_type: str, content: str, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None):
+    def _send_im_message(
+        self,
+        msg_type: str,
+        content: str,
+        receive_id_type: str | None = None,
+        receive_id: str | None = None,
+    ):
         """
         Generic internal method to send any IM message type.
         """
-        resolved_receive_id_type, resolved_receive_id = self._resolve_receive_params(receive_id_type, receive_id)
+        resolved_receive_id_type, resolved_receive_id = self._resolve_receive_params(
+            receive_id_type, receive_id
+        )
 
         if not resolved_receive_id:
-            logger.error(f"Feishu send {msg_type} failed: No receive_id provided or resolved from context.")
+            logger.error(
+                f"Feishu send {msg_type} failed: No receive_id provided or resolved from context."
+            )
             return {"success": False, "error": "No receive_id provided."}
 
-        request = CreateMessageRequest.builder() \
-            .receive_id_type(resolved_receive_id_type) \
-            .request_body(CreateMessageRequestBody.builder()
-                          .receive_id(resolved_receive_id)
-                          .msg_type(msg_type)
-                          .content(content)
-                          .build()) \
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type(resolved_receive_id_type)
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(resolved_receive_id)
+                .msg_type(msg_type)
+                .content(content)
+                .build()
+            )
             .build()
+        )
 
         response = self.client.im.v1.message.create(request)
-        
+
         if not response.success():
             logger.error(f"Feishu send {msg_type} failed: {response.code}, {response.msg}")
             return {"success": False, "error": response.msg, "code": response.code}
-        
+
         return {"success": True, "data": lark.JSON.marshal(response.data)}
 
-    def send_text_message(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, text: str = ""):
+    def send_text_message(
+        self,
+        receive_id_type: str | None = None,
+        receive_id: str | None = None,
+        text: str = "",
+    ):
         """Send a simple text message."""
         content = json.dumps({"text": text})
         return self._send_im_message("text", content, receive_id_type, receive_id)
@@ -103,30 +138,47 @@ class FeishuClient:
         truncated = encoded[: limit_bytes - 300].decode("utf-8", errors="ignore")
         return truncated.rstrip() + "\n\n…（内容超出卡片限制，已截断。完整内容请下载附件）"
 
-    def send_card_message(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, text: str = ""):
+    def send_card_message(
+        self,
+        receive_id_type: str | None = None,
+        receive_id: str | None = None,
+        text: str = "",
+    ):
         """Send a card message. Truncates only if the UTF-8 byte size exceeds 28 KB."""
         text_bytes = len(text.encode("utf-8"))
         if text_bytes > self._CARD_TEXT_LIMIT_BYTES:
             logger.warning(f"Feishu card text {text_bytes} bytes exceeds 28 KB limit, truncating.")
             text = self._fit_text_to_card(text)
 
-        content = json.dumps({
-            "config": {"wide_screen_mode": True},
-            "elements": [{"tag": "markdown", "content": text}]
-        })
+        content = json.dumps(
+            {
+                "config": {"wide_screen_mode": True},
+                "elements": [{"tag": "markdown", "content": text}],
+            }
+        )
         return self._send_im_message("interactive", content, receive_id_type, receive_id)
 
-    def update_card_message(self, message_id: str, text: str, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None):
+    def update_card_message(
+        self,
+        message_id: str,
+        text: str,
+        receive_id_type: str | None = None,
+        receive_id: str | None = None,
+    ):
         """Update an existing card message."""
-        content = json.dumps({
-            "config": {"wide_screen_mode": True},
-            "elements": [{"tag": "markdown", "content": self._fit_text_to_card(text)}]
-        })
-        
-        request = PatchMessageRequest.builder() \
-            .message_id(message_id) \
-            .request_body(PatchMessageRequestBody.builder().content(content).build()) \
+        content = json.dumps(
+            {
+                "config": {"wide_screen_mode": True},
+                "elements": [{"tag": "markdown", "content": self._fit_text_to_card(text)}],
+            }
+        )
+
+        request = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(PatchMessageRequestBody.builder().content(content).build())
             .build()
+        )
 
         response = self.client.im.v1.message.patch(request)
         return {"success": response.success()}
@@ -137,30 +189,34 @@ class FeishuClient:
         Note: 'stream' is a universal type supported by all files.
         """
         from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
-        
+
         if not file_name:
             file_name = os.path.basename(file_path)
-            
+
         file_path = os.path.normpath(file_path)
         if not os.path.exists(file_path):
             return {"success": False, "error": "File not found"}
 
         try:
             with open(file_path, "rb") as f:
-                request = CreateFileRequest.builder() \
-                    .request_body(CreateFileRequestBody.builder()
-                                  .file_type(file_type)
-                                  .file_name(file_name)
-                                  .file(f)
-                                  .build()) \
+                request = (
+                    CreateFileRequest.builder()
+                    .request_body(
+                        CreateFileRequestBody.builder()
+                        .file_type(file_type)
+                        .file_name(file_name)
+                        .file(f)
+                        .build()
+                    )
                     .build()
+                )
 
                 response = self.client.im.v1.file.create(request)
 
             # CRITICAL FIX: If file_key is present, the upload was successful regardless of response.success().
             # This suppresses false-positive 234001 errors where the file is received but headers cause a warning.
             file_key = getattr(response.data, "file_key", None) if response.data else None
-            
+
             if file_key:
                 return {"success": True, "file_key": file_key}
 
@@ -168,72 +224,134 @@ class FeishuClient:
                 msg = feishu_error_msg(response.code, response.msg)
                 logger.error(f"Feishu upload file failed: {response.code}, {msg}")
                 return {"success": False, "error": msg, "code": response.code}
-            
+
             return {"success": True, "file_key": file_key}
         except Exception as e:
             logger.error(f"Feishu upload process failed: {e}")
             return {"success": False, "error": str(e)}
 
-    def send_file_message(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, file_key: str = ""):
+    def send_file_message(
+        self,
+        receive_id_type: str | None = None,
+        receive_id: str | None = None,
+        file_key: str = "",
+    ):
         """Send a file message using a file_key."""
         content = json.dumps({"file_key": file_key})
         return self._send_im_message("file", content, receive_id_type, receive_id)
 
-    def send_local_file(self, receive_id_type: Optional[str] = None, receive_id: Optional[str] = None, file_path: str = "", filename: str = None):
+    def send_local_file(
+        self,
+        receive_id_type: str | None = None,
+        receive_id: str | None = None,
+        file_path: str = "",
+        filename: str = None,
+    ):
         """Upload local file and send it as a Feishu attachment."""
-        resolved_receive_id_type, resolved_receive_id = self._resolve_receive_params(receive_id_type, receive_id)
+        resolved_receive_id_type, resolved_receive_id = self._resolve_receive_params(
+            receive_id_type, receive_id
+        )
         if not resolved_receive_id:
             return {"success": False, "error": "No receive_id provided."}
 
         upload_res = self.upload_file(file_path, filename or os.path.basename(file_path))
         if not upload_res.get("success"):
             return upload_res
-            
-        return self.send_file_message(resolved_receive_id_type, resolved_receive_id, upload_res["file_key"])
+
+        return self.send_file_message(
+            resolved_receive_id_type, resolved_receive_id, upload_res["file_key"]
+        )
 
     def create_bitable(self, name: str, folder_token: str = None, user_access_token: str = None):
         """Create a new Bitable."""
-        from lark_oapi.api.bitable.v1 import CreateAppRequest, App
-        request = CreateAppRequest.builder() \
-            .request_body(App.builder().name(name).folder_token(folder_token).build()) \
+        from lark_oapi.api.bitable.v1 import App, CreateAppRequest
+
+        request = (
+            CreateAppRequest.builder()
+            .request_body(App.builder().name(name).folder_token(folder_token).build())
             .build()
-        option = lark.RequestOption.builder().user_access_token(user_access_token).build() if user_access_token else None
+        )
+        option = (
+            lark.RequestOption.builder().user_access_token(user_access_token).build()
+            if user_access_token
+            else None
+        )
         response = self.client.bitable.v1.app.create(request, option)
-        if not response.success(): return {"success": False, "error": response.msg}
+        if not response.success():
+            return {"success": False, "error": response.msg}
         return {"success": True, "data": lark.JSON.marshal(response.data)}
 
     def list_bitable_tables(self, app_token: str, user_access_token: str = None):
         """List all tables within a Bitable."""
         from lark_oapi.api.bitable.v1 import ListAppTableRequest
+
         request = ListAppTableRequest.builder().app_token(app_token).build()
-        option = lark.RequestOption.builder().user_access_token(user_access_token).build() if user_access_token else None
+        option = (
+            lark.RequestOption.builder().user_access_token(user_access_token).build()
+            if user_access_token
+            else None
+        )
         response = self.client.bitable.v1.app_table.list(request, option)
-        if not response.success(): return {"success": False, "error": response.msg}
+        if not response.success():
+            return {"success": False, "error": response.msg}
         return {"success": True, "items": lark.JSON.marshal(response.data.items)}
 
-    def delete_all_bitable_records(self, app_token: str, table_id: str, user_access_token: str = None):
+    def delete_all_bitable_records(
+        self, app_token: str, table_id: str, user_access_token: str = None
+    ):
         """Clear all records from a Bitable table."""
         # Simple implementation for cleanup
         return {"success": True}
 
-    def create_bitable_field(self, app_token: str, table_id: str, field_name: str, field_type: int = 1, user_access_token: str = None):
+    def create_bitable_field(
+        self,
+        app_token: str,
+        table_id: str,
+        field_name: str,
+        field_type: int = 1,
+        user_access_token: str = None,
+    ):
         """Create a field in Bitable."""
-        from lark_oapi.api.bitable.v1 import CreateAppTableFieldRequest, AppTableField
-        request = CreateAppTableFieldRequest.builder() \
-            .app_token(app_token).table_id(table_id) \
-            .request_body(AppTableField.builder().field_name(field_name).type(field_type).build()) \
+        from lark_oapi.api.bitable.v1 import AppTableField, CreateAppTableFieldRequest
+
+        request = (
+            CreateAppTableFieldRequest.builder()
+            .app_token(app_token)
+            .table_id(table_id)
+            .request_body(AppTableField.builder().field_name(field_name).type(field_type).build())
             .build()
-        option = lark.RequestOption.builder().user_access_token(user_access_token).build() if user_access_token else None
+        )
+        option = (
+            lark.RequestOption.builder().user_access_token(user_access_token).build()
+            if user_access_token
+            else None
+        )
         response = self.client.bitable.v1.app_table_field.create(request, option)
         return {"success": response.success()}
 
-    def batch_add_bitable_records(self, app_token: str, table_id: str, records_list: list[dict], user_access_token: str = None):
+    def batch_add_bitable_records(
+        self, app_token: str, table_id: str, records_list: list[dict], user_access_token: str = None
+    ):
         """Add records in batch."""
-        from lark_oapi.api.bitable.v1 import BatchCreateAppTableRecordRequest, BatchCreateAppTableRecordRequestBody, AppTableRecord
+        from lark_oapi.api.bitable.v1 import (
+            AppTableRecord,
+            BatchCreateAppTableRecordRequest,
+            BatchCreateAppTableRecordRequestBody,
+        )
+
         records = [AppTableRecord.builder().fields(f).build() for f in records_list[:100]]
-        request = BatchCreateAppTableRecordRequest.builder().app_token(app_token).table_id(table_id) \
-            .request_body(BatchCreateAppTableRecordRequestBody.builder().records(records).build()).build()
-        option = lark.RequestOption.builder().user_access_token(user_access_token).build() if user_access_token else None
+        request = (
+            BatchCreateAppTableRecordRequest.builder()
+            .app_token(app_token)
+            .table_id(table_id)
+            .request_body(BatchCreateAppTableRecordRequestBody.builder().records(records).build())
+            .build()
+        )
+        option = (
+            lark.RequestOption.builder().user_access_token(user_access_token).build()
+            if user_access_token
+            else None
+        )
         response = self.client.bitable.v1.app_table_record.batch_create(request, option)
         return {"success": response.success()}
 
@@ -242,26 +360,27 @@ class FeishuClient:
         Upload an image to Feishu to get an image_key (required for cards).
         """
         from lark_oapi.api.im.v1 import CreateImageRequest, CreateImageRequestBody
-        
+
         file_path = os.path.normpath(file_path)
         if not os.path.exists(file_path):
             return {"success": False, "error": "Image file not found"}
 
         try:
             with open(file_path, "rb") as f:
-                request = CreateImageRequest.builder() \
-                    .request_body(CreateImageRequestBody.builder()
-                                  .image_type("message")
-                                  .image(f)
-                                  .build()) \
+                request = (
+                    CreateImageRequest.builder()
+                    .request_body(
+                        CreateImageRequestBody.builder().image_type("message").image(f).build()
+                    )
                     .build()
+                )
 
                 response = self.client.im.v1.image.create(request)
 
             if not response.success():
                 logger.error(f"Feishu upload image failed: {response.code}, {response.msg}")
                 return {"success": False, "error": response.msg, "code": response.code}
-            
+
             return {"success": True, "image_key": response.data.image_key}
         except Exception as e:
             logger.error(f"Feishu image upload process failed: {e}")

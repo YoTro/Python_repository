@@ -2,16 +2,16 @@
 Unit tests for SP-API auth and client (no real credentials needed).
 Tests parse helpers and auth logic with mocked HTTP.
 """
-import sys
+
 import os
+import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 class TestSPAPIAuth(unittest.TestCase):
-
     def _make_auth(self, store="US"):
         env = {
             "AMAZON_SP_API_CLIENT_ID": "test_client_id",
@@ -20,6 +20,7 @@ class TestSPAPIAuth(unittest.TestCase):
         }
         with patch.dict(os.environ, env):
             from src.mcp.servers.amazon.sp_api.auth import SPAPIAuth
+
             return SPAPIAuth(store_id=store)
 
     def test_us_marketplace_id(self):
@@ -38,12 +39,14 @@ class TestSPAPIAuth(unittest.TestCase):
         }
         with patch.dict(os.environ, env):
             from src.mcp.servers.amazon.sp_api.auth import SPAPIAuth
+
             auth = SPAPIAuth(store_id="DE")
         self.assertIn("sellingpartnerapi-eu", auth.endpoint)
 
     def test_missing_credentials_raises(self):
         with patch.dict(os.environ, {}, clear=True):
             from src.mcp.servers.amazon.sp_api.auth import SPAPIAuth
+
             with self.assertRaises(ValueError):
                 SPAPIAuth(store_id="US")
 
@@ -77,6 +80,7 @@ class TestSPAPIClientParsers(unittest.TestCase):
         }
         with patch.dict(os.environ, env):
             import importlib
+
             mod = importlib.import_module("src.mcp.servers.amazon.sp_api.client")
             return mod
 
@@ -128,6 +132,7 @@ class TestGetOrderMetrics(unittest.IsolatedAsyncioTestCase):
         }
         with patch.dict(os.environ, env):
             from src.mcp.servers.amazon.sp_api.client import SPAPIClient
+
             return SPAPIClient(store_id="US")
 
     def _mock_auth(self):
@@ -185,7 +190,7 @@ class TestGetOrderMetrics(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_payload_returns_empty_list(self):
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {}          # no "payload" key
+        mock_resp.json.return_value = {}  # no "payload" key
         mock_resp.raise_for_status = MagicMock()
 
         with self._mock_auth(), patch("requests.get", return_value=mock_resp):
@@ -200,12 +205,15 @@ class TestGetOrderMetrics(unittest.IsolatedAsyncioTestCase):
 
     async def test_http_error_propagates(self):
         import requests as _req
+
         mock_resp = MagicMock()
         mock_resp.raise_for_status.side_effect = _req.HTTPError("403 Forbidden")
 
+        import requests as _req_mod
+
         with self._mock_auth(), patch("requests.get", return_value=mock_resp):
             client = self._make_client()
-            with self.assertRaises(Exception):
+            with self.assertRaises(_req_mod.HTTPError):
                 await client.get_order_metrics(
                     asin="B0BAD",
                     start_date="2026-03-30",
@@ -217,20 +225,20 @@ class TestGetOrderMetrics(unittest.IsolatedAsyncioTestCase):
     def test_daily_sales_from_unit_count(self):
         """Verify the enricher formula: daily_sales = unitCount / days."""
         metrics = [{"unitCount": 150}]
-        days    = 30
-        total_units  = sum(m.get("unitCount", 0) for m in metrics)
-        daily_sales  = round(total_units / days, 2)
+        days = 30
+        total_units = sum(m.get("unitCount", 0) for m in metrics)
+        daily_sales = round(total_units / days, 2)
         self.assertEqual(daily_sales, 5.0)
 
     def test_can_sell_days_formula(self):
         total_available = 200
-        daily_sales     = 5.0
-        can_sell_days   = round(total_available / daily_sales)
+        daily_sales = 5.0
+        can_sell_days = round(total_available / daily_sales)
         self.assertEqual(can_sell_days, 40)
 
     def test_zero_units_returns_no_can_sell_days(self):
         """When no units were sold, can_sell_days should not be computed."""
-        metrics    = [{"unitCount": 0}]
+        metrics = [{"unitCount": 0}]
         total_units = sum(m.get("unitCount", 0) for m in metrics)
         self.assertFalse(total_units > 0)
 

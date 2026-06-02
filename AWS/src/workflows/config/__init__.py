@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Workflow configuration management.
 
@@ -9,10 +10,10 @@ Two-layer config merge (single-user version):
 Upgrade path to multi-user: add tenant layer between 1 and 2.
 """
 
-import os
 import copy
 import logging
-from typing import Dict, Any, Optional
+import os
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ _DEFAULTS_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "config", "workflow_defaults.yaml"
 )
 
-_defaults_cache: Optional[dict] = None
+_defaults_cache: dict | None = None
 
 
 def _load_defaults() -> dict:
@@ -32,8 +33,9 @@ def _load_defaults() -> dict:
 
     try:
         import yaml
+
         if os.path.exists(_DEFAULTS_PATH):
-            with open(_DEFAULTS_PATH, "r") as f:
+            with open(_DEFAULTS_PATH) as f:
                 _defaults_cache = yaml.safe_load(f) or {}
                 logger.debug(f"Loaded workflow defaults from {_DEFAULTS_PATH}")
         else:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 CheckpointManager — step-level checkpoint persistence with event log.
 
@@ -9,12 +10,12 @@ Event log follows Temporal's event-sourcing pattern:
   STEP_STARTED, ACTIVITY_COMPLETED, BATCH_SUBMITTED, BATCH_COMPLETED, HEARTBEAT
 """
 
-import os
 import json
 import logging
-from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Dict, Any
+import os
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from typing import Any
 
 from src.core.errors.exceptions import CheckpointError
 
@@ -24,8 +25,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class WorkflowEvent:
     """A single immutable entry in the workflow event log."""
+
     timestamp: float
-    event_type: str   # STEP_STARTED | ACTIVITY_COMPLETED | BATCH_SUBMITTED | BATCH_COMPLETED | HEARTBEAT
+    event_type: (
+        str  # STEP_STARTED | ACTIVITY_COMPLETED | BATCH_SUBMITTED | BATCH_COMPLETED | HEARTBEAT
+    )
     step_name: str
     payload: dict
 
@@ -33,19 +37,20 @@ class WorkflowEvent:
 @dataclass
 class CheckpointData:
     """Snapshot of workflow state at a completed step."""
+
     job_id: str
     step_index: int
     step_name: str
-    items: List[Dict[str, Any]]
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    items: list[dict[str, Any]]
+    metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     # Resume context — stored so callers don't need to re-supply them
     workflow_name: str = ""
-    workflow_params: Dict[str, Any] = field(default_factory=dict)
+    workflow_params: dict[str, Any] = field(default_factory=dict)
     # Workflow context cache — populated by earlier steps, needed by later ones
-    ctx_cache: Dict[str, Any] = field(default_factory=dict)
+    ctx_cache: dict[str, Any] = field(default_factory=dict)
     # Append-only event log for durable execution (Temporal-inspired)
-    events: List[Dict[str, Any]] = field(default_factory=list)
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
 class CheckpointManager:
@@ -56,9 +61,9 @@ class CheckpointManager:
     """
 
     def __init__(self, checkpoint_dir: str = None):
-        self.checkpoint_dir = checkpoint_dir or os.path.abspath(os.path.join(
-            os.path.dirname(__file__), "..", "..", "..", "data", "checkpoints"
-        ))
+        self.checkpoint_dir = checkpoint_dir or os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "checkpoints")
+        )
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
     def _path(self, job_id: str) -> str:
@@ -69,11 +74,11 @@ class CheckpointManager:
         job_id: str,
         step_index: int,
         step_name: str,
-        items: List[Dict[str, Any]],
-        metadata: Dict[str, Any] = None,
+        items: list[dict[str, Any]],
+        metadata: dict[str, Any] = None,
         workflow_name: str = "",
-        workflow_params: Dict[str, Any] = None,
-        ctx_cache: Dict[str, Any] = None,
+        workflow_params: dict[str, Any] = None,
+        ctx_cache: dict[str, Any] = None,
     ) -> None:
         """Save checkpoint after a step completes."""
         checkpoint = CheckpointData(
@@ -96,23 +101,22 @@ class CheckpointManager:
                 f"{len(items)} items"
             )
         except Exception as e:
-            raise CheckpointError(f"Failed to save checkpoint for {job_id}: {e}")
+            raise CheckpointError(f"Failed to save checkpoint for {job_id}: {e}") from e
 
-    def load(self, job_id: str) -> Optional[CheckpointData]:
+    def load(self, job_id: str) -> CheckpointData | None:
         """Load the latest checkpoint for a job. Returns None if not found."""
         path = self._path(job_id)
         if not os.path.exists(path):
             return None
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             # Deserialize events list from raw dicts back to WorkflowEvent objects
             raw_events = data.pop("events", [])
             checkpoint = CheckpointData(**data)
             checkpoint.events = [
-                WorkflowEvent(**e) if isinstance(e, dict) else e
-                for e in raw_events
+                WorkflowEvent(**e) if isinstance(e, dict) else e for e in raw_events
             ]
             logger.debug(
                 f"Checkpoint loaded: job={job_id}, resuming from step "
@@ -139,7 +143,7 @@ class CheckpointManager:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(asdict(checkpoint), f, ensure_ascii=False, default=str)
         except Exception as e:
-            raise CheckpointError(f"Failed to append event for {job_id}: {e}")
+            raise CheckpointError(f"Failed to append event for {job_id}: {e}") from e
 
     def clear(self, job_id: str) -> None:
         """Delete checkpoint after successful workflow completion."""
@@ -151,7 +155,7 @@ class CheckpointManager:
         except Exception as e:
             logger.warning(f"Failed to clear checkpoint for {job_id}: {e}")
 
-    def list_checkpoints(self) -> List[str]:
+    def list_checkpoints(self) -> list[str]:
         """List all job IDs with active checkpoints."""
         try:
             return [

@@ -1,22 +1,24 @@
 from __future__ import annotations
-import os
+
 import json
 import logging
-import asyncio
-from typing import Optional, Any, Dict
-from .base import BaseLLMProvider
+import os
+from typing import Any
+
 from src.intelligence.dto import LLMResponse
+
+from .base import BaseLLMProvider
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "deepseek-v4-flash"
 
 _CONTEXT_WINDOWS = {
-    "deepseek-v4-flash":  131_072,
-    "deepseek-v4-pro":    131_072,
+    "deepseek-v4-flash": 131_072,
+    "deepseek-v4-pro": 131_072,
     # Legacy aliases — resolved to deepseek-v4-flash by PriceManager
-    "deepseek-chat":      131_072,
-    "deepseek-reasoner":   65_536,
+    "deepseek-chat": 131_072,
+    "deepseek-reasoner": 65_536,
 }
 
 
@@ -37,8 +39,8 @@ class DeepSeekProvider(BaseLLMProvider):
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        model_name: Optional[str] = None,
+        api_key: str | None = None,
+        model_name: str | None = None,
         base_url: str = "https://api.deepseek.com",
     ):
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
@@ -50,20 +52,24 @@ class DeepSeekProvider(BaseLLMProvider):
 
         try:
             from openai import AsyncOpenAI
+
             self._client = AsyncOpenAI(api_key=self.api_key, base_url=base_url)
         except ImportError:
-            raise ImportError("openai package required: pip install openai")
+            raise ImportError("openai package required: pip install openai") from None
 
         from .config.limits import get_max_output_tokens
+
         _ceiling = get_max_output_tokens("deepseek", self.model_name)
         _env = os.getenv("MAX_LLM_OUTPUT_TOKENS", "").strip()
         self._DEFAULT_MAX_TOKENS = min(int(_env) if _env else _ceiling, _ceiling)
 
-        logger.info(f"DeepSeekProvider initialized: model={self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}")
+        logger.info(
+            f"DeepSeekProvider initialized: model={self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}"
+        )
 
     # ── Token counting ────────────────────────────────────────────────────────
 
-    async def count_tokens(self, prompt: str, system_message: Optional[str] = None) -> int:
+    async def count_tokens(self, prompt: str, system_message: str | None = None) -> int:
         # DeepSeek has no dedicated token-count endpoint; estimate via char count.
         full = (system_message or "") + prompt
         return max(1, len(full) // 4)
@@ -73,7 +79,7 @@ class DeepSeekProvider(BaseLLMProvider):
     async def generate_text(
         self,
         prompt: str,
-        system_message: Optional[str] = None,
+        system_message: str | None = None,
         **kwargs,
     ) -> LLMResponse:
         await self._check_context_limit(prompt, system_message)
@@ -104,7 +110,7 @@ class DeepSeekProvider(BaseLLMProvider):
         self,
         prompt: str,
         schema: Any,
-        system_message: Optional[str] = None,
+        system_message: str | None = None,
         **kwargs,
     ) -> LLMResponse:
         await self._check_context_limit(prompt, system_message)
@@ -142,7 +148,7 @@ class DeepSeekProvider(BaseLLMProvider):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _build_messages(prompt: str, system_message: Optional[str]) -> list:
+    def _build_messages(prompt: str, system_message: str | None) -> list:
         msgs = []
         if system_message:
             msgs.append({"role": "system", "content": system_message})
@@ -150,22 +156,22 @@ class DeepSeekProvider(BaseLLMProvider):
         return msgs
 
     def _parse_response(self, resp, *, is_batch: bool) -> LLMResponse:
-        choice  = resp.choices[0]
-        text    = choice.message.content or ""
-        usage   = resp.usage
+        choice = resp.choices[0]
+        text = choice.message.content or ""
+        usage = resp.usage
 
-        input_tokens      = getattr(usage, "prompt_tokens", 0) or 0
-        output_tokens     = getattr(usage, "completion_tokens", 0) or 0
+        input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+        output_tokens = getattr(usage, "completion_tokens", 0) or 0
 
         # Reasoning tokens (deepseek-reasoner only) are included in completion_tokens.
         # Extract them for transparency but do NOT double-count in cost — the API
         # already rolls them into completion_tokens for billing.
         completion_detail = getattr(usage, "completion_tokens_details", None)
-        reasoning_tokens  = getattr(completion_detail, "reasoning_tokens", 0) or 0
+        reasoning_tokens = getattr(completion_detail, "reasoning_tokens", 0) or 0
 
         # Cache hit tokens from server-side KV cache
-        prompt_detail     = getattr(usage, "prompt_tokens_details", None)
-        cached_tokens     = getattr(prompt_detail, "cached_tokens", 0) or 0
+        prompt_detail = getattr(usage, "prompt_tokens_details", None)
+        cached_tokens = getattr(prompt_detail, "cached_tokens", 0) or 0
 
         return self.create_response(
             text=text,

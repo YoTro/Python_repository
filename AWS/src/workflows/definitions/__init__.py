@@ -1,6 +1,9 @@
 from __future__ import annotations
-from . import amazon_bsr
-from . import product_screening
-from . import cli_test
-from . import category_monopoly_analysis
-from . import lp_validation
+
+from . import (  # noqa: F401  — side-effect imports that register workflows via @WorkflowRegistry.register
+    amazon_bsr,
+    category_monopoly_analysis,
+    cli_test,
+    lp_validation,
+    product_screening,
+)
