@@ -11,7 +11,7 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
     ```bash
     python3.11 -m venv venv311
     source venv311/bin/activate
-    pip install -r requirements.txt
+    pip install -e .
     ```
 3.  **Config**: Populate `.env` with `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, and `FEISHU_*` credentials.
 

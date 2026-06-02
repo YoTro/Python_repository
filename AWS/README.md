@@ -62,7 +62,7 @@ LLM / cost work:      LLM_GUIDELINES → MCP_PROTOCOL
    ```bash
    python3.11 -m venv venv311
    source venv311/bin/activate
-   pip install -r requirements.txt
+   pip install -e .
    ```
 3. **Environment Variables**:
    Copy the template below and save it as `.env` in the project root:
