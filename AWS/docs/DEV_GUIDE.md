@@ -7,7 +7,7 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 ## 1. Environment Setup
 
 1.  **Python Version**: Python 3.11+ required.
-2.  **Environment**: 
+2.  **Environment**:
     ```bash
     python3.11 -m venv venv311
     source venv311/bin/activate
@@ -410,3 +410,98 @@ if is_retryable(code):
 2. Add a branch in `src/core/storage/__init__.py` `get_storage_backend()`.
 3. Set `STORAGE_BACKEND=your_backend` in `.env`.
 4. No changes to `export_html`, `export_csv`, or any caller.
+
+---
+
+## 9. DataCache Standards
+
+`DataCache` (`src/core/data_cache.py`) is the shared persistence contract between L1 scrapers and L2 calculators. This section defines the key schema, TTL policy, and ownership rules every contributor must follow.
+
+### 9.1 API
+
+```python
+data_cache.set(domain, key, value)                           # write
+data_cache.get(domain, key, ttl_seconds=None)                # read; returns None if expired
+data_cache.get_model(domain, key, ModelClass, ttl_seconds)   # read + Pydantic validation
+data_cache.exists(domain, key)                               # boolean check
+```
+
+TTL is enforced **at read time** by comparing the stored `updated_at` timestamp to `datetime.utcnow()`. There is no background eviction — stale entries remain until overwritten.
+
+### 9.2 Redis Key Format
+
+The Redis backend constructs every key as:
+
+```
+aws:cache:{domain}:{key}
+```
+
+The `{key}` portion for L2 workflows follows:
+
+```
+{tenant_id}:{store_id}:{data_type}:{entity_id_or_hash}
+```
+
+| Layer | Full Redis key example |
+|-------|------------------------|
+| L1 (raw product) | `aws:cache:amazon:B01XXXXX` |
+| L1 (reviews) | `aws:cache:amazon:reviews:B01XXXXX` |
+| L1 (social) | `aws:cache:tiktok:yoga mat` |
+| L2 (workflow result) | `aws:cache:product_screening:default:US:profitability:B01XXXXX` |
+| L2 (ad report) | `aws:cache:ad_diag:tenant123:JP:perf_report:{hash}` |
+
+### 9.3 L1 vs L2 Domain Ownership
+
+| Layer | Who writes | Domain name | Key shape |
+|-------|-----------|-------------|-----------|
+| **L1** | MCP servers only | Named by data source (`amazon`, `tiktok`) | `ASIN` \| `{type}:{ASIN}` \| keyword |
+| **L2** | Workflow steps only | Named by workflow (`product_screening`, `ad_diag`, `cat_monopoly`) | `{tenant_id}:{store_id}:{data_type}:{entity_id}` |
+
+**Isolation rules:**
+- L1 MCP servers **never read L2 domains**.
+- Workflow steps **never write to L1 domains**.
+- L2 reads L1 as raw input; L2 writes computed results under its own workflow domain.
+
+**L1 key conventions:**
+- ASIN keys must be **uppercase** — call `.upper()` before every `set`/`get`.
+- Sub-type keys use `{type}:{id}` notation: `reviews:B01XXXXX`.
+
+**L2 key construction** — use the standard helper, never inline the key logic:
+
+```python
+_L2_DOMAIN = "product_screening"   # one constant per workflow file
+
+def _l2_key(ctx: WorkflowContext, *parts) -> str:
+    tid = ctx.tenant_id or "default"
+    sid = ctx.config.get("store_id", "US")
+    return ":".join(str(p) for p in (tid, sid) + parts)
+
+def _l2_get(ctx, ttl: int, *parts):
+    return _data_cache.get(_L2_DOMAIN, _l2_key(ctx, *parts), ttl_seconds=ttl)
+
+def _l2_set(ctx, value, *parts) -> None:
+    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value)
+```
+
+### 9.4 TTL Reference
+
+Define TTL constants at module level with a comment. Never pass a magic integer to `get()`.
+
+| Constant | Seconds | Duration | Data type examples |
+|----------|---------|----------|--------------------|
+| `_TTL_*` | `3_600` | 1 h | BSR scrape, market signals (ABA/SERP/CPC), deal intensity |
+| | `7_200` | 2 h | Ad traffic ratios, ad account config (campaigns/keywords) |
+| | `14_400` | 4 h | Product reviews |
+| | `21_600` | 6 h | Seller/fulfillment info, ad perf reports, change history, LLM keyword extraction, Xiyouzhaoci traffic |
+| | `43_200` | 12 h | Fulfillment type, TikTok PSI + external social signals |
+| | `86_400` | 24 h | Product metadata, past-month sales, SellerSprite snapshots, historical timeseries, YoY/ERP data |
+| | `604_800` | 7 d | Compliance/regulatory rules (essentially static) |
+
+### 9.5 Adding a New Cached Data Type
+
+1. Decide the layer: **L1** if raw scraped data; **L2** if computed/derived.
+2. Use an existing domain if the source matches; create a new one only for a genuinely new workflow or data source.
+3. Define a named `_TTL_*` constant using the table above.
+4. For L2: key via `_l2_key(ctx, "<data_type>", entity_id)` — never a bare string.
+5. For L1: normalize ASIN to uppercase; use `{type}:{ASIN}` for sub-types.
+6. Test with `pytest tests/test_l1_l2_cache.py`.
