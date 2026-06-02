@@ -52,6 +52,8 @@ dependencies = [
 dev = [
     "mypy>=1.10",
     "pytest>=8.0",
+    "pre-commit>=3.7",
+    "ruff>=0.11",
     # Type stubs for runtime dependencies
     "boto3-stubs[s3]",
     "types-redis",
@@ -103,3 +105,34 @@ module = [
     "mcp.*",
 ]
 ignore_missing_imports = true
+
+# ── ruff ──────────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+exclude = ["venv311", "models", "data", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes (undefined names, unused imports)
+    "I",   # isort (import order)
+    "UP",  # pyupgrade (modern Python syntax)
+    "B",   # flake8-bugbear (common bugs)
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long — handled by ruff-format
+    "E402",   # module-level import not at top — many files use docstrings or sys.path before imports
+    "B008",   # function calls in default args — common in Pydantic/FastAPI
+    "SIM102", # nested if → combine with and — often less readable
+    "SIM103", # return bool condition directly — sometimes explicit is clearer
+    "SIM105", # contextlib.suppress — try/except/pass is often more readable
+    "SIM108", # ternary operator — often less readable in complex conditions
+    "SIM117", # multiple with statements — parenthesized form is clearer in Python 3.10+
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]

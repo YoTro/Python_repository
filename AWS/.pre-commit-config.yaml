@@ -1,0 +1,47 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        files: ^AWS/
+      - id: end-of-file-fixer
+        files: ^AWS/
+      - id: check-yaml
+        files: ^AWS/
+      - id: check-toml
+        files: ^AWS/
+      - id: check-json
+        files: ^AWS/
+        exclude: ^AWS/\.vscode/
+      - id: check-added-large-files
+        args: [--maxkb=500]
+        files: ^AWS/
+      - id: debug-statements
+        files: ^AWS/src/
+      - id: check-merge-conflict
+        files: ^AWS/
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.12
+    hooks:
+      - id: ruff
+        files: ^AWS/
+        args: [--fix, --unsafe-fixes]
+      - id: ruff-format
+        files: ^AWS/
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.1
+    hooks:
+      - id: mypy
+        files: ^AWS/src/core/
+        args: [--config-file=AWS/pyproject.toml]
+        additional_dependencies:
+          - pydantic>=2.0
+          - types-requests
+          - types-redis
+          - types-PyYAML
+          - types-beautifulsoup4
+          - types-Markdown
+          - boto3-stubs[s3]
+          - pandas-stubs
