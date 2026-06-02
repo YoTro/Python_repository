@@ -123,7 +123,7 @@ class DataCache:
     Backend is swappable (JsonFile by default, Redis if REDIS_URL is set).
     """
 
-    def __init__(self, backend: _CacheBackend = None, cache_dir: str = None):
+    def __init__(self, backend: Optional[_CacheBackend] = None, cache_dir: Optional[str] = None):
         if backend is not None:
             self._backend = backend
         else:
@@ -137,7 +137,7 @@ class DataCache:
             else:
                 self._backend = self._init_json_backend(cache_dir)
 
-    def _init_json_backend(self, cache_dir: str = None) -> _JsonFileBackend:
+    def _init_json_backend(self, cache_dir: Optional[str] = None) -> _JsonFileBackend:
         _dir = cache_dir or os.path.join(
             os.path.dirname(__file__), "..", "..", "data", "cache"
         )
