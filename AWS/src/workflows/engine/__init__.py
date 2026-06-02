@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Workflow Engine — executes a sequence of Steps with checkpoint support.
 
@@ -9,14 +10,15 @@ Features:
   - RetryableError → re-queue, FatalError → abort
 """
 
-import time
 import logging
+import time
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import Any
 
-from src.workflows.steps.base import Step, WorkflowContext, StepResult
-from src.core.errors.exceptions import RetryableError, FatalError, StepError, BatchPendingError
+from src.core.errors.exceptions import BatchPendingError, FatalError, RetryableError, StepError
 from src.workflows.engine.activity_runner import ActivityRunner
+from src.workflows.steps.base import Step, WorkflowContext
+from src.workflows.steps.base import StepResult as StepResult
 
 logger = logging.getLogger(__name__)
 
@@ -24,21 +26,23 @@ logger = logging.getLogger(__name__)
 @dataclass
 class StepReport:
     """Report for a single step execution."""
+
     step_name: str
     step_index: int
     input_count: int
     output_count: int
     filtered_count: int
     duration_ms: int
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class WorkflowResult:
     """Final result of a complete workflow execution."""
+
     name: str
-    final_items: List[Dict[str, Any]] = field(default_factory=list)
-    step_reports: List[StepReport] = field(default_factory=list)
+    final_items: list[dict[str, Any]] = field(default_factory=list)
+    step_reports: list[StepReport] = field(default_factory=list)
     total_duration_ms: int = 0
     completed: bool = False
 
@@ -52,7 +56,7 @@ class Workflow:
         result = await workflow.execute(job_id, params, ctx, callback, checkpoint_mgr)
     """
 
-    def __init__(self, name: str, steps: List[Step]):
+    def __init__(self, name: str, steps: list[Step]):
         self.name = name
         self.steps = steps
 
@@ -118,7 +122,7 @@ class Workflow:
                         total_steps=total_steps,
                         step_name=step.name,
                         message=f"Processing {len(items)} items",
-                        remaining_step_names=[s.name for s in active_steps[i + 1:]],
+                        remaining_step_names=[s.name for s in active_steps[i + 1 :]],
                         workflow_name=self.name,
                     )
                 except Exception as e:
@@ -178,8 +182,7 @@ class Workflow:
 
             except RetryableError:
                 logger.warning(
-                    f"RetryableError at step '{step.name}', "
-                    f"checkpoint saved at step {i}"
+                    f"RetryableError at step '{step.name}', checkpoint saved at step {i}"
                 )
                 raise  # Let JobManager handle retry/requeue
 
@@ -198,7 +201,7 @@ class Workflow:
                     message=str(e),
                     step_name=step.name,
                     step_index=i,
-                )
+                ) from e
 
         # Complete
         result.final_items = items

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 WorkflowRegistry — maps workflow names to builder functions.
 
@@ -11,7 +12,7 @@ Registration is done via decorator:
 """
 
 import logging
-from typing import Callable, Dict, List
+from collections.abc import Callable
 
 from src.workflows.engine import Workflow
 
@@ -23,15 +24,18 @@ class WorkflowRegistry:
     Registry of workflow builder functions.
     Each builder takes a config dict and returns a Workflow.
     """
-    _builders: Dict[str, Callable[[dict], Workflow]] = {}
+
+    _builders: dict[str, Callable[[dict], Workflow]] = {}
 
     @classmethod
     def register(cls, name: str):
         """Decorator to register a workflow builder function."""
+
         def decorator(fn: Callable[[dict], Workflow]):
             cls._builders[name] = fn
             logger.debug(f"Registered workflow: {name}")
             return fn
+
         return decorator
 
     @classmethod
@@ -39,13 +43,11 @@ class WorkflowRegistry:
         """Build a workflow instance from its registered builder."""
         if name not in cls._builders:
             available = ", ".join(cls._builders.keys())
-            raise KeyError(
-                f"Workflow '{name}' not found. Available: {available}"
-            )
+            raise KeyError(f"Workflow '{name}' not found. Available: {available}")
         return cls._builders[name](config or {})
 
     @classmethod
-    def list_workflows(cls) -> List[str]:
+    def list_workflows(cls) -> list[str]:
         """List all registered workflow names."""
         return list(cls._builders.keys())
 

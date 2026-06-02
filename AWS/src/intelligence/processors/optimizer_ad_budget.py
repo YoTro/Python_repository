@@ -1,7 +1,7 @@
 from __future__ import annotations
+
 import logging
-import math
-from typing import Dict, List, Optional, Any
+from typing import Any
 
 from ortools.linear_solver import pywraplp
 
@@ -11,11 +11,11 @@ logger = logging.getLogger(__name__)
 # "Dynamic bids - up and down": Amazon can raise bids up to 100% for TOS,
 # up to 50% for other placements.  We use a blended conservative overhead so
 # the budget constraint is not violated in practice.
-_STRATEGY_CPC_MULTIPLIER: Dict[str, float] = {
+_STRATEGY_CPC_MULTIPLIER: dict[str, float] = {
     "Dynamic bids - up and down": 1.40,  # blended ~40% overhead (TOS-heavy accounts)
-    "Dynamic bids - down only":   1.00,  # bids can only decrease → no overhead
-    "Fixed bids":                 1.00,
-    "Rule-based bidding":         1.15,  # some variance from rules
+    "Dynamic bids - down only": 1.00,  # bids can only decrease → no overhead
+    "Fixed bids": 1.00,
+    "Rule-based bidding": 1.15,  # some variance from rules
 }
 _DEFAULT_STRATEGY_MULTIPLIER = 1.20  # unknown strategy — moderate overhead
 
@@ -23,10 +23,10 @@ _DEFAULT_STRATEGY_MULTIPLIER = 1.20  # unknown strategy — moderate overhead
 # k ∈ [K_min, K_max] — adapts to data richness via posterior variance, no ramp_n config.
 # s = k / μ  — prior pseudo-observations (scales inversely with μ so low-CVR products
 #               naturally require more data before observed CVR is trusted).
-_K_CVR_MIN = 0.3    # floor: new campaigns get light shrinkage, early signal passes through
-_K_CVR_MAX = 3.0    # ceiling: mature campaigns get 3× more regularisation than floor
-_S_MIN     = 5.0    # prevents s from exploding when μ is tiny
-_S_MAX     = 500.0  # prevents over-regularisation on very low-CVR products
+_K_CVR_MIN = 0.3  # floor: new campaigns get light shrinkage, early signal passes through
+_K_CVR_MAX = 3.0  # ceiling: mature campaigns get 3× more regularisation than floor
+_S_MIN = 5.0  # prevents s from exploding when μ is tiny
+_S_MAX = 500.0  # prevents over-regularisation on very low-CVR products
 
 
 def _adaptive_k(
@@ -47,11 +47,11 @@ def _adaptive_k(
       confidence → 0  (data contradicts prior, high uncertainty): k → K_min
       confidence → 1  (data confirms prior, low uncertainty):     k → k_max
     """
-    alpha_post    = orders + prior_mu * k_max
-    beta_post     = max(clicks - orders, 0) + (1.0 - prior_mu) * k_max
-    n             = alpha_post + beta_post
+    alpha_post = orders + prior_mu * k_max
+    beta_post = max(clicks - orders, 0) + (1.0 - prior_mu) * k_max
+    n = alpha_post + beta_post
     posterior_var = (alpha_post * beta_post) / (n * n * (n + 1.0))
-    var_at_zero   = prior_mu * (1.0 - prior_mu) / (k_max + 1.0)
+    var_at_zero = prior_mu * (1.0 - prior_mu) / (k_max + 1.0)
     if var_at_zero <= 0:
         return k_max
     confidence = 1.0 - min(posterior_var / var_at_zero, 1.0)
@@ -77,8 +77,8 @@ def _beta_cvr(
       BROAD (high noise) → large k_max → needs more data before trusting CVR
     """
     mu = prior_mu if prior_mu > 0 else (raw_cvr or 0.02)
-    k  = _adaptive_k(clicks, orders, mu, k_max=k_max)
-    s  = max(_S_MIN, min(k / mu, _S_MAX))
+    k = _adaptive_k(clicks, orders, mu, k_max=k_max)
+    s = max(_S_MIN, min(k / mu, _S_MAX))
     return (mu * s + orders) / (s + clicks)
 
 
@@ -113,13 +113,13 @@ class AdBudgetOptimizer:
 
     def optimize(
         self,
-        keywords: List[Dict[str, Any]],
+        keywords: list[dict[str, Any]],
         total_budget: float,
-        campaign_budgets: Optional[Dict[str, float]] = None,
-        target_acos: Optional[float] = None,
-        avg_price: Optional[float] = None,
-        max_daily_orders: Optional[float] = None,
-    ) -> Dict[str, Any]:
+        campaign_budgets: dict[str, float] | None = None,
+        target_acos: float | None = None,
+        avg_price: float | None = None,
+        max_daily_orders: float | None = None,
+    ) -> dict[str, Any]:
         """
         Parameters
         ----------
@@ -147,26 +147,26 @@ class AdBudgetOptimizer:
         self.solver.Clear()
 
         # ── Pre-compute effective CPC per keyword ─────────────────────────
-        eff_cpcs: List[float] = []
-        pess_cvrs: List[float] = []
+        eff_cpcs: list[float] = []
+        pess_cvrs: list[float] = []
         for kw in keywords:
-            strategy   = kw.get("bidding_strategy", "")
+            strategy = kw.get("bidding_strategy", "")
             strat_mult = _STRATEGY_CPC_MULTIPLIER.get(strategy, _DEFAULT_STRATEGY_MULTIPLIER)
             place_mult = float(kw.get("placement_multiplier", 1.0))
-            eff_cpc    = kw["avg_cpc"] * strat_mult * place_mult
+            eff_cpc = kw["avg_cpc"] * strat_mult * place_mult
             eff_cpcs.append(eff_cpc)
 
-            raw_cvr  = kw.get("estimated_cvr") or 0.0
-            clicks   = int(kw.get("sample_clicks", 0))
-            orders   = int(kw.get("sample_orders", round(raw_cvr * clicks)))
+            raw_cvr = kw.get("estimated_cvr") or 0.0
+            clicks = int(kw.get("sample_clicks", 0))
+            orders = int(kw.get("sample_orders", round(raw_cvr * clicks)))
             prior_mu = float(kw.get("prior_mu") or raw_cvr or 0.02)
-            k_max    = float(kw.get("k_max", _K_CVR_MAX))
+            k_max = float(kw.get("k_max", _K_CVR_MAX))
             pess_cvr = _beta_cvr(raw_cvr, clicks, orders, prior_mu, k_max=k_max)
             pess_cvrs.append(pess_cvr)
 
         # ── Variables ─────────────────────────────────────────────────────
-        click_vars: List[pywraplp.Variable] = []
-        for i, kw in enumerate(keywords):
+        click_vars: list[pywraplp.Variable] = []
+        for _, kw in enumerate(keywords):
             lo = float(kw.get("min_daily_clicks", 0.0))
             hi = float(kw.get("max_daily_clicks", 1000.0))
             lo = min(lo, hi)  # guard against mis-configured floors
@@ -182,7 +182,7 @@ class AdBudgetOptimizer:
 
         # ── Constraint 2: Per-campaign budgets ────────────────────────────
         if campaign_budgets:
-            camp_idx: Dict[str, List[int]] = {}
+            camp_idx: dict[str, list[int]] = {}
             for i, kw in enumerate(keywords):
                 cid = str(kw.get("campaign_id", ""))
                 if cid:
@@ -220,36 +220,38 @@ class AdBudgetOptimizer:
 
         if status != pywraplp.Solver.OPTIMAL:
             return {
-                "status":  "FAILED",
+                "status": "FAILED",
                 "error_code": status,
                 "message": "No optimal solution found within constraints.",
             }
 
         # ── Extract solution ──────────────────────────────────────────────
-        allocation: List[Dict] = []
-        total_spend   = 0.0
-        total_clicks  = 0.0
-        total_orders  = 0.0
-        camp_spend: Dict[str, float] = {}
+        allocation: list[dict] = []
+        total_spend = 0.0
+        total_clicks = 0.0
+        total_orders = 0.0
+        camp_spend: dict[str, float] = {}
 
         for i, kw in enumerate(keywords):
             sol = click_vars[i].solution_value()
             if sol < 0.5:
                 continue
-            spend   = sol * eff_cpcs[i]
-            orders  = sol * pess_cvrs[i]
-            cid     = str(kw.get("campaign_id", ""))
+            spend = sol * eff_cpcs[i]
+            orders = sol * pess_cvrs[i]
+            cid = str(kw.get("campaign_id", ""))
 
-            allocation.append({
-                "keyword":             kw["name"],
-                "campaign_id":         cid,
-                "optimized_clicks":    round(sol, 1),
-                "estimated_spend":     round(spend, 2),
-                "contribution_to_orders": round(orders, 2),
-                "effective_cpc":       round(eff_cpcs[i], 4),
-                "pessimistic_cvr":     round(pess_cvrs[i], 4),
-            })
-            total_spend  += spend
+            allocation.append(
+                {
+                    "keyword": kw["name"],
+                    "campaign_id": cid,
+                    "optimized_clicks": round(sol, 1),
+                    "estimated_spend": round(spend, 2),
+                    "contribution_to_orders": round(orders, 2),
+                    "effective_cpc": round(eff_cpcs[i], 4),
+                    "pessimistic_cvr": round(pess_cvrs[i], 4),
+                }
+            )
+            total_spend += spend
             total_clicks += sol
             total_orders += orders
             if cid:
@@ -260,11 +262,13 @@ class AdBudgetOptimizer:
         return {
             "status": "OPTIMAL",
             "summary": {
-                "total_budget":          total_budget,
-                "actual_spend":          round(total_spend, 2),
+                "total_budget": total_budget,
+                "actual_spend": round(total_spend, 2),
                 "total_expected_orders": round(total_orders, 2),
-                "avg_effective_cpc":     round(total_spend / total_clicks, 2) if total_clicks > 0 else 0,
+                "avg_effective_cpc": round(total_spend / total_clicks, 2)
+                if total_clicks > 0
+                else 0,
             },
-            "allocation":   allocation,
-            "camp_spend":   {k: round(v, 2) for k, v in camp_spend.items()},
+            "allocation": allocation,
+            "camp_spend": {k: round(v, 2) for k, v in camp_spend.items()},
         }

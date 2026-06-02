@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 JobManager — task lifecycle management.
 
@@ -7,17 +8,23 @@ Multi-user extension point: Redis Priority Queue.
 """
 
 import asyncio
-import uuid
 import logging
-from enum import Enum
+import uuid
 from dataclasses import dataclass, field
-from typing import Dict, Optional, List, Any, Union
 from datetime import datetime
+from enum import Enum
+from typing import Any
 
-from src.core.errors.exceptions import AWSBaseError, RetryableError, JobSuspendedError, BatchPendingError
+from src.core.errors.exceptions import (
+    AWSBaseError,
+    BatchPendingError,
+    JobSuspendedError,
+    RetryableError,
+)
 from src.core.models.request import UnifiedRequest
 
 logger = logging.getLogger(__name__)
+
 
 class JobStatus(Enum):
     PENDING = "pending"
@@ -27,19 +34,22 @@ class JobStatus(Enum):
     CANCELLED = "cancelled"
     SUSPENDED = "suspended"
 
+
 @dataclass
 class JobRecord:
     """Tracks the state of a submitted job."""
+
     job_id: str
     request: UnifiedRequest
     status: JobStatus = JobStatus.PENDING
     callback: Any = None
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    completed_at: Optional[str] = None
-    suspended_at: Optional[float] = None  # Timestamp for timeout tracking
-    suspend_timeout_sec: int = 300       # Dynamic timeout per job
-    error: Optional[str] = None
+    completed_at: str | None = None
+    suspended_at: float | None = None  # Timestamp for timeout tracking
+    suspend_timeout_sec: int = 300  # Dynamic timeout per job
+    error: str | None = None
     result: Any = None
+
 
 class JobManager:
     """
@@ -48,12 +58,12 @@ class JobManager:
     """
 
     def __init__(self, max_workers: int = 2):
-        self._jobs: Dict[str, JobRecord] = {}
+        self._jobs: dict[str, JobRecord] = {}
 
         self._queue = asyncio.Queue()
-        self._workers: List[asyncio.Task] = []
+        self._workers: list[asyncio.Task] = []
         self._max_workers = max_workers
-        self._reaper_task: Optional[asyncio.Task] = None
+        self._reaper_task: asyncio.Task | None = None
         self._batch_poller = None
         self._start_workers()
 
@@ -71,6 +81,7 @@ class JobManager:
             from src.jobs.batch_poller import BatchPoller
             from src.jobs.checkpoint import CheckpointManager
             from src.jobs.signals import get_signal_bus
+
             self._batch_poller = BatchPoller(
                 checkpoint_mgr=CheckpointManager(),
                 signal_bus=get_signal_bus(),
@@ -87,30 +98,34 @@ class JobManager:
             try:
                 await asyncio.sleep(60)  # Check every 60 seconds
                 now = datetime.utcnow().timestamp()
-                
+
                 expired_jobs = []
-                # Use list() to take a snapshot of items to avoid RuntimeError 
+                # Use list() to take a snapshot of items to avoid RuntimeError
                 # if another coroutine adds a job during iteration.
-                for job_id, record in list(self._jobs.items()):
+                for _job_id, record in list(self._jobs.items()):
                     if record.status == JobStatus.SUSPENDED and record.suspended_at:
                         # Use the job's specific timeout setting
                         if now - record.suspended_at > record.suspend_timeout_sec:
                             expired_jobs.append(record)
-                
+
                 for record in expired_jobs:
-                    logger.warning(f"Job {record.job_id} suspended for {record.suspend_timeout_sec}s. Auto-cancelling.")
+                    logger.warning(
+                        f"Job {record.job_id} suspended for {record.suspend_timeout_sec}s. Auto-cancelling."
+                    )
                     record.status = JobStatus.CANCELLED
                     record.error = "Job timed out waiting for user interaction."
                     record.completed_at = datetime.utcnow().isoformat()
-                    
+
                     # Notify the user if possible
                     if record.callback:
                         try:
-                            error_msg = Exception(f"任务由于长时间未响应 (超过 {record.suspend_timeout_sec} 秒)，已自动取消。")
+                            error_msg = Exception(
+                                f"任务由于长时间未响应 (超过 {record.suspend_timeout_sec} 秒)，已自动取消。"
+                            )
                             await record.callback.on_error(error_msg)
                         except Exception as e:
                             logger.debug(f"Failed to notify user of job cancellation: {e}")
-                            
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -131,10 +146,10 @@ class JobManager:
 
     def submit(
         self,
-        request_or_workflow: Union[UnifiedRequest, str],
+        request_or_workflow: UnifiedRequest | str,
         params: dict = None,
         callback=None,
-        job_id: Optional[str] = None,
+        job_id: str | None = None,
     ) -> str:
         """
         Submit a new job to the queue.
@@ -142,20 +157,18 @@ class JobManager:
         Pass job_id to pin the ID (e.g. for checkpoint-resume in tests).
         """
         if isinstance(request_or_workflow, str):
-            request = UnifiedRequest(
-                workflow_name=request_or_workflow,
-                params=params or {}
-            )
+            request = UnifiedRequest(workflow_name=request_or_workflow, params=params or {})
         else:
             request = request_or_workflow
 
         job_id = job_id or uuid.uuid4().hex[:8]
-        
+
         # Build callback from config if missing
         if not callback and request.callback:
             from src.jobs.callbacks.factory import CallbackFactory
+
             callback = CallbackFactory.create(request.callback)
-            
+
         record = JobRecord(
             job_id=job_id,
             request=request,
@@ -165,7 +178,7 @@ class JobManager:
 
         # Push to async queue
         self._queue.put_nowait(job_id)
-        
+
         target = request.workflow_name or "Agent Session"
         logger.info(f"Job submitted to queue: {job_id} ({target})")
         return job_id
@@ -191,6 +204,7 @@ class JobManager:
         :returns:             The same job_id, now queued again.
         """
         from src.jobs.checkpoint import CheckpointManager
+
         checkpoint_mgr = CheckpointManager()
         checkpoint = checkpoint_mgr.load(job_id)
         if not checkpoint:
@@ -216,19 +230,19 @@ class JobManager:
 
     async def submit_and_wait(
         self,
-        request_or_workflow: Union[UnifiedRequest, str],
+        request_or_workflow: UnifiedRequest | str,
         params: dict = None,
         callback=None,
     ) -> Any:
         job_id = self.submit(request_or_workflow, params, callback)
-        
+
         # Wait until the job finishes
         while True:
             record = self._jobs.get(job_id)
             if record.status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED]:
                 break
             await asyncio.sleep(0.5)
-            
+
         if record.status == JobStatus.FAILED:
             raise AWSBaseError(record.error or "Job failed")
         return record.result
@@ -245,6 +259,7 @@ class JobManager:
             # Lazy import breaks the circular dependency:
             # jobs/manager → gateway/rate_limit → gateway/__init__ → gateway/router → jobs/manager
             from src.gateway.rate_limit import RateLimiter  # noqa: PLC0415
+
             # concurrent_slot acquires on entry and releases in finally —
             # guaranteeing the counter is decremented even if execution crashes.
             async with RateLimiter().concurrent_slot(
@@ -329,10 +344,10 @@ class JobManager:
                     pass
 
     async def _run_workflow_mode(self, record: JobRecord) -> None:
-        from src.workflows.registry import WorkflowRegistry
-        from src.workflows.config import merge_config
-        from src.workflows.steps.base import WorkflowContext
         from src.jobs.checkpoint import CheckpointManager
+        from src.workflows.config import merge_config
+        from src.workflows.registry import WorkflowRegistry
+        from src.workflows.steps.base import WorkflowContext
 
         job_id = record.job_id
         req = record.request
@@ -340,20 +355,19 @@ class JobManager:
         workflow = WorkflowRegistry.build(req.workflow_name, config)
 
         ctx = WorkflowContext(
-            job_id=job_id, 
-            tenant_id=req.tenant_id, 
-            user_id=req.user_id, 
-            config=config
+            job_id=job_id, tenant_id=req.tenant_id, user_id=req.user_id, config=config
         )
 
         try:
             from src.mcp.client import get_mcp_client
+
             ctx.mcp = get_mcp_client()
         except Exception as e:
             logger.debug(f"MCP Client not available: {e}")
 
         try:
             from src.intelligence.router import IntelligenceRouter
+
             ctx.router = IntelligenceRouter()
         except Exception as e:
             logger.debug(f"IntelligenceRouter not available: {e}")
@@ -377,21 +391,21 @@ class JobManager:
                 await record.callback.on_complete(result)
             except Exception as e:
                 logger.warning(f"Callback on_complete failed: {e}")
-        
+
         logger.info(f"Workflow Job completed: {job_id}")
 
     async def _run_agent_mode(self, record: JobRecord) -> None:
         """Execute conversational/exploratory intent."""
         logger.info(f"Agent Job executed for intent: {record.request.intent}")
         try:
-            from src.intelligence.router import IntelligenceRouter
             from src.agents.mcp_agent import MCPAgent
             from src.agents.session import AgentSessionManager
-            
+            from src.intelligence.router import IntelligenceRouter
+
             router = IntelligenceRouter()
             session_mgr = AgentSessionManager()
             agent = MCPAgent(router, session_mgr)
-            
+
             # Prepare runtime context (chat_id, etc.) for task context propagation
             context = {}
             if record.request.callback and record.request.callback.target:
@@ -401,21 +415,22 @@ class JobManager:
 
             # The job_id acts as the session_id, ensuring 1-to-1 mapping
             response = await agent.run(
-                query=record.request.intent, 
-                session_id=record.job_id, 
+                query=record.request.intent,
+                session_id=record.job_id,
                 tenant_id=record.request.tenant_id,
                 user_id=record.request.user_id,
                 callback=record.callback,
-                context=context
+                context=context,
             )
-            
+
             record.result = {"intent": record.request.intent, "message": response}
             record.status = JobStatus.COMPLETED
             record.completed_at = datetime.utcnow().isoformat()
-            
+
             if record.callback:
                 try:
                     from src.workflows.engine import WorkflowResult
+
                     session = session_mgr.load(record.job_id)
                     item = {"response": response}
                     if session and session.context.get("report_file_path"):
@@ -424,20 +439,20 @@ class JobManager:
                     await record.callback.on_complete(mock_res)
                 except Exception as e:
                     logger.warning(f"Agent callback failed: {e}")
-                    
+
         except JobSuspendedError as e:
-            logger.info(f"Job {job_id} suspended for interaction: {e}")
+            logger.info(f"Job {record.job_id} suspended for interaction: {e}")
             record.status = JobStatus.SUSPENDED
             record.suspended_at = datetime.utcnow().timestamp()
             record.suspend_timeout_sec = e.timeout_sec
             record.error = str(e)
             # Do NOT call on_complete, as the job is still ongoing
-            
+
         except Exception as e:
             logger.error(f"Agent execution failed: {e}")
             raise
 
-    def get_status(self, job_id: str) -> Optional[JobRecord]:
+    def get_status(self, job_id: str) -> JobRecord | None:
         return self._jobs.get(job_id)
 
     def resume(self, job_id: str) -> bool:
@@ -445,7 +460,7 @@ class JobManager:
         record = self._jobs.get(job_id)
         if not record or record.status not in [JobStatus.FAILED, JobStatus.SUSPENDED]:
             return False
-            
+
         record.status = JobStatus.PENDING
         record.error = None
         record.result = None
@@ -462,12 +477,13 @@ class JobManager:
         logger.info(f"Job cancelled: {job_id}")
         return True
 
-    def list_jobs(self) -> List[JobRecord]:
+    def list_jobs(self) -> list[JobRecord]:
         return list(self._jobs.values())
 
 
 # Singleton
-_job_manager: Optional[JobManager] = None
+_job_manager: JobManager | None = None
+
 
 def get_job_manager() -> JobManager:
     global _job_manager

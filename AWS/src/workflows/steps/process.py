@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 ProcessStep — transforms items via Python functions or LLM inference.
 
@@ -8,14 +9,15 @@ Routes to the appropriate compute target:
   CLOUD_LLM    — formats prompt, routes to cloud model via IntelligenceRouter
 """
 
-import logging
 import asyncio
-from typing import List, Dict, Any, Callable, Optional, Type
+import logging
+from collections.abc import Callable
+from typing import Any
 
 from pydantic import BaseModel
 
-from src.workflows.steps.base import Step, StepResult, WorkflowContext, ComputeTarget
 from src.core.errors.exceptions import BatchPendingError, FatalError
+from src.workflows.steps.base import ComputeTarget, Step, StepResult, WorkflowContext
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +36,12 @@ class ProcessStep(Step):
     def __init__(
         self,
         name: str,
-        fn: Optional[Callable[[List[dict]], List[dict]]] = None,
-        prompt_template: Optional[str] = None,
-        output_schema: Optional[Type[BaseModel]] = None,
+        fn: Callable[[list[dict]], list[dict]] | None = None,
+        prompt_template: str | None = None,
+        output_schema: type[BaseModel] | None = None,
         output_field: str = None,
         compute_target: ComputeTarget = ComputeTarget.PURE_PYTHON,
-        batch_threshold: Optional[int] = None,
+        batch_threshold: int | None = None,
         **kwargs,
     ):
         super().__init__(name=name, compute_target=compute_target, **kwargs)
@@ -47,9 +49,11 @@ class ProcessStep(Step):
         self.prompt_template = prompt_template
         self.output_schema = output_schema
         self.output_field = output_field or name
-        self.batch_threshold = batch_threshold if batch_threshold is not None else self.BATCH_THRESHOLD
+        self.batch_threshold = (
+            batch_threshold if batch_threshold is not None else self.BATCH_THRESHOLD
+        )
 
-    async def run(self, items: List[Dict[str, Any]], ctx: WorkflowContext) -> StepResult:
+    async def run(self, items: list[dict[str, Any]], ctx: WorkflowContext) -> StepResult:
         start = self._start_timer()
         logger.info(f"[{self.name}] Processing {len(items)} items via {self.compute_target.value}")
 
@@ -71,30 +75,32 @@ class ProcessStep(Step):
             },
         )
 
-    async def _run_python(self, items: List[dict], ctx: WorkflowContext) -> List[dict]:
+    async def _run_python(self, items: list[dict], ctx: WorkflowContext) -> list[dict]:
         """Execute a pure Python function on all items."""
         if self.fn is None:
             logger.warning(f"[{self.name}] No fn provided for PURE_PYTHON step, passing through")
             return items
-        
+
         import asyncio
         import inspect
-        
+
         if asyncio.iscoroutinefunction(self.fn):
             sig = inspect.signature(self.fn)
-            if 'ctx' in sig.parameters:
+            if "ctx" in sig.parameters:
                 return await self.fn(items, ctx)
             return await self.fn(items)
         else:
             sig = inspect.signature(self.fn)
-            if 'ctx' in sig.parameters:
+            if "ctx" in sig.parameters:
                 return self.fn(items, ctx)
             return self.fn(items)
 
-    async def _run_llm(self, items: List[dict], ctx: WorkflowContext) -> List[dict]:
+    async def _run_llm(self, items: list[dict], ctx: WorkflowContext) -> list[dict]:
         """Execute LLM inference for each item (or batch)."""
         if not self.prompt_template:
-            logger.warning(f"[{self.name}] No prompt_template provided for LLM step, passing through")
+            logger.warning(
+                f"[{self.name}] No prompt_template provided for LLM step, passing through"
+            )
             return items
 
         router = ctx.router
@@ -112,23 +118,28 @@ class ProcessStep(Step):
 
         prompts_to_process = []
         items_to_process = []  # List of (item, cache_key, original_idx)
-        
+
         for i, item in enumerate(items):
             cache_key = f"{ctx.job_id}:{self.name}:{item.get('asin', hash(str(item)))}"
             if cache_key in ctx.cache:
                 item[self.output_field] = ctx.cache[cache_key]
                 continue
-                
+
             try:
-                import json as _json
                 import datetime as _dt
+                import json as _json
+
                 _today = _dt.date.today()
                 prompt = self.prompt_template.format(
                     count=len(items),
                     items_json=_json.dumps(items, ensure_ascii=False, default=str),
                     report_date=_today.isoformat(),
                     _example_date=(_today - _dt.timedelta(days=10)).isoformat(),
-                    **{k: v for k, v in item.items() if isinstance(v, (str, int, float, bool, type(None)))},
+                    **{
+                        k: v
+                        for k, v in item.items()
+                        if isinstance(v, str | int | float | bool | type(None))
+                    },
                 )
                 prompts_to_process.append(prompt)
                 items_to_process.append((item, cache_key, i))
@@ -166,23 +177,24 @@ class ProcessStep(Step):
         if use_batch:
             logger.info(f"[{self.name}] Submitting batch ({n} items, ~{estimated_tokens} tokens)")
             from src.intelligence.dto import BatchRequest as _BatchRequest
+
             api_requests = []
             event_requests = []
-            for prompt, (item, cache_key, original_idx) in zip(
-                prompts_to_process, items_to_process
+            for prompt, (_item, cache_key, original_idx) in zip(
+                prompts_to_process, items_to_process, strict=False
             ):
-                api_requests.append(_BatchRequest(
-                    custom_id=cache_key,
-                    prompt=prompt,
-                    schema=self.output_schema,
-                ))
+                api_requests.append(
+                    _BatchRequest(
+                        custom_id=cache_key,
+                        prompt=prompt,
+                        schema=self.output_schema,
+                    )
+                )
                 event_requests.append({"custom_id": cache_key, "item_idx": original_idx})
 
             schema_path = None
             if self.output_schema:
-                schema_path = (
-                    f"{self.output_schema.__module__}.{self.output_schema.__qualname__}"
-                )
+                schema_path = f"{self.output_schema.__module__}.{self.output_schema.__qualname__}"
 
             handle = await cloud_provider.generate_batch(api_requests)
             raise BatchPendingError(
@@ -190,7 +202,7 @@ class ProcessStep(Step):
                 batch_job_id=handle.job_id,
                 handle=handle,
                 requests=event_requests,
-                items_snapshot=list(items),   # snapshot before further mutation
+                items_snapshot=list(items),  # snapshot before further mutation
                 output_field=self.output_field,
                 schema_path=schema_path,
             )
@@ -209,7 +221,9 @@ class ProcessStep(Step):
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for (item, cache_key, _original_idx), result in zip(items_to_process, results):
+            for (item, cache_key, _original_idx), result in zip(
+                items_to_process, results, strict=False
+            ):
                 if isinstance(result, Exception):
                     logger.warning(f"[{self.name}] LLM call failed for item: {result}")
                     item[self.output_field] = None
