@@ -19,9 +19,9 @@ _USER_AGENTS = [
 
 class AmazonBaseScraper:
     def __init__(self, use_proxy: bool = False, proxies_dict: Optional[Dict] = None):
-        self.proxies = proxies_dict if use_proxy else None
+        self.proxies: Any = proxies_dict if use_proxy else None  # curl_cffi.ProxySpec has no stubs
         self.cookie_helper = AmazonCookieHelper()
-        self.session = None
+        self.session: Optional[requests.AsyncSession] = None
         self._headers: Dict = {}
         self._initialize_session()
 
@@ -76,6 +76,10 @@ class AmazonBaseScraper:
         from src.gateway.rate_limit import RateLimiter  # lazy import — avoids circular deps
         if not RateLimiter().acquire_source("crawler"):
             logger.warning(f"[scraper] crawler token-bucket timeout, skipping fetch: {url}")
+            return None
+
+        if self.session is None:
+            logger.warning(f"[scraper] session not initialised, skipping fetch: {url}")
             return None
 
         for attempt in range(max_retries):

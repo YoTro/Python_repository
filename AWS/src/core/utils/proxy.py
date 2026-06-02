@@ -15,7 +15,7 @@ class ProxyManager:
     
     def __init__(self, proxy_file: str = "config/proxies.txt"):
         self.proxy_file = proxy_file
-        self.proxies = {"http": [], "https": []}
+        self.proxies: dict[str, list[str]] = {"http": [], "https": []}
         self.load_proxies()
 
     def load_proxies(self):

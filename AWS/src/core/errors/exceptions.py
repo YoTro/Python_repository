@@ -31,7 +31,7 @@ class AWSBaseError(Exception):
     def __init__(
         self,
         message: str = "",
-        details: dict = None,
+        details: Optional[dict] = None,
         code: Optional["ErrorCode"] = None,
     ):
         self.message = message
@@ -132,10 +132,10 @@ class BatchPendingError(AWSBaseError):
         message: str,
         batch_job_id: str,
         handle: Any,                  # BatchJobHandle instance
-        requests: list = None,        # [{"custom_id": str, "item_idx": int}]
-        items_snapshot: list = None,  # full items list at submission time
-        output_field: str = None,
-        schema_path: str = None,      # "module.ClassName" or None
+        requests: Optional[list] = None,        # [{"custom_id": str, "item_idx": int}]
+        items_snapshot: Optional[list] = None,  # full items list at submission time
+        output_field: Optional[str] = None,
+        schema_path: Optional[str] = None,      # "module.ClassName" or None
     ):
         self.batch_job_id = batch_job_id
         self.handle = handle

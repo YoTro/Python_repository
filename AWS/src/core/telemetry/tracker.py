@@ -74,7 +74,7 @@ class TimeEstimator:
     AGENT_BASELINE_PER_ITERATION = 6.0
 
     @classmethod
-    def estimate_workflow(cls, workflow_name: str, params: dict = None) -> str:
+    def estimate_workflow(cls, workflow_name: str, params: Optional[dict] = None) -> str:
         base_time = cls.WORKFLOW_AVERAGES.get(workflow_name, 30.0)
         return f"~{int(base_time)}秒"
 
