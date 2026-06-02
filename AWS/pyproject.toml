@@ -1,0 +1,105 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aws-v2"
+version = "2.0.0"
+description = "Amazon Web Scraper V2 – Hybrid Intelligence Agentic Platform"
+requires-python = ">=3.11"
+dependencies = [
+    # Core scraping & parsing
+    "curl-cffi",
+    "beautifulsoup4",
+    "lxml",
+    "DrissionPage",
+    "aiohttp",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0",
+    "matplotlib",
+
+    # AI & intelligence
+    "google-genai",
+    "anthropic",
+    "openai",
+    "pyyaml",
+    "jinja2",
+    "llama-cpp-python",
+    "redis",
+    "google-api-core",
+
+    # Analysis & data
+    "scikit-learn",
+    "numpy",
+    "pandas",
+    "causalimpact",
+    "boto3",
+    "markdown",
+    "netcdf4",
+
+    # Encryption
+    "cryptography",
+
+    # Protocol
+    "mcp",
+
+    # Integrations
+    "lark-oapi",
+    "ortools>=9.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.10",
+    "pytest>=8.0",
+    # Type stubs for runtime dependencies
+    "boto3-stubs[s3]",
+    "types-redis",
+    "types-PyYAML",
+    "types-beautifulsoup4",
+    "types-Markdown",
+    "pandas-stubs",
+]
+
+[project.scripts]
+aws = "src.entry.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+# ── pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+markers = [
+    "live: requires live external API credentials or network access (deselect with '-m \"not live\"')",
+    "redis: requires a running Redis instance with real cached data (deselect with '-m \"not redis\"')",
+]
+
+# ── mypy ──────────────────────────────────────────────────────────────────────
+# Coverage scope: src/core/ (stable, well-typed foundation layer).
+# Expand to src/gateway/, src/workflows/, etc. as annotations are added.
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "."                 # resolve `src.*` from project root
+explicit_package_bases = true   # prevent double-discovery when run from root
+ignore_missing_imports = true   # many third-party deps lack stubs
+check_untyped_defs = true       # check bodies even without annotations
+no_implicit_optional = true     # None must be explicit in Optional[X]
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+# Third-party packages with known partial or missing stubs — suppress noise
+[[tool.mypy.overrides]]
+module = [
+    "curl_cffi.*",
+    "DrissionPage.*",
+    "lark_oapi.*",
+    "google.genai.*",
+    "google.api_core.*",
+    "causalimpact.*",
+    "llama_cpp.*",
+    "netCDF4.*",
+    "ortools.*",
+    "mcp.*",
+]
+ignore_missing_imports = true

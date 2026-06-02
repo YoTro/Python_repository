@@ -54,7 +54,7 @@ This guide provides solutions to common issues you might encounter while develop
 
 *   **`ImportError: No module named 'openai'` when using DeepSeekProvider**:
     *   **Cause**: `DeepSeekProvider` uses the `openai` Python package for the OpenAI-compatible endpoint.
-    *   **Solution**: `pip install openai` (or `pip install -r requirements.txt` after adding `openai` to it).
+    *   **Solution**: Add `openai` to the `dependencies` list in `pyproject.toml`, then re-run `pip install -e .`.
 
 *   **Local LLM (`llama.cpp`) Silent or Slow Response**:
     *   **Cause**: The local model might be taking too long to respond, is stuck, or not running efficiently.
@@ -111,8 +111,8 @@ This guide provides solutions to common issues you might encounter while develop
     *   **Solution**: This was addressed by modifying `src/mcp/server.py` to use absolute imports and adding `sys.path.insert(0, project_root)`. Ensure you are running with `venv311/bin/python src/mcp/server.py` or similar.
 
 *   **`No module named '...'` after `pip install`**:
-    *   **Cause**: The library might not be installed in the currently active virtual environment, or `requirements.txt` is missing an entry.
-    *   **Solution**: Re-run `pip install -r requirements.txt` inside your `venv311` after activating it.
+    *   **Cause**: The library might not be installed in the currently active virtual environment, or it is missing from `pyproject.toml`.
+    *   **Solution**: Add the package to `dependencies` in `pyproject.toml`, then re-run `pip install -e .` inside your `venv311` after activating it.
 
 *   **`src/core/fallback.py` causes circular import or wrong dependency**:
     *   **Cause**: The `FallbackHandler` was incorrectly placed in the `src/core/` layer, violating dependency rules.
