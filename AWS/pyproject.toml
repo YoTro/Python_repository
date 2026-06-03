@@ -54,6 +54,7 @@ dev = [
     "pytest>=8.0",
     "pre-commit>=3.7",
     "ruff>=0.11",
+    "bandit[toml]>=1.8",
     # Type stubs for runtime dependencies
     "boto3-stubs[s3]",
     "types-redis",
@@ -136,3 +137,18 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
+
+# ── bandit ────────────────────────────────────────────────────────────────────
+[tool.bandit]
+targets = ["src"]
+exclude_dirs = [".venv311", "models", "data", "scripts"]
+skips = [
+    # B305: ECB cipher mode — required by Lingxing ERP API (src/mcp/servers/erp/lingxing/auth.py).
+    #       We do not choose this cipher; the external API mandates it.
+    "B305",
+    # B324: MD5 hash — used exclusively for non-security purposes:
+    #         • cache-key generation in workflow definitions (short content IDs)
+    #         • API request signatures mandated by TikTok and SellerSprite protocols
+    #       No user passwords or sensitive data are hashed with MD5 in this codebase.
+    "B324",
+]

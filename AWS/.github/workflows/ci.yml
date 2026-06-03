@@ -40,6 +40,21 @@ jobs:
         # unittest-based; run separately to preserve verbose output format
         run: PYTHONPATH=. python -m unittest tests/test_rate_limiting_system.py -v
 
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: "check --output-format=github"
+
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: "format --check"
+
   typecheck:
     name: Type Check (mypy)
     runs-on: ubuntu-latest
@@ -60,3 +75,24 @@ jobs:
         # Scope: src/core/ is the stable, well-typed foundation.
         # Expand to src/gateway/ src/workflows/ etc. as annotations improve.
         run: mypy src/core/
+
+  security:
+    name: Security (bandit)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: bandit — src/
+        # Flags: -ll (medium+ severity), -ii (medium+ confidence), -c (pyproject.toml config).
+        # Skips: B305 (ECB — Lingxing API), B324 (MD5 — cache keys / protocol signatures).
+        run: bandit -r src/ -ll -ii -c pyproject.toml
