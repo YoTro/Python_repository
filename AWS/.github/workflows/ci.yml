@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [master]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Unit Tests (Python ${{ matrix.python-version }})
@@ -24,21 +28,71 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: pyproject.toml
 
-      - name: Install dependencies
-        run: pip install -e .
+      - name: Install dependencies (dev extras)
+        run: pip install -e ".[dev]"
 
       - name: Import integrity (circular import detection)
         run: PYTHONPATH=. pytest tests/test_imports.py -v --tb=short
 
       - name: Unit tests (no live services)
         # Runs the full test suite minus anything marked live or redis.
-        # New tests are included automatically; no manual file list to maintain.
-        run: PYTHONPATH=. pytest tests/ -m "not live and not redis" -v --tb=short
+        # Includes test_rate_limiting_system.py — pytest collects unittest.TestCase
+        # subclasses natively, so no separate unittest step is needed.
+        run: >
+          PYTHONPATH=. pytest tests/ -m "not live and not redis" -v --tb=short
+          --cov=src --cov-report=xml --cov-report=term-missing
 
-      - name: Rate limiting (all three layers)
-        # unittest-based; run separately to preserve verbose output format
-        run: PYTHONPATH=. python -m unittest tests/test_rate_limiting_system.py -v
+      - name: Upload coverage to Codecov
+        # Only upload once — from the Python 3.11 runner — to avoid duplicate reports.
+        if: matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false   # don't break the build if Codecov is unreachable
+
+  pre-commit:
+    name: Pre-commit hooks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - uses: pre-commit/action@v3.0.1
+        env:
+          # ruff and mypy have dedicated CI jobs — skip here to avoid duplication.
+          # Remaining hooks: trailing-whitespace, end-of-file-fixer, check-yaml,
+          # check-toml, check-json, check-added-large-files, debug-statements,
+          # check-merge-conflict.
+          SKIP: ruff,ruff-format,mypy
+
+  docs:
+    name: Docs (markdownlint + link-check)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: markdownlint
+        uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: "**/*.md"
+
+      - name: markdown link check
+        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        with:
+          use-quiet-mode: "yes"
+          use-verbose-mode: "yes"
+          config-file: ".markdown-link-check.json"
+          folder-path: "."
+          file-extension: ".md"
 
   lint:
     name: Lint (ruff)
@@ -67,6 +121,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install dependencies + dev extras
         run: pip install -e ".[dev]"
@@ -75,6 +130,20 @@ jobs:
         # Scope: src/core/ is the stable, well-typed foundation.
         # Expand to src/gateway/ src/workflows/ etc. as annotations improve.
         run: mypy src/core/
+
+  secret-scan:
+    name: Secret Scanning (gitleaks)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history — gitleaks scans every commit, not just HEAD
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE required only for private repos — set in repo secrets if needed
 
   security:
     name: Security (bandit)
@@ -88,6 +157,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install dev dependencies
         run: pip install -e ".[dev]"

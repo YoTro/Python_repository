@@ -1,0 +1,10 @@
+default: true
+
+MD013:
+  line_length: 200   # wide tables are common in this codebase
+  tables: false      # never flag table rows regardless of width
+  code_blocks: false # never flag lines inside fenced code blocks
+
+MD024: false   # duplicate headings — intentional in multi-section reference docs
+MD033: false   # inline HTML — used in badge/shield markup
+MD041: false   # first-line-h1 — not all docs open with a heading (e.g. CLAUDE.md)
