@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 JobCallback ABC — output strategy interface.
 
@@ -10,20 +11,22 @@ Different entry points use different callbacks:
 
 from abc import ABC, abstractmethod
 from enum import Enum, auto
-from typing import List, Optional, Set
+
 
 class CallbackCapability(Enum):
     """Capabilities that a specific output channel might support."""
+
     MARKDOWN = auto()
     IMAGE_DISPLAY = auto()
     INTERACTIVE_BUTTONS = auto()
     FORM_INPUT = auto()
 
+
 class JobCallback(ABC):
     """Abstract callback for job lifecycle events."""
 
     @property
-    def capabilities(self) -> Set[CallbackCapability]:
+    def capabilities(self) -> set[CallbackCapability]:
         """Declare the capabilities of this callback channel. Defaults to Markdown only."""
         return {CallbackCapability.MARKDOWN}
 
@@ -34,7 +37,7 @@ class JobCallback(ABC):
         total_steps: int,
         step_name: str,
         message: str = "",
-        remaining_step_names: Optional[List[str]] = None,
+        remaining_step_names: list[str] | None = None,
         workflow_name: str = "",
     ) -> None:
         """Called after each step completes."""
@@ -66,4 +69,10 @@ class JobCallback(ABC):
         Subclasses may override for a lighter-weight send (e.g. a simple chat
         message instead of a full progress card).
         """
-        await self.on_progress(step_index=0, total_steps=1, step_name="notify", message=message, remaining_step_names=[])
+        await self.on_progress(
+            step_index=0,
+            total_steps=1,
+            step_name="notify",
+            message=message,
+            remaining_step_names=[],
+        )

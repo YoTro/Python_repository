@@ -1,9 +1,11 @@
 from __future__ import annotations
+
+import json
 import logging
 import re
-import json
-from bs4 import BeautifulSoup
 from urllib.parse import urlencode
+
+from bs4 import BeautifulSoup
 
 from src.core.scraper import AmazonBaseScraper
 
@@ -35,7 +37,9 @@ class CartStockExtractor(AmazonBaseScraper):
 
         payload = self._get_dynamic_form_parameters(html, asin)
         if not payload.get("offerListingID"):
-            logger.warning(f"Product not available for sale or could not find add-to-cart form for {asin}.")
+            logger.warning(
+                f"Product not available for sale or could not find add-to-cart form for {asin}."
+            )
             result["Stock"] = 0
             result["StockStatus"] = "OutOfStock"
             return result
@@ -73,7 +77,7 @@ class CartStockExtractor(AmazonBaseScraper):
                     payload[name] = value
 
         logger.debug(
-            f"Extracted payload tokens for {asin}: {[k for k in payload.keys() if 'token' in k or 'session' in k]}"
+            f"Extracted payload tokens for {asin}: {[k for k in payload if 'token' in k or 'session' in k]}"
         )
 
         # Fallback and common overrides
@@ -223,7 +227,9 @@ class CartStockExtractor(AmazonBaseScraper):
 
                     # 2. Actual stock detection
                     if "only have" in json_str.lower() or "available" in json_str.lower():
-                        match = re.search(r"(?:only have|available).*?(\d+)", json_str, re.IGNORECASE)
+                        match = re.search(
+                            r"(?:only have|available).*?(\d+)", json_str, re.IGNORECASE
+                        )
                         if match:
                             stock = int(match.group(1))
                             logger.info(f"Detected Actual Stock: {stock}")

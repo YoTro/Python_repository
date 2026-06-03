@@ -215,7 +215,7 @@ if __name__ == "__main__":
 When adding new capabilities, follow these standards:
 
 1.  **Asynchronous by Default**: Use `@pytest.mark.asyncio` for any test involving MCP Tools, Scrapers, or LLMs.
-2.  **Mock External I/O**: 
+2.  **Mock External I/O**:
     *   Mock `curl_cffi` requests in scrapers to avoid network dependency.
     *   Mock LLM Provider responses to avoid token costs (especially in `IntelligenceRouter` tests).
     *   Use `tempfile` or local directory mocks for `DataCache` and `AgentSession` tests.

@@ -1,11 +1,12 @@
 from __future__ import annotations
-import asyncio
+
+import html as html_lib
 import logging
 import re
-import json
 import time
-import html as html_lib
+
 from bs4 import BeautifulSoup
+
 from src.core.scraper import AmazonBaseScraper
 
 logger = logging.getLogger(__name__)
@@ -75,15 +76,15 @@ class BestSellersExtractor(AmazonBaseScraper):
             logger.warning("Could not find ACP path/token for lazy-load API")
             return []
 
-        acp_path = path_match.group(1).rstrip('/')
+        acp_path = path_match.group(1).rstrip("/")
         acp_token = token_match.group(1)
 
         # Extract category node for reftag
-        cat_match = re.search(r'zg_bs_g_(\d+)', raw_html)
+        cat_match = re.search(r"zg_bs_g_(\d+)", raw_html)
         cat_node = cat_match.group(1) if cat_match else ""
 
         # Determine which ASINs are already in DOM cards
-        dom_asins = set(re.findall(r'id="gridItemRoot[^"]*"', raw_html))
+        set(re.findall(r'id="gridItemRoot[^"]*"', raw_html))
         soup = BeautifulSoup(raw_html, "html.parser")
         dom_asin_set = set()
         for card in soup.find_all("div", id=re.compile(r"^gridItemRoot")):
@@ -164,8 +165,8 @@ class BestSellersExtractor(AmazonBaseScraper):
     def _parse_card(self, card) -> dict:
         """Extract product data from a single gridItemRoot DOM element."""
         item = {
-            "Rank":  None,
-            "ASIN":  None,
+            "Rank": None,
+            "ASIN": None,
             "Title": None,
             "Brand": None,
             "Image": None,
@@ -187,9 +188,7 @@ class BestSellersExtractor(AmazonBaseScraper):
             if match:
                 item["ASIN"] = match.group(1)
 
-            title_div = card.find(
-                "div", class_=re.compile(r"p13n-sc-css-line-clamp")
-            )
+            title_div = card.find("div", class_=re.compile(r"p13n-sc-css-line-clamp"))
             if title_div:
                 item["Title"] = title_div.get_text(strip=True)
             else:

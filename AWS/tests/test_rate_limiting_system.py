@@ -7,7 +7,9 @@ Layer 2  — Tenant daily quota              (_check_tenant_quota / check_limit)
 Layer 3  — External API token bucket       (acquire_source)
 Integration — Gateway → UnifiedRequest metadata propagation
 """
+
 from __future__ import annotations
+
 import asyncio
 import os
 import sys
@@ -16,12 +18,11 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.gateway.rate_limit import RateLimiter
 from src.core.models.request import UnifiedRequest
-from src.core.errors.exceptions import AWSBaseError
-
+from src.gateway.rate_limit import RateLimiter
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def reset_limiter() -> RateLimiter:
     """
@@ -40,6 +41,7 @@ def reset_limiter() -> RateLimiter:
 
 
 # ── Layer 3: Token bucket ─────────────────────────────────────────────────────
+
 
 class TestLayer3TokenBucket(unittest.TestCase):
     """acquire_source — token-bucket throttling for external API calls."""
@@ -70,11 +72,12 @@ class TestLayer3TokenBucket(unittest.TestCase):
         """Depleting xiyouzhaoci must not affect sellersprite."""
         for _ in range(5):
             self.rl.acquire_source("xiyouzhaoci")
-        self.rl.acquire_source("xiyouzhaoci", timeout=0.05)   # should fail / drain
+        self.rl.acquire_source("xiyouzhaoci", timeout=0.05)  # should fail / drain
         self.assertTrue(self.rl.acquire_source("sellersprite"))
 
 
 # ── Layer 2: Tenant daily quota ───────────────────────────────────────────────
+
 
 class TestLayer2TenantQuota(unittest.TestCase):
     """_check_tenant_quota — daily request budget per plan tier."""
@@ -119,6 +122,7 @@ class TestLayer2TenantQuota(unittest.TestCase):
 
 # ── Layer 1a: Cooldown debounce ───────────────────────────────────────────────
 
+
 class TestLayer1aCooldown(unittest.TestCase):
     """_check_chat_cooldown — per-chat debounce window."""
 
@@ -151,8 +155,8 @@ class TestLayer1aCooldown(unittest.TestCase):
 
     def test_blocked_call_does_not_reset_timer(self):
         """A rejected call must not update the timestamp — window stays fixed."""
-        self.rl._check_chat_cooldown("chat_timer", 0.3)   # t=0, allowed
-        self.rl._check_chat_cooldown("chat_timer", 0.3)   # t≈0, blocked
+        self.rl._check_chat_cooldown("chat_timer", 0.3)  # t=0, allowed
+        self.rl._check_chat_cooldown("chat_timer", 0.3)  # t≈0, blocked
         time.sleep(0.15)
         # Still within the original 0.3s window → must still be blocked
         self.assertFalse(self.rl._check_chat_cooldown("chat_timer", 0.3))
@@ -162,6 +166,7 @@ class TestLayer1aCooldown(unittest.TestCase):
 
 
 # ── Layer 1b: Concurrent slot ─────────────────────────────────────────────────
+
 
 class TestLayer1bConcurrentSlot(unittest.IsolatedAsyncioTestCase):
     """concurrent_slot — async context manager with guaranteed release."""
@@ -240,6 +245,7 @@ class TestLayer1bConcurrentSlot(unittest.IsolatedAsyncioTestCase):
 
 # ── check_limit: combined gateway gate ───────────────────────────────────────
 
+
 class TestCheckLimit(unittest.TestCase):
     """check_limit — unified dispatch gate: cooldown + daily quota."""
 
@@ -252,15 +258,11 @@ class TestCheckLimit(unittest.TestCase):
 
     def test_feishu_cooldown_blocks_repeat_for_same_chat(self):
         self.rl.check_limit(self.identity, "feishu_workflow", chat_id="chat_gw")
-        self.assertFalse(
-            self.rl.check_limit(self.identity, "feishu_workflow", chat_id="chat_gw")
-        )
+        self.assertFalse(self.rl.check_limit(self.identity, "feishu_workflow", chat_id="chat_gw"))
 
     def test_feishu_cooldown_does_not_affect_other_chats(self):
         self.rl.check_limit(self.identity, "feishu_workflow", chat_id="chat_a")
-        self.assertTrue(
-            self.rl.check_limit(self.identity, "feishu_workflow", chat_id="chat_b")
-        )
+        self.assertTrue(self.rl.check_limit(self.identity, "feishu_workflow", chat_id="chat_b"))
 
     def test_daily_quota_exhausted_blocks(self):
         today = time.strftime("%Y-%m-%d")
@@ -278,6 +280,7 @@ class TestCheckLimit(unittest.TestCase):
 
 
 # ── UnifiedRequest metadata ───────────────────────────────────────────────────
+
 
 class TestUnifiedRequestMetadata(unittest.TestCase):
     """entry_type and chat_id must propagate from gateway through to JobManager."""

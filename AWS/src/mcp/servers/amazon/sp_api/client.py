@@ -1,16 +1,17 @@
 from __future__ import annotations
+
 import asyncio
 import gzip
 import json
 import logging
-import time
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import requests
 
-from .auth import SPAPIAuth
 from src.core.utils.decorators import exponential_backoff
+
+from .auth import SPAPIAuth
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +25,12 @@ class SPAPIClient:
       - Catalog (basic item metadata fallback)
     """
 
-    def __init__(self, store_id: Optional[str] = None):
+    def __init__(self, store_id: str | None = None):
         self.auth = SPAPIAuth(store_id)
 
     # ── internal ───────────────────────────────────────────────────────────
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         return {
             "x-amz-access-token": self.auth.get_access_token(),
             "x-amz-date": _utc_now(),
@@ -37,27 +38,31 @@ class SPAPIClient:
             "Accept": "application/json",
         }
 
-    def _post(self, path: str, body: Dict) -> Dict[str, Any]:
+    def _post(self, path: str, body: dict) -> dict[str, Any]:
         url = f"{self.auth.endpoint}{path}"
         try:
             resp = requests.post(url, headers=self._headers(), json=body, timeout=30)
             resp.raise_for_status()
             return resp.json()
         except requests.HTTPError as e:
-            logger.error(f"SP-API POST {path} → HTTP {e.response.status_code}: {e.response.text[:400]}")
+            logger.error(
+                f"SP-API POST {path} → HTTP {e.response.status_code}: {e.response.text[:400]}"
+            )
             raise
         except Exception as e:
             logger.error(f"SP-API POST {path} failed: {e}")
             raise
 
-    def _get(self, path: str, params: Optional[Dict] = None) -> Dict[str, Any]:
+    def _get(self, path: str, params: dict | None = None) -> dict[str, Any]:
         url = f"{self.auth.endpoint}{path}"
         try:
             resp = requests.get(url, headers=self._headers(), params=params, timeout=30)
             resp.raise_for_status()
             return resp.json()
         except requests.HTTPError as e:
-            logger.error(f"SP-API GET {path} → HTTP {e.response.status_code}: {e.response.text[:400]}")
+            logger.error(
+                f"SP-API GET {path} → HTTP {e.response.status_code}: {e.response.text[:400]}"
+            )
             raise
         except Exception as e:
             logger.error(f"SP-API GET {path} failed: {e}")
@@ -66,7 +71,7 @@ class SPAPIClient:
     # ── Inventory ──────────────────────────────────────────────────────────
 
     @exponential_backoff(max_retries=5, base_delay=1.0)
-    async def _fetch_inventory_page(self, params: Dict) -> Dict:
+    async def _fetch_inventory_page(self, params: dict) -> dict:
         """Internal helper to fetch a single page of inventory with retries."""
         url = f"{self.auth.endpoint}/fba/inventory/v1/summaries"
         resp = await asyncio.to_thread(
@@ -77,9 +82,9 @@ class SPAPIClient:
 
     async def get_inventory(
         self,
-        seller_skus: Optional[List[str]] = None,
+        seller_skus: list[str] | None = None,
         include_details: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         FBA Inventory Summaries (v1).
         Usage Plan: Rate 2, Burst 2.
@@ -90,25 +95,27 @@ class SPAPIClient:
         """
         sem = asyncio.Semaphore(2)
 
-        async def _fetch_all_pages(base_params: Dict) -> List[Dict]:
+        async def _fetch_all_pages(base_params: dict) -> list[dict]:
             all_items = []
             params = dict(base_params)
             while True:
                 async with sem:
                     data = await self._fetch_inventory_page(params)
-                
+
                 payload = data.get("payload", {})
                 summaries = payload.get("inventorySummaries", [])
                 all_items.extend([_parse_inventory_summary(s) for s in summaries])
-                
+
                 next_token = data.get("pagination", {}).get("nextToken")
                 if not next_token:
                     break
-                logger.info(f"Fetching next page of SP-API inventory with token: {next_token[:20]}...")
+                logger.info(
+                    f"Fetching next page of SP-API inventory with token: {next_token[:20]}..."
+                )
                 params["nextToken"] = next_token
             return all_items
 
-        base_params: Dict[str, Any] = {
+        base_params: dict[str, Any] = {
             "details": str(include_details).lower(),
             "granularityType": "Marketplace",
             "granularityId": self.auth.marketplace_id,
@@ -120,28 +127,27 @@ class SPAPIClient:
 
         # Amazon SP-API allows up to 50 SKUs per request.
         sku_list = list(seller_skus)
-        batches = [sku_list[i:i+50] for i in range(0, len(sku_list), 50)]
-        
-        results = await asyncio.gather(*[
-            _fetch_all_pages({**base_params, "sellerSkus": ",".join(batch)})
-            for batch in batches
-        ])
-        
+        batches = [sku_list[i : i + 50] for i in range(0, len(sku_list), 50)]
+
+        results = await asyncio.gather(
+            *[_fetch_all_pages({**base_params, "sellerSkus": ",".join(batch)}) for batch in batches]
+        )
+
         return [item for batch_result in results for item in batch_result]
 
     # ── Sales & Traffic Report ─────────────────────────────────────────────
 
-    _REPORT_POLL_INTERVAL = 15   # seconds between status polls
-    _REPORT_POLL_MAX      = 120  # max polls → 30 min ceiling
+    _REPORT_POLL_INTERVAL = 15  # seconds between status polls
+    _REPORT_POLL_MAX = 120  # max polls → 30 min ceiling
 
     async def get_sales_and_traffic(
         self,
-        asin: Optional[str] = None,
+        asin: str | None = None,
         days: int = 30,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
         granularity: str = "DAY",
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Request GET_SALES_AND_TRAFFIC_REPORT, poll until complete, download and
         parse the result.  Returns a list of daily (or summary) traffic+sales
@@ -161,14 +167,14 @@ class SPAPIClient:
               units_ordered_b2b, ordered_product_sales, ordered_product_sales_b2b,
               total_order_items, total_order_items_b2b
         """
-        today    = datetime.now(timezone.utc).date()
-        end_dt   = end_date   or str(today - timedelta(days=1))
+        today = datetime.now(UTC).date()
+        end_dt = end_date or str(today - timedelta(days=1))
         start_dt = start_date or str(today - timedelta(days=days))
 
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "reportType": "GET_SALES_AND_TRAFFIC_REPORT",
             "dataStartTime": f"{start_dt}T00:00:00.000Z",
-            "dataEndTime":   f"{end_dt}T23:59:59.000Z",
+            "dataEndTime": f"{end_dt}T23:59:59.000Z",
             "marketplaceIds": [self.auth.marketplace_id],
             "reportOptions": {
                 "dateGranularity": granularity,
@@ -176,11 +182,13 @@ class SPAPIClient:
             },
         }
 
-        data      = await asyncio.to_thread(self._post, "/reports/2021-06-30/reports", body)
+        data = await asyncio.to_thread(self._post, "/reports/2021-06-30/reports", body)
         report_id = data.get("reportId")
         if not report_id:
             raise ValueError(f"No reportId in createReport response: {data}")
-        logger.info(f"Created SP-API report {report_id} (GET_SALES_AND_TRAFFIC_REPORT {start_dt}→{end_dt})")
+        logger.info(
+            f"Created SP-API report {report_id} (GET_SALES_AND_TRAFFIC_REPORT {start_dt}→{end_dt})"
+        )
 
         document_id = await self._poll_sp_report(report_id)
         raw_records = await self._download_sp_report(document_id)
@@ -191,7 +199,7 @@ class SPAPIClient:
         """Poll until DONE, return reportDocumentId."""
         path = f"/reports/2021-06-30/reports/{report_id}"
         for attempt in range(self._REPORT_POLL_MAX):
-            data   = await asyncio.to_thread(self._get, path)
+            data = await asyncio.to_thread(self._get, path)
             status = data.get("processingStatus")
             logger.debug(f"SP report {report_id} status: {status} (attempt {attempt + 1})")
             if status == "DONE":
@@ -202,15 +210,15 @@ class SPAPIClient:
             if status in ("CANCELLED", "FATAL"):
                 raise RuntimeError(f"SP report {report_id} ended with status {status}")
             await asyncio.sleep(self._REPORT_POLL_INTERVAL)
-        raise TimeoutError(f"SP report {report_id} did not complete after {self._REPORT_POLL_MAX} polls.")
-
-    async def _download_sp_report(self, document_id: str) -> List[Dict]:
-        """Fetch document metadata, download the file, decompress if needed."""
-        meta = await asyncio.to_thread(
-            self._get, f"/reports/2021-06-30/documents/{document_id}"
+        raise TimeoutError(
+            f"SP report {report_id} did not complete after {self._REPORT_POLL_MAX} polls."
         )
-        url            = meta.get("url")
-        compression    = meta.get("compressionAlgorithm", "")
+
+    async def _download_sp_report(self, document_id: str) -> list[dict]:
+        """Fetch document metadata, download the file, decompress if needed."""
+        meta = await asyncio.to_thread(self._get, f"/reports/2021-06-30/documents/{document_id}")
+        url = meta.get("url")
+        compression = meta.get("compressionAlgorithm", "")
         if not url:
             raise ValueError(f"No URL in report document metadata: {meta}")
 
@@ -231,8 +239,8 @@ class SPAPIClient:
         start_date: str,
         end_date: str,
         granularity: str = "Total",
-        granularity_timezone: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        granularity_timezone: str | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Sales Order Metrics API v1 — getOrderMetrics.
 
@@ -248,32 +256,32 @@ class SPAPIClient:
         Interval format: two ISO-8601 datetimes separated by "--" (double hyphen).
         The end boundary is EXCLUSIVE — we add 1 day so end_date is fully included.
         """
-        from datetime import date as _date, timedelta as _td
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
         _end_excl = (_date.fromisoformat(end_date) + _td(days=1)).isoformat()
-        interval  = f"{start_date}T00:00:00Z--{_end_excl}T00:00:00Z"
-        params: Dict[str, Any] = {
+        interval = f"{start_date}T00:00:00Z--{_end_excl}T00:00:00Z"
+        params: dict[str, Any] = {
             "marketplaceIds": self.auth.marketplace_id,
-            "interval":       interval,
-            "granularity":    granularity,
-            "asin":           asin,
+            "interval": interval,
+            "granularity": granularity,
+            "asin": asin,
         }
         if granularity_timezone:
             params["granularityTimeZone"] = granularity_timezone
-        data = await asyncio.to_thread(
-            self._get, "/sales/v1/orderMetrics", params
-        )
+        data = await asyncio.to_thread(self._get, "/sales/v1/orderMetrics", params)
         return data.get("payload", [])
 
     # ── FBA Inbound Shipments ──────────────────────────────────────────────
 
     async def get_inbound_shipments(
         self,
-        shipment_status_list: Optional[List[str]] = None,
-        last_updated_after: Optional[str] = None,
-        last_updated_before: Optional[str] = None,
+        shipment_status_list: list[str] | None = None,
+        last_updated_after: str | None = None,
+        last_updated_before: str | None = None,
         query_type: str = "DATE_RANGE",
         max_pages: int = 20,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         FBA Inbound Shipments API v0 — list historical shipments.
 
@@ -299,17 +307,17 @@ class SPAPIClient:
         statuses = shipment_status_list or ["CLOSED"]
         # DATE_RANGE requires both bounds; default LastUpdatedBefore to now.
         if not last_updated_before:
-            last_updated_before = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        params: Dict[str, Any] = {
-            "MarketplaceId":       self.auth.marketplace_id,
-            "QueryType":           query_type,
-            "ShipmentStatusList":  ",".join(statuses),
-            "LastUpdatedAfter":    last_updated_after or "2020-01-01T00:00:00Z",
-            "LastUpdatedBefore":   last_updated_before,
+            last_updated_before = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        params: dict[str, Any] = {
+            "MarketplaceId": self.auth.marketplace_id,
+            "QueryType": query_type,
+            "ShipmentStatusList": ",".join(statuses),
+            "LastUpdatedAfter": last_updated_after or "2020-01-01T00:00:00Z",
+            "LastUpdatedBefore": last_updated_before,
         }
 
         loop = asyncio.get_event_loop()
-        all_shipments: List[Dict] = []
+        all_shipments: list[dict] = []
         page = 0
         while page < max_pages:
             data = await loop.run_in_executor(
@@ -321,19 +329,24 @@ class SPAPIClient:
             next_token = payload.get("NextToken")
             if not next_token or not shipments:
                 break
-            params = {"MarketplaceId": self.auth.marketplace_id,
-                      "QueryType": "NEXT_TOKEN", "NextToken": next_token}
+            params = {
+                "MarketplaceId": self.auth.marketplace_id,
+                "QueryType": "NEXT_TOKEN",
+                "NextToken": next_token,
+            }
             page += 1
 
-        logger.info(f"get_inbound_shipments: fetched {len(all_shipments)} shipments "
-                    f"(status={statuses}, pages={page+1})")
+        logger.info(
+            f"get_inbound_shipments: fetched {len(all_shipments)} shipments "
+            f"(status={statuses}, pages={page + 1})"
+        )
         return all_shipments
 
     async def get_inbound_plans(
         self,
-        status: Optional[str] = None,
+        status: str | None = None,
         max_pages: int = 50,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         FBA Inbound Plans API 2024-03-20 — list inbound plans with date fields.
 
@@ -358,8 +371,8 @@ class SPAPIClient:
         """
         loop = asyncio.get_event_loop()
 
-        async def _fetch_status(s: Optional[str]) -> List[Dict]:
-            params: Dict[str, Any] = {"pageSize": 30}  # API max is 30
+        async def _fetch_status(s: str | None) -> list[dict]:
+            params: dict[str, Any] = {"pageSize": 30}  # API max is 30
             if s:
                 params["status"] = s
             results = []
@@ -369,7 +382,11 @@ class SPAPIClient:
                     None, lambda p=params: self._get("/inbound/fba/2024-03-20/inboundPlans", p)
                 )
                 results.extend(data.get("inboundPlans", []))
-                token = data.get("pagination", {}).get("nextToken") if isinstance(data.get("pagination"), dict) else data.get("paginationToken")
+                token = (
+                    data.get("pagination", {}).get("nextToken")
+                    if isinstance(data.get("pagination"), dict)
+                    else data.get("paginationToken")
+                )
                 if not token:
                     break
                 params = {"pageSize": 30, "paginationToken": token}
@@ -394,7 +411,7 @@ class SPAPIClient:
 
     # ── Catalog ────────────────────────────────────────────────────────────
 
-    async def get_catalog_item(self, asin: str) -> Dict[str, Any]:
+    async def get_catalog_item(self, asin: str) -> dict[str, Any]:
         """
         Catalog Items API 2022-04-01.
 
@@ -404,20 +421,20 @@ class SPAPIClient:
             "marketplaceIds": self.auth.marketplace_id,
             "includedData": "attributes,summaries,identifiers",
         }
-        data = await asyncio.to_thread(
-            self._get, f"/catalog/2022-04-01/items/{asin}", params
-        )
+        data = await asyncio.to_thread(self._get, f"/catalog/2022-04-01/items/{asin}", params)
         return _parse_catalog_item(asin, data)
 
 
 # ── parsers ────────────────────────────────────────────────────────────────
 
+
 def _utc_now() -> str:
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    from datetime import datetime
+
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _parse_inventory_summary(s: Dict) -> Dict[str, Any]:
+def _parse_inventory_summary(s: dict) -> dict[str, Any]:
     inv_details = s.get("inventoryDetails", {})
     fulfillable = inv_details.get("fulfillableQuantity", 0)
     reserved = inv_details.get("reservedQuantity", {})
@@ -432,22 +449,26 @@ def _parse_inventory_summary(s: Dict) -> Dict[str, Any]:
         "total_quantity": s.get("totalQuantity", 0),
         "available_quantity": fulfillable,
         "total_available": fulfillable,
-        "reserved_quantity":  reserved.get("totalReservedQuantity", 0) if isinstance(reserved, dict) else reserved,
-        "fc_transfer":        reserved.get("pendingTransshipmentQuantity", 0) if isinstance(reserved, dict) else 0,
+        "reserved_quantity": reserved.get("totalReservedQuantity", 0)
+        if isinstance(reserved, dict)
+        else reserved,
+        "fc_transfer": reserved.get("pendingTransshipmentQuantity", 0)
+        if isinstance(reserved, dict)
+        else 0,
         # Split inbound tiers — reliability differs significantly:
         #   receiving  : already at FC, available in 1-2 days (certain)
         #   shipped    : in transit from seller, ETA 10-30 days (certain but timing varies)
         #   working    : shipment plan only, not yet handed to carrier (uncertain ETA)
         "inbound_receiving": inbound_receiving,
-        "inbound_shipped":   inbound_shipped,
-        "inbound_working":   inbound_working,
+        "inbound_shipped": inbound_shipped,
+        "inbound_working": inbound_working,
         # inbound_quantity = confirmed in-transit only (receiving + shipped); working excluded
-        "inbound_quantity":  inbound_receiving + inbound_shipped,
+        "inbound_quantity": inbound_receiving + inbound_shipped,
         "last_updated": s.get("lastUpdatedTime"),
     }
 
 
-def _parse_catalog_item(asin: str, data: Dict) -> Dict[str, Any]:
+def _parse_catalog_item(asin: str, data: dict) -> dict[str, Any]:
     summaries = data.get("summaries", [{}])
     summary = summaries[0] if summaries else {}
     attributes = data.get("attributes", {})
@@ -462,7 +483,7 @@ def _parse_catalog_item(asin: str, data: Dict) -> Dict[str, Any]:
     }
 
 
-def _first_attr(attributes: Dict, key: str) -> Optional[str]:
+def _first_attr(attributes: dict, key: str) -> str | None:
     vals = attributes.get(key, [])
     if vals and isinstance(vals, list):
         return vals[0].get("value")
@@ -471,8 +492,8 @@ def _first_attr(attributes: Dict, key: str) -> Optional[str]:
 
 def _parse_sales_traffic_records(
     data: Any,
-    asin_filter: Optional[str],
-) -> List[Dict[str, Any]]:
+    asin_filter: str | None,
+) -> list[dict[str, Any]]:
     """
     Parse GET_SALES_AND_TRAFFIC_REPORT JSON payload.
 
@@ -490,7 +511,7 @@ def _parse_sales_traffic_records(
 
     filter_upper = asin_filter.upper() if asin_filter else None
 
-    def _money(val: Any) -> Optional[float]:
+    def _money(val: Any) -> float | None:
         if val is None:
             return None
         if isinstance(val, dict):
@@ -502,50 +523,54 @@ def _parse_sales_traffic_records(
     # ── ASIN-level records (summary over period) ──────────────────────────
     for entry in data.get("salesAndTrafficByAsin", []):
         parent = (entry.get("parentAsin") or "").upper()
-        child  = (entry.get("childAsin")  or "").upper()
+        child = (entry.get("childAsin") or "").upper()
         if filter_upper and filter_upper not in (parent, child):
             continue
 
         traffic = entry.get("trafficByAsin") or {}
-        sales   = entry.get("salesByAsin")   or {}
-        results.append({
-            "date":                       None,          # period summary, no single date
-            "asin":                       entry.get("childAsin") or entry.get("parentAsin"),
-            "parent_asin":                entry.get("parentAsin"),
-            "sessions":                   traffic.get("sessions"),
-            "session_percentage":         traffic.get("sessionPercentage"),
-            "page_views":                 traffic.get("pageViews"),
-            "page_views_percentage":      traffic.get("pageViewsPercentage"),
-            "buy_box_percentage":         traffic.get("buyBoxPercentage"),
-            "units_ordered":              sales.get("unitsOrdered"),
-            "units_ordered_b2b":          sales.get("unitsOrderedB2B"),
-            "ordered_product_sales":      _money(sales.get("orderedProductSales")),
-            "ordered_product_sales_b2b":  _money(sales.get("orderedProductSalesB2B")),
-            "total_order_items":          sales.get("totalOrderItems"),
-            "total_order_items_b2b":      sales.get("totalOrderItemsB2B"),
-        })
+        sales = entry.get("salesByAsin") or {}
+        results.append(
+            {
+                "date": None,  # period summary, no single date
+                "asin": entry.get("childAsin") or entry.get("parentAsin"),
+                "parent_asin": entry.get("parentAsin"),
+                "sessions": traffic.get("sessions"),
+                "session_percentage": traffic.get("sessionPercentage"),
+                "page_views": traffic.get("pageViews"),
+                "page_views_percentage": traffic.get("pageViewsPercentage"),
+                "buy_box_percentage": traffic.get("buyBoxPercentage"),
+                "units_ordered": sales.get("unitsOrdered"),
+                "units_ordered_b2b": sales.get("unitsOrderedB2B"),
+                "ordered_product_sales": _money(sales.get("orderedProductSales")),
+                "ordered_product_sales_b2b": _money(sales.get("orderedProductSalesB2B")),
+                "total_order_items": sales.get("totalOrderItems"),
+                "total_order_items_b2b": sales.get("totalOrderItemsB2B"),
+            }
+        )
 
     # ── Date-level records (account totals per day, no per-ASIN split) ───
     # Only include if no ASIN filter is active (these are account-wide rows)
     if not filter_upper:
         for entry in data.get("salesAndTrafficByDate", []):
             traffic = entry.get("trafficByDate") or {}
-            sales   = entry.get("salesByDate")   or {}
-            results.append({
-                "date":                       entry.get("date"),
-                "asin":                       None,
-                "parent_asin":                None,
-                "sessions":                   traffic.get("sessions"),
-                "session_percentage":         traffic.get("sessionPercentage"),
-                "page_views":                 traffic.get("pageViews"),
-                "page_views_percentage":      traffic.get("pageViewsPercentage"),
-                "buy_box_percentage":         traffic.get("buyBoxPercentage"),
-                "units_ordered":              sales.get("unitsOrdered"),
-                "units_ordered_b2b":          sales.get("unitsOrderedB2B"),
-                "ordered_product_sales":      _money(sales.get("orderedProductSales")),
-                "ordered_product_sales_b2b":  _money(sales.get("orderedProductSalesB2B")),
-                "total_order_items":          sales.get("totalOrderItems"),
-                "total_order_items_b2b":      sales.get("totalOrderItemsB2B"),
-            })
+            sales = entry.get("salesByDate") or {}
+            results.append(
+                {
+                    "date": entry.get("date"),
+                    "asin": None,
+                    "parent_asin": None,
+                    "sessions": traffic.get("sessions"),
+                    "session_percentage": traffic.get("sessionPercentage"),
+                    "page_views": traffic.get("pageViews"),
+                    "page_views_percentage": traffic.get("pageViewsPercentage"),
+                    "buy_box_percentage": traffic.get("buyBoxPercentage"),
+                    "units_ordered": sales.get("unitsOrdered"),
+                    "units_ordered_b2b": sales.get("unitsOrderedB2B"),
+                    "ordered_product_sales": _money(sales.get("orderedProductSales")),
+                    "ordered_product_sales_b2b": _money(sales.get("orderedProductSalesB2B")),
+                    "total_order_items": sales.get("totalOrderItems"),
+                    "total_order_items_b2b": sales.get("totalOrderItemsB2B"),
+                }
+            )
 
     return results

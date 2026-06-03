@@ -4,7 +4,7 @@ import logging
 import os
 import string
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -16,8 +16,10 @@ logger = logging.getLogger(__name__)
 # Exceptions
 # ---------------------------------------------------------------------------
 
+
 class PromptValidationError(ValueError):
     """Required variables missing or a {placeholder} left unresolved."""
+
 
 class PromptBudgetError(ValueError):
     """Rendered prompt exceeds the spec's token_budget."""
@@ -27,23 +29,25 @@ class PromptBudgetError(ValueError):
 # PromptSpec — the definition object (loaded from config/specs/*.yaml)
 # ---------------------------------------------------------------------------
 
+
 class PromptSpec(BaseModel):
     id: str
     version: str = "0.0.1"
     scope: Literal["per_item", "batch", "system"] = "batch"
-    token_budget: int = 32_000          # ~128K chars; tighten per-spec as needed
+    token_budget: int = 32_000  # ~128K chars; tighten per-spec as needed
     role_id: str = "product_manager"
-    framework_ids: List[str] = Field(default_factory=list)
+    framework_ids: list[str] = Field(default_factory=list)
     include_system_in_prompt: bool = False
-    required_vars: List[str] = Field(default_factory=list)
-    optional_vars: Dict[str, Any] = Field(default_factory=dict)
-    output_schema: Optional[str] = None # pydantic class name — reserved for future use
-    template: Optional[str] = None      # None = caller must supply via template_override
+    required_vars: list[str] = Field(default_factory=list)
+    optional_vars: dict[str, Any] = Field(default_factory=dict)
+    output_schema: str | None = None  # pydantic class name — reserved for future use
+    template: str | None = None  # None = caller must supply via template_override
 
 
 # ---------------------------------------------------------------------------
 # RenderedPrompt — the output of render_spec()
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class RenderedPrompt:
@@ -53,9 +57,9 @@ class RenderedPrompt:
     spec_id: str
     version: str
     scope: str
-    _manager: Optional["PromptManager"] = None
-    _base_variables: Optional[Dict[str, Any]] = None
-    _template_override: Optional[str] = None
+    _manager: PromptManager | None = None
+    _base_variables: dict[str, Any] | None = None
+    _template_override: str | None = None
     _include_system_in_prompt: bool = False
 
     def format(self, **runtime_variables: Any) -> str:
@@ -85,6 +89,7 @@ class RenderedPrompt:
 # PromptManager
 # ---------------------------------------------------------------------------
 
+
 class PromptManager:
     """
     Centralized manager for prompt components (SSOT).
@@ -104,52 +109,52 @@ class PromptManager:
     """
 
     def __init__(self) -> None:
-        self.root_dir   = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+        self.root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
         self.config_dir = os.path.join(os.path.dirname(__file__), "config")
-        self.specs_dir  = os.path.join(self.config_dir, "specs")
+        self.specs_dir = os.path.join(self.config_dir, "specs")
         self.project_specs_dir = os.path.join(self.root_dir, "config", "specs")
 
-        self.workflow_defaults  = self._load_workflow_defaults()
-        self.config_variables   = self._flatten_config_thresholds(self.workflow_defaults)
+        self.workflow_defaults = self._load_workflow_defaults()
+        self.config_variables = self._flatten_config_thresholds(self.workflow_defaults)
 
-        self.roles      = self._load_yaml("roles.yaml")
+        self.roles = self._load_yaml("roles.yaml")
         self.frameworks = self._load_yaml("frameworks.yaml")
-        self.templates  = self._load_yaml("templates.yaml")
+        self.templates = self._load_yaml("templates.yaml")
 
-        self._specs: Dict[str, PromptSpec] = self._load_specs()
+        self._specs: dict[str, PromptSpec] = self._load_specs()
 
     # ── Loaders ─────────────────────────────────────────────────────────────
 
-    def _load_workflow_defaults(self) -> Dict[str, Any]:
+    def _load_workflow_defaults(self) -> dict[str, Any]:
         path = os.path.join(self.root_dir, "config", "workflow_defaults.yaml")
         try:
             if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     return yaml.safe_load(f) or {}
         except Exception as e:
             logger.error("PromptManager failed to load workflow_defaults: %s", e)
         return {}
 
-    def _flatten_config_thresholds(self, config: Dict[str, Any]) -> Dict[str, str]:
-        out: Dict[str, str] = {}
+    def _flatten_config_thresholds(self, config: dict[str, Any]) -> dict[str, str]:
+        out: dict[str, str] = {}
         for wf_cfg in config.values():
             if isinstance(wf_cfg, dict):
                 for k, v in wf_cfg.get("thresholds", {}).items():
                     out[k] = str(v)
         return out
 
-    def _load_yaml(self, filename: str) -> Dict[str, Any]:
+    def _load_yaml(self, filename: str) -> dict[str, Any]:
         path = os.path.join(self.config_dir, filename)
         try:
             if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     return yaml.safe_load(f) or {}
         except Exception as e:
             logger.error("Failed to load prompt config %s: %s", filename, e)
         return {}
 
-    def _load_specs(self) -> Dict[str, PromptSpec]:
-        specs: Dict[str, PromptSpec] = {}
+    def _load_specs(self) -> dict[str, PromptSpec]:
+        specs: dict[str, PromptSpec] = {}
         # Load legacy package-local specs first, then project-level specs so
         # config/specs can override while product_screening remains compatible.
         for specs_dir in (self.specs_dir, self.project_specs_dir):
@@ -160,7 +165,7 @@ class PromptManager:
                     continue
                 path = os.path.join(specs_dir, fname)
                 try:
-                    with open(path, "r", encoding="utf-8") as f:
+                    with open(path, encoding="utf-8") as f:
                         data = yaml.safe_load(f) or {}
                     spec = PromptSpec.model_validate(data)
                     specs[spec.id] = spec
@@ -188,7 +193,7 @@ class PromptManager:
 
     # ── Extension point ──────────────────────────────────────────────────────
 
-    def _fetch_remote_template(self, spec_id: str, version: str) -> Optional[str]:
+    def _fetch_remote_template(self, spec_id: str, version: str) -> str | None:
         """
         Override in a subclass to pull templates from a remote store.
 
@@ -205,12 +210,12 @@ class PromptManager:
         content = self.roles.get(role_id, {}).get("role_content", "")
         return self._inject_vars(content)
 
-    def get_frameworks(self, framework_ids: List[str]) -> str:
+    def get_frameworks(self, framework_ids: list[str]) -> str:
         parts = []
         for fid in framework_ids:
             fw = self.frameworks.get(fid)
             if fw:
-                title   = fw.get("title", "")
+                title = fw.get("title", "")
                 content = self._inject_vars(fw.get("content", ""))
                 parts.append(f"### {title}\n{content}")
         return "\n\n".join(parts)
@@ -222,7 +227,7 @@ class PromptManager:
     def assemble_report_instructions(
         self,
         role_id: str,
-        framework_ids: List[str],
+        framework_ids: list[str],
         template_id: str = "standard_report",
     ) -> str:
         return (
@@ -234,7 +239,7 @@ class PromptManager:
     def render(
         self,
         name: str,
-        variables: Dict[str, Any],
+        variables: dict[str, Any],
         role_id: str = "product_manager",
     ) -> tuple[str, str]:
         """Legacy render — returns (system_message, user_prompt)."""
@@ -256,9 +261,9 @@ class PromptManager:
     def render_spec(
         self,
         spec_id: str,
-        variables: Dict[str, Any],
+        variables: dict[str, Any],
         *,
-        template_override: Optional[str] = None,
+        template_override: str | None = None,
         _attach_formatter: bool = True,
     ) -> RenderedPrompt:
         """
@@ -276,13 +281,12 @@ class PromptManager:
         """
         if spec_id not in self._specs:
             raise KeyError(
-                f"PromptSpec '{spec_id}' not registered. "
-                f"Available: {sorted(self._specs)}"
+                f"PromptSpec '{spec_id}' not registered. Available: {sorted(self._specs)}"
             )
         spec = self._specs[spec_id]
 
         # 1. Variable validation
-        merged  = {**spec.optional_vars, **variables}
+        merged = {**spec.optional_vars, **variables}
         missing = set(spec.required_vars) - merged.keys()
         if missing:
             raise PromptValidationError(
@@ -291,9 +295,7 @@ class PromptManager:
 
         # 2. Template resolution
         template = (
-            template_override
-            or self._fetch_remote_template(spec_id, spec.version)
-            or spec.template
+            template_override or self._fetch_remote_template(spec_id, spec.version) or spec.template
         )
         if not template:
             raise PromptValidationError(
@@ -340,10 +342,10 @@ class PromptManager:
         """Register a spec at runtime (useful for tests or dynamic prompts)."""
         self._specs[spec.id] = spec
 
-    def get_spec(self, spec_id: str) -> Optional[PromptSpec]:
+    def get_spec(self, spec_id: str) -> PromptSpec | None:
         return self._specs.get(spec_id)
 
-    def list_specs(self) -> List[str]:
+    def list_specs(self) -> list[str]:
         return sorted(self._specs)
 
 

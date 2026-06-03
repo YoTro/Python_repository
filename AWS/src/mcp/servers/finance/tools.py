@@ -1,64 +1,82 @@
 import json
 import logging
 import os
-from typing import Dict, Any, Optional
-from mcp.types import Tool, TextContent
-from src.registry.tools import tool_registry
+from typing import Any
+
+from mcp.types import TextContent, Tool
 from src.core.data_cache import data_cache
+from src.registry.tools import tool_registry
 
 logger = logging.getLogger("mcp-finance")
 
 # Load fee data
 BASE_DIR = os.path.dirname(__file__)
-FBA_FEE_PATH          = os.path.join(BASE_DIR, "fba_fee.json")
-REFERRAL_FEE_PATH     = os.path.join(BASE_DIR, "referral_fee_rates.json")
+FBA_FEE_PATH = os.path.join(BASE_DIR, "fba_fee.json")
+REFERRAL_FEE_PATH = os.path.join(BASE_DIR, "referral_fee_rates.json")
 CATEGORY_METRICS_PATH = os.path.join(BASE_DIR, "us_category_metrics.json")
 
-def load_json_config(path: str) -> Dict[str, Any]:
+
+def load_json_config(path: str) -> dict[str, Any]:
     try:
         if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
         logger.error(f"Error loading config {path}: {e}")
     return {}
 
-FBA_CONFIG      = load_json_config(FBA_FEE_PATH)
+
+FBA_CONFIG = load_json_config(FBA_FEE_PATH)
 REFERRAL_CONFIG = load_json_config(REFERRAL_FEE_PATH)
 _CATEGORY_METRICS = load_json_config(CATEGORY_METRICS_PATH).get("categories", {})
+
 
 def get_referral_rate(category: str, price: float) -> float:
     """Find the referral fee rate for a category and price."""
     fees = REFERRAL_CONFIG.get("referral_fees", [])
     default_rate = 0.15
     for item in fees:
-        if item["category"].lower() in category.lower() or category.lower() in item["category"].lower():
+        if (
+            item["category"].lower() in category.lower()
+            or category.lower() in item["category"].lower()
+        ):
             tiers = item.get("tiers", [])
-            if not tiers: return default_rate
+            if not tiers:
+                return default_rate
             for tier in tiers:
-                if tier["price_range"] == "All prices": return tier["rate_pct"] / 100.0
+                if tier["price_range"] == "All prices":
+                    return tier["rate_pct"] / 100.0
                 if "≤" in tier["price_range"]:
                     limit = float(tier["price_range"].replace("≤", "").replace("$", "").strip())
-                    if price <= limit: return tier["rate_pct"] / 100.0
+                    if price <= limit:
+                        return tier["rate_pct"] / 100.0
                 if ">" in tier["price_range"]:
                     limit = float(tier["price_range"].replace(">", "").replace("$", "").strip())
-                    if price > limit: return tier["rate_pct"] / 100.0
+                    if price > limit:
+                        return tier["rate_pct"] / 100.0
             return tiers[0]["rate_pct"] / 100.0
     return default_rate
 
-def _cat_metrics_from_items(c: dict) -> Dict[str, Any]:
+
+def _cat_metrics_from_items(c: dict) -> dict[str, Any]:
     """Compute avg return_rate and search_to_buy_ratio from subcategory items."""
     items = c.get("items", [])
-    rr_vals  = [i["return_rate_pct"]        for i in items if isinstance(i.get("return_rate_pct"),        (int, float))]
-    stb_vals = [i["search_to_buy_ratio_pm"] for i in items if isinstance(i.get("search_to_buy_ratio_pm"), (int, float))]
+    rr_vals = [
+        i["return_rate_pct"] for i in items if isinstance(i.get("return_rate_pct"), int | float)
+    ]
+    stb_vals = [
+        i["search_to_buy_ratio_pm"]
+        for i in items
+        if isinstance(i.get("search_to_buy_ratio_pm"), int | float)
+    ]
     return {
-        "label":                c["label"],
-        "avg_return_rate_pct":  round(sum(rr_vals)  / len(rr_vals),  2) if rr_vals  else None,
+        "label": c["label"],
+        "avg_return_rate_pct": round(sum(rr_vals) / len(rr_vals), 2) if rr_vals else None,
         "avg_search_to_buy_pm": round(sum(stb_vals) / len(stb_vals), 2) if stb_vals else None,
     }
 
 
-def get_category_metrics(node_id: str = None, category: str = None) -> Dict[str, Any]:
+def get_category_metrics(node_id: str = None, category: str = None) -> dict[str, Any]:
     """
     Return avg return_rate (%) and avg search_to_buy_ratio (‰) for a top-level category.
 
@@ -77,7 +95,8 @@ def get_category_metrics(node_id: str = None, category: str = None) -> Dict[str,
         cat_lower = category.lower()
         for fee_item in REFERRAL_CONFIG.get("referral_fees", []):
             if fee_item.get("node_id") and (
-                fee_item["category"].lower() in cat_lower or cat_lower in fee_item["category"].lower()
+                fee_item["category"].lower() in cat_lower
+                or cat_lower in fee_item["category"].lower()
             ):
                 resolved = fee_item["node_id"]
                 if resolved in _CATEGORY_METRICS:
@@ -95,20 +114,27 @@ def get_category_metrics(node_id: str = None, category: str = None) -> Dict[str,
 def estimate_fba_fee_from_dims(weight_lb: float, is_apparel: bool = False) -> float:
     section = "apparel" if is_apparel else "standard_non_apparel"
     tiers = FBA_CONFIG.get("fba_fulfillment_fees", {}).get(section, {}).get("tiers", [])
-    if not tiers: return 4.50
+    if not tiers:
+        return 4.50
     weight_oz = weight_lb * 16.0
     for tier in tiers:
         if "Small Standard" in tier.get("size_tier", ""):
-            if weight_oz <= 16: return tier.get("fee_usd", 3.11)
+            if weight_oz <= 16:
+                return tier.get("fee_usd", 3.11)
         if "Large Standard" in tier.get("size_tier", ""):
-            if weight_lb <= 1.0: return 4.20
-            if weight_lb <= 2.0: return 5.50
-            if weight_lb <= 3.0: return 6.50
+            if weight_lb <= 1.0:
+                return 4.20
+            if weight_lb <= 2.0:
+                return 5.50
+            if weight_lb <= 3.0:
+                return 6.50
     return 7.00
+
 
 def calculate_amazon_refund_admin_fee(referral_fee: float) -> float:
     """Calculates standard refund administration fee: lesser of $5 or 20% of referral fee."""
     return round(min(5.0, 0.20 * referral_fee), 2)
+
 
 def calculate_high_return_rate_fee(category: str, weight_lb: float, return_rate: float) -> float:
     """
@@ -117,11 +143,11 @@ def calculate_high_return_rate_fee(category: str, weight_lb: float, return_rate:
     """
     hrr_config = FBA_CONFIG.get("high_return_rate_fees", {})
     thresholds = hrr_config.get("thresholds", {})
-    
+
     # 1. Get threshold (default to 10% if category not matched)
     category_matched = next((k for k in thresholds if k.lower() in category.lower()), None)
     threshold = thresholds.get(category_matched, 10.0) / 100.0
-    
+
     # 2. Check if fee applies
     is_apparel = "clothing" in category.lower() or "shoe" in category.lower()
     if not is_apparel and return_rate <= threshold:
@@ -130,9 +156,9 @@ def calculate_high_return_rate_fee(category: str, weight_lb: float, return_rate:
     # 3. Determine Rate Card
     section = "apparel_and_shoes" if is_apparel else "other_products"
     rate_tiers = hrr_config.get("rate_cards", {}).get(section, {}).get("tiers", [])
-    
+
     # 4. Find Tier Fee
-    per_return_fee = 2.50 # Fallback
+    per_return_fee = 2.50  # Fallback
     weight_oz = weight_lb * 16.0
     for tier in rate_tiers:
         if "Small standard" in tier.get("size_tier", "") and weight_oz <= 16:
@@ -151,25 +177,36 @@ def calculate_high_return_rate_fee(category: str, weight_lb: float, return_rate:
         excess_rate = max(0, return_rate - threshold)
         return round(per_return_fee * excess_rate, 2)
 
+
 async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "calc_profit":
         asin = arguments.get("asin")
         cost = arguments.get("estimated_cost", 0)
 
         product_data = data_cache.get("amazon", asin) or {}
-        price    = float(arguments.get("current_price") or product_data.get("price") or 0)
+        price = float(arguments.get("current_price") or product_data.get("price") or 0)
         category = arguments.get("category") or product_data.get("category", "")
-        weight   = product_data.get("weight_lb") or product_data.get("weight", 1.0)
+        weight = product_data.get("weight_lb") or product_data.get("weight", 1.0)
 
         if price <= 0:
-            return [TextContent(type="text", text=json.dumps({"error": "Price not found. Pass current_price or call get_product_details first.", "asin": asin}))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "error": "Price not found. Pass current_price or call get_product_details first.",
+                            "asin": asin,
+                        }
+                    ),
+                )
+            ]
 
         # Resolve category-level benchmarks from us_category_metrics.json
         # Prefer top_level_node_id from cache (set by get_bsr_rank) for precise lookup
         node_id = product_data.get("top_level_node_id")
         cat_metrics = get_category_metrics(node_id=node_id, category=category)
         category_avg_return_pct = cat_metrics.get("avg_return_rate_pct")  # e.g. 4.2
-        category_avg_stb_pm     = cat_metrics.get("avg_search_to_buy_pm") # e.g. 18.5 ‰
+        category_avg_stb_pm = cat_metrics.get("avg_search_to_buy_pm")  # e.g. 18.5 ‰
 
         # Use caller-supplied return_rate; fall back to category avg, then 5%
         if "return_rate" in arguments:
@@ -182,16 +219,21 @@ async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
         # Base Fees
         ref_rate = get_referral_rate(category, price)
         referral_fee = price * ref_rate
-        fba_fee = estimate_fba_fee_from_dims(weight if isinstance(weight, (int, float)) else 1.0)
+        fba_fee = estimate_fba_fee_from_dims(weight if isinstance(weight, int | float) else 1.0)
 
         # Return-related Fees
         admin_fee_per_return = calculate_amazon_refund_admin_fee(referral_fee)
         high_return_fee_per_unit = calculate_high_return_rate_fee(category, weight, est_return_rate)
 
-        total_fees = referral_fee + fba_fee + (est_return_rate * admin_fee_per_return) + high_return_fee_per_unit
+        total_fees = (
+            referral_fee
+            + fba_fee
+            + (est_return_rate * admin_fee_per_return)
+            + high_return_fee_per_unit
+        )
         net_profit = price - cost - total_fees
 
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "asin": asin,
             "price": price,
             "cost": cost,
@@ -213,7 +255,9 @@ async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
                 "matched_category": cat_metrics.get("label"),
                 "avg_return_rate_pct": category_avg_return_pct,
                 "avg_search_to_buy_pm": category_avg_stb_pm,
-                "return_rate_source": "category_avg" if "return_rate" not in arguments else "caller_supplied",
+                "return_rate_source": "category_avg"
+                if "return_rate" not in arguments
+                else "caller_supplied",
             }
         return _json_response(result)
 
@@ -228,8 +272,10 @@ async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
+
 def _json_response(data) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps(data, indent=2, ensure_ascii=False))]
+
 
 finance_tools = [
     Tool(
@@ -246,14 +292,26 @@ finance_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "asin":           {"type": "string", "description": "Product ASIN"},
-                "estimated_cost": {"type": "number", "description": "COGS in USD (landed cost per unit)"},
-                "current_price":  {"type": "number", "description": "Selling price (USD). Falls back to DataCache if omitted."},
-                "category":       {"type": "string", "description": "Amazon category name (e.g. 'Tools & Home Improvement'). Falls back to DataCache if omitted."},
-                "return_rate":    {"type": "number", "description": "Estimated return rate fraction (e.g. 0.05 for 5%). Defaults to category average from us_category_metrics.json."},
+                "asin": {"type": "string", "description": "Product ASIN"},
+                "estimated_cost": {
+                    "type": "number",
+                    "description": "COGS in USD (landed cost per unit)",
+                },
+                "current_price": {
+                    "type": "number",
+                    "description": "Selling price (USD). Falls back to DataCache if omitted.",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Amazon category name (e.g. 'Tools & Home Improvement'). Falls back to DataCache if omitted.",
+                },
+                "return_rate": {
+                    "type": "number",
+                    "description": "Estimated return rate fraction (e.g. 0.05 for 5%). Defaults to category average from us_category_metrics.json.",
+                },
             },
-            "required": ["asin", "estimated_cost"]
-        }
+            "required": ["asin", "estimated_cost"],
+        },
     ),
     Tool(
         name="calc_fba_fee",
@@ -266,12 +324,20 @@ finance_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "asin":      {"type": "string", "description": "Product ASIN (used to look up weight from DataCache)"},
-                "weight_lb": {"type": "number", "description": "Product weight in pounds. Falls back to DataCache if omitted."}
-            }
-        }
-    )
+                "asin": {
+                    "type": "string",
+                    "description": "Product ASIN (used to look up weight from DataCache)",
+                },
+                "weight_lb": {
+                    "type": "number",
+                    "description": "Product weight in pounds. Falls back to DataCache if omitted.",
+                },
+            },
+        },
+    ),
 ]
 
 for tool in finance_tools:
-    tool_registry.register_tool(tool, handle_finance_tool, category="COMPUTE", returns="JSON report")
+    tool_registry.register_tool(
+        tool, handle_finance_tool, category="COMPUTE", returns="JSON report"
+    )

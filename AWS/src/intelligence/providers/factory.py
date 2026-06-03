@@ -1,14 +1,16 @@
 from __future__ import annotations
-import os
+
 import logging
-from typing import Optional
+import os
+
 from .base import BaseLLMProvider
-from .gemini import GeminiProvider
 from .claude import ClaudeProvider
 from .deepseek import DeepSeekProvider
+from .gemini import GeminiProvider
 from .llama_cpp import LlamaCppProvider
 
 logger = logging.getLogger(__name__)
+
 
 class ProviderFactory:
     """
@@ -18,7 +20,7 @@ class ProviderFactory:
     """
 
     @staticmethod
-    def get_provider(provider_type: Optional[str] = None) -> BaseLLMProvider:
+    def get_provider(provider_type: str | None = None) -> BaseLLMProvider:
         ptype = provider_type or os.getenv("DEFAULT_LLM_PROVIDER", "gemini").lower()
 
         if ptype == "claude" or ptype == "anthropic":
@@ -38,7 +40,9 @@ class ProviderFactory:
                 raise ValueError("LOCAL_MODEL_PATH must be set in .env to use local provider.")
 
             if not os.path.isabs(model_path):
-                project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+                project_root = os.path.abspath(
+                    os.path.join(os.path.dirname(__file__), "..", "..", "..")
+                )
                 model_path = os.path.join(project_root, model_path)
                 logger.info(f"Resolved LOCAL_MODEL_PATH to absolute: {model_path}")
 
@@ -46,6 +50,7 @@ class ProviderFactory:
 
         else:
             raise ValueError(f"Unsupported LLM Provider type: {ptype}")
+
 
 def get_default_provider() -> BaseLLMProvider:
     return ProviderFactory.get_provider()

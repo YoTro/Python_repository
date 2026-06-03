@@ -1,11 +1,12 @@
 from __future__ import annotations
-import logging
+
 import asyncio
-from typing import Dict, Any
+import logging
+from typing import Any
 
 from src.jobs.interactions.registry import InteractionRegistry
-from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
 from src.jobs.manager import get_job_manager
+from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ def _notify_chat(bot_name: str, chat_id: str, message: str) -> None:
         return
     try:
         from src.entry.feishu.client import FeishuClient
+
         FeishuClient(bot_name=bot_name or "amazon_bot").send_text_message(
             "chat_id", chat_id, message
         )
@@ -24,7 +26,7 @@ def _notify_chat(bot_name: str, chat_id: str, message: str) -> None:
 
 
 @InteractionRegistry.register("VERIFY_XIYOU_LOGIN")
-async def handle_xiyou_verification(payload: Dict[str, Any]) -> Dict[str, Any]:
+async def handle_xiyou_verification(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Handler for the 'I have scanned' button click.
     Verifies Xiyou login status and sends a text confirmation to the chat.
@@ -34,9 +36,9 @@ async def handle_xiyou_verification(payload: Dict[str, Any]) -> Dict[str, Any]:
     user gets clear feedback regardless of job state.
     """
     tenant_id = payload.get("tenant_id", "default")
-    job_id    = payload.get("job_id")
-    chat_id   = payload.get("chat_id")
-    bot_name  = payload.get("bot_name", "amazon_bot")
+    job_id = payload.get("job_id")
+    chat_id = payload.get("chat_id")
+    bot_name = payload.get("bot_name", "amazon_bot")
 
     if not job_id:
         return {"toast": "错误: 缺少 Job ID", "success": False}

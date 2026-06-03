@@ -1,10 +1,11 @@
 from __future__ import annotations
+
 import csv
-import os
 import logging
-from typing import List, Dict
+import os
 
 logger = logging.getLogger(__name__)
+
 
 class CSVHelper:
     """
@@ -12,7 +13,7 @@ class CSVHelper:
     """
 
     @staticmethod
-    def save_to_csv(data: List[Dict], file_path: str):
+    def save_to_csv(data: list[dict], file_path: str):
         """
         Save a list of dictionaries to a CSV file.
         """
@@ -21,14 +22,14 @@ class CSVHelper:
             return
 
         keys = data[0].keys()
-        
+
         # Ensure directory exists
         dir_path = os.path.dirname(file_path)
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
-        
+
         try:
-            with open(file_path, 'w', newline='', encoding='utf-8') as output_file:
+            with open(file_path, "w", newline="", encoding="utf-8") as output_file:
                 dict_writer = csv.DictWriter(output_file, fieldnames=keys)
                 dict_writer.writeheader()
                 dict_writer.writerows(data)
@@ -37,7 +38,7 @@ class CSVHelper:
             logger.error(f"Failed to save CSV: {e}")
 
     @staticmethod
-    def read_csv(file_path: str) -> List[Dict]:
+    def read_csv(file_path: str) -> list[dict]:
         """
         Read all rows from a CSV file into a list of dictionaries.
         Supports multiple encodings.
@@ -46,11 +47,11 @@ class CSVHelper:
             logger.error(f"File not found: {file_path}")
             return []
 
-        encodings = ['utf-8', 'gbk', 'latin1']
+        encodings = ["utf-8", "gbk", "latin1"]
         for encoding in encodings:
             try:
                 data = []
-                with open(file_path, 'r', encoding=encoding) as f:
+                with open(file_path, encoding=encoding) as f:
                     reader = csv.DictReader(f)
                     for row in reader:
                         data.append(row)
@@ -60,12 +61,12 @@ class CSVHelper:
                 continue
             except Exception as e:
                 logger.error(f"Failed to read CSV with {encoding}: {e}")
-                
+
         logger.error(f"Failed to read CSV {file_path} after trying all encodings.")
         return []
 
     @staticmethod
-    def read_asins_from_csv(file_path: str, column_name: str = "ASIN") -> List[str]:
+    def read_asins_from_csv(file_path: str, column_name: str = "ASIN") -> list[str]:
         """
         Read a list of ASINs from a CSV file.
         """
@@ -75,7 +76,7 @@ class CSVHelper:
             return []
 
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     if column_name in row:

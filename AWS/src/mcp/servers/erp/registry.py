@@ -1,12 +1,11 @@
 from __future__ import annotations
-from typing import Dict, Type
+
 from .base import ERPClient
 
+_PROVIDERS: dict[str, type[ERPClient]] = {}
 
-_PROVIDERS: Dict[str, Type[ERPClient]] = {}
 
-
-def register_provider(name: str, cls: Type[ERPClient]) -> None:
+def register_provider(name: str, cls: type[ERPClient]) -> None:
     _PROVIDERS[name] = cls
 
 

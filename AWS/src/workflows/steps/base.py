@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Step primitives — the atomic building blocks of all Workflows.
 
@@ -8,12 +9,13 @@ ComputeTarget determines where the step executes:
   CLOUD_LLM    — cloud API (Gemini / Claude), per-token billing, 2-10s
 """
 
-import time
 import logging
+import time
 from abc import ABC, abstractmethod
-from enum import Enum
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Callable
+from enum import Enum
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +29,9 @@ class ComputeTarget(Enum):
 @dataclass
 class StepResult:
     """Output of a single Step execution."""
-    items: List[Dict[str, Any]]
-    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    items: list[dict[str, Any]]
+    metadata: dict[str, Any] = field(default_factory=dict)
     # Common metadata keys:
     #   duration_ms, cost_usd, filtered_count, data_source,
     #   input_count, output_count, rejection_reasons
@@ -37,15 +40,16 @@ class StepResult:
 @dataclass
 class WorkflowContext:
     """Shared context passed to every Step in a Workflow."""
+
     job_id: str
     tenant_id: str = "default"
     user_id: str = "default"
-    config: Dict[str, Any] = field(default_factory=dict)
-    cache: Dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
+    cache: dict[str, Any] = field(default_factory=dict)
     router: Any = None  # IntelligenceRouter instance (injected)
-    mcp: Any = None     # MCPClient instance (injected)
+    mcp: Any = None  # MCPClient instance (injected)
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("workflow"))
-    heartbeat: Optional[Callable[[dict], None]] = None  # Injected by ActivityRunner
+    heartbeat: Callable[[dict], None] | None = None  # Injected by ActivityRunner
 
 
 class Step(ABC):
@@ -56,7 +60,7 @@ class Step(ABC):
         name: str,
         compute_target: ComputeTarget = ComputeTarget.PURE_PYTHON,
         enabled: bool = True,
-        min_plan: Optional[str] = None,
+        min_plan: str | None = None,
     ):
         self.name = name
         self.compute_target = compute_target
@@ -64,7 +68,7 @@ class Step(ABC):
         self.min_plan = min_plan  # Reserved for multi-tenant: "free" | "pro" | "enterprise"
 
     @abstractmethod
-    async def run(self, items: List[Dict[str, Any]], ctx: WorkflowContext) -> StepResult:
+    async def run(self, items: list[dict[str, Any]], ctx: WorkflowContext) -> StepResult:
         """Execute this step on the given items."""
         ...
 

@@ -2,9 +2,10 @@
 Unit tests for AdBudgetOptimizer — verifies each constraint independently
 and then validates the full constraint stack against real dev data.
 """
+
 from __future__ import annotations
+
 import json
-import math
 import os
 import sys
 
@@ -13,18 +14,18 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.intelligence.processors.optimizer_ad_budget import (
-    AdBudgetOptimizer,
-    _beta_cvr,
-    _adaptive_k,
-    _STRATEGY_CPC_MULTIPLIER,
-    _K_CVR_MIN,
     _K_CVR_MAX,
+    _K_CVR_MIN,
+    AdBudgetOptimizer,
+    _adaptive_k,
+    _beta_cvr,
 )
 
 DEV_JSON = os.path.join(os.path.dirname(__file__), "../../ad-diag-B0FXFGMD7Z-dev.json")
 
 
 # ─────────────────────────── helpers ────────────────────────────────────────
+
 
 def _kw(
     name="kw|EXACT",
@@ -40,16 +41,16 @@ def _kw(
     placement_mult=1.0,
 ):
     d = {
-        "name":                name,
-        "avg_cpc":             avg_cpc,
-        "estimated_cvr":       cvr,
-        "max_daily_clicks":    max_clicks,
-        "min_daily_clicks":    min_clicks,
-        "sample_clicks":       sample_clicks,
-        "sample_orders":       round(cvr * sample_clicks),  # consistent with estimated_cvr
-        "prior_mu":            prior_mu,
-        "campaign_id":         campaign_id,
-        "bidding_strategy":    strategy,
+        "name": name,
+        "avg_cpc": avg_cpc,
+        "estimated_cvr": cvr,
+        "max_daily_clicks": max_clicks,
+        "min_daily_clicks": min_clicks,
+        "sample_clicks": sample_clicks,
+        "sample_orders": round(cvr * sample_clicks),  # consistent with estimated_cvr
+        "prior_mu": prior_mu,
+        "campaign_id": campaign_id,
+        "bidding_strategy": strategy,
         "placement_multiplier": placement_mult,
     }
     if k_max is not None:
@@ -76,6 +77,7 @@ def _camp_spend(result, cid):
 
 # ─────────────────────────── _beta_cvr / _adaptive_k ────────────────────────
 
+
 class TestBetaCVR:
     def test_zero_clicks_falls_back_to_prior(self):
         # With no data the estimate collapses to the prior mean μ (not 0)
@@ -95,14 +97,14 @@ class TestBetaCVR:
     def test_low_clicks_penalised(self):
         # More data → estimate closer to raw CVR
         high_sample = _beta_cvr(0.10, clicks=1_000, orders=100, prior_mu=0.05)
-        low_sample  = _beta_cvr(0.10, clicks=5,     orders=0,   prior_mu=0.05)
+        low_sample = _beta_cvr(0.10, clicks=5, orders=0, prior_mu=0.05)
         assert low_sample < high_sample
 
     def test_adaptive_k_weak_for_new_campaigns(self):
         # New campaign with strong CVR signal (far above prior) → k ≈ K_min → weak prior
-        k_new    = _adaptive_k(clicks=5,    orders=1,   prior_mu=0.05)
+        k_new = _adaptive_k(clicks=5, orders=1, prior_mu=0.05)
         k_mature = _adaptive_k(clicks=1000, orders=200, prior_mu=0.05)
-        assert k_new    == pytest.approx(_K_CVR_MIN, abs=0.5)
+        assert k_new == pytest.approx(_K_CVR_MIN, abs=0.5)
         assert k_mature == pytest.approx(_K_CVR_MAX, abs=0.5)
         assert k_new < k_mature
 
@@ -110,13 +112,14 @@ class TestBetaCVR:
         # CVR kept at prior_mu throughout → each batch confirms the prior →
         # posterior tightens → confidence rises → k grows
         prior_mu = 0.05
-        k5    = _adaptive_k(clicks=5,    orders=0,   prior_mu=prior_mu)  # CVR≈0%
-        k100  = _adaptive_k(clicks=100,  orders=5,   prior_mu=prior_mu)  # CVR=5%=prior
+        k5 = _adaptive_k(clicks=5, orders=0, prior_mu=prior_mu)  # CVR≈0%
+        k100 = _adaptive_k(clicks=100, orders=5, prior_mu=prior_mu)  # CVR=5%=prior
         k2000 = _adaptive_k(clicks=2000, orders=100, prior_mu=prior_mu)  # CVR=5%=prior
         assert k5 < k100 < k2000
 
 
 # ─────────────────────────── k_max per-stratum maturity ─────────────────────
+
 
 class TestKMax:
     def test_missing_k_max_uses_default(self):
@@ -127,37 +130,50 @@ class TestKMax:
         r_explicit = _solve([kw_explicit], 50.0)
         assert r_implicit["status"] == "OPTIMAL"
         assert r_explicit["status"] == "OPTIMAL"
-        assert (
-            r_implicit["allocation"][0]["pessimistic_cvr"]
-            == pytest.approx(r_explicit["allocation"][0]["pessimistic_cvr"], abs=1e-6)
+        assert r_implicit["allocation"][0]["pessimistic_cvr"] == pytest.approx(
+            r_explicit["allocation"][0]["pessimistic_cvr"], abs=1e-6
         )
 
     def test_high_k_max_means_more_shrinkage(self):
         # High k_max → prior is "harder" → more shrinkage towards prior_mu (0.05)
         # when observed CVR (0.20) is well above prior
-        kw_low_k  = _kw("kw|EXACT", cvr=0.20, sample_clicks=50, prior_mu=0.05, k_max=0.5)
+        kw_low_k = _kw("kw|EXACT", cvr=0.20, sample_clicks=50, prior_mu=0.05, k_max=0.5)
         kw_high_k = _kw("kw|EXACT", cvr=0.20, sample_clicks=50, prior_mu=0.05, k_max=15.0)
-        r_low  = _solve([kw_low_k],  100.0)
+        r_low = _solve([kw_low_k], 100.0)
         r_high = _solve([kw_high_k], 100.0)
         assert r_low["status"] == "OPTIMAL"
         assert r_high["status"] == "OPTIMAL"
         # High k_max → more shrinkage → lower pessimistic CVR when raw > prior
-        cvr_low  = r_low["allocation"][0]["pessimistic_cvr"]
+        cvr_low = r_low["allocation"][0]["pessimistic_cvr"]
         cvr_high = r_high["allocation"][0]["pessimistic_cvr"]
         assert cvr_high < cvr_low
 
     def test_k_max_does_not_affect_spend(self):
         # k_max changes CVR estimate but optimizer objective is to maximise orders;
         # budget is the binding constraint (not orders), so total spend stays the same
-        kw_low_k  = _kw("kw|EXACT", avg_cpc=1.0, cvr=0.20, max_clicks=200,
-                         sample_clicks=50, prior_mu=0.05, k_max=0.5)
-        kw_high_k = _kw("kw|EXACT", avg_cpc=1.0, cvr=0.20, max_clicks=200,
-                         sample_clicks=50, prior_mu=0.05, k_max=15.0)
-        r_low  = _solve([kw_low_k],  50.0)
+        kw_low_k = _kw(
+            "kw|EXACT",
+            avg_cpc=1.0,
+            cvr=0.20,
+            max_clicks=200,
+            sample_clicks=50,
+            prior_mu=0.05,
+            k_max=0.5,
+        )
+        kw_high_k = _kw(
+            "kw|EXACT",
+            avg_cpc=1.0,
+            cvr=0.20,
+            max_clicks=200,
+            sample_clicks=50,
+            prior_mu=0.05,
+            k_max=15.0,
+        )
+        r_low = _solve([kw_low_k], 50.0)
         r_high = _solve([kw_high_k], 50.0)
-        assert r_low["status"]  == "OPTIMAL"
+        assert r_low["status"] == "OPTIMAL"
         assert r_high["status"] == "OPTIMAL"
-        assert _alloc_spend(r_low)  == pytest.approx(50.0, abs=0.5)
+        assert _alloc_spend(r_low) == pytest.approx(50.0, abs=0.5)
         assert _alloc_spend(r_high) == pytest.approx(50.0, abs=0.5)
 
     def test_broad_exact_different_k_max(self):
@@ -177,6 +193,7 @@ class TestKMax:
 
 
 # ─────────────────────────── C1: Global budget ──────────────────────────────
+
 
 class TestC1GlobalBudget:
     def test_spend_never_exceeds_budget(self):
@@ -202,6 +219,7 @@ class TestC1GlobalBudget:
 
 
 # ─────────────────────────── C2: Per-campaign budgets ───────────────────────
+
 
 class TestC2CampaignBudgets:
     def test_campaign_spend_respects_cap(self):
@@ -233,13 +251,28 @@ class TestC2CampaignBudgets:
 
 # ─────────────────────────── C3: Target ACOS ────────────────────────────────
 
+
 class TestC3TargetACOS:
     def test_high_cpc_kw_excluded_when_acos_tight(self):
         # expensive: eff_cpc=5.00, pess_cvr≈0.27 → ACOS ≈ 93% ✗
         # cheap: max_clicks=1 so subsidy capacity is negligible (< 0.5 click worth of headroom)
         kws = [
-            _kw("cheap|EXACT",     avg_cpc=0.10, cvr=0.30, max_clicks=1,   campaign_id="C1", sample_clicks=500),
-            _kw("expensive|BROAD", avg_cpc=5.00, cvr=0.30, max_clicks=200, campaign_id="C1", sample_clicks=500),
+            _kw(
+                "cheap|EXACT",
+                avg_cpc=0.10,
+                cvr=0.30,
+                max_clicks=1,
+                campaign_id="C1",
+                sample_clicks=500,
+            ),
+            _kw(
+                "expensive|BROAD",
+                avg_cpc=5.00,
+                cvr=0.30,
+                max_clicks=200,
+                campaign_id="C1",
+                sample_clicks=500,
+            ),
         ]
         r = _solve(kws, total_budget=200.0, target_acos=0.25, avg_price=20.0)
         assert r["status"] == "OPTIMAL"
@@ -253,11 +286,11 @@ class TestC3TargetACOS:
             _kw("kw2|BROAD", avg_cpc=1.5, cvr=0.35, max_clicks=100, sample_clicks=200),
         ]
         target_acos = 0.35
-        avg_price   = 30.0
+        avg_price = 30.0
         r = _solve(kws, total_budget=300.0, target_acos=target_acos, avg_price=avg_price)
         assert r["status"] == "OPTIMAL"
-        total_spend   = sum(a["estimated_spend"]        for a in r["allocation"])
-        total_orders  = sum(a["contribution_to_orders"] for a in r["allocation"])
+        total_spend = sum(a["estimated_spend"] for a in r["allocation"])
+        total_orders = sum(a["contribution_to_orders"] for a in r["allocation"])
         total_revenue = total_orders * avg_price
         if total_revenue > 0:
             actual_acos = total_spend / total_revenue
@@ -272,6 +305,7 @@ class TestC3TargetACOS:
 
 # ─────────────────────────── C4: Inventory cap ──────────────────────────────
 
+
 class TestC4InventoryCap:
     def test_orders_capped_at_max(self):
         kws = [_kw("kw|EXACT", avg_cpc=0.50, cvr=0.20, max_clicks=500, sample_clicks=1000)]
@@ -282,20 +316,30 @@ class TestC4InventoryCap:
 
     def test_without_cap_orders_exceed_cap_value(self):
         kws = [_kw("kw|EXACT", avg_cpc=0.50, cvr=0.20, max_clicks=500, sample_clicks=1000)]
-        r_capped   = _solve(kws, total_budget=1000.0, max_daily_orders=5.0)
+        r_capped = _solve(kws, total_budget=1000.0, max_daily_orders=5.0)
         r_uncapped = _solve(kws, total_budget=1000.0)
         assert _alloc_orders(r_uncapped) > _alloc_orders(r_capped) + 0.5
 
 
 # ─────────────────────────── C5: Click floor (brand keywords) ───────────────
 
+
 class TestC5ClickFloor:
     def test_brand_kw_always_allocated(self):
         # brand keyword has min_daily_clicks=5; budget so tight only 1 click affordable
         # LP must still allocate ≥5 clicks to brand (may cause FAILED if budget truly zero)
         kws = [
-            _kw("brand|EXACT",   avg_cpc=1.0, cvr=0.20, max_clicks=50, min_clicks=5, campaign_id="C1"),
-            _kw("generic|BROAD", avg_cpc=1.0, cvr=0.05, max_clicks=50, min_clicks=0, campaign_id="C1"),
+            _kw(
+                "brand|EXACT", avg_cpc=1.0, cvr=0.20, max_clicks=50, min_clicks=5, campaign_id="C1"
+            ),
+            _kw(
+                "generic|BROAD",
+                avg_cpc=1.0,
+                cvr=0.05,
+                max_clicks=50,
+                min_clicks=0,
+                campaign_id="C1",
+            ),
         ]
         r = _solve(kws, total_budget=100.0)
         assert r["status"] == "OPTIMAL"
@@ -312,26 +356,39 @@ class TestC5ClickFloor:
 
 # ─────────────────────────── Bidding strategy multiplier ────────────────────
 
+
 class TestBiddingStrategyMultiplier:
     def test_up_and_down_costs_more_than_fixed(self):
-        base = dict(avg_cpc=1.0, cvr=0.10, max_clicks=100, sample_clicks=200, campaign_id="C1")
+        base = {
+            "avg_cpc": 1.0,
+            "cvr": 0.10,
+            "max_clicks": 100,
+            "sample_clicks": 200,
+            "campaign_id": "C1",
+        }
         kw_updown = _kw("kw|EXACT", **base, strategy="Dynamic bids - up and down")
-        kw_fixed  = _kw("kw|EXACT", **base, strategy="Fixed bids")
+        kw_fixed = _kw("kw|EXACT", **base, strategy="Fixed bids")
         budget = 50.0
 
-        r_up    = _solve([kw_updown], budget)
-        r_fixed = _solve([kw_fixed],  budget)
+        r_up = _solve([kw_updown], budget)
+        r_fixed = _solve([kw_fixed], budget)
 
         # "up and down" has higher eff_cpc → fewer clicks for same budget
-        clicks_up    = r_up["allocation"][0]["optimized_clicks"]   if r_up["allocation"]   else 0
+        clicks_up = r_up["allocation"][0]["optimized_clicks"] if r_up["allocation"] else 0
         clicks_fixed = r_fixed["allocation"][0]["optimized_clicks"] if r_fixed["allocation"] else 0
         assert clicks_up < clicks_fixed
 
     def test_down_only_equals_fixed(self):
-        base = dict(avg_cpc=1.0, cvr=0.10, max_clicks=100, sample_clicks=200, campaign_id="C1")
-        kw_down  = _kw("kw|EXACT", **base, strategy="Dynamic bids - down only")
+        base = {
+            "avg_cpc": 1.0,
+            "cvr": 0.10,
+            "max_clicks": 100,
+            "sample_clicks": 200,
+            "campaign_id": "C1",
+        }
+        kw_down = _kw("kw|EXACT", **base, strategy="Dynamic bids - down only")
         kw_fixed = _kw("kw|EXACT", **base, strategy="Fixed bids")
-        r_down  = _solve([kw_down],  50.0)
+        r_down = _solve([kw_down], 50.0)
         r_fixed = _solve([kw_fixed], 50.0)
         # Both multipliers == 1.0 → same effective CPC → same allocation
         assert r_down["allocation"][0]["optimized_clicks"] == pytest.approx(
@@ -339,9 +396,13 @@ class TestBiddingStrategyMultiplier:
         )
 
     def test_unknown_strategy_uses_default_multiplier(self):
-        kw_known   = _kw("kw|EXACT", strategy="Fixed bids",  avg_cpc=1.0, max_clicks=100, sample_clicks=100)
-        kw_unknown = _kw("kw|EXACT", strategy="SomeFuture",  avg_cpc=1.0, max_clicks=100, sample_clicks=100)
-        r_known   = _solve([kw_known],   50.0)
+        kw_known = _kw(
+            "kw|EXACT", strategy="Fixed bids", avg_cpc=1.0, max_clicks=100, sample_clicks=100
+        )
+        kw_unknown = _kw(
+            "kw|EXACT", strategy="SomeFuture", avg_cpc=1.0, max_clicks=100, sample_clicks=100
+        )
+        r_known = _solve([kw_known], 50.0)
         r_unknown = _solve([kw_unknown], 50.0)
         # unknown strategy multiplier (1.20) > Fixed (1.00) → fewer clicks
         assert (
@@ -352,28 +413,66 @@ class TestBiddingStrategyMultiplier:
 
 # ─────────────────────────── Placement multiplier ───────────────────────────
 
+
 class TestPlacementMultiplier:
     def test_higher_placement_mult_reduces_clicks(self):
-        kw_low  = _kw("kw|EXACT", avg_cpc=1.0, max_clicks=200, placement_mult=1.0, sample_clicks=200)
-        kw_high = _kw("kw|EXACT", avg_cpc=1.0, max_clicks=200, placement_mult=1.5, sample_clicks=200)
-        r_low  = _solve([kw_low],  100.0)
+        kw_low = _kw("kw|EXACT", avg_cpc=1.0, max_clicks=200, placement_mult=1.0, sample_clicks=200)
+        kw_high = _kw(
+            "kw|EXACT", avg_cpc=1.0, max_clicks=200, placement_mult=1.5, sample_clicks=200
+        )
+        r_low = _solve([kw_low], 100.0)
         r_high = _solve([kw_high], 100.0)
-        assert r_low["allocation"][0]["optimized_clicks"] > r_high["allocation"][0]["optimized_clicks"]
+        assert (
+            r_low["allocation"][0]["optimized_clicks"] > r_high["allocation"][0]["optimized_clicks"]
+        )
 
 
 # ─────────────────────────── Combined constraints ───────────────────────────
 
+
 class TestCombinedConstraints:
     def test_all_constraints_active_solves(self):
         kws = [
-            _kw("brand|EXACT",   avg_cpc=0.80, cvr=0.20, max_clicks=100, min_clicks=5,
-                 sample_clicks=300, campaign_id="C1", strategy="Fixed bids"),
-            _kw("top|BROAD",     avg_cpc=1.20, cvr=0.12, max_clicks=200, min_clicks=0,
-                 sample_clicks=150, campaign_id="C1", strategy="Dynamic bids - up and down"),
-            _kw("niche|PHRASE",  avg_cpc=0.60, cvr=0.08, max_clicks=80,  min_clicks=0,
-                 sample_clicks=50,  campaign_id="C2", strategy="Dynamic bids - down only"),
-            _kw("waste|EXACT",   avg_cpc=8.00, cvr=0.02, max_clicks=30,  min_clicks=0,
-                 sample_clicks=20,  campaign_id="C2", strategy="Fixed bids"),
+            _kw(
+                "brand|EXACT",
+                avg_cpc=0.80,
+                cvr=0.20,
+                max_clicks=100,
+                min_clicks=5,
+                sample_clicks=300,
+                campaign_id="C1",
+                strategy="Fixed bids",
+            ),
+            _kw(
+                "top|BROAD",
+                avg_cpc=1.20,
+                cvr=0.12,
+                max_clicks=200,
+                min_clicks=0,
+                sample_clicks=150,
+                campaign_id="C1",
+                strategy="Dynamic bids - up and down",
+            ),
+            _kw(
+                "niche|PHRASE",
+                avg_cpc=0.60,
+                cvr=0.08,
+                max_clicks=80,
+                min_clicks=0,
+                sample_clicks=50,
+                campaign_id="C2",
+                strategy="Dynamic bids - down only",
+            ),
+            _kw(
+                "waste|EXACT",
+                avg_cpc=8.00,
+                cvr=0.02,
+                max_clicks=30,
+                min_clicks=0,
+                sample_clicks=20,
+                campaign_id="C2",
+                strategy="Fixed bids",
+            ),
         ]
         r = _solve(
             kws,
@@ -385,13 +484,13 @@ class TestCombinedConstraints:
         )
         assert r["status"] == "OPTIMAL"
 
-        total_spend  = _alloc_spend(r)
+        total_spend = _alloc_spend(r)
         total_orders = _alloc_orders(r)
 
-        assert total_spend  <= 150.0 + 1e-4          # C1
+        assert total_spend <= 150.0 + 1e-4  # C1
         assert _camp_spend(r, "C1") <= 100.0 + 1e-4  # C2
-        assert _camp_spend(r, "C2") <= 60.0  + 1e-4  # C2
-        assert total_orders <= 8.0 + 1e-4             # C4
+        assert _camp_spend(r, "C2") <= 60.0 + 1e-4  # C2
+        assert total_orders <= 8.0 + 1e-4  # C4
 
         # brand keyword floor respected
         brand = next((a for a in r["allocation"] if "brand" in a["keyword"]), None)
@@ -417,6 +516,7 @@ class TestCombinedConstraints:
 
 # ─────────────────────────── Real dev-data smoke test ───────────────────────
 
+
 class TestRealData:
     @pytest.fixture(scope="class")
     def dev_item(self):
@@ -434,24 +534,27 @@ class TestRealData:
         camp_meta = {str(c["campaign_id"]): c for c in campaigns if c.get("campaign_id")}
         campaign_budgets = {
             cid: float(c.get("daily_budget") or 0)
-            for cid, c in camp_meta.items() if c.get("daily_budget")
+            for cid, c in camp_meta.items()
+            if c.get("daily_budget")
         }
 
         lp_input = []
         for kw in kw_perf:
             if not kw.get("avg_cpc") or not kw.get("cvr"):
                 continue
-            lp_input.append({
-                "name":               f"{kw['keyword_text']}|{kw['match_type']}",
-                "avg_cpc":            kw["avg_cpc"],
-                "estimated_cvr":      kw["cvr"],
-                "sample_clicks":      kw.get("total_clicks", 0),
-                "max_daily_clicks":   max(round(kw["daily_clicks"] * 3.0, 1), 1.0),
-                "min_daily_clicks":   0.0,
-                "campaign_id":        "",
-                "bidding_strategy":   "Dynamic bids - up and down",
-                "placement_multiplier": 1.0,
-            })
+            lp_input.append(
+                {
+                    "name": f"{kw['keyword_text']}|{kw['match_type']}",
+                    "avg_cpc": kw["avg_cpc"],
+                    "estimated_cvr": kw["cvr"],
+                    "sample_clicks": kw.get("total_clicks", 0),
+                    "max_daily_clicks": max(round(kw["daily_clicks"] * 3.0, 1), 1.0),
+                    "min_daily_clicks": 0.0,
+                    "campaign_id": "",
+                    "bidding_strategy": "Dynamic bids - up and down",
+                    "placement_multiplier": 1.0,
+                }
+            )
 
         assert len(lp_input) > 0, "No LP-eligible keywords in dev data"
 
@@ -466,9 +569,11 @@ class TestRealData:
         assert r["summary"]["actual_spend"] <= total_budget + 1e-4
         assert len(r["allocation"]) > 0
 
-        print(f"\n[real data] {len(lp_input)} keywords | "
-              f"budget=${total_budget} | spend=${r['summary']['actual_spend']} | "
-              f"orders={r['summary']['total_expected_orders']}")
+        print(
+            f"\n[real data] {len(lp_input)} keywords | "
+            f"budget=${total_budget} | spend=${r['summary']['actual_spend']} | "
+            f"orders={r['summary']['total_expected_orders']}"
+        )
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ Phase 1 (current): record_pas() writes telemetry only.
 Phase 3: compute_update() is called after 3+ consecutive out-of-band PAS
          observations and writes proportional k_max adjustments.
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -20,28 +21,28 @@ import json
 import logging
 import os
 from datetime import date as _date_cls
-from typing import Dict, List, Optional
 
 import yaml
 
 logger = logging.getLogger(__name__)
 
-_CAL_DIR     = os.path.join("config", "lp_calibration")
-_SNAP_ROOT   = os.path.join("data", "intelligence", "lp_snapshots")
+_CAL_DIR = os.path.join("config", "lp_calibration")
+_SNAP_ROOT = os.path.join("data", "intelligence", "lp_snapshots")
 _GLOBAL_SEED = os.path.join(_CAL_DIR, "_global.yaml")
 
 # Proportional correction step size per trigger event.
 # PAS > hi → conservative → k_max too large  → decrease by _STEP_FACTOR
 # PAS < lo → over-optimistic → k_max too small → increase by _STEP_FACTOR
-_STEP_FACTOR    = 0.10   # 10% adjustment per trigger
-_TRIGGER_WINDOW = 3      # consecutive out-of-band PAS observations required
-_K_MAX_FLOOR    = 0.5    # never shrink k_max below this
-_K_MAX_CEILING  = 10.0   # never grow k_max above this
+_STEP_FACTOR = 0.10  # 10% adjustment per trigger
+_TRIGGER_WINDOW = 3  # consecutive out-of-band PAS observations required
+_K_MAX_FLOOR = 0.5  # never shrink k_max below this
+_K_MAX_CEILING = 10.0  # never grow k_max above this
 
 
 # ---------------------------------------------------------------------------
 # I/O helpers
 # ---------------------------------------------------------------------------
+
 
 def _cal_path(asin: str) -> str:
     return os.path.join(_CAL_DIR, f"{asin.upper()}.yaml")
@@ -51,7 +52,7 @@ def _pas_log_path(asin: str) -> str:
     return os.path.join(_SNAP_ROOT, asin.upper(), "pas_history.jsonl")
 
 
-def _deep_merge(base: Dict, overrides: Dict) -> Dict:
+def _deep_merge(base: dict, overrides: dict) -> dict:
     """Merge overrides into base, recursively merging nested dicts.
 
     Prevents shallow dict.update() from clobbering entire nested mappings
@@ -66,9 +67,9 @@ def _deep_merge(base: Dict, overrides: Dict) -> Dict:
     return result
 
 
-def load_calibration(asin: str) -> Dict:
+def load_calibration(asin: str) -> dict:
     """Return calibration params for asin, deep-merging over _global.yaml."""
-    params: Dict = {}
+    params: dict = {}
     if os.path.exists(_GLOBAL_SEED):
         with open(_GLOBAL_SEED) as f:
             params = yaml.safe_load(f) or {}
@@ -82,7 +83,7 @@ def load_calibration(asin: str) -> Dict:
     return params
 
 
-def save_calibration(asin: str, params: Dict) -> None:
+def save_calibration(asin: str, params: dict) -> None:
     """Persist updated calibration params for asin."""
     os.makedirs(_CAL_DIR, exist_ok=True)
     path = _cal_path(asin)
@@ -91,7 +92,7 @@ def save_calibration(asin: str, params: Dict) -> None:
     logger.info("Calibration written → %s", path)
 
 
-def _append_pas_log(asin: str, entry: Dict) -> None:
+def _append_pas_log(asin: str, entry: dict) -> None:
     log_path = _pas_log_path(asin)
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     with open(log_path, "a") as f:
@@ -102,11 +103,11 @@ def _append_pas_log(asin: str, entry: Dict) -> None:
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def _load_pas_log(asin: str) -> List[Dict]:
+def _load_pas_log(asin: str) -> list[dict]:
     log_path = _pas_log_path(asin)
     if not os.path.exists(log_path):
         return []
-    entries: List[Dict] = []
+    entries: list[dict] = []
     with open(log_path) as f:
         for line in f:
             line = line.strip()
@@ -116,7 +117,9 @@ def _load_pas_log(asin: str) -> List[Dict]:
                 except json.JSONDecodeError as exc:
                     logger.warning(
                         "Skipping unparsable PAS log line for %s: %s — line: %.120r",
-                        asin, exc, line,
+                        asin,
+                        exc,
+                        line,
                     )
     return entries
 
@@ -125,10 +128,11 @@ def _load_pas_log(asin: str) -> List[Dict]:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def record_pas(
     asin: str,
     run_date: str,
-    pas: Optional[float],
+    pas: float | None,
     band_result: str,
     n_keywords: int,
     mean_impl_ratio: float,
@@ -138,24 +142,27 @@ def record_pas(
     update if _TRIGGER_WINDOW consecutive out-of-band results are seen.
     """
     entry = {
-        "date":            run_date,
-        "pas":             pas,
-        "band_result":     band_result,
-        "n_keywords":      n_keywords,
+        "date": run_date,
+        "pas": pas,
+        "band_result": band_result,
+        "n_keywords": n_keywords,
         "mean_impl_ratio": mean_impl_ratio,
-        "its_status":      its_status,
+        "its_status": its_status,
     }
     _append_pas_log(asin, entry)
     logger.info(
         "PAS recorded for %s/%s: PAS=%s band=%s",
-        asin, run_date, pas, band_result,
+        asin,
+        run_date,
+        pas,
+        band_result,
     )
 
     if band_result in ("over_optimistic", "conservative") and pas is not None:
         _maybe_update(asin)
 
 
-def compute_update(asin: str, current_params: Optional[Dict] = None) -> Optional[Dict]:
+def compute_update(asin: str, current_params: dict | None = None) -> dict | None:
     """Check whether the trigger has fired and return updated params if so.
 
     Returns updated params dict when:
@@ -182,15 +189,15 @@ def compute_update(asin: str, current_params: Optional[Dict] = None) -> Optional
 
     # Only consider observations that arrived after the last trigger.
     last_trigger_at = int(params.get("last_trigger_at", 0))
-    new_obs_count   = len(history) - last_trigger_at
+    new_obs_count = len(history) - last_trigger_at
     if new_obs_count < _TRIGGER_WINDOW:
         return None
 
     # Evaluate the most recent _TRIGGER_WINDOW observations in the new window.
-    recent = history[last_trigger_at: last_trigger_at + _TRIGGER_WINDOW]
-    bands  = [e["band_result"] for e in recent]
+    recent = history[last_trigger_at : last_trigger_at + _TRIGGER_WINDOW]
+    bands = [e["band_result"] for e in recent]
 
-    all_conservative    = all(b == "conservative"    for b in bands)
+    all_conservative = all(b == "conservative" for b in bands)
     all_over_optimistic = all(b == "over_optimistic" for b in bands)
 
     if not (all_conservative or all_over_optimistic):
@@ -199,7 +206,9 @@ def compute_update(asin: str, current_params: Optional[Dict] = None) -> Optional
         params["last_trigger_at"] = last_trigger_at + _TRIGGER_WINDOW
         logger.debug(
             "Calibration window mixed for %s (obs %d–%d) — advancing watermark to %d",
-            asin, last_trigger_at, last_trigger_at + _TRIGGER_WINDOW - 1,
+            asin,
+            last_trigger_at,
+            last_trigger_at + _TRIGGER_WINDOW - 1,
             last_trigger_at + _TRIGGER_WINDOW,
         )
         return params
@@ -207,26 +216,30 @@ def compute_update(asin: str, current_params: Optional[Dict] = None) -> Optional
     k_max = float(params.get("k_cvr_max", 3.0))
 
     if all_conservative:
-        new_k     = max(k_max * (1.0 - _STEP_FACTOR), _K_MAX_FLOOR)
+        new_k = max(k_max * (1.0 - _STEP_FACTOR), _K_MAX_FLOOR)
         direction = "decrease"
     else:
-        new_k     = min(k_max * (1.0 + _STEP_FACTOR), _K_MAX_CEILING)
+        new_k = min(k_max * (1.0 + _STEP_FACTOR), _K_MAX_CEILING)
         direction = "increase"
 
     new_k = round(new_k, 4)
     if new_k == k_max:
         return None
 
-    params["k_cvr_max"]       = new_k
-    params["last_updated"]    = _date_cls.today().isoformat()
-    params["last_trigger"]    = direction
+    params["k_cvr_max"] = new_k
+    params["last_updated"] = _date_cls.today().isoformat()
+    params["last_trigger"] = direction
     # Advance the watermark so the next trigger requires a fresh window.
     params["last_trigger_at"] = last_trigger_at + _TRIGGER_WINDOW
 
     logger.info(
         "Calibration trigger fired for %s: k_cvr_max %s → %s (%s, obs %d–%d)",
-        asin, k_max, new_k, direction,
-        last_trigger_at, last_trigger_at + _TRIGGER_WINDOW - 1,
+        asin,
+        k_max,
+        new_k,
+        direction,
+        last_trigger_at,
+        last_trigger_at + _TRIGGER_WINDOW - 1,
     )
     return params
 

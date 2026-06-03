@@ -1,25 +1,24 @@
 from __future__ import annotations
+
 import argparse
 import asyncio
 import logging
-import sys
 import os
+import sys
 
 # Adjust sys.path to ensure project-wide imports work
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../'))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.core.utils.config_helper import ConfigHelper
 from src.gateway import APIGateway
-from src.workflows.registry import WorkflowRegistry
-import src.workflows.definitions # Ensure all decorators are executed
 
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("AWS_CLI")
+
 
 async def run_workflow(workflow_name: str, params: dict):
     logger.info(f"Starting workflow via Gateway: {workflow_name} with params: {params}")
@@ -34,6 +33,7 @@ async def run_workflow(workflow_name: str, params: dict):
         logger.error(f"Workflow {workflow_name} failed: {e}")
         sys.exit(1)
 
+
 async def run_explore(query: str):
     logger.info(f"Starting exploration (Agent mode) via Gateway for query: {query}")
     try:
@@ -44,22 +44,30 @@ async def run_explore(query: str):
         logger.error(f"Exploration failed: {e}")
         sys.exit(1)
 
+
 def main():
     ConfigHelper.load_config()
-    
+
     parser = argparse.ArgumentParser(description="AWS (Amazon Web Scraper) CLI Entry Point")
-    
+
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--workflow", type=str, help="Name of the workflow to run (e.g., product_screening)")
-    group.add_argument("--explore", type=str, help="Natural language query for the MCP Agent to explore")
+    group.add_argument(
+        "--workflow", type=str, help="Name of the workflow to run (e.g., product_screening)"
+    )
+    group.add_argument(
+        "--explore", type=str, help="Natural language query for the MCP Agent to explore"
+    )
     group.add_argument("--list-workflows", action="store_true", help="List all available workflows")
-    
-    parser.add_argument("--params", type=str, help="JSON string of parameters for the workflow", default="{}")
-    
+
+    parser.add_argument(
+        "--params", type=str, help="JSON string of parameters for the workflow", default="{}"
+    )
+
     args = parser.parse_args()
 
     if args.list_workflows:
         from src.workflows.registry import WorkflowRegistry
+
         workflows = WorkflowRegistry.list_workflows()
         print("\n[Available Workflows]")
         for wf in workflows:
@@ -68,6 +76,7 @@ def main():
         return
 
     import json
+
     try:
         params = json.loads(args.params)
     except json.JSONDecodeError:
@@ -78,6 +87,7 @@ def main():
         asyncio.run(run_workflow(args.workflow, params))
     elif args.explore:
         asyncio.run(run_explore(args.explore))
+
 
 if __name__ == "__main__":
     main()

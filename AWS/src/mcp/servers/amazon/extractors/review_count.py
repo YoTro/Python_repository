@@ -1,7 +1,10 @@
 from __future__ import annotations
+
 import logging
 import re
+
 from bs4 import BeautifulSoup
+
 from src.core.scraper import AmazonBaseScraper
 
 logger = logging.getLogger(__name__)
@@ -52,7 +55,9 @@ class ReviewRatioExtractor(AmazonBaseScraper):
             m = re.search(r"([\d,]+)\s+global\s+ratings?", text, re.IGNORECASE)
             if m:
                 global_ratings = int(m.group(1).replace(",", ""))
-            m = re.search(r"([\d,]+)\s+(?:with\s+reviews?|customer\s+reviews?)", text, re.IGNORECASE)
+            m = re.search(
+                r"([\d,]+)\s+(?:with\s+reviews?|customer\s+reviews?)", text, re.IGNORECASE
+            )
             if m:
                 written_reviews = int(m.group(1).replace(",", ""))
 

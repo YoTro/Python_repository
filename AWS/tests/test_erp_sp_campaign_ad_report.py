@@ -6,25 +6,39 @@ x-ak-* identity env vars) to be set in .env.
 Run:
     PYTHONPATH=. python3 tests/test_erp_sp_campaign_ad_report.py
 """
+
 import json
 import os
 import sys
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.mcp.servers.erp.lingxing.client import LingxingClient
 
-PROFILE_ID  = "3134479135518484"
+PROFILE_ID = "3134479135518484"
 REPORT_DATE = "2025-04-02 - 2025-05-01"
-ASINS       = ["B0DRWPNT6Z", "B0DRWN72VB"]
+ASINS = ["B0DRWPNT6Z", "B0DRWN72VB"]
 
 
 def _print_row(label: str, row: dict):
-    fields = ["date_day", "clicks", "impressions", "orders", "spends",
-              "sales", "acos", "roas", "ctr", "cvr", "cpc", "cpa"]
+    fields = [
+        "date_day",
+        "clicks",
+        "impressions",
+        "orders",
+        "spends",
+        "sales",
+        "acos",
+        "roas",
+        "ctr",
+        "cvr",
+        "cpc",
+        "cpa",
+    ]
     vals = {k: row.get(k, "--") for k in fields}
     print(f"  [{label}] {json.dumps(vals, ensure_ascii=False)}")
 
@@ -38,7 +52,7 @@ def main():
         sys.exit(1)
     print(f"Auth token OK (first 20 chars): {client.token[:20]}...")
 
-    print(f"\n--- length clamp test: length=10 → should clamp to 25 ---")
+    print("\n--- length clamp test: length=10 → should clamp to 25 ---")
     resp = client.get_sp_campaign_ad_report(
         profile_id=PROFILE_ID,
         report_date=REPORT_DATE,
@@ -48,7 +62,7 @@ def main():
     )
     print(f"  success={resp.get('success')}  rows={len(resp.get('data', []))}")
 
-    print(f"\n--- single page, aggregate + daily (length=50) ---")
+    print("\n--- single page, aggregate + daily (length=50) ---")
     resp = client.get_sp_campaign_ad_report(
         profile_id=PROFILE_ID,
         report_date=REPORT_DATE,
@@ -65,7 +79,7 @@ def main():
     if len(data) > 4:
         print(f"  ... ({len(data) - 4} more daily rows)")
 
-    print(f"\n--- fetch_all=True (auto-paginate, length=500) ---")
+    print("\n--- fetch_all=True (auto-paginate, length=500) ---")
     resp_all = client.get_sp_campaign_ad_report(
         profile_id=PROFILE_ID,
         report_date=REPORT_DATE,

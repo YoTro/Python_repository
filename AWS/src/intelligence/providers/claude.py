@@ -1,11 +1,15 @@
 from __future__ import annotations
-import os
+
 import logging
-from typing import Optional, TypeVar, Any, List, Dict
-from pydantic import BaseModel
+import os
+from typing import Any, TypeVar
+
 import anthropic
+from pydantic import BaseModel
+
+from src.intelligence.dto import BatchJobHandle, BatchRequest, LLMResponse
+
 from .base import BaseLLMProvider
-from src.intelligence.dto import LLMResponse, BatchRequest, BatchJobHandle
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +22,7 @@ _MODEL_PRIORITIES = [
     "claude-3-haiku-20240307",
 ]
 
+
 class ClaudeProvider(BaseLLMProvider):
     """
     Claude (Anthropic) provider with Cost Calculation.
@@ -27,19 +32,16 @@ class ClaudeProvider(BaseLLMProvider):
     # All Claude 3+ models share a 200k context window.
     _MODEL_CONTEXT_WINDOWS = {
         "claude-3-5-sonnet": 200_000,
-        "claude-3-5-haiku":  200_000,
-        "claude-3-opus":     200_000,
-        "claude-3-sonnet":   200_000,
-        "claude-3-haiku":    200_000,
-        "claude-opus-4":     200_000,
-        "claude-sonnet-4":   200_000,
-        "claude-haiku-4":    200_000,
+        "claude-3-5-haiku": 200_000,
+        "claude-3-opus": 200_000,
+        "claude-3-sonnet": 200_000,
+        "claude-3-haiku": 200_000,
+        "claude-opus-4": 200_000,
+        "claude-sonnet-4": 200_000,
+        "claude-haiku-4": 200_000,
     }
 
-    def __init__(self,
-                 api_key: Optional[str] = None,
-                 model_name: Optional[str] = None):
-
+    def __init__(self, api_key: str | None = None, model_name: str | None = None):
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY missing.")
@@ -50,35 +52,40 @@ class ClaudeProvider(BaseLLMProvider):
         super().__init__("claude", selected_model)
 
         from .config.limits import get_max_output_tokens
+
         _ceiling = get_max_output_tokens("claude", self.model_name)
         _env = os.getenv("MAX_LLM_OUTPUT_TOKENS", "").strip()
         self._DEFAULT_MAX_TOKENS = min(int(_env) if _env else _ceiling, _ceiling)
 
-        logger.info(f"ClaudeProvider initialized with model: {self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}")
+        logger.info(
+            f"ClaudeProvider initialized with model: {self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}"
+        )
 
-    async def count_tokens(self, prompt: str, system_message: Optional[str] = None) -> int:
+    async def count_tokens(self, prompt: str, system_message: str | None = None) -> int:
         try:
-            kwargs = dict(
-                model=self.model_name,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            kwargs = {
+                "model": self.model_name,
+                "messages": [{"role": "user", "content": prompt}],
+            }
             if system_message:
                 kwargs["system"] = system_message
-            
+
             response = await self.client.messages.count_tokens(**kwargs)
             return response.input_tokens
         except Exception as e:
             logger.warning(f"Claude token count failed, falling back to estimate: {e}")
             return len(prompt) // 4
 
-    async def generate_text(self, prompt: str, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
+    async def generate_text(
+        self, prompt: str, system_message: str | None = None, **kwargs
+    ) -> LLMResponse:
         await self._check_context_limit(prompt, system_message)
         try:
-            api_kwargs = dict(
-                model=self.model_name,
-                max_tokens=self._DEFAULT_MAX_TOKENS,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            api_kwargs = {
+                "model": self.model_name,
+                "max_tokens": self._DEFAULT_MAX_TOKENS,
+                "messages": [{"role": "user", "content": prompt}],
+            }
             if system_message:
                 api_kwargs["system"] = system_message
 
@@ -115,14 +122,18 @@ class ClaudeProvider(BaseLLMProvider):
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read,
-                cache_creation_tokens=cache_creation
+                cache_creation_tokens=cache_creation,
             )
         except Exception as e:
             logger.error(f"Claude text generation failed: {e}")
             raise
 
-    async def generate_structured(self, prompt: str, schema: Any, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
-        raise NotImplementedError("Claude structured generation via Pydantic is not implemented in this version.")
+    async def generate_structured(
+        self, prompt: str, schema: Any, system_message: str | None = None, **kwargs
+    ) -> LLMResponse:
+        raise NotImplementedError(
+            "Claude structured generation via Pydantic is not implemented in this version."
+        )
 
     # ── Batch API ─────────────────────────────────────────────────────────────
     # Limits: 100,000 requests OR 256 MB per batch; expires after 24 h if not
@@ -133,7 +144,7 @@ class ClaudeProvider(BaseLLMProvider):
     def supports_batch(self) -> bool:
         return True
 
-    async def generate_batch(self, requests: List[BatchRequest]) -> BatchJobHandle:
+    async def generate_batch(self, requests: list[BatchRequest]) -> BatchJobHandle:
         """Submit a Claude Message Batch. Returns immediately with a handle."""
         if len(requests) > self.BATCH_MAX_REQUESTS:
             raise ValueError(
@@ -151,10 +162,12 @@ class ClaudeProvider(BaseLLMProvider):
                 }
                 if req.system_message:
                     params["system"] = req.system_message
-                batch_requests.append({
-                    "custom_id": req.custom_id,
-                    "params": params,
-                })
+                batch_requests.append(
+                    {
+                        "custom_id": req.custom_id,
+                        "params": params,
+                    }
+                )
 
             batch = await self.client.messages.batches.create(requests=batch_requests)
             logger.info(f"Claude batch submitted: {batch.id}, {len(requests)} requests")
@@ -167,7 +180,7 @@ class ClaudeProvider(BaseLLMProvider):
             logger.error(f"Claude batch submission failed: {e}")
             raise
 
-    async def poll_batch(self, handle: BatchJobHandle) -> Optional[Dict[str, LLMResponse]]:
+    async def poll_batch(self, handle: BatchJobHandle) -> dict[str, LLMResponse] | None:
         """Check batch status. Returns None while pending; dict on completion.
 
         A completed batch may contain items with result.type:
@@ -184,7 +197,7 @@ class ClaudeProvider(BaseLLMProvider):
                 logger.debug(f"Claude batch {handle.job_id} status={batch.processing_status}")
                 return None
 
-            results: Dict[str, LLMResponse] = {}
+            results: dict[str, LLMResponse] = {}
             async for result in self.client.messages.batches.results(handle.job_id):
                 result_type = result.result.type
                 if result_type == "succeeded":

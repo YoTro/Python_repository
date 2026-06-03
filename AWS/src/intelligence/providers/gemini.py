@@ -1,17 +1,22 @@
 from __future__ import annotations
-import os
-import logging
+
 import asyncio
-from typing import Optional, TypeVar, Any, List, Dict
-from pydantic import BaseModel
+import logging
+import os
+from typing import Any, TypeVar
+
 from google import genai
 from google.genai import types
+from pydantic import BaseModel
+
+from src.intelligence.dto import BatchJobHandle, BatchRequest, LLMResponse
+
 from .base import BaseLLMProvider
-from src.intelligence.dto import LLMResponse, BatchRequest, BatchJobHandle
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
 
 class GeminiProvider(BaseLLMProvider):
     """
@@ -21,19 +26,16 @@ class GeminiProvider(BaseLLMProvider):
     # Context windows per model family (prefix-matched against self.model_name).
     # Gemini 1.5 Pro has a 2M window; all other current models are 1M.
     _MODEL_CONTEXT_WINDOWS = {
-        "models/gemini-2.5-pro":    1_048_576,
-        "models/gemini-2.5-flash":  1_048_576,
-        "models/gemini-2.0-flash":  1_048_576,
-        "models/gemini-2.0-pro":    1_048_576,
-        "models/gemini-1.5-pro":    2_097_152,
-        "models/gemini-1.5-flash":  1_048_576,
-        "models/gemini-1.0-pro":       32_760,
+        "models/gemini-2.5-pro": 1_048_576,
+        "models/gemini-2.5-flash": 1_048_576,
+        "models/gemini-2.0-flash": 1_048_576,
+        "models/gemini-2.0-pro": 1_048_576,
+        "models/gemini-1.5-pro": 2_097_152,
+        "models/gemini-1.5-flash": 1_048_576,
+        "models/gemini-1.0-pro": 32_760,
     }
 
-    def __init__(self,
-                 api_key: Optional[str] = None,
-                 model_name: Optional[str] = None):
-
+    def __init__(self, api_key: str | None = None, model_name: str | None = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY missing.")
@@ -44,22 +46,28 @@ class GeminiProvider(BaseLLMProvider):
         super().__init__("gemini", discovered_model)
 
         from .config.limits import get_max_output_tokens
+
         _ceiling = get_max_output_tokens("gemini", self.model_name)
         _env = os.getenv("MAX_LLM_OUTPUT_TOKENS", "").strip()
         self._DEFAULT_MAX_TOKENS = min(int(_env) if _env else _ceiling, _ceiling)
 
-        logger.info(f"GeminiProvider initialized with model: {self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}")
+        logger.info(
+            f"GeminiProvider initialized with model: {self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}"
+        )
 
-    def _discover_best_model(self, preferred: Optional[str]) -> str:
+    def _discover_best_model(self, preferred: str | None) -> str:
         """Query the API to find the highest-tier available model."""
         try:
             # Try newer attribute first, then fallback to older
             all_models = self.client.models.list()
             available = []
             for m in all_models:
-                if hasattr(m, 'supported_generation_methods') and 'generateContent' in m.supported_generation_methods:
-                    available.append(m.name)
-                elif hasattr(m, 'supported_actions') and "generateContent" in m.supported_actions:
+                if (
+                    hasattr(m, "supported_generation_methods")
+                    and "generateContent" in m.supported_generation_methods
+                    or hasattr(m, "supported_actions")
+                    and "generateContent" in m.supported_actions
+                ):
                     available.append(m.name)
 
             priorities = [
@@ -80,13 +88,11 @@ class GeminiProvider(BaseLLMProvider):
             logger.error(f"Failed to list models: {e}. Falling back to default.")
             return "models/gemini-1.5-flash"
 
-    async def count_tokens(self, prompt: str, system_message: Optional[str] = None) -> int:
+    async def count_tokens(self, prompt: str, system_message: str | None = None) -> int:
         try:
             full_text = f"{system_message}\n\n{prompt}" if system_message else prompt
             response = await asyncio.to_thread(
-                self.client.models.count_tokens,
-                model=self.model_name,
-                contents=full_text
+                self.client.models.count_tokens, model=self.model_name, contents=full_text
             )
             return response.total_tokens
         except Exception:
@@ -98,9 +104,9 @@ class GeminiProvider(BaseLLMProvider):
     def _is_truncated(response) -> bool:
         candidate = (getattr(response, "candidates", None) or [None])[0]
         finish_reason = getattr(candidate, "finish_reason", None)
-        return bool(finish_reason and str(finish_reason) in (
-            "FinishReason.MAX_TOKENS", "MAX_TOKENS", "2"
-        ))
+        return bool(
+            finish_reason and str(finish_reason) in ("FinishReason.MAX_TOKENS", "MAX_TOKENS", "2")
+        )
 
     def _make_config(self, system_message, temp):
         if system_message:
@@ -114,7 +120,9 @@ class GeminiProvider(BaseLLMProvider):
             max_output_tokens=self._DEFAULT_MAX_TOKENS,
         )
 
-    async def generate_text(self, prompt: str, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
+    async def generate_text(
+        self, prompt: str, system_message: str | None = None, **kwargs
+    ) -> LLMResponse:
         await self._check_context_limit(prompt, system_message)
         try:
             filtered_kwargs = self._filter_kwargs(kwargs)
@@ -126,14 +134,18 @@ class GeminiProvider(BaseLLMProvider):
                 model=self.model_name,
                 contents=prompt,
                 config=config,
-                **filtered_kwargs
+                **filtered_kwargs,
             )
 
             usage = getattr(response, "usage_metadata", None)
-            input_tokens   = (usage.prompt_token_count      or 0) if usage else await self.count_tokens(prompt, system_message)
-            output_tokens  = (usage.candidates_token_count  or 0) if usage else 0
-            thought_tokens = getattr(usage, "thought_token_count",        0) or 0
-            cached_tokens  = getattr(usage, "cached_content_token_count", 0) or 0
+            input_tokens = (
+                (usage.prompt_token_count or 0)
+                if usage
+                else await self.count_tokens(prompt, system_message)
+            )
+            output_tokens = (usage.candidates_token_count or 0) if usage else 0
+            thought_tokens = getattr(usage, "thought_token_count", 0) or 0
+            cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
             full_text = response.text
 
             # ── Continuation loop ────────────────────────────────────────────
@@ -149,26 +161,31 @@ class GeminiProvider(BaseLLMProvider):
                     f"(continuation {cont + 1}/{self._MAX_CONTINUATIONS})…"
                 )
                 continuation_contents = [
-                    types.Content(role="user",  parts=[types.Part(text=prompt)]),
+                    types.Content(role="user", parts=[types.Part(text=prompt)]),
                     types.Content(role="model", parts=[types.Part(text=full_text)]),
-                    types.Content(role="user",  parts=[types.Part(
-                        text="Your previous response was cut off. Continue EXACTLY from where you stopped, "
-                             "without repeating any prior content."
-                    )]),
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                text="Your previous response was cut off. Continue EXACTLY from where you stopped, "
+                                "without repeating any prior content."
+                            )
+                        ],
+                    ),
                 ]
                 response = await asyncio.to_thread(
                     self.client.models.generate_content,
                     model=self.model_name,
                     contents=continuation_contents,
                     config=config,
-                    **filtered_kwargs
+                    **filtered_kwargs,
                 )
                 cont_usage = getattr(response, "usage_metadata", None)
                 if cont_usage:
-                    input_tokens  += cont_usage.prompt_token_count      or 0
-                    output_tokens += cont_usage.candidates_token_count  or 0
-                    thought_tokens += getattr(cont_usage, "thought_token_count",        0) or 0
-                    cached_tokens  += getattr(cont_usage, "cached_content_token_count", 0) or 0
+                    input_tokens += cont_usage.prompt_token_count or 0
+                    output_tokens += cont_usage.candidates_token_count or 0
+                    thought_tokens += getattr(cont_usage, "thought_token_count", 0) or 0
+                    cached_tokens += getattr(cont_usage, "cached_content_token_count", 0) or 0
                 full_text += response.text
             else:
                 if self._is_truncated(response):
@@ -200,8 +217,7 @@ class GeminiProvider(BaseLLMProvider):
                 result[k] = GeminiProvider._clean_schema(v)
             elif isinstance(v, list):
                 result[k] = [
-                    GeminiProvider._clean_schema(i) if isinstance(i, dict) else i
-                    for i in v
+                    GeminiProvider._clean_schema(i) if isinstance(i, dict) else i for i in v
                 ]
             else:
                 result[k] = v
@@ -212,7 +228,7 @@ class GeminiProvider(BaseLLMProvider):
     def supports_batch(self) -> bool:
         return True
 
-    async def generate_batch(self, requests: List[BatchRequest]) -> BatchJobHandle:
+    async def generate_batch(self, requests: list[BatchRequest]) -> BatchJobHandle:
         """Submit an inline batch job. Returns immediately with a handle.
 
         SDK v1.67+: src accepts a list[InlinedRequest] directly; each InlinedRequest
@@ -224,7 +240,9 @@ class GeminiProvider(BaseLLMProvider):
             for req in requests:
                 config = None
                 if req.schema or req.system_message:
-                    schema_dict = self._clean_schema(req.schema.model_json_schema()) if req.schema else None
+                    schema_dict = (
+                        self._clean_schema(req.schema.model_json_schema()) if req.schema else None
+                    )
                     config = types.GenerateContentConfig(
                         system_instruction=req.system_message,
                         response_mime_type="application/json" if schema_dict else None,
@@ -254,7 +272,7 @@ class GeminiProvider(BaseLLMProvider):
             logger.error(f"Gemini batch submission failed: {e}")
             raise
 
-    async def poll_batch(self, handle: BatchJobHandle) -> Optional[Dict[str, LLMResponse]]:
+    async def poll_batch(self, handle: BatchJobHandle) -> dict[str, LLMResponse] | None:
         """Check batch status. Returns None while pending; dict on completion.
 
         SDK v1.67+: completed results are in job.dest.inlined_responses (same
@@ -274,14 +292,12 @@ class GeminiProvider(BaseLLMProvider):
             if state != "JOB_STATE_SUCCEEDED":
                 raise RuntimeError(f"Gemini batch {handle.job_id} ended with state={state}")
 
-            inlined_responses = (
-                (job.dest.inlined_responses or []) if job.dest else []
-            )
-            results: Dict[str, LLMResponse] = {}
+            inlined_responses = (job.dest.inlined_responses or []) if job.dest else []
+            results: dict[str, LLMResponse] = {}
             for resp in inlined_responses:
                 custom_id = (resp.metadata or {}).get("custom_id")
                 if not custom_id:
-                    logger.warning(f"Gemini batch response missing custom_id metadata, skipping")
+                    logger.warning("Gemini batch response missing custom_id metadata, skipping")
                     continue
                 if getattr(resp, "error", None):
                     logger.warning(f"Gemini batch item error custom_id={custom_id}: {resp.error}")
@@ -308,7 +324,9 @@ class GeminiProvider(BaseLLMProvider):
 
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def generate_structured(self, prompt: str, schema: Any, system_message: Optional[str] = None, **kwargs) -> LLMResponse:
+    async def generate_structured(
+        self, prompt: str, schema: Any, system_message: str | None = None, **kwargs
+    ) -> LLMResponse:
         await self._check_context_limit(prompt, system_message)
         try:
             raw_schema = schema.model_json_schema()
@@ -326,26 +344,26 @@ class GeminiProvider(BaseLLMProvider):
                     response_mime_type="application/json",
                     response_schema=clean,
                 ),
-                **filtered_kwargs
+                **filtered_kwargs,
             )
-            
+
             # Since we're asking for a schema, the text should be valid JSON
             text_response = response.text
-            
+
             usage = getattr(response, "usage_metadata", None)
             input_tokens = usage.prompt_token_count if usage else 0
             output_tokens = usage.candidates_token_count if usage else 0
-            
+
             # Extract advanced usage stats for precise billing
             thought_tokens = getattr(usage, "thought_token_count", 0) or 0
             cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
-            
+
             return self.create_response(
                 text=text_response,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 thought_tokens=thought_tokens,
-                cached_tokens=cached_tokens
+                cached_tokens=cached_tokens,
             )
         except Exception as e:
             logger.error(f"Structured generation failed on {self.model_name}: {e}")

@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 import json
 import logging
 import os
-from mcp.types import Tool, TextContent
+
+from mcp.types import TextContent, Tool
 
 logger = logging.getLogger("mcp-output-html")
 
@@ -65,12 +67,14 @@ def _md_to_html(md: str) -> str:
     """Convert markdown to HTML. Uses `markdown` package; falls back to <pre> wrap."""
     try:
         import markdown as _md
+
         return _md.markdown(
             md,
             extensions=["tables", "fenced_code", "nl2br", "toc"],
         )
     except ImportError:
         import html as _html
+
         return f"<pre style='white-space:pre-wrap'>{_html.escape(md)}</pre>"
 
 
@@ -87,6 +91,7 @@ def _upload_images(content: str, image_paths: list[str]) -> tuple[str, list[str]
 
     try:
         from src.core.storage import get_storage_backend
+
         storage = get_storage_backend()
     except (ValueError, KeyError) as e:
         logger.warning(f"Storage backend not configured, images skipped: {e}")
@@ -101,8 +106,8 @@ def _upload_images(content: str, image_paths: list[str]) -> tuple[str, list[str]
             logger.warning(f"Image not found, skipping: {local_path}")
             continue
         mime = mimetypes.guess_type(local_path)[0] or "image/png"
-        ext  = os.path.splitext(local_path)[1] or ".png"
-        key  = f"reports/{uuid.uuid4().hex}{ext}"
+        ext = os.path.splitext(local_path)[1] or ".png"
+        key = f"reports/{uuid.uuid4().hex}{ext}"
         try:
             url = storage.upload_file(key, local_path, mime)
             public_urls.append(url)
@@ -114,11 +119,11 @@ def _upload_images(content: str, image_paths: list[str]) -> tuple[str, list[str]
 
 
 async def handle_export_html(name: str, arguments: dict) -> list[TextContent]:
-    content      = arguments.get("content", "")
-    filename     = arguments.get("filename", "report.html")
-    title        = arguments.get("title", "Report")
-    is_markdown  = arguments.get("is_markdown", True)
-    image_paths  = arguments.get("images", [])   # list of local file paths to upload
+    content = arguments.get("content", "")
+    filename = arguments.get("filename", "report.html")
+    title = arguments.get("title", "Report")
+    is_markdown = arguments.get("is_markdown", True)
+    image_paths = arguments.get("images", [])  # list of local file paths to upload
 
     try:
         # Upload images and rewrite references before markdown conversion
@@ -133,7 +138,7 @@ async def handle_export_html(name: str, arguments: dict) -> list[TextContent]:
         if not safe_filename.endswith(".html"):
             safe_filename += ".html"
 
-        body         = _md_to_html(content) if is_markdown else content
+        body = _md_to_html(content) if is_markdown else content
         html_content = _HTML_TEMPLATE.format(title=title, body=body)
 
         file_path = os.path.join(report_dir, safe_filename)
@@ -141,16 +146,20 @@ async def handle_export_html(name: str, arguments: dict) -> list[TextContent]:
             f.write(html_content)
 
         logger.info(f"HTML report exported to: {file_path}")
-        return [TextContent(
-            type="text",
-            text=json.dumps({"success": True, "file_path": file_path}, indent=2),
-        )]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"success": True, "file_path": file_path}, indent=2),
+            )
+        ]
     except Exception as e:
         logger.error(f"Failed to export HTML: {e}")
-        return [TextContent(
-            type="text",
-            text=json.dumps({"success": False, "error": str(e)}),
-        )]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"success": False, "error": str(e)}),
+            )
+        ]
 
 
 tools = [

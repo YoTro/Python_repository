@@ -1,28 +1,32 @@
 from __future__ import annotations
-from abc import ABC, abstractmethod
-import re
-import logging
+
 import asyncio
-from typing import Optional
+import logging
+import re
+from abc import ABC, abstractmethod
+
+from src.core.telemetry.tracker import TimeEstimator
 from src.core.utils.config_helper import ConfigHelper
 from src.entry.feishu.client import FeishuClient
-from src.core.utils.cookie_helper import AmazonCookieHelper
-from src.core.telemetry.tracker import TimeEstimator
 
 logger = logging.getLogger(__name__)
 
+
 class BotCommand(ABC):
     """Abstract Strategy for handling Feishu Bot commands."""
-    
-    def __init__(self, bot_name: str = "amazon_bot", loop: Optional[asyncio.AbstractEventLoop] = None):
+
+    def __init__(self, bot_name: str = "amazon_bot", loop: asyncio.AbstractEventLoop | None = None):
         self.bot_name = bot_name
         self.loop = loop or asyncio.get_event_loop()
 
     @abstractmethod
-    def match(self, text: str) -> bool: pass
-        
+    def match(self, text: str) -> bool:
+        pass
+
     @abstractmethod
-    def execute(self, text: str, chat_id: str): pass
+    def execute(self, text: str, chat_id: str):
+        pass
+
 
 class RefreshCookieCommand(BotCommand):
     def match(self, text: str) -> bool:
@@ -31,29 +35,33 @@ class RefreshCookieCommand(BotCommand):
     def execute(self, text: str, chat_id: str):
         logger.info(f"Manual cookie refresh triggered: {chat_id}")
         feishu_client = FeishuClient(bot_name=self.bot_name)
-        feishu_client.send_text_message("chat_id", chat_id, "🔄 收到！正在启动有头浏览器刷新亚马逊 Cookies...")
+        feishu_client.send_text_message(
+            "chat_id", chat_id, "🔄 收到！正在启动有头浏览器刷新亚马逊 Cookies..."
+        )
 
         async def _do_refresh():
             try:
                 from src.core.utils.cookie_helper import AmazonCookieHelper
+
                 helper = AmazonCookieHelper(headless=False)
                 await asyncio.to_thread(helper.fetch_fresh_cookies, True)
                 feishu_client.send_card_message("chat_id", chat_id, "✅ 亚马逊 Cookies 更新成功！")
             except Exception as e:
                 logger.error(f"Cookie refresh failed: {e}")
-                feishu_client.send_card_message("chat_id", chat_id, f"❌ Cookies 更新失败: {str(e)}")
+                feishu_client.send_card_message(
+                    "chat_id", chat_id, f"❌ Cookies 更新失败: {str(e)}"
+                )
 
         asyncio.run_coroutine_threadsafe(_do_refresh(), self.loop)
 
 
-
 class ExtractBSRCommand(BotCommand):
-    def __init__(self, bot_name: str = "amazon_bot", loop: Optional[asyncio.AbstractEventLoop] = None):
+    def __init__(self, bot_name: str = "amazon_bot", loop: asyncio.AbstractEventLoop | None = None):
         super().__init__(bot_name, loop)
         self.url_map = {
             "Electronics": "https://www.amazon.com/Best-Sellers-Electronics/zgbs/electronics/",
             "Camera": "https://www.amazon.com/Best-Sellers-Camera-Photo/zgbs/camera-photo/",
-            "Software": "https://www.amazon.com/best-sellers-software/zgbs/software/"
+            "Software": "https://www.amazon.com/best-sellers-software/zgbs/software/",
         }
 
     def match(self, text: str) -> bool:
@@ -63,32 +71,36 @@ class ExtractBSRCommand(BotCommand):
         match = re.search(r"获取\s*(.*?)\s*BSR", text, re.IGNORECASE)
         category = match.group(1).strip()
         target_url = self.url_map.get(category)
-        
+
         feishu_client = FeishuClient(bot_name=self.bot_name)
         if target_url:
             eta = TimeEstimator.estimate_workflow("amazon_bsr", params={"category": category})
-            feishu_client.send_text_message("chat_id", chat_id, f"🚀 开始抓取 {category} BSR 数据...\n⏱️ 预计耗时: {eta}")
-            
+            feishu_client.send_text_message(
+                "chat_id", chat_id, f"🚀 开始抓取 {category} BSR 数据...\n⏱️ 预计耗时: {eta}"
+            )
+
             bot_cfg = ConfigHelper.get_feishu_bot(self.bot_name)
-            user_token = bot_cfg["user_access_token"] if bot_cfg else ""
-            webhook_url = bot_cfg["webhook_url"] if bot_cfg else ""
-            
+            bot_cfg["user_access_token"] if bot_cfg else ""
+            bot_cfg["webhook_url"] if bot_cfg else ""
+
             async def _dispatch_job():
                 from src.gateway import APIGateway
-                import src.workflows.definitions.amazon_bsr
-                
+
                 params = {"amazon_url": target_url, "category": category}
                 job_id = APIGateway.dispatch_feishu_command(
                     workflow_name="amazon_bsr",
                     params=params,
                     chat_id=chat_id,
-                    bot_name=self.bot_name
+                    bot_name=self.bot_name,
                 )
-                logger.info(f"Feishu command routed to Gateway, job_id={job_id}, bot_name={self.bot_name}")
+                logger.info(
+                    f"Feishu command routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
 
             asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
         else:
             feishu_client.send_text_message("chat_id", chat_id, f"❌ 未知类目: {category}")
+
 
 class AnalyzeCategoryMonopolyCommand(BotCommand):
     def match(self, text: str) -> bool:
@@ -98,33 +110,43 @@ class AnalyzeCategoryMonopolyCommand(BotCommand):
         # Extract URL if present
         match = re.search(r"(https?://www\.amazon\.com[^\s]+)", text)
         url = match.group(1) if match else None
-        
+
         feishu_client = FeishuClient(bot_name=self.bot_name)
-        
+
         if not url:
-            feishu_client.send_text_message("chat_id", chat_id, "❌ 请提供要分析的 Amazon Best Sellers 类目 URL。格式：分析垄断度 [URL]")
+            feishu_client.send_text_message(
+                "chat_id",
+                chat_id,
+                "❌ 请提供要分析的 Amazon Best Sellers 类目 URL。格式：分析垄断度 [URL]",
+            )
             return
-            
+
         eta = TimeEstimator.estimate_workflow("category_monopoly_analysis", params={})
-        feishu_client.send_text_message("chat_id", chat_id, f"📊 开始分析该类目垄断度...\n⏱️ 预计耗时: {eta}，由于需要抓取大量 ASIN 数据，请耐心等待。")
-        
+        feishu_client.send_text_message(
+            "chat_id",
+            chat_id,
+            f"📊 开始分析该类目垄断度...\n⏱️ 预计耗时: {eta}，由于需要抓取大量 ASIN 数据，请耐心等待。",
+        )
+
         async def _dispatch_job():
             try:
                 from src.gateway import APIGateway
-                import src.workflows.definitions.category_monopoly_analysis
-                
+
                 job_id = APIGateway.dispatch_feishu_command(
                     workflow_name="category_monopoly_analysis",
                     params={"url": url},
                     chat_id=chat_id,
-                    bot_name=self.bot_name
+                    bot_name=self.bot_name,
                 )
-                logger.info(f"Monopoly analysis routed to Gateway, job_id={job_id}, bot_name={self.bot_name}")
+                logger.info(
+                    f"Monopoly analysis routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
             except Exception as e:
                 logger.error(f"Monopoly analysis dispatch failed: {e}")
                 feishu_client.send_text_message("chat_id", chat_id, f"❌ 分析任务启动失败: {e}")
 
         asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+
 
 class ResumeJobCommand(BotCommand):
     """
@@ -150,16 +172,15 @@ class ResumeJobCommand(BotCommand):
 
         async def _do_resume():
             try:
+                from src.core.utils.config_helper import ConfigHelper
+                from src.jobs.callbacks.feishu import FeishuCallback
                 from src.jobs.checkpoint import CheckpointManager
                 from src.jobs.manager import get_job_manager
-                from src.jobs.callbacks.feishu import FeishuCallback
-                from src.core.utils.config_helper import ConfigHelper
 
                 checkpoint = CheckpointManager().load(job_id)
                 if not checkpoint:
                     feishu_client.send_text_message(
-                        "chat_id", chat_id,
-                        f"❌ 未找到任务 `{job_id}` 的断点，无法恢复。"
+                        "chat_id", chat_id, f"❌ 未找到任务 `{job_id}` 的断点，无法恢复。"
                     )
                     return
 
@@ -172,8 +193,9 @@ class ResumeJobCommand(BotCommand):
                 )
 
                 feishu_client.send_text_message(
-                    "chat_id", chat_id,
-                    f"▶️ 正在从断点恢复任务 `{job_id}`（已完成步骤: {checkpoint.step_name}）…"
+                    "chat_id",
+                    chat_id,
+                    f"▶️ 正在从断点恢复任务 `{job_id}`（已完成步骤: {checkpoint.step_name}）…",
                 )
 
                 get_job_manager().resume_from_checkpoint(job_id=job_id, callback=callback)
@@ -205,23 +227,25 @@ class ProductScreeningCommand(BotCommand):
         feishu_client = FeishuClient(bot_name=self.bot_name)
         eta = TimeEstimator.estimate_workflow("product_screening", params={"keyword": keyword})
         feishu_client.send_text_message(
-            "chat_id", chat_id,
+            "chat_id",
+            chat_id,
             f"🔍 开始筛选「{keyword}」类目产品...\n⏱️ 预计耗时: {eta}\n"
-            "将依次执行价格/评分 → 利润 → 合规 → 广告流量多维过滤，请耐心等待。"
+            "将依次执行价格/评分 → 利润 → 合规 → 广告流量多维过滤，请耐心等待。",
         )
 
         async def _dispatch_job():
             try:
                 from src.gateway import APIGateway
-                import src.workflows.definitions.product_screening
 
                 job_id = APIGateway.dispatch_feishu_command(
                     workflow_name="product_screening",
                     params={"keyword": keyword},
                     chat_id=chat_id,
-                    bot_name=self.bot_name
+                    bot_name=self.bot_name,
                 )
-                logger.info(f"Product screening routed to Gateway, job_id={job_id}, bot_name={self.bot_name}")
+                logger.info(
+                    f"Product screening routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
             except Exception as e:
                 logger.error(f"Product screening dispatch failed: {e}")
                 feishu_client.send_text_message("chat_id", chat_id, f"❌ 产品筛选任务启动失败: {e}")
@@ -249,15 +273,15 @@ class AdDiagnosisCommand(BotCommand):
         feishu_client = FeishuClient(bot_name=self.bot_name)
         eta = TimeEstimator.estimate_workflow("ad_diagnosis", params={"asin": asin})
         feishu_client.send_text_message(
-            "chat_id", chat_id,
+            "chat_id",
+            chat_id,
             f"🔍 开始诊断 {asin} 广告表现...\n⏱️ 预计耗时: {eta}\n"
-            "将分析关键词绩效、版位数据及变更历史，请耐心等待。"
+            "将分析关键词绩效、版位数据及变更历史，请耐心等待。",
         )
 
         async def _dispatch_job():
             try:
                 from src.gateway import APIGateway
-                import src.workflows.definitions.ad_diagnosis
 
                 job_id = APIGateway.dispatch_feishu_command(
                     workflow_name="ad_diagnosis",
@@ -266,7 +290,9 @@ class AdDiagnosisCommand(BotCommand):
                     bot_name=self.bot_name,
                     callback_type="feishu_card",
                 )
-                logger.info(f"Ad diagnosis routed to Gateway, job_id={job_id}, bot_name={self.bot_name}")
+                logger.info(
+                    f"Ad diagnosis routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
             except Exception as e:
                 logger.error(f"Ad diagnosis dispatch failed: {e}")
                 feishu_client.send_text_message("chat_id", chat_id, f"❌ 广告诊断任务启动失败: {e}")
@@ -302,16 +328,16 @@ class LpValidationCommand(BotCommand):
 
         feishu_client = FeishuClient(bot_name=self.bot_name)
         feishu_client.send_text_message(
-            "chat_id", chat_id,
+            "chat_id",
+            chat_id,
             f"📐 开始验证 {asin} LP 模型预测准确性...\n"
             f"　快照日期：{snapshot_date}　验证窗口：{n_days} 天\n"
-            "将拉取广告后验数据并计算 PAS（预测准确率分），请稍候。"
+            "将拉取广告后验数据并计算 PAS（预测准确率分），请稍候。",
         )
 
         async def _dispatch_job():
             try:
                 from src.gateway import APIGateway
-                import src.workflows.definitions.lp_validation
 
                 params = {"asin": asin, "snapshot_date": snapshot_date, "n_days": n_days}
                 job_id = APIGateway.dispatch_feishu_command(
@@ -322,13 +348,13 @@ class LpValidationCommand(BotCommand):
                 )
                 logger.info(
                     "LP validation routed to Gateway, job_id=%s, asin=%s, snapshot=%s",
-                    job_id, asin, snapshot_date,
+                    job_id,
+                    asin,
+                    snapshot_date,
                 )
             except Exception as e:
                 logger.error("LP validation dispatch failed: %s", e)
-                feishu_client.send_text_message(
-                    "chat_id", chat_id, f"❌ LP 验证任务启动失败: {e}"
-                )
+                feishu_client.send_text_message("chat_id", chat_id, f"❌ LP 验证任务启动失败: {e}")
 
         asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
 
@@ -370,13 +396,10 @@ class HelpCommand(BotCommand):
         return text.strip() == "常用命令"
 
     def execute(self, text: str, chat_id: str):
-        FeishuClient(bot_name=self.bot_name).send_text_message(
-            "chat_id", chat_id, self._HELP_TEXT
-        )
+        FeishuClient(bot_name=self.bot_name).send_text_message("chat_id", chat_id, self._HELP_TEXT)
 
 
 class AgentExploreCommand(BotCommand):
-
     def match(self, text: str) -> bool:
         return True
 
@@ -384,21 +407,29 @@ class AgentExploreCommand(BotCommand):
         logger.info(f"Agent fallback triggered for: {text}")
         feishu_client = FeishuClient(bot_name=self.bot_name)
         eta = TimeEstimator.estimate_agent()
-        feishu_client.send_text_message("chat_id", chat_id, f"🤖 收到！正在召唤 MCP Agent 深度分析...\n⏱️ 预计耗时: {eta}")
-        
+        feishu_client.send_text_message(
+            "chat_id", chat_id, f"🤖 收到！正在召唤 MCP Agent 深度分析...\n⏱️ 预计耗时: {eta}"
+        )
+
         async def _dispatch_agent():
             try:
                 from src.gateway import APIGateway
-                job_id = APIGateway.dispatch_feishu_explore(intent=text, chat_id=chat_id, bot_name=self.bot_name)
-                logger.info(f"Feishu explore command routed to Gateway, job_id={job_id}, bot_name={self.bot_name}")
+
+                job_id = APIGateway.dispatch_feishu_explore(
+                    intent=text, chat_id=chat_id, bot_name=self.bot_name
+                )
+                logger.info(
+                    f"Feishu explore command routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
             except Exception as e:
                 logger.error(f"Agent dispatch failed: {e}")
                 feishu_client.send_text_message("chat_id", chat_id, f"❌ Agent 调度失败: {e}")
 
         asyncio.run_coroutine_threadsafe(_dispatch_agent(), self.loop)
 
+
 class CommandDispatcher:
-    def __init__(self, bot_name: str = "amazon_bot", loop: Optional[asyncio.AbstractEventLoop] = None):
+    def __init__(self, bot_name: str = "amazon_bot", loop: asyncio.AbstractEventLoop | None = None):
         self.commands = [
             HelpCommand(bot_name, loop),
             RefreshCookieCommand(bot_name, loop),
@@ -410,9 +441,10 @@ class CommandDispatcher:
             LpValidationCommand(bot_name, loop),
             AgentExploreCommand(bot_name, loop),  # fallback — must stay last
         ]
-        
+
     def dispatch(self, text: str, chat_id: str) -> bool:
         for cmd in self.commands:
             if cmd.match(text):
-                cmd.execute(text, chat_id); return True
+                cmd.execute(text, chat_id)
+                return True
         return False

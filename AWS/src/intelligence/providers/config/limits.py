@@ -9,16 +9,18 @@ Usage:
     ceiling = get_max_output_tokens("claude", "claude-sonnet-4-6")
     # → 16384  (longest-prefix match against model_limits section)
 """
+
 from __future__ import annotations
+
+import functools
 import json
 import os
-import functools
 
 _CONFIG_DIR = os.path.dirname(__file__)
 _FALLBACK_MAX_OUTPUT = 8_192
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _load(provider: str) -> dict:
     path = os.path.join(_CONFIG_DIR, f"{provider}_pricing.json")
     try:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 S3-compatible storage backend.
 
@@ -22,6 +23,7 @@ Optional (pick one endpoint strategy):
 """
 import logging
 import os
+
 from .base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -37,11 +39,11 @@ class S3CompatibleBackend(StorageBackend):
         public_url: str | None = None,
         region: str = "auto",
     ):
-        self._bucket     = bucket_name       or os.environ["STORAGE_BUCKET_NAME"]
-        self._public_url = (public_url       or os.environ["STORAGE_PUBLIC_URL"]).rstrip("/")
-        _key             = access_key_id     or os.environ["STORAGE_ACCESS_KEY_ID"]
-        _secret          = secret_access_key or os.environ["STORAGE_SECRET_ACCESS_KEY"]
-        _region          = region            or os.getenv("STORAGE_REGION", "auto")
+        self._bucket = bucket_name or os.environ["STORAGE_BUCKET_NAME"]
+        self._public_url = (public_url or os.environ["STORAGE_PUBLIC_URL"]).rstrip("/")
+        _key = access_key_id or os.environ["STORAGE_ACCESS_KEY_ID"]
+        _secret = secret_access_key or os.environ["STORAGE_SECRET_ACCESS_KEY"]
+        _region = region or os.getenv("STORAGE_REGION", "auto")
 
         # Endpoint priority:
         #   1. constructor arg
@@ -56,9 +58,10 @@ class S3CompatibleBackend(StorageBackend):
         )
 
         import boto3
+
         self._s3 = boto3.client(
             "s3",
-            endpoint_url=_endpoint,          # None → standard AWS S3
+            endpoint_url=_endpoint,  # None → standard AWS S3
             aws_access_key_id=_key,
             aws_secret_access_key=_secret,
             region_name=_region,
@@ -75,7 +78,9 @@ class S3CompatibleBackend(StorageBackend):
         logger.info(f"[storage] uploaded {key} ({len(data)} bytes) → {url}")
         return url
 
-    def upload_file(self, key: str, file_path: str, content_type: str = "application/octet-stream") -> str:
+    def upload_file(
+        self, key: str, file_path: str, content_type: str = "application/octet-stream"
+    ) -> str:
         with open(file_path, "rb") as f:
             return self.upload(key, f.read(), content_type)
 

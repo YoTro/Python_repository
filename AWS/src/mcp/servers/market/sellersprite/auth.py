@@ -1,8 +1,10 @@
 from __future__ import annotations
+
+import hashlib
 import json
 import logging
-import hashlib
 import os
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -67,14 +69,16 @@ class SellerspriteAuth:
         if not os.path.exists(self.token_file):
             return ""
         try:
-            with open(self.token_file, "r", encoding="utf-8") as f:
+            with open(self.token_file, encoding="utf-8") as f:
                 data = json.load(f)
             token = data.get("token", "")
             for name, value in (data.get("cookies") or {}).items():
                 if value:
                     self.session.cookies.set(name, value, domain="sellersprite.com")
             if data.get("cookies"):
-                logger.debug(f"[sellersprite:{self.tenant_id}] Restored {len(data['cookies'])} session cookies.")
+                logger.debug(
+                    f"[sellersprite:{self.tenant_id}] Restored {len(data['cookies'])} session cookies."
+                )
             return token
         except Exception as e:
             logger.error(f"[sellersprite:{self.tenant_id}] Failed to load token: {e}")
@@ -104,6 +108,7 @@ class SellerspriteAuth:
 
     def _cal(self, e: str, t: str) -> str:
         """Internal JS-like token generation algorithm translated to Python."""
+
         def n(e, t):
             for i in range(0, len(t) - 2, 3):
                 r = t[i + 2]
@@ -123,7 +128,7 @@ class SellerspriteAuth:
                 a += 1
             else:
                 if o >= 2048:
-                    if 64512 == (64512 & o) and i + 1 < len(e) and 56320 == (64512 & ord(e[i + 1])):
+                    if (64512 & o) == 64512 and i + 1 < len(e) and (64512 & ord(e[i + 1])) == 56320:
                         o = 65536 + ((1023 & o) << 10) + (1023 & ord(e[i + 1]))
                         s.append(o >> 18 | 240)
                         s.append(o >> 12 & 63 | 128)
@@ -174,13 +179,9 @@ class SellerspriteAuth:
         """
         if not email or not password:
             suffix = self.tenant_id.upper()
-            email = (
-                os.getenv(f"SELLERSPRITE_EMAIL_{suffix}")
-                or os.getenv("SELLERSPRITE_EMAIL", "")
-            )
-            password = (
-                os.getenv(f"SELLERSPRITE_PASSWORD_{suffix}")
-                or os.getenv("SELLERSPRITE_PASSWORD", "")
+            email = os.getenv(f"SELLERSPRITE_EMAIL_{suffix}") or os.getenv("SELLERSPRITE_EMAIL", "")
+            password = os.getenv(f"SELLERSPRITE_PASSWORD_{suffix}") or os.getenv(
+                "SELLERSPRITE_PASSWORD", ""
             )
 
         if not email or not password:
@@ -224,11 +225,11 @@ class SellerspriteAuth:
             "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
         }
         data = {
-            "callback":     "",
-            "password":     password_hash,
-            "email":        email,
+            "callback": "",
+            "password": password_hash,
+            "email": email,
             "password_otn": "xxxxxxxxxx",
-            "salt":         salt,
+            "salt": salt,
         }
         try:
             # allow_redirects=True: follow the 302 so the landing page can set
@@ -248,13 +249,14 @@ class SellerspriteAuth:
         jar = self.session.cookies.get_dict()
         token = jar.get("rank-login-user")
         if not token:
-            logger.warning(f"[sellersprite:{self.tenant_id}] Web login did not set rank-login-user cookie")
+            logger.warning(
+                f"[sellersprite:{self.tenant_id}] Web login did not set rank-login-user cookie"
+            )
             return None
 
         found = [k for k in _SESSION_COOKIE_KEYS if jar.get(k)]
         logger.info(
-            f"[sellersprite:{self.tenant_id}] Web login successful — "
-            f"captured cookies: {found}"
+            f"[sellersprite:{self.tenant_id}] Web login successful — captured cookies: {found}"
         )
         self._save_token(token)
         return token
@@ -282,7 +284,9 @@ class SellerspriteAuth:
             return None
 
         if res.status_code != 200:
-            logger.warning(f"[sellersprite:{self.tenant_id}] Extension signin returned {res.status_code}")
+            logger.warning(
+                f"[sellersprite:{self.tenant_id}] Extension signin returned {res.status_code}"
+            )
             return None
 
         body = res.json()
@@ -309,7 +313,9 @@ class SellerspriteAuth:
         if isinstance(data, dict) and "token" in data:
             token = data["token"]
             self._save_token(token)
-            logger.info(f"[sellersprite:{self.tenant_id}] Extension signin successful, token + cookies saved.")
+            logger.info(
+                f"[sellersprite:{self.tenant_id}] Extension signin successful, token + cookies saved."
+            )
             return token
         logger.error(f"[sellersprite:{self.tenant_id}] Extension signin failed: {res.text[:300]}")
         return None

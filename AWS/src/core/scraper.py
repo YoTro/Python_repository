@@ -1,10 +1,14 @@
 from __future__ import annotations
+
+import asyncio
+import logging
+import random
+from collections.abc import Callable
+from typing import Any
+
 from curl_cffi import requests
 from curl_cffi.requests.errors import RequestsError
-import asyncio
-import random
-import logging
-from typing import Optional, Dict, Any, Callable
+
 from src.core.utils.cookie_helper import AmazonCookieHelper
 
 logger = logging.getLogger(__name__)
@@ -18,11 +22,11 @@ _USER_AGENTS = [
 
 
 class AmazonBaseScraper:
-    def __init__(self, use_proxy: bool = False, proxies_dict: Optional[Dict] = None):
+    def __init__(self, use_proxy: bool = False, proxies_dict: dict | None = None):
         self.proxies: Any = proxies_dict if use_proxy else None  # curl_cffi.ProxySpec has no stubs
         self.cookie_helper = AmazonCookieHelper()
-        self.session: Optional[requests.AsyncSession] = None
-        self._headers: Dict = {}
+        self.session: requests.AsyncSession | None = None
+        self._headers: dict = {}
         self._initialize_session()
 
     def _initialize_session(self, force_refresh: bool = False):
@@ -50,7 +54,7 @@ class AmazonBaseScraper:
             proxies=self.proxies,
         )
 
-    def _get_default_headers(self) -> Dict:
+    def _get_default_headers(self) -> dict:
         """Return a copy of the base session headers for use in custom requests."""
         return self._headers.copy()
 
@@ -62,11 +66,11 @@ class AmazonBaseScraper:
         self,
         url: str,
         method: str = "GET",
-        headers: Optional[Dict] = None,
+        headers: dict | None = None,
         data: Any = None,
-        validator: Optional[Callable[[str], bool]] = None,
+        validator: Callable[[str], bool] | None = None,
         max_retries: int = 3,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Async fetch with content validation and retries.
         Layer 3 rate limiting: acquires one token from the 'crawler' bucket before
@@ -74,6 +78,7 @@ class AmazonBaseScraper:
         :param validator: Optional function returning True if content is valid.
         """
         from src.gateway.rate_limit import RateLimiter  # lazy import — avoids circular deps
+
         if not RateLimiter().acquire_source("crawler"):
             logger.warning(f"[scraper] crawler token-bucket timeout, skipping fetch: {url}")
             return None

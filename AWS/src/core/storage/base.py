@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
 
 
@@ -15,7 +16,9 @@ class StorageBackend(ABC):
         """Upload bytes and return the public HTTPS URL."""
 
     @abstractmethod
-    def upload_file(self, key: str, file_path: str, content_type: str = "application/octet-stream") -> str:
+    def upload_file(
+        self, key: str, file_path: str, content_type: str = "application/octet-stream"
+    ) -> str:
         """Upload a local file and return the public HTTPS URL."""
 
     @abstractmethod

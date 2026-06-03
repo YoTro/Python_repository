@@ -2,7 +2,7 @@
 
 A next-generation Amazon market intelligence platform featuring a robust **Dual-Track Agentic Architecture** and **Model Context Protocol (MCP)** integration. It enables LLMs (Claude, Gemini, etc.) and code-based Workflow Engines to autonomously perform market research, competitor analysis, and listing optimization.
 
-It employs a **Hybrid Intelligence** model: 
+It employs a **Hybrid Intelligence** model:
 - **Workflow Track**: For deterministic, high-throughput batch processing using **Step Tri-primitives** and persistent checkpoints.
 - **Agent Track**: For exploratory, high-reasoning market analysis via ReAct loops and **Persistent Session Management**.
 - **Unified Gateway**: A centralized API Gateway for identity resolution, rate limiting, and request normalization.

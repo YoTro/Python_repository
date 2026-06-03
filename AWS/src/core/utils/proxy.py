@@ -1,18 +1,21 @@
 from __future__ import annotations
+
 import logging
-import requests
-import random
 import os
+import random
+
+import requests
 
 logger = logging.getLogger(__name__)
+
 
 class ProxyManager:
     """
     Manages loading, verifying, and providing proxies.
-    Replaces the legacy freeproxies.py logic, simplifying the workflow 
+    Replaces the legacy freeproxies.py logic, simplifying the workflow
     by allowing proxies to be loaded from a simple text or CSV file.
     """
-    
+
     def __init__(self, proxy_file: str = "config/proxies.txt"):
         self.proxy_file = proxy_file
         self.proxies: dict[str, list[str]] = {"http": [], "https": []}
@@ -27,7 +30,7 @@ class ProxyManager:
             logger.warning(f"Proxy file {self.proxy_file} not found. Operating without proxies.")
             return
 
-        with open(self.proxy_file, "r") as f:
+        with open(self.proxy_file) as f:
             for line in f:
                 proxy = line.strip()
                 if proxy:
@@ -36,13 +39,18 @@ class ProxyManager:
                         full_proxy = proxy
                     else:
                         full_proxy = f"http://{proxy}"
-                        
+
                     self.proxies["http"].append(full_proxy)
                     self.proxies["https"].append(full_proxy)
-        
+
         logger.info(f"Loaded {len(self.proxies['http'])} HTTP/HTTPS proxies from {self.proxy_file}")
 
-    def verify_proxy(self, proxy_url: str, test_url: str = "https://geo.brdtest.com/welcome.txt?product=isp&method=native", timeout: int = 5) -> bool:
+    def verify_proxy(
+        self,
+        proxy_url: str,
+        test_url: str = "https://geo.brdtest.com/welcome.txt?product=isp&method=native",
+        timeout: int = 5,
+    ) -> bool:
         """
         Tests if a given proxy is working by attempting to fetch a test URL.
         """
@@ -55,10 +63,14 @@ class ProxyManager:
                 return True
         except Exception as e:
             logger.debug(f"Proxy {proxy_url} FAILED: {e}")
-            
+
         return False
 
-    def get_verified_proxies(self, test_url: str = "https://geo.brdtest.com/welcome.txt?product=isp&method=native", timeout: int = 5) -> list:
+    def get_verified_proxies(
+        self,
+        test_url: str = "https://geo.brdtest.com/welcome.txt?product=isp&method=native",
+        timeout: int = 5,
+    ) -> list:
         """
         Filters the internal proxy list and returns only the ones that pass verification.
         """
@@ -66,8 +78,10 @@ class ProxyManager:
         for proxy in self.proxies["http"]:
             if self.verify_proxy(proxy, test_url, timeout):
                 working_proxies.append(proxy)
-        
-        logger.info(f"Verified {len(working_proxies)} working proxies out of {len(self.proxies['http'])}.")
+
+        logger.info(
+            f"Verified {len(working_proxies)} working proxies out of {len(self.proxies['http'])}."
+        )
         return working_proxies
 
     def get_random_proxy(self) -> dict:
@@ -76,9 +90,6 @@ class ProxyManager:
         """
         if not self.proxies["http"]:
             return {}
-            
+
         proxy = random.choice(self.proxies["http"])
-        return {
-            "http": proxy,
-            "https": proxy
-        }
+        return {"http": proxy, "https": proxy}

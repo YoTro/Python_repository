@@ -1,11 +1,12 @@
 import json
 import logging
-from mcp.types import Tool, TextContent
-from src.registry.tools import tool_registry
+
+from mcp.types import TextContent, Tool
 from src.intelligence.processors.shipment_lead_time import (
-    compute_quarterly_lead_times,
     adapt_lingxing_shipments,
+    compute_quarterly_lead_times,
 )
+from src.registry.tools import tool_registry
 
 logger = logging.getLogger("mcp-erp")
 
@@ -48,10 +49,10 @@ async def handle_erp_tool(name: str, arguments: dict) -> list[TextContent]:
             normalised = adapt_lingxing_shipments(raw)
             result = compute_quarterly_lead_times(
                 normalised,
-                sea_start_field  = arguments.get("sea_start_field",  "domestic_ship_date"),
-                sea_end_field    = arguments.get("sea_end_field",    "overseas_arrival_date"),
-                ovs_start_field  = arguments.get("ovs_start_field",  "overseas_ship_date"),
-                ovs_end_field    = arguments.get("ovs_end_field",    "fba_received_date"),
+                sea_start_field=arguments.get("sea_start_field", "domestic_ship_date"),
+                sea_end_field=arguments.get("sea_end_field", "overseas_arrival_date"),
+                ovs_start_field=arguments.get("ovs_start_field", "overseas_ship_date"),
+                ovs_end_field=arguments.get("ovs_end_field", "fba_received_date"),
             )
         elif name == "erp_sp_campaign_ad_report":
             asin_raw = arguments.get("asin")
@@ -70,7 +71,9 @@ async def handle_erp_tool(name: str, arguments: dict) -> list[TextContent]:
         else:
             return [TextContent(type="text", text=f"Unknown ERP tool: {name}")]
     except NotImplementedError as e:
-        return [TextContent(type="text", text=f"Provider '{provider}' does not support this tool: {e}")]
+        return [
+            TextContent(type="text", text=f"Provider '{provider}' does not support this tool: {e}")
+        ]
     except Exception as e:
         logger.error(f"ERP tool '{name}' failed: {e}")
         return [TextContent(type="text", text=f"ERP tool error: {e}")]
@@ -89,8 +92,11 @@ erp_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "sku":      {"type": "string", "description": "Seller SKU to query"},
-                "provider": {"type": "string", "description": "ERP provider name (default: lingxing)"},
+                "sku": {"type": "string", "description": "Seller SKU to query"},
+                "provider": {
+                    "type": "string",
+                    "description": "ERP provider name (default: lingxing)",
+                },
             },
             "required": ["sku"],
         },
@@ -105,9 +111,12 @@ erp_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "sku":      {"type": "string",  "description": "Filter by SKU (optional)"},
-                "status":   {"type": "string",  "description": "Filter by order status (optional)"},
-                "provider": {"type": "string",  "description": "ERP provider name (default: lingxing)"},
+                "sku": {"type": "string", "description": "Filter by SKU (optional)"},
+                "status": {"type": "string", "description": "Filter by order status (optional)"},
+                "provider": {
+                    "type": "string",
+                    "description": "ERP provider name (default: lingxing)",
+                },
             },
         },
     ),
@@ -121,9 +130,12 @@ erp_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "sku":      {"type": "string",  "description": "Filter by SKU (optional)"},
-                "days":     {"type": "integer", "description": "Lookback window in days (default: 30)"},
-                "provider": {"type": "string",  "description": "ERP provider name (default: lingxing)"},
+                "sku": {"type": "string", "description": "Filter by SKU (optional)"},
+                "days": {"type": "integer", "description": "Lookback window in days (default: 30)"},
+                "provider": {
+                    "type": "string",
+                    "description": "ERP provider name (default: lingxing)",
+                },
             },
         },
     ),
@@ -223,7 +235,7 @@ erp_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "profile_id":  {"type": "string",  "description": "Amazon Advertising profile ID"},
+                "profile_id": {"type": "string", "description": "Amazon Advertising profile ID"},
                 "report_date": {
                     "type": "string",
                     "description": "Date range string, e.g. '2025-04-02 - 2025-05-01'. No range-length restriction.",
@@ -251,15 +263,21 @@ erp_tools = [
                     "type": "string",
                     "description": "Record scope: 'total' (default)",
                 },
-                "page":       {"type": "integer", "description": "Page number, 1-based (default: 1)"},
-                "length":     {
+                "page": {"type": "integer", "description": "Page number, 1-based (default: 1)"},
+                "length": {
                     "type": "integer",
                     "description": "Rows per page. Range: 25–500 (default: 50)",
                     "minimum": 25,
                     "maximum": 500,
                 },
-                "fetch_all":  {"type": "boolean", "description": "Auto-paginate and merge all pages (default: false)"},
-                "provider":   {"type": "string",  "description": "ERP provider name (default: lingxing)"},
+                "fetch_all": {
+                    "type": "boolean",
+                    "description": "Auto-paginate and merge all pages (default: false)",
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "ERP provider name (default: lingxing)",
+                },
             },
             "required": ["profile_id", "report_date"],
         },
@@ -267,16 +285,17 @@ erp_tools = [
 ]
 
 _TOOL_RETURNS = {
-    "erp_inventory":             "ERP real-time inventory levels for a SKU",
-    "erp_purchase_orders":       "ERP inbound purchase order list with status and ETA",
-    "erp_sales_orders":          "ERP recent sales order list with qty and dates",
-    "erp_shipment_lead_time":    "Quarterly lead-time distributions: sea transit days + overseas-to-FBA days (p25/median/p75/p90)",
+    "erp_inventory": "ERP real-time inventory levels for a SKU",
+    "erp_purchase_orders": "ERP inbound purchase order list with status and ETA",
+    "erp_sales_orders": "ERP recent sales order list with qty and dates",
+    "erp_shipment_lead_time": "Quarterly lead-time distributions: sea transit days + overseas-to-FBA days (p25/median/p75/p90)",
     "erp_sp_campaign_ad_report": "SP campaign ad report: clicks, impressions, orders, spends, sales, acos, roas per campaign/day",
 }
 
 for tool in erp_tools:
     tool_registry.register_tool(
-        tool, handle_erp_tool,
+        tool,
+        handle_erp_tool,
         category="DATA",
         returns=_TOOL_RETURNS.get(tool.name, "ERP data"),
     )

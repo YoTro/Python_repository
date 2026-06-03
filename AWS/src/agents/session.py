@@ -1,19 +1,25 @@
 from __future__ import annotations
-import os
+
 import json
 import logging
-from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any, Optional
+import os
 from datetime import datetime
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+
 class AgentMessage(BaseModel):
     """Represents a single message in an Agent's conversation history."""
-    role: str = Field(..., description="Role of the sender (e.g., 'user', 'assistant', 'system', 'tool')")
+
+    role: str = Field(
+        ..., description="Role of the sender (e.g., 'user', 'assistant', 'system', 'tool')"
+    )
     content: str = Field(..., description="Content of the message")
-    name: Optional[str] = Field(None, description="Optional name (useful for tool calls/results)")
+    name: str | None = Field(None, description="Optional name (useful for tool calls/results)")
+
 
 class AgentSession(BaseModel):
     """
@@ -21,23 +27,26 @@ class AgentSession(BaseModel):
     This replaces the in-memory string 'conversation' and enables multi-turn,
     suspend/resume capabilities (e.g., human-in-the-loop).
     """
+
     session_id: str
     tenant_id: str = "default"
     user_id: str = "default"
-    history: List[AgentMessage] = Field(default_factory=list)
-    token_usage: int = 0           # total (cloud + local)
-    cloud_token_usage: int = 0      # cloud API tokens only (budget-relevant)
-    total_cost: float = 0.0         # cumulative monetary cost
-    currency: str = "USD"           # currency of the cost
+    history: list[AgentMessage] = Field(default_factory=list)
+    token_usage: int = 0  # total (cloud + local)
+    cloud_token_usage: int = 0  # cloud API tokens only (budget-relevant)
+    total_cost: float = 0.0  # cumulative monetary cost
+    currency: str = "USD"  # currency of the cost
     max_steps: int = 15
     current_step: int = 0
     status: str = "active"  # active, suspended_for_human, completed, failed
     created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    context: Dict[str, Any] = Field(default_factory=dict) # NEW: store runtime context (chat_id, etc.)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(
+        default_factory=dict
+    )  # NEW: store runtime context (chat_id, etc.)
 
-    def add_message(self, role: str, content: str, name: Optional[str] = None):
+    def add_message(self, role: str, content: str, name: str | None = None):
         self.history.append(AgentMessage(role=role, content=content, name=name))
         self.updated_at = datetime.utcnow().isoformat()
 
@@ -58,6 +67,7 @@ class AgentSessionManager:
     Single-user version: stores to local JSON files in data/sessions/
     Multi-user extension point: Swap to Redis.
     """
+
     def __init__(self, session_dir: str = None):
         self.session_dir = session_dir or os.path.join(
             os.path.dirname(__file__), "..", "..", "data", "sessions"
@@ -80,14 +90,14 @@ class AgentSessionManager:
         except Exception as e:
             logger.error(f"Failed to save agent session {session.session_id}: {e}")
 
-    def load(self, session_id: str) -> Optional[AgentSession]:
+    def load(self, session_id: str) -> AgentSession | None:
         """Load session state from disk."""
         path = self._path(session_id)
         if not os.path.exists(path):
             return None
-            
+
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             return AgentSession(**data)
         except Exception as e:

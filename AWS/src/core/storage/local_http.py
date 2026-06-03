@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Local-HTTP storage backend.
 
@@ -19,6 +20,7 @@ nginx config example:
 """
 import logging
 import os
+
 from .base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -30,7 +32,7 @@ class LocalHTTPBackend(StorageBackend):
         local_dir: str | None = None,
         public_url: str | None = None,
     ):
-        self._dir        = local_dir  or os.environ["STORAGE_LOCAL_DIR"]
+        self._dir = local_dir or os.environ["STORAGE_LOCAL_DIR"]
         self._public_url = (public_url or os.environ["STORAGE_PUBLIC_URL"]).rstrip("/")
         os.makedirs(self._dir, exist_ok=True)
 
@@ -43,7 +45,9 @@ class LocalHTTPBackend(StorageBackend):
         logger.info(f"[storage] written {key} ({len(data)} bytes) → {url}")
         return url
 
-    def upload_file(self, key: str, file_path: str, content_type: str = "application/octet-stream") -> str:
+    def upload_file(
+        self, key: str, file_path: str, content_type: str = "application/octet-stream"
+    ) -> str:
         with open(file_path, "rb") as f:
             return self.upload(key, f.read(), content_type)
 

@@ -1,10 +1,14 @@
 from __future__ import annotations
+
 import pytest
+
 from src.intelligence.processors.promo_analyzer import PromoAnalyzer
+
 
 @pytest.fixture
 def analyzer():
     return PromoAnalyzer()
+
 
 def test_analyze_empty_deals(analyzer):
     result = analyzer.analyze(current_price=29.99, deals=[])
@@ -14,6 +18,7 @@ def test_analyze_empty_deals(analyzer):
     assert result["promo_dependency_score"] == 0.0
     assert result["risk_level"] == "Low (Stable Price)"
     assert result["total_deals_found"] == 0
+
 
 def test_analyze_stable_price(analyzer):
     deals = [
@@ -26,6 +31,7 @@ def test_analyze_stable_price(analyzer):
     assert result["promo_dependency_score"] < 40  # Low score
     assert result["risk_level"] == "Low (Stable Price)"
 
+
 def test_analyze_medium_risk(analyzer):
     deals = [
         {"price": 19.99, "discount_pct": 30},
@@ -35,16 +41,17 @@ def test_analyze_medium_risk(analyzer):
     assert result["total_deals_found"] == 2
     assert result["all_time_low"] == 19.99
     assert result["median_discount_pct"] == 25.0
-    
+
     # frequency = 2 * 3 / 180 = 6 / 180 = 0.033
     # dependency = 0.033 * 50 + min(25.0, 50) = 1.65 + 25.0 = 26.65 (so it might be low actually)
     # let's make it medium risk (>= 40)
-    
+
     deals_medium = [{"price": 19.99, "discount_pct": 30} for _ in range(20)]
     result2 = analyzer.analyze(current_price=29.99, deals=deals_medium, days_analyzed=180)
     # frequency = 20 * 3 / 180 = 60 / 180 = 0.333
     # dependency = 0.333 * 50 + 30 = 16.65 + 30 = 46.65 (medium risk)
     assert result2["risk_level"] == "Medium (Regular Promotions)"
+
 
 def test_analyze_high_risk_clearance(analyzer):
     deals = [

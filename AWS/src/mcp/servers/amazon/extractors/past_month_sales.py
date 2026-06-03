@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 import logging
 import re
-from typing import Dict, List, Optional
+
 from bs4 import BeautifulSoup
+
 from src.core.scraper import AmazonBaseScraper
 from src.core.utils.parser_helper import parse_integer
 
@@ -23,9 +25,9 @@ class PastMonthSalesExtractor(AmazonBaseScraper):
 
     async def get_batch_past_month_sales(
         self,
-        asins: List[str],
+        asins: list[str],
         host: str = "https://www.amazon.com",
-    ) -> Dict[str, Optional[int]]:
+    ) -> dict[str, int | None]:
         """
         Fetch 'bought in past month' for multiple ASINs via Amazon search.
 
@@ -39,7 +41,7 @@ class PastMonthSalesExtractor(AmazonBaseScraper):
         if not host.startswith("http"):
             host = "https://" + host
 
-        results: Dict[str, Optional[int]] = {a.upper(): None for a in asins}
+        results: dict[str, int | None] = {a.upper(): None for a in asins}
 
         for i in range(0, len(asins), _BATCH_SIZE):
             chunk = [a.upper() for a in asins[i : i + _BATCH_SIZE]]
@@ -84,18 +86,23 @@ class PastMonthSalesExtractor(AmazonBaseScraper):
         # Method 1: exact span id
         m = re.search(
             r'<span id="social-proofing-faceout-title-tk_bought"[^>]*>(.*?)</span>',
-            html, re.DOTALL | re.IGNORECASE,
+            html,
+            re.DOTALL | re.IGNORECASE,
         )
         if m:
             val = parse_integer(m.group(1).strip())
-            logger.debug(f"[PastMonthSales] primary match asin={asin} raw={m.group(1).strip()!r} -> {val}")
+            logger.debug(
+                f"[PastMonthSales] primary match asin={asin} raw={m.group(1).strip()!r} -> {val}"
+            )
             return {"ASIN": asin, "PastMonthSales": val}
 
         # Method 2: loose text match
         m = re.search(r"([0-9KkMm+.]+)\s+bought\s+in\s+past\s+month", html, re.IGNORECASE)
         if m:
             val = parse_integer(m.group(1).strip())
-            logger.debug(f"[PastMonthSales] fallback match asin={asin} raw={m.group(1).strip()!r} -> {val}")
+            logger.debug(
+                f"[PastMonthSales] fallback match asin={asin} raw={m.group(1).strip()!r} -> {val}"
+            )
             return {"ASIN": asin, "PastMonthSales": val}
 
         logger.info(f"[PastMonthSales] no badge found asin={asin}")
@@ -106,9 +113,10 @@ class PastMonthSalesExtractor(AmazonBaseScraper):
 # Parser helper (module-level, testable independently)
 # ---------------------------------------------------------------------------
 
+
 def _parse_search_page(
     soup: BeautifulSoup,
-    results: Dict[str, Optional[int]],
+    results: dict[str, int | None],
 ) -> None:
     """
     Walk every element with a data-asin attribute and extract

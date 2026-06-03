@@ -1,13 +1,14 @@
 from __future__ import annotations
-import os
+
 import logging
-import requests
+import os
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+
+import requests
 
 logger = logging.getLogger(__name__)
 
-MARKETPLACE_IDS: Dict[str, str] = {
+MARKETPLACE_IDS: dict[str, str] = {
     "US": "ATVPDKIKX0DER",
     "CA": "A2EUQ1WTGCTBG2",
     "UK": "A1F83G8C2ARO7P",
@@ -18,15 +19,20 @@ MARKETPLACE_IDS: Dict[str, str] = {
     "JP": "A1VC38T7YXB528",
 }
 
-SP_API_ENDPOINTS: Dict[str, str] = {
+SP_API_ENDPOINTS: dict[str, str] = {
     "NA": "https://sellingpartnerapi-na.amazon.com",
     "EU": "https://sellingpartnerapi-eu.amazon.com",
     "FE": "https://sellingpartnerapi-fe.amazon.com",
 }
 
-STORE_TO_REGION: Dict[str, str] = {
-    "US": "NA", "CA": "NA",
-    "UK": "EU", "DE": "EU", "FR": "EU", "IT": "EU", "ES": "EU",
+STORE_TO_REGION: dict[str, str] = {
+    "US": "NA",
+    "CA": "NA",
+    "UK": "EU",
+    "DE": "EU",
+    "FR": "EU",
+    "IT": "EU",
+    "ES": "EU",
     "JP": "FE",
 }
 
@@ -42,19 +48,14 @@ class SPAPIAuth:
       AMAZON_SP_MARKETPLACE_ID_US   (optional override; defaults from MARKETPLACE_IDS)
     """
 
-    _token_cache: Dict[str, Dict] = {}
+    _token_cache: dict[str, dict] = {}
 
-    def __init__(self, store_id: Optional[str] = None):
+    def __init__(self, store_id: str | None = None):
         self.store_id = (store_id or os.getenv("AMAZON_SP_API_DEFAULT_STORE", "US")).upper()
         # LWA shared creds take priority; SP-API-specific creds as fallback
-        self.client_id = (
-            os.getenv("AMAZON_LWA_CLIENT_ID")
-            or os.getenv("AMAZON_SP_API_CLIENT_ID")
-        )
+        self.client_id = os.getenv("AMAZON_LWA_CLIENT_ID") or os.getenv("AMAZON_SP_API_CLIENT_ID")
         self.client_secret = (
-            os.getenv("AMAZON_LWA_CLIENT_SECRET")
-            or os.getenv("AMAZON_SP_API_CLIENT_SECRET")
-            or ""
+            os.getenv("AMAZON_LWA_CLIENT_SECRET") or os.getenv("AMAZON_SP_API_CLIENT_SECRET") or ""
         )
 
         refresh_env = f"AMAZON_SP_API_REFRESH_TOKEN_{self.store_id}"
@@ -72,7 +73,9 @@ class SPAPIAuth:
         marketplace_env = f"AMAZON_SP_MARKETPLACE_ID_{self.store_id}"
         self.marketplace_id = os.getenv(marketplace_env) or MARKETPLACE_IDS.get(self.store_id)
         if not self.marketplace_id:
-            raise ValueError(f"Unknown marketplace for store '{self.store_id}'. Set {marketplace_env}.")
+            raise ValueError(
+                f"Unknown marketplace for store '{self.store_id}'. Set {marketplace_env}."
+            )
 
     def get_access_token(self) -> str:
         cache = self._token_cache.get(self.store_id)

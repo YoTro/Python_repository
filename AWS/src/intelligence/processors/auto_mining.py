@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Auto campaign search term mining.
 
@@ -39,25 +40,26 @@ Entry point
 import logging
 import math
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # ── Tuneable constants (no category-specific values) ─────────────────────────
-_PRIOR_MIN_CLICKS      = 5     # minimum clicks per term for EB prior fitting
-_PRIOR_MIN_TERMS       = 10    # minimum distinct terms for reliable MOM estimate
-_NEG_P0_EXPECTED       = 3.0   # expected_orders threshold for P0 (p≈0.05)
-_NEG_P1_EXPECTED       = 1.5   # expected_orders threshold for P1 (p≈0.22)
-_NEG_SPEND_P0_MULT     = 1.5   # spend ≥ breakeven × this → P0
-_NEG_SPEND_P1_MULT     = 0.75  # spend ≥ breakeven × this → P1
-_NEG_CPO_MULT          = 3.0   # effective_CPO > breakeven × this → Gate C P1
-_HARVEST_MIN_ORDERS    = 2     # minimum orders to harvest a term
-_HARVEST_CI_ALPHA      = 0.05  # one-sided Wilson CI level for CVR lower bound
+_PRIOR_MIN_CLICKS = 5  # minimum clicks per term for EB prior fitting
+_PRIOR_MIN_TERMS = 10  # minimum distinct terms for reliable MOM estimate
+_NEG_P0_EXPECTED = 3.0  # expected_orders threshold for P0 (p≈0.05)
+_NEG_P1_EXPECTED = 1.5  # expected_orders threshold for P1 (p≈0.22)
+_NEG_SPEND_P0_MULT = 1.5  # spend ≥ breakeven × this → P0
+_NEG_SPEND_P1_MULT = 0.75  # spend ≥ breakeven × this → P1
+_NEG_CPO_MULT = 3.0  # effective_CPO > breakeven × this → Gate C P1
+_HARVEST_MIN_ORDERS = 2  # minimum orders to harvest a term
+_HARVEST_CI_ALPHA = 0.05  # one-sided Wilson CI level for CVR lower bound
 
 
 # ── Stage 1: Empirical Bayes prior ────────────────────────────────────────────
 
-def _fit_beta_prior(term_totals: List[Dict]) -> Tuple[float, float, bool]:
+
+def _fit_beta_prior(term_totals: list[dict]) -> tuple[float, float, bool]:
     """
     Fit Beta(α, β) from observed CVRs via Method of Moments.
 
@@ -99,16 +101,16 @@ def _fit_beta_prior(term_totals: List[Dict]) -> Tuple[float, float, bool]:
         k = 5.0
         return max(mu_pool * k, 1e-3), max((1.0 - mu_pool) * k, 0.1), is_fallback or True
 
-    mu  = sum(obs_cvrs) / len(obs_cvrs)
+    mu = sum(obs_cvrs) / len(obs_cvrs)
     var = sum((x - mu) ** 2 for x in obs_cvrs) / len(obs_cvrs)
 
     # k = μ(1−μ)/σ² − 1; clamp variance away from 0 and the theoretical max
     var_max = mu * (1.0 - mu) * 0.99
-    var     = min(max(var, 1e-6), var_max)
-    k       = max(mu * (1.0 - mu) / var - 1.0, 1.0)
+    var = min(max(var, 1e-6), var_max)
+    k = max(mu * (1.0 - mu) / var - 1.0, 1.0)
 
     alpha = max(mu * k, 1e-3)
-    beta  = max((1.0 - mu) * k, 0.1)
+    beta = max((1.0 - mu) * k, 0.1)
     logger.debug(
         f"[auto_mining] EB prior: α={alpha:.3f} β={beta:.3f} "
         f"(μ={mu:.4f}, n_obs={len(obs_cvrs)}, n_valid={len(valid)})"
@@ -118,6 +120,7 @@ def _fit_beta_prior(term_totals: List[Dict]) -> Tuple[float, float, bool]:
 
 # ── Stage 2: Negative detection ───────────────────────────────────────────────
 
+
 def _negative_priority(
     clicks: int,
     orders: int,
@@ -125,7 +128,7 @@ def _negative_priority(
     alpha: float,
     beta: float,
     breakeven_spend: float,
-) -> Optional[str]:
+) -> str | None:
     """
     Returns 'P0', 'P1', or None.
     OR-logic: the higher (lower-indexed) priority from Gate A, B, C wins.
@@ -134,7 +137,7 @@ def _negative_priority(
         return None
 
     prior_cvr = alpha / (alpha + beta)
-    expected  = clicks * prior_cvr
+    expected = clicks * prior_cvr
 
     if orders == 0:
         # Gate A — statistical
@@ -168,13 +171,14 @@ def _negative_priority(
 
 # ── Stage 3: Harvest detection ────────────────────────────────────────────────
 
+
 def _harvest_signal(
     clicks: int,
     orders: int,
     spend: float,
     avg_price: float,
     target_acos: float,
-) -> Optional[Tuple[str, float]]:
+) -> tuple[str, float] | None:
     """
     Returns (priority, suggested_bid) or None.
 
@@ -191,17 +195,16 @@ def _harvest_signal(
     # Wilson lower-bound CVR (exact Beta percentile if scipy available)
     try:
         from scipy.stats import beta as _scipy_beta
-        cvr_lower = float(
-            _scipy_beta.ppf(_HARVEST_CI_ALPHA, orders + 1, clicks - orders + 1)
-        )
+
+        cvr_lower = float(_scipy_beta.ppf(_HARVEST_CI_ALPHA, orders + 1, clicks - orders + 1))
     except Exception:
         # Normal-approx Wilson fallback
         p = orders / clicks
         z = 1.645
         n = clicks
-        denom = 1.0 + z ** 2 / n
-        centre = p + z ** 2 / (2 * n)
-        margin = z * math.sqrt(p * (1 - p) / n + z ** 2 / (4 * n ** 2))
+        denom = 1.0 + z**2 / n
+        centre = p + z**2 / (2 * n)
+        margin = z * math.sqrt(p * (1 - p) / n + z**2 / (4 * n**2))
         cvr_lower = (centre - margin) / denom
 
     if cvr_lower <= 0:
@@ -214,10 +217,11 @@ def _harvest_signal(
 
 # ── Aggregation ───────────────────────────────────────────────────────────────
 
+
 def _aggregate_search_terms(
-    records: List[Dict],
-    cids: Set[str],
-) -> List[Dict]:
+    records: list[dict],
+    cids: set[str],
+) -> list[dict]:
     """
     Aggregate raw (possibly multi-day) spSearchTerm records for auto/PT campaigns.
 
@@ -228,9 +232,15 @@ def _aggregate_search_terms(
 
     Returns list of aggregated per-term dicts.
     """
-    agg: Dict[Tuple[str, str], Dict] = defaultdict(
-        lambda: {"clicks": 0, "orders": 0, "spend": 0.0, "sales": 0.0,
-                 "campaign_id": "", "query": ""}
+    agg: dict[tuple[str, str], dict] = defaultdict(
+        lambda: {
+            "clicks": 0,
+            "orders": 0,
+            "spend": 0.0,
+            "sales": 0.0,
+            "campaign_id": "",
+            "query": "",
+        }
     )
     for r in records:
         cid = str(r.get("campaign_id", "") or "")
@@ -242,25 +252,26 @@ def _aggregate_search_terms(
             continue
         key = (cid, query.lower())
         a = agg[key]
-        a["campaign_id"]  = cid
-        a["query"]        = query
-        a["clicks"]      += int(r.get("clicks", 0) or 0)
-        a["orders"]      += int(r.get("orders", 0) or 0)
-        a["spend"]       += float(r.get("spend", 0) or 0)
-        a["sales"]       += float(r.get("sales", 0) or 0)
+        a["campaign_id"] = cid
+        a["query"] = query
+        a["clicks"] += int(r.get("clicks", 0) or 0)
+        a["orders"] += int(r.get("orders", 0) or 0)
+        a["spend"] += float(r.get("spend", 0) or 0)
+        a["sales"] += float(r.get("sales", 0) or 0)
     return list(agg.values())
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+
 def build_auto_mining_actions(
-    search_term_records: List[Dict],
-    auto_pt_cids: Set[str],
-    existing_manual_kws: Set[str],
+    search_term_records: list[dict],
+    auto_pt_cids: set[str],
+    existing_manual_kws: set[str],
     avg_price: float,
     target_acos: float,
     days: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Main entry point for auto campaign search term mining.
 
@@ -284,15 +295,25 @@ def build_auto_mining_actions(
     }
     """
     if not auto_pt_cids:
-        return {"negatives": [], "harvest": [], "beta_prior": {},
-                "summary": {"skipped": True, "reason": "no auto/PT campaigns identified"}}
+        return {
+            "negatives": [],
+            "harvest": [],
+            "beta_prior": {},
+            "summary": {"skipped": True, "reason": "no auto/PT campaigns identified"},
+        }
 
     term_totals = _aggregate_search_terms(search_term_records, auto_pt_cids)
 
     if not term_totals:
-        return {"negatives": [], "harvest": [], "beta_prior": {},
-                "summary": {"skipped": True,
-                            "reason": "no search term data found for auto/PT campaigns"}}
+        return {
+            "negatives": [],
+            "harvest": [],
+            "beta_prior": {},
+            "summary": {
+                "skipped": True,
+                "reason": "no search term data found for auto/PT campaigns",
+            },
+        }
 
     # Stage 1: fit EB prior from this ASIN's own data
     alpha, beta, prior_is_fallback = _fit_beta_prior(term_totals)
@@ -301,15 +322,15 @@ def build_auto_mining_actions(
     # Breakeven spend: price a seller is willing to pay per order at target ACOS
     breakeven_spend = avg_price * target_acos if avg_price > 0 and target_acos > 0 else 0.0
 
-    negatives: List[Dict] = []
-    harvest:   List[Dict] = []
+    negatives: list[dict] = []
+    harvest: list[dict] = []
 
     for t in term_totals:
-        query   = t["query"]
-        cid     = t["campaign_id"]
-        clicks  = t["clicks"]
-        orders  = t["orders"]
-        spend   = t["spend"]
+        query = t["query"]
+        cid = t["campaign_id"]
+        clicks = t["clicks"]
+        orders = t["orders"]
+        spend = t["spend"]
         daily_spend = round(spend / days, 2) if days > 0 else round(spend, 2)
 
         # Stage 2: negative detection
@@ -324,31 +345,33 @@ def build_auto_mining_actions(
             # Gate C (orders>0, CPO > 3× breakeven): real conversions are lost; use
             # observed rate as the best estimate of ongoing loss.
             expected_order_delta = 0.0 if orders == 0 else -round(orders / days, 2)
-            negatives.append({
-                "action":               "add_negative_keyword",
-                "priority":             neg_p,
-                "campaign_id":          cid,
-                "keyword_text":         query,
-                "suggested_match":      suggested_match,
-                "clicks":               clicks,
-                "orders":               orders,
-                "spend_total":          round(spend, 2),
-                "daily_spend":          daily_spend,
-                "expected_orders_eb":   expected,
-                "expected_order_delta": expected_order_delta,
-                "expected_spend_delta": -daily_spend,
-                "breakeven_spend":      round(breakeven_spend, 2),
-                "rationale": (
-                    f"${spend:.2f} spent ({clicks} clicks, {orders} orders); "
-                    f"EB expected {expected:.1f} orders at "
-                    + (
-                        f"prior CVR {prior_cvr_pct:.1f}% (fallback — insufficient conversion data); "
-                        if prior_is_fallback
-                        else f"account CVR {prior_cvr_pct:.1f}%; "
-                    )
-                    + f"breakeven_spend=${breakeven_spend:.2f}"
-                ),
-            })
+            negatives.append(
+                {
+                    "action": "add_negative_keyword",
+                    "priority": neg_p,
+                    "campaign_id": cid,
+                    "keyword_text": query,
+                    "suggested_match": suggested_match,
+                    "clicks": clicks,
+                    "orders": orders,
+                    "spend_total": round(spend, 2),
+                    "daily_spend": daily_spend,
+                    "expected_orders_eb": expected,
+                    "expected_order_delta": expected_order_delta,
+                    "expected_spend_delta": -daily_spend,
+                    "breakeven_spend": round(breakeven_spend, 2),
+                    "rationale": (
+                        f"${spend:.2f} spent ({clicks} clicks, {orders} orders); "
+                        f"EB expected {expected:.1f} orders at "
+                        + (
+                            f"prior CVR {prior_cvr_pct:.1f}% (fallback — insufficient conversion data); "
+                            if prior_is_fallback
+                            else f"account CVR {prior_cvr_pct:.1f}%; "
+                        )
+                        + f"breakeven_spend=${breakeven_spend:.2f}"
+                    ),
+                }
+            )
             # A negative candidate is not evaluated for harvest
             continue
 
@@ -357,27 +380,32 @@ def build_auto_mining_actions(
             result = _harvest_signal(clicks, orders, spend, avg_price, target_acos)
             if result:
                 harv_p, suggested_bid = result
-                actual_acos_pct = round(spend / (orders * avg_price) * 100, 1) \
-                    if orders > 0 and avg_price > 0 else None
-                harvest.append({
-                    "action":          "harvest_to_manual",
-                    "priority":        harv_p,
-                    "campaign_id":     cid,
-                    "keyword_text":    query,
-                    "suggested_match": "EXACT",
-                    "suggested_bid":   suggested_bid,
-                    "clicks":          clicks,
-                    "orders":          orders,
-                    "spend_total":     round(spend, 2),
-                    "daily_spend":     daily_spend,
-                    "acos_pct":        actual_acos_pct,
-                    "rationale": (
-                        f"{orders} orders @ ACOS {actual_acos_pct}% "
-                        f"(target {round(target_acos * 100):.0f}%); "
-                        f"suggested bid ${suggested_bid} "
-                        f"(target_acos × avg_price × Wilson CVR lower bound)"
-                    ),
-                })
+                actual_acos_pct = (
+                    round(spend / (orders * avg_price) * 100, 1)
+                    if orders > 0 and avg_price > 0
+                    else None
+                )
+                harvest.append(
+                    {
+                        "action": "harvest_to_manual",
+                        "priority": harv_p,
+                        "campaign_id": cid,
+                        "keyword_text": query,
+                        "suggested_match": "EXACT",
+                        "suggested_bid": suggested_bid,
+                        "clicks": clicks,
+                        "orders": orders,
+                        "spend_total": round(spend, 2),
+                        "daily_spend": daily_spend,
+                        "acos_pct": actual_acos_pct,
+                        "rationale": (
+                            f"{orders} orders @ ACOS {actual_acos_pct}% "
+                            f"(target {round(target_acos * 100):.0f}%); "
+                            f"suggested bid ${suggested_bid} "
+                            f"(target_acos × avg_price × Wilson CVR lower bound)"
+                        ),
+                    }
+                )
 
     # Sort: priority first, then by spend (negatives) or orders (harvest)
     negatives.sort(key=lambda x: (x["priority"], -x["spend_total"]))
@@ -387,22 +415,23 @@ def build_auto_mining_actions(
 
     return {
         "negatives": negatives[:30],
-        "harvest":   harvest[:20],
+        "harvest": harvest[:20],
         "beta_prior": {
-            "alpha":           round(alpha, 4),
-            "beta":            round(beta, 4),
+            "alpha": round(alpha, 4),
+            "beta": round(beta, 4),
             "implied_cvr_pct": prior_cvr_pct,
-            "is_fallback":     prior_is_fallback,
-            "n_terms_fitted":  len([t for t in term_totals
-                                    if t.get("clicks", 0) >= _PRIOR_MIN_CLICKS]),
+            "is_fallback": prior_is_fallback,
+            "n_terms_fitted": len(
+                [t for t in term_totals if t.get("clicks", 0) >= _PRIOR_MIN_CLICKS]
+            ),
         },
         "summary": {
-            "auto_pt_cids_count":  len(auto_pt_cids),
-            "terms_analyzed":      len(term_totals),
-            "negative_count":      len(negatives),
-            "harvest_count":       len(harvest),
-            "total_wasted_spend":  round(total_wasted, 2),
-            "daily_wasted_spend":  round(total_wasted / days, 2) if days > 0 else 0.0,
-            "breakeven_spend":     round(breakeven_spend, 2),
+            "auto_pt_cids_count": len(auto_pt_cids),
+            "terms_analyzed": len(term_totals),
+            "negative_count": len(negatives),
+            "harvest_count": len(harvest),
+            "total_wasted_spend": round(total_wasted, 2),
+            "daily_wasted_spend": round(total_wasted / days, 2) if days > 0 else 0.0,
+            "breakeven_spend": round(breakeven_spend, 2),
         },
     }
