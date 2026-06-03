@@ -308,12 +308,11 @@ else
 fi
 
 # 8. Remaining Dependencies
-echo "⚙️ Installing other requirements..."
-if [ -f "requirements.txt" ]; then
-    grep -v "llama-cpp-python" requirements.txt > /tmp/temp_req.txt || true
-    pip install -r /tmp/temp_req.txt
-    rm /tmp/temp_req.txt
-fi
+echo "⚙️ Installing package dependencies..."
+# Pin the already-installed llama-cpp-python (GPU/CPU variant) so pip does not replace it
+pip freeze | grep -i "llama" > /tmp/llama_pin.txt
+pip install -e . -c /tmp/llama_pin.txt
+rm /tmp/llama_pin.txt
 pip install pycausalimpact redis
 
 # 9. Redis Configuration + Service (background daemon)
