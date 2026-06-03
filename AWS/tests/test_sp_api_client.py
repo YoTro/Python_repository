@@ -104,7 +104,7 @@ class TestSPAPIClientParsers(unittest.TestCase):
         self.assertEqual(result["sku"], "SKU-001")
         self.assertEqual(result["available_quantity"], 150)
         self.assertEqual(result["reserved_quantity"], 30)
-        self.assertEqual(result["inbound_quantity"], 20)  # 10+5+5
+        self.assertEqual(result["inbound_quantity"], 15)  # 10+5 (working excluded)
 
     def test_parse_catalog_item(self):
         mod = self._parsers()

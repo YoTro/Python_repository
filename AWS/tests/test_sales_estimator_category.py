@@ -11,11 +11,11 @@ def test_category_specific_estimation():
     """
     estimator = SalesEstimator()
 
-    # Data from config: Patio, Lawn & Garden (node_id: 553632)
-    # theta: 1.7886, c: 19.2222
-    node_id = "553632"
-    theta = 1.7886
-    c = 19.2222
+    # Data from config: Appliances (node_id: 2619525011)
+    # theta: 1.0011, c: 9.1169
+    node_id = "2619525011"
+    theta = 1.0011
+    c = 9.1169
     rank = 1000
 
     product = Product(asin="B00EXAMPLE", sales_rank=rank, category_node_id=node_id)

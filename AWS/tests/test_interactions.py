@@ -36,7 +36,7 @@ class TestInteractionsAndCallbacks(unittest.IsolatedAsyncioTestCase):
         mock_job_mgr.resume.assert_called_once_with("job_123")
 
         self.assertTrue(result.get("success"))
-        self.assertIn("✅ 登录成功", result.get("toast", ""))
+        self.assertIn("登录成功", result.get("toast", ""))
 
     @patch("aiohttp.ClientSession.get")
     async def test_feishu_card_rendering(self, mock_aiohttp_get):

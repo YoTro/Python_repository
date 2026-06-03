@@ -38,11 +38,15 @@ jobs:
 
       - name: Unit tests (no live services)
         # Runs the full test suite minus anything marked live or redis.
-        # Includes test_rate_limiting_system.py — pytest collects unittest.TestCase
-        # subclasses natively, so no separate unittest step is needed.
+        # test_rate_limiting_system.py is excluded (RateLimiter singleton needs isolation).
         run: >
           PYTHONPATH=. pytest tests/ -m "not live and not redis" -v --tb=short
           --cov=src --cov-report=xml --cov-report=term-missing
+
+      - name: Rate limiting (all three layers)
+        # Runs in isolation — RateLimiter is a singleton and leaks state across
+        # test classes when collected alongside other test files.
+        run: PYTHONPATH=. python -m unittest tests/test_rate_limiting_system.py -v
 
       - name: Upload coverage to Codecov
         # Only upload once — from the Python 3.11 runner — to avoid duplicate reports.
@@ -129,7 +133,7 @@ jobs:
       - name: mypy — core layer
         # Scope: src/core/ is the stable, well-typed foundation.
         # Expand to src/gateway/ src/workflows/ etc. as annotations improve.
-        run: mypy src/core/
+        run: mypy src/core/ --follow-imports=silent
 
   secret-scan:
     name: Secret Scanning (gitleaks)

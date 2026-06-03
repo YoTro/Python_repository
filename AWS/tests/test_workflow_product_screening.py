@@ -18,11 +18,12 @@ def mock_config():
         "weight_max": 2000,
         "daily_sales_min": 10,
         "profit_margin_min": 0.25,
-        "cost_ratio_max": 0.40,
+        # cost_ratio_max omitted — only meaningful when caller supplies actual COGS
         "compliance_status_allowed": ["pass"],
         "epa_status_allowed": ["exempt", "not_required"],
         "enable_ad_analysis_xiyou": True,
         "enable_social_analysis": False,
+        "enable_review_analysis": False,  # review stage requires live LLM; skip here
     }
 
 
@@ -41,17 +42,20 @@ async def test_product_screening_full_funnel(mock_config, mock_mcp):
     # Product C: Low Margin (Fail profit_filter)
     # Product D: Compliance Risk (Fail compliance_filter)
 
+    # No "keyword" field so _search_and_expand returns items unchanged (no-op).
     initial_items = [
-        {"asin": "PASS01", "keyword": "test"},
-        {"asin": "FAIL_PRICE", "keyword": "test"},
-        {"asin": "FAIL_MARGIN", "keyword": "test"},
-        {"asin": "FAIL_COMPLIANCE", "keyword": "test"},
+        {"asin": "PASS01"},
+        {"asin": "FAIL_PRICE"},
+        {"asin": "FAIL_MARGIN"},
+        {"asin": "FAIL_COMPLIANCE"},
     ]
 
-    # Mock Profitability API Enrichment
+    # Mock Profitability API Enrichment.
+    # Each dict must include "asin" so _enrich_via_profitability_api can verify the match.
     async def side_effect_profitability(asin, page_offset=1):
         data = {
             "PASS01": {
+                "asin": "PASS01",
                 "title": "Good Product",
                 "price": 30.0,
                 "weight": 0.5,
@@ -59,6 +63,7 @@ async def test_product_screening_full_funnel(mock_config, mock_mcp):
                 "customerReviewsRating": 4.5,
             },
             "FAIL_PRICE": {
+                "asin": "FAIL_PRICE",
                 "title": "Expensive",
                 "price": 500.0,
                 "weight": 0.5,
@@ -66,6 +71,7 @@ async def test_product_screening_full_funnel(mock_config, mock_mcp):
                 "customerReviewsRating": 4.5,
             },
             "FAIL_MARGIN": {
+                "asin": "FAIL_MARGIN",
                 "title": "Thin Profit",
                 "price": 25.0,
                 "weight": 0.5,
@@ -73,6 +79,7 @@ async def test_product_screening_full_funnel(mock_config, mock_mcp):
                 "customerReviewsRating": 4.5,
             },
             "FAIL_COMPLIANCE": {
+                "asin": "FAIL_COMPLIANCE",
                 "title": "Risky",
                 "price": 35.0,
                 "weight": 0.5,

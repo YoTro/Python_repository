@@ -14,7 +14,7 @@ async def test_xiyou_get_traffic_scores_tool_registration():
     """Verify that xiyou_get_traffic_scores is in the market_tools list."""
     tool = next((t for t in market_tools if t.name == "xiyou_get_traffic_scores"), None)
     assert tool is not None
-    assert tool.description.startswith("[Third-party Xiyouzhaoci tool]")
+    assert tool.description.startswith("[Xiyouzhaoci]")
     assert "asins" in tool.inputSchema["properties"]
 
 
