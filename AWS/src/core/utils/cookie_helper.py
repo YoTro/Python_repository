@@ -1,12 +1,13 @@
 from __future__ import annotations
-from DrissionPage import ChromiumPage, ChromiumOptions
+
+import json
 import logging
+import os
+import random
 import sys
 import time
-import os
-import json
-from typing import Dict, Optional
-import random
+
+from DrissionPage import ChromiumOptions, ChromiumPage
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class AmazonCookieHelper:
         self.cache_file = cache_file
         self.headless = headless
 
-    def fetch_fresh_cookies(self, wait_for_manual: bool = False) -> Dict[str, str]:
+    def fetch_fresh_cookies(self, wait_for_manual: bool = False) -> dict[str, str]:
         """
         Launch a browser to fetch fresh cookies.
         :param wait_for_manual:
@@ -135,7 +136,7 @@ class AmazonCookieHelper:
             co.set_argument(f"--remote-debugging-port={_REMOTE_DEBUG_PORT}")
             co.set_argument("--remote-debugging-address=127.0.0.1")
             co.set_local_port(_REMOTE_DEBUG_PORT)
-            server_ip   = os.environ.get("SERVER_IP",   "<server-ip>")
+            server_ip = os.environ.get("SERVER_IP", "<server-ip>")
             server_user = os.environ.get("SERVER_USER", "root")
             logger.warning(
                 "\n"
@@ -218,14 +219,15 @@ class AmazonCookieHelper:
 
             cookies_dict["i18n-prefs"] = "USD"
             cookies_dict["lc-main"] = "en_US"
-            self._save_to_cache({
-                "cookies": cookies_dict,
-                "user_agent": ua,
-                "is_logged_in": wait_for_manual,
-            })
+            self._save_to_cache(
+                {
+                    "cookies": cookies_dict,
+                    "user_agent": ua,
+                    "is_logged_in": wait_for_manual,
+                }
+            )
             logger.info(
-                f"💾 Captured {len(cookies_dict)} cookies. "
-                f"Session saved to {self.cache_file}."
+                f"💾 Captured {len(cookies_dict)} cookies. Session saved to {self.cache_file}."
             )
 
         except Exception as e:
@@ -237,7 +239,7 @@ class AmazonCookieHelper:
 
         return cookies_dict
 
-    def import_from_browser_export(self, export_file: str) -> Dict[str, str]:
+    def import_from_browser_export(self, export_file: str) -> dict[str, str]:
         """
         Import cookies from a browser extension export (Cookie-Editor JSON format).
 
@@ -254,7 +256,7 @@ class AmazonCookieHelper:
           helper = AmazonCookieHelper()
           helper.import_from_browser_export("/tmp/amazon_cookies.json")
         """
-        with open(export_file, "r", encoding="utf-8") as f:
+        with open(export_file, encoding="utf-8") as f:
             raw = json.load(f)
 
         # Cookie-Editor exports a list; our cache stores a name→value dict.
@@ -267,34 +269,40 @@ class AmazonCookieHelper:
             raise ValueError(f"Unrecognised cookie export format in {export_file}")
 
         if "session-id" not in cookies_dict:
-            raise ValueError("Imported cookies missing 'session-id' — make sure you exported from amazon.com while logged in.")
+            raise ValueError(
+                "Imported cookies missing 'session-id' — make sure you exported from amazon.com while logged in."
+            )
 
         cookies_dict.setdefault("i18n-prefs", "USD")
         cookies_dict.setdefault("lc-main", "en_US")
 
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        self._save_to_cache({
-            "cookies": cookies_dict,
-            "user_agent": ua,
-            "is_logged_in": True,
-        })
-        logger.info(f"💾 Imported {len(cookies_dict)} cookies from {export_file} → {self.cache_file}")
+        self._save_to_cache(
+            {
+                "cookies": cookies_dict,
+                "user_agent": ua,
+                "is_logged_in": True,
+            }
+        )
+        logger.info(
+            f"💾 Imported {len(cookies_dict)} cookies from {export_file} → {self.cache_file}"
+        )
         return cookies_dict
 
-    def get_cookie_data(self, force_refresh: bool = False) -> Dict:
+    def get_cookie_data(self, force_refresh: bool = False) -> dict:
         if not force_refresh:
             cached = self._load_from_cache()
             if cached:
                 return cached
         return self.fetch_fresh_cookies(wait_for_manual=False)
 
-    def _save_to_cache(self, data: Dict):
+    def _save_to_cache(self, data: dict):
         os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
         with open(self.cache_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
 
-    def _load_from_cache(self) -> Optional[Dict]:
+    def _load_from_cache(self) -> dict | None:
         if os.path.exists(self.cache_file):
-            with open(self.cache_file, "r", encoding="utf-8") as f:
+            with open(self.cache_file, encoding="utf-8") as f:
                 return json.load(f)
         return None

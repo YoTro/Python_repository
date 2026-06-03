@@ -1,36 +1,37 @@
 from __future__ import annotations
-import os
+
+import asyncio
 import json
 import logging
-import asyncio
-from mcp.types import Tool, TextContent
-from src.registry.tools import tool_registry
-from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
-from src.mcp.servers.amazon.extractors.product_details import ProductDetailsExtractor
-from src.mcp.servers.amazon.extractors.search import SearchExtractor
-from src.mcp.servers.amazon.extractors.ranks import RanksExtractor
-from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
-from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
-from src.mcp.servers.amazon.extractors.cart_stock import CartStockExtractor
-from src.mcp.servers.amazon.extractors.keywords_rank import KeywordsRankExtractor
-from src.mcp.servers.amazon.extractors.comments import CommentsExtractor
-from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
-from src.mcp.servers.amazon.extractors.feedback import SellerFeedbackExtractor
-from src.mcp.servers.amazon.extractors.dimensions import DimensionsExtractor
-from src.mcp.servers.amazon.extractors.images import ImageExtractor
-from src.mcp.servers.amazon.extractors.videos import VideoExtractor
-from src.mcp.servers.amazon.extractors.products_num import ProductsNumExtractor
-from src.mcp.servers.amazon.extractors.search_result_asins import AsinExtractor
-from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
-from src.mcp.servers.amazon.ads.client import AmazonAdsClient
-from src.mcp.servers.amazon.sp_api.client import SPAPIClient
-from src.core.utils.cookie_helper import AmazonCookieHelper
-from src.mcp.servers.amazon.extractors.bsr_category_extractor import BSRCategoryExtractor
+import os
+
+from mcp.types import TextContent, Tool
 from src.core.data_cache import data_cache
-from src.intelligence.processors import ReviewSummarizer, SalesEstimator
-from src.intelligence.providers.factory import ProviderFactory
 from src.core.models.review import Review
-from src.core.models.product import Product
+from src.core.utils.cookie_helper import AmazonCookieHelper
+from src.intelligence.processors import ReviewSummarizer
+from src.intelligence.providers.factory import ProviderFactory
+from src.mcp.servers.amazon.ads.client import AmazonAdsClient
+from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
+from src.mcp.servers.amazon.extractors.bsr_category_extractor import BSRCategoryExtractor
+from src.mcp.servers.amazon.extractors.cart_stock import CartStockExtractor
+from src.mcp.servers.amazon.extractors.comments import CommentsExtractor
+from src.mcp.servers.amazon.extractors.dimensions import DimensionsExtractor
+from src.mcp.servers.amazon.extractors.feedback import SellerFeedbackExtractor
+from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
+from src.mcp.servers.amazon.extractors.images import ImageExtractor
+from src.mcp.servers.amazon.extractors.keywords_rank import KeywordsRankExtractor
+from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
+from src.mcp.servers.amazon.extractors.product_details import ProductDetailsExtractor
+from src.mcp.servers.amazon.extractors.products_num import ProductsNumExtractor
+from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
+from src.mcp.servers.amazon.extractors.ranks import RanksExtractor
+from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
+from src.mcp.servers.amazon.extractors.search import SearchExtractor
+from src.mcp.servers.amazon.extractors.search_result_asins import AsinExtractor
+from src.mcp.servers.amazon.extractors.videos import VideoExtractor
+from src.mcp.servers.amazon.sp_api.client import SPAPIClient
+from src.registry.tools import tool_registry
 
 logger = logging.getLogger("mcp-amazon")
 
@@ -43,6 +44,7 @@ def _to_serializable(data):
         return data.model_dump()
     if hasattr(data, "__dataclass_fields__"):
         from dataclasses import asdict
+
         return asdict(data)
     if isinstance(data, list):
         return [_to_serializable(item) for item in data]
@@ -51,7 +53,12 @@ def _to_serializable(data):
 
 def _json_response(data) -> list[TextContent]:
     """Serialize data to JSON TextContent."""
-    return [TextContent(type="text", text=json.dumps(_to_serializable(data), indent=2, ensure_ascii=False, default=str))]
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps(_to_serializable(data), indent=2, ensure_ascii=False, default=str),
+        )
+    ]
 
 
 async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
@@ -62,10 +69,21 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         headless = arguments.get("headless", False)
         wait_for_login = arguments.get("wait_for_login", True)
         helper = AmazonCookieHelper(headless=headless)
-        cookies = await asyncio.to_thread(helper.fetch_fresh_cookies, wait_for_manual=wait_for_login)
+        cookies = await asyncio.to_thread(
+            helper.fetch_fresh_cookies, wait_for_manual=wait_for_login
+        )
         if cookies and "session-id" in cookies:
-            return [TextContent(type="text", text="Successfully refreshed Amazon cookies. Session captured.")]
-        return [TextContent(type="text", text="Failed to capture Amazon cookies. Please ensure you logged in if requested.")]
+            return [
+                TextContent(
+                    type="text", text="Successfully refreshed Amazon cookies. Session captured."
+                )
+            ]
+        return [
+            TextContent(
+                type="text",
+                text="Failed to capture Amazon cookies. Please ensure you logged in if requested.",
+            )
+        ]
 
     # ── Tier 1: Core screening ───────────────────────────────────────────
     if name == "get_amazon_bestsellers":
@@ -118,12 +136,14 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         )
         if result and result.get("PrimaryRank"):
             cached = data_cache.get("amazon", asin) or {}
-            cached.update({
-                "bsr":              result["PrimaryRank"],
-                "category":         result.get("Category"),
-                "top_level_node_id": result.get("TopLevelNodeId"),
-                "leaf_node_id":     result.get("LeafNodeId"),
-            })
+            cached.update(
+                {
+                    "bsr": result["PrimaryRank"],
+                    "category": result.get("Category"),
+                    "top_level_node_id": result.get("TopLevelNodeId"),
+                    "leaf_node_id": result.get("LeafNodeId"),
+                }
+            )
             data_cache.set("amazon", asin, cached)
         return _json_response(result)
 
@@ -151,11 +171,13 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         )
         if isinstance(result, dict) and result.get("GlobalRatings") is not None:
             cached = data_cache.get("amazon", asin) or {}
-            cached.update({
-                "global_ratings":  result.get("GlobalRatings"),
-                "written_reviews": result.get("WrittenReviews"),
-                "review_ratio":    result.get("Ratio"),
-            })
+            cached.update(
+                {
+                    "global_ratings": result.get("GlobalRatings"),
+                    "written_reviews": result.get("WrittenReviews"),
+                    "review_ratio": result.get("Ratio"),
+                }
+            )
             data_cache.set("amazon", asin, cached)
         return _json_response(result)
 
@@ -225,8 +247,9 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
             return _json_response(summary)
         except Exception as e:
             logger.error(f"analyze_reviews failed for {asin}: {e}", exc_info=True)
-            return [TextContent(type="text", text=f"Review analysis failed: {type(e).__name__}: {e}")]
-
+            return [
+                TextContent(type="text", text=f"Review analysis failed: {type(e).__name__}: {e}")
+            ]
 
     if name == "get_fulfillment":
         extractor = FulfillmentExtractor()
@@ -263,7 +286,15 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         )
         if isinstance(result, dict):
             cached = data_cache.get("amazon", asin) or {}
-            for field in ("weight_lb", "weight", "dimensions", "price", "length_in", "width_in", "height_in"):
+            for field in (
+                "weight_lb",
+                "weight",
+                "dimensions",
+                "price",
+                "length_in",
+                "width_in",
+                "height_in",
+            ):
                 if result.get(field) is not None:
                     cached[field] = result[field]
             if cached:
@@ -289,7 +320,7 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
     # ── Tier 4: BSR Navigation ───────────────────────────────────────────
     if name == "get_top_bsr_categories":
         try:
-            with open(BSR_URL_FILE, "r", encoding="utf-8") as f:
+            with open(BSR_URL_FILE, encoding="utf-8") as f:
                 data = json.load(f)
             return _json_response(data.get("categories", []))
         except Exception as e:
@@ -306,19 +337,19 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         store_id = arguments.get("store_id")
         region = arguments.get("region", "NA")
         client = AmazonAdsClient(store_id=store_id, region=region)
-        
+
         # Prepare keywords for API
         keywords = arguments["keyword"]
         if isinstance(keywords, str):
             keywords = [keywords]
-            
+
         match_types = arguments.get("match_types", ["EXACT"])
-        
+
         keywords_payload = []
         for kw in keywords:
             for m in match_types:
                 keywords_payload.append({"keyword": kw, "matchType": m.upper()})
-        
+
         result = await client.get_keyword_bid_recommendations(
             keywords=keywords_payload,
             strategy=arguments.get("strategy", "AUTO_FOR_SALES"),
@@ -423,7 +454,11 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
 
 # ── Tool Definitions ─────────────────────────────────────────────────────
 
-_HOST_PROP = {"type": "string", "default": "https://www.amazon.com", "description": "Amazon domain, must include scheme, e.g. https://www.amazon.com or https://www.amazon.co.uk"}
+_HOST_PROP = {
+    "type": "string",
+    "default": "https://www.amazon.com",
+    "description": "Amazon domain, must include scheme, e.g. https://www.amazon.com or https://www.amazon.co.uk",
+}
 
 amazon_tools = [
     # Session
@@ -433,8 +468,16 @@ amazon_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "headless": {"type": "boolean", "default": False, "description": "Set to false to see the browser and login manually."},
-                "wait_for_login": {"type": "boolean", "default": True, "description": "If true, waits up to 60s for manual login completion."},
+                "headless": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Set to false to see the browser and login manually.",
+                },
+                "wait_for_login": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "If true, waits up to 60s for manual login completion.",
+                },
             },
         },
     ),
@@ -450,7 +493,11 @@ amazon_tools = [
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "The Amazon Best Sellers category URL"},
-                "max_pages": {"type": "integer", "default": 2, "description": "Max pages to scrape"},
+                "max_pages": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "Max pages to scrape",
+                },
             },
             "required": ["url"],
         },
@@ -483,7 +530,11 @@ amazon_tools = [
             "type": "object",
             "properties": {
                 "keyword": {"type": "string", "description": "Search keyword"},
-                "page": {"type": "integer", "default": 1, "description": "Search result page number"},
+                "page": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Search result page number",
+                },
             },
             "required": ["keyword"],
         },
@@ -501,7 +552,11 @@ amazon_tools = [
             "type": "object",
             "properties": {
                 "keyword": {"type": "string", "description": "Search keyword"},
-                "page_offset": {"type": "integer", "default": 1, "description": "Pagination offset (1-indexed, 16 results per page)"},
+                "page_offset": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Pagination offset (1-indexed, 16 results per page)",
+                },
             },
             "required": ["keyword"],
         },
@@ -539,7 +594,7 @@ amazon_tools = [
                 "asins": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of ASINs to query (e.g. [\"B08N5WRWNW\", \"B0CKY689WQ\"])",
+                    "description": 'List of ASINs to query (e.g. ["B08N5WRWNW", "B0CKY689WQ"])',
                 },
             },
             "required": ["asins"],
@@ -591,8 +646,16 @@ amazon_tools = [
             "type": "object",
             "properties": {
                 "keyword": {"type": "string", "description": "Search keyword"},
-                "target_asins": {"type": "array", "items": {"type": "string"}, "description": "List of ASINs to find"},
-                "max_pages": {"type": "integer", "default": 3, "description": "Max search pages to scan"},
+                "target_asins": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of ASINs to find",
+                },
+                "max_pages": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "Max search pages to scan",
+                },
             },
             "required": ["keyword", "target_asins"],
         },
@@ -608,7 +671,11 @@ amazon_tools = [
             "type": "object",
             "properties": {
                 "keyword": {"type": "string", "description": "Search keyword"},
-                "page": {"type": "integer", "default": 1, "description": "Search result page number"},
+                "page": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Search result page number",
+                },
             },
             "required": ["keyword"],
         },
@@ -626,7 +693,11 @@ amazon_tools = [
             "type": "object",
             "properties": {
                 "asin": {"type": "string", "description": "Product ASIN"},
-                "max_pages": {"type": "integer", "default": 2, "description": "Max review pages to fetch"},
+                "max_pages": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "Max review pages to fetch",
+                },
             },
             "required": ["asin"],
         },
@@ -645,9 +716,21 @@ amazon_tools = [
             "type": "object",
             "properties": {
                 "asin": {"type": "string", "description": "Product ASIN"},
-                "max_pages": {"type": "integer", "default": 3, "description": "Max review pages to fetch"},
-                "competitive_benchmark": {"type": "integer", "default": 500, "description": "Review count threshold to estimate competitive barrier"},
-                "est_monthly_sales": {"type": "integer", "default": 0, "description": "Estimated monthly sales volume for review-to-sales ratio calculation (0 = unknown)"},
+                "max_pages": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "Max review pages to fetch",
+                },
+                "competitive_benchmark": {
+                    "type": "integer",
+                    "default": 500,
+                    "description": "Review count threshold to estimate competitive barrier",
+                },
+                "est_monthly_sales": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Estimated monthly sales volume for review-to-sales ratio calculation (0 = unknown)",
+                },
             },
             "required": ["asin"],
         },
@@ -692,7 +775,10 @@ amazon_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "Amazon product listing URL (seller ID will be extracted)"},
+                "url": {
+                    "type": "string",
+                    "description": "Amazon product listing URL (seller ID will be extracted)",
+                },
             },
             "required": ["url"],
         },
@@ -753,7 +839,7 @@ amazon_tools = [
             "Returns list of {name, url} objects (e.g. Electronics, Home & Kitchen, Toys & Games). "
             "Use this to discover category URLs before calling get_bsr_subcategories."
         ),
-        inputSchema={"type": "object", "properties": {}}
+        inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
         name="get_bsr_subcategories",
@@ -765,10 +851,13 @@ amazon_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "The parent BSR URL to explore (e.g. https://www.amazon.com/Best-Sellers-Electronics/zgbs/electronics/)"}
+                "url": {
+                    "type": "string",
+                    "description": "The parent BSR URL to explore (e.g. https://www.amazon.com/Best-Sellers-Electronics/zgbs/electronics/)",
+                }
             },
-            "required": ["url"]
-        }
+            "required": ["url"],
+        },
     ),
     Tool(
         name="get_amazon_keyword_bid_recommendations",
@@ -776,34 +865,61 @@ amazon_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "The keyword to check (e.g. 'wireless charger')"},
+                "keyword": {
+                    "type": "string",
+                    "description": "The keyword to check (e.g. 'wireless charger')",
+                },
                 "match_types": {
                     "type": "array",
                     "items": {"type": "string", "enum": ["EXACT", "PHRASE", "BROAD"]},
                     "default": ["EXACT"],
-                    "description": "List of match types to get recommendations for"
+                    "description": "List of match types to get recommendations for",
                 },
                 "strategy": {
                     "oneOf": [
-                        {"type": "string", "enum": ["AUTO_FOR_SALES", "LEGACY_FOR_SALES", "MANUAL"]},
-                        {"type": "array", "items": {"type": "string", "enum": ["AUTO_FOR_SALES", "LEGACY_FOR_SALES", "MANUAL"]}}
+                        {
+                            "type": "string",
+                            "enum": ["AUTO_FOR_SALES", "LEGACY_FOR_SALES", "MANUAL"],
+                        },
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["AUTO_FOR_SALES", "LEGACY_FOR_SALES", "MANUAL"],
+                            },
+                        },
                     ],
                     "default": "AUTO_FOR_SALES",
-                    "description": "Bidding strategy. AUTO_FOR_SALES (Up & Down), LEGACY_FOR_SALES (Down only), MANUAL (Fixed). Can be a single string or a list."
+                    "description": "Bidding strategy. AUTO_FOR_SALES (Up & Down), LEGACY_FOR_SALES (Down only), MANUAL (Fixed). Can be a single string or a list.",
                 },
                 "include_analysis": {
                     "type": "boolean",
                     "default": False,
-                    "description": "Whether to include advanced impact analysis in the response (v5.0 feature)."
+                    "description": "Whether to include advanced impact analysis in the response (v5.0 feature).",
                 },
-                "store_id": {"type": "string", "description": "The store ID suffix from .env (e.g. 'US', 'UK'). If omitted, uses default."},
-                "region": {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA", "description": "Amazon Ads API region."},
-                "ad_group_id": {"type": "string", "description": "Optional existing ad group ID to refine recommendations based on campaign strategy."},
+                "store_id": {
+                    "type": "string",
+                    "description": "The store ID suffix from .env (e.g. 'US', 'UK'). If omitted, uses default.",
+                },
+                "region": {
+                    "type": "string",
+                    "enum": ["NA", "EU", "FE"],
+                    "default": "NA",
+                    "description": "Amazon Ads API region.",
+                },
+                "ad_group_id": {
+                    "type": "string",
+                    "description": "Optional existing ad group ID to refine recommendations based on campaign strategy.",
+                },
                 "campaign_id": {"type": "string", "description": "Optional existing campaign ID."},
-                "asins": {"type": "array", "items": {"type": "string"}, "description": "Optional list of owned ASINs to provide context for new ad groups."}
+                "asins": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of owned ASINs to provide context for new ad groups.",
+                },
             },
-            "required": ["keyword"]
-        }
+            "required": ["keyword"],
+        },
     ),
     # ── Ads-API: campaigns / ad groups / keywords / performance ───────────
     Tool(
@@ -822,8 +938,15 @@ amazon_tools = [
                     "default": ["ENABLED"],
                     "description": "Filter by campaign state.",
                 },
-                "max_results": {"type": "integer", "default": 100, "description": "Max campaigns to return."},
-                "store_id": {"type": "string", "description": "Store ID suffix (e.g. 'US'). Defaults to env default."},
+                "max_results": {
+                    "type": "integer",
+                    "default": 100,
+                    "description": "Max campaigns to return.",
+                },
+                "store_id": {
+                    "type": "string",
+                    "description": "Store ID suffix (e.g. 'US'). Defaults to env default.",
+                },
                 "region": {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA"},
             },
         },
@@ -904,7 +1027,10 @@ amazon_tools = [
                     "default": 30,
                     "description": "Number of past days to report on. Ignored if start_date/end_date provided.",
                 },
-                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD (inclusive)."},
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date YYYY-MM-DD (inclusive).",
+                },
                 "end_date": {"type": "string", "description": "End date YYYY-MM-DD (inclusive)."},
                 "store_id": {"type": "string"},
                 "region": {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA"},
@@ -966,9 +1092,9 @@ amazon_tools = [
                     "description": "Lookback days. Ignored if start_date/end_date are set.",
                 },
                 "start_date": {"type": "string", "description": "YYYY-MM-DD inclusive."},
-                "end_date":   {"type": "string", "description": "YYYY-MM-DD inclusive."},
-                "store_id":   {"type": "string"},
-                "region":     {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD inclusive."},
+                "store_id": {"type": "string"},
+                "region": {"type": "string", "enum": ["NA", "EU", "FE"], "default": "NA"},
             },
         },
     ),
@@ -1000,7 +1126,7 @@ amazon_tools = [
                         "Supported keys: CAMPAIGN, AD_GROUP, KEYWORD, AD, BUDGET_RULE, TARGETING, THEME. "
                         "Each value may have 'filters' (list of field names, e.g. STATUS, BID, BUDGET) "
                         "and 'parents' (list of {campaignId, adGroupId} to scope the query). "
-                        "Example: {\"KEYWORD\": {\"filters\": [\"BID\"], \"parents\": [{\"campaignId\": \"123\"}]}}"
+                        'Example: {"KEYWORD": {"filters": ["BID"], "parents": [{"campaignId": "123"}]}}'
                     ),
                 },
                 "count": {
@@ -1030,15 +1156,27 @@ _AMAZON_META = {
     "get_amazon_bestsellers": ("DATA", "list of bestseller products with ASIN, title, rank, price"),
     "get_product_details": ("DATA", "full product details: title, price, brand, ratings, features"),
     "search_products": ("DATA", "list of products matching keyword with ASIN, title, price"),
-    "search_profitability_products": ("DATA", "list of products with rich metadata: ASIN, title, brand, dimensions, weight, price"),
+    "search_profitability_products": (
+        "DATA",
+        "list of products with rich metadata: ASIN, title, brand, dimensions, weight, price",
+    ),
     "get_bsr_rank": ("DATA", "BSR rank, category rankings and NodeIdPath"),
-    "get_batch_past_month_sales": ("DATA", "dict of ASIN → past-month purchase count (batch search)"),
-    "get_review_count": ("DATA", "GlobalRatings, WrittenReviews, and their Ratio — Ratio > 0.50 indicates fake-review risk"),
+    "get_batch_past_month_sales": (
+        "DATA",
+        "dict of ASIN → past-month purchase count (batch search)",
+    ),
+    "get_review_count": (
+        "DATA",
+        "GlobalRatings, WrittenReviews, and their Ratio — Ratio > 0.50 indicates fake-review risk",
+    ),
     "get_stock_estimate": ("DATA", "estimated remaining stock quantity"),
     "get_keyword_rank": ("DATA", "search position of ASINs for a keyword"),
     "search_return_asins": ("DATA", "ASINs from search results"),
     "get_reviews": ("DATA", "customer reviews with text, rating, date"),
-    "analyze_reviews": ("COMPUTE", "structured review summary: pros/cons, sentiment, buyer persona, velocity, rating distribution, competitive barrier, manipulation risk score"),
+    "analyze_reviews": (
+        "COMPUTE",
+        "structured review summary: pros/cons, sentiment, buyer persona, velocity, rating distribution, competitive barrier, manipulation risk score",
+    ),
     "get_fulfillment": ("DATA", "FBA or FBM fulfillment status"),
     "get_seller_feedback": ("DATA", "seller feedback count"),
     "get_seller_product_count": ("DATA", "total products listed by seller"),
@@ -1047,18 +1185,33 @@ _AMAZON_META = {
     "check_has_videos": ("DATA", "video presence and count"),
     "get_top_bsr_categories": ("DATA", "list of top-level BSR categories with URLs"),
     "get_bsr_subcategories": ("DATA", "list of subcategories within a BSR category"),
-    "get_amazon_keyword_bid_recommendations": ("DATA", "keyword bid recommendations from Advertising API"),
+    "get_amazon_keyword_bid_recommendations": (
+        "DATA",
+        "keyword bid recommendations from Advertising API",
+    ),
     # Ads-API v3
-    "list_sp_campaigns":       ("DATA", "list of SP campaigns with budget, state, bidding strategy"),
-    "list_sp_ad_groups":       ("DATA", "list of SP ad groups with default bid"),
-    "list_sp_keywords":        ("DATA", "list of SP manual keywords with bid and match type"),
-    "get_sp_performance_report": ("DATA", "SP performance records with impressions, clicks, spend, orders, sales, ACOS, CTR"),
+    "list_sp_campaigns": ("DATA", "list of SP campaigns with budget, state, bidding strategy"),
+    "list_sp_ad_groups": ("DATA", "list of SP ad groups with default bid"),
+    "list_sp_keywords": ("DATA", "list of SP manual keywords with bid and match type"),
+    "get_sp_performance_report": (
+        "DATA",
+        "SP performance records with impressions, clicks, spend, orders, sales, ACOS, CTR",
+    ),
     # SP-API
-    "get_sp_inventory":        ("DATA", "FBA inventory per SKU: available, reserved, inbound quantities"),
-    "get_sp_catalog_item":     ("DATA", "product metadata from Catalog API: title, brand, size, bullet points"),
+    "get_sp_inventory": ("DATA", "FBA inventory per SKU: available, reserved, inbound quantities"),
+    "get_sp_catalog_item": (
+        "DATA",
+        "product metadata from Catalog API: title, brand, size, bullet points",
+    ),
     # Ads Placement + Change History
-    "get_sp_placement_report": ("DATA", "SP campaign metrics split by placement: Top of Search, Product Pages, Other"),
-    "get_ad_change_history":   ("DATA", "SP/SB campaign change history events with old/new values, sorted by date"),
+    "get_sp_placement_report": (
+        "DATA",
+        "SP campaign metrics split by placement: Top of Search, Product Pages, Other",
+    ),
+    "get_ad_change_history": (
+        "DATA",
+        "SP/SB campaign change history events with old/new values, sorted by date",
+    ),
 }
 
 for tool in amazon_tools:

@@ -1,16 +1,19 @@
 from __future__ import annotations
+
 import logging
 import os
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 from curl_cffi import requests
+
 from ..base import ERPClient
 from .auth import LingxingAuth
 
 logger = logging.getLogger(__name__)
 
 _TOKEN_EXPIRED_CODES = {401, "401", -1, -999}
-_TOKEN_EXPIRED_MSGS  = ("token", "未登录", "登录已过期")
+_TOKEN_EXPIRED_MSGS = ("token", "未登录", "登录已过期")
 
 
 def _is_token_expired(data: dict) -> bool:
@@ -26,13 +29,13 @@ class LingxingClient(ERPClient):
     Implements ERPClient against the Lingxing gateway API.
     """
 
-    BASE_URL     = "https://gw.lingxingerp.com"
+    BASE_URL = "https://gw.lingxingerp.com"
     ERP_DIRECT_URL = "https://erp.lingxing.com"  # for web-app endpoints not on the gateway
 
     def __init__(self, account: str = None, password: str = None):
-        self.auth       = LingxingAuth()
-        self.session    = requests.Session(impersonate="chrome")
-        self.token      = self.auth.load_token()
+        self.auth = LingxingAuth()
+        self.session = requests.Session(impersonate="chrome")
+        self.token = self.auth.load_token()
         if not self.token:
             self.token = self.auth.login(account, password)
         if not self.token:
@@ -41,9 +44,9 @@ class LingxingClient(ERPClient):
         # Ad API identity headers: env vars take priority; fall back to saved token meta.
         _meta = self.auth.load_meta()
         self._company_id = os.getenv("LINGXING_COMPANY_ID") or _meta.get("company_id", "")
-        self._env_key    = os.getenv("LINGXING_ENV_KEY")    or _meta.get("env_key", "")
-        self._uid        = os.getenv("LINGXING_UID")        or _meta.get("uid", "")
-        self._zid        = os.getenv("LINGXING_ZID")        or _meta.get("zid", "")
+        self._env_key = os.getenv("LINGXING_ENV_KEY") or _meta.get("env_key", "")
+        self._uid = os.getenv("LINGXING_UID") or _meta.get("uid", "")
+        self._zid = os.getenv("LINGXING_ZID") or _meta.get("zid", "")
         # sids: optional store filter ("4443,4441"). Empty = all stores (API default).
         self._sids = os.getenv("LINGXING_SIDS") or _meta.get("sids", "")
 
@@ -81,18 +84,18 @@ class LingxingClient(ERPClient):
     def _erp_request(self, path: str, payload: dict) -> dict:
         """POST to erp.lingxing.com (web-app endpoints not exposed on the gateway)."""
         erp_headers = {
-            "AK-Client-Type":      "web",
-            "AK-Origin":           "https://erp.lingxing.com",
-            "Origin":              "https://erp.lingxing.com",
-            "Referer":             "https://erp.lingxing.com/",
+            "AK-Client-Type": "web",
+            "AK-Origin": "https://erp.lingxing.com",
+            "Origin": "https://erp.lingxing.com",
+            "Referer": "https://erp.lingxing.com/",
             "x-ak-request-source": "erp",
-            "x-ak-platform":       "1",
-            "x-ak-language":       "zh",
-            "x-ak-version":        "3.8.4.2.0.007",
-            "x-ak-company-id":     self._company_id,
-            "x-ak-env-key":        self._env_key,
-            "x-ak-uid":            self._uid,
-            "x-ak-zid":            self._zid,
+            "x-ak-platform": "1",
+            "x-ak-language": "zh",
+            "x-ak-version": "3.8.4.2.0.007",
+            "x-ak-company-id": self._company_id,
+            "x-ak-env-key": self._env_key,
+            "x-ak-uid": self._uid,
+            "x-ak-zid": self._zid,
         }
         url = f"{self.ERP_DIRECT_URL}{path}"
         headers = {
@@ -121,47 +124,50 @@ class LingxingClient(ERPClient):
     def _ad_request(self, path: str, payload: dict) -> dict:
         """POST to the Lingxing ad-report gateway (/pb-newad-web/...)."""
         ad_headers = {
-            "ak-origin":        "https://ads.lingxing.com",
-            "Origin":           "https://ads.lingxing.com",
-            "Referer":          "https://ads.lingxing.com/",
+            "ak-origin": "https://ads.lingxing.com",
+            "Origin": "https://ads.lingxing.com",
+            "Referer": "https://ads.lingxing.com/",
             "x-ak-request-source": "erp",
-            "x-ak-version":     "1.1.4.0.000",
-            "x-ak-company-id":  self._company_id,
-            "x-ak-env-key":     self._env_key,
-            "x-ak-uid":         self._uid,
-            "x-ak-zid":         self._zid,
+            "x-ak-version": "1.1.4.0.000",
+            "x-ak-company-id": self._company_id,
+            "x-ak-env-key": self._env_key,
+            "x-ak-uid": self._uid,
+            "x-ak-zid": self._zid,
         }
         return self._request("POST", path, json=payload, headers=ad_headers)
 
     # ── ERPClient interface ───────────────────────────────────────────────────
 
-    def get_inventory(self, sku: str) -> Dict[str, Any]:
+    def get_inventory(self, sku: str) -> dict[str, Any]:
         # TODO: map to real Lingxing inventory endpoint
         data = self._request("POST", "/newadmin/api/inventory/list", json={"msku": sku})
         return data
 
     def get_purchase_orders(
         self,
-        sku: Optional[str] = None,
-        status: Optional[str] = None,
+        sku: str | None = None,
+        status: str | None = None,
         **kwargs,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         # TODO: map to real Lingxing purchase order endpoint
         payload = {}
-        if sku:    payload["msku"]   = sku
-        if status: payload["status"] = status
+        if sku:
+            payload["msku"] = sku
+        if status:
+            payload["status"] = status
         data = self._request("POST", "/newadmin/api/purchase/list", json=payload)
         return data.get("data", [])
 
     def get_sales_orders(
         self,
-        sku: Optional[str] = None,
+        sku: str | None = None,
         days: int = 30,
         **kwargs,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         # TODO: map to real Lingxing sales order endpoint
         payload = {"days": days}
-        if sku: payload["msku"] = sku
+        if sku:
+            payload["msku"] = sku
         data = self._request("POST", "/newadmin/api/orders/list", json=payload)
         return data.get("data", [])
 
@@ -169,19 +175,19 @@ class LingxingClient(ERPClient):
 
     def get_fba_shipment_tracking(
         self,
-        sku: Optional[str] = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        transport_type: Optional[str] = None,
-        shipment_status: Optional[List[str]] = None,
-        sids: Optional[str] = None,
+        sku: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        transport_type: str | None = None,
+        shipment_status: list[str] | None = None,
+        sids: str | None = None,
         search_field_time: str = "create_date",
         search_field: str = "shipment_id",
-        search_value: Optional[str] = None,
+        search_value: str | None = None,
         length: int = 100,
         fetch_all: bool = True,
         **kwargs,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Query Lingxing FBA shipment tracking records.
 
@@ -214,41 +220,46 @@ class LingxingClient(ERPClient):
 
         def _build_payload(offset: int) -> dict:
             _seq_counter[0] += 1
-            payload: Dict[str, Any] = {
-                "search_field_time":          search_field_time,
-                "is_sta":                     "",
-                "is_awd":                     "",
-                "ship_mode":                  transport_type or "",
-                "step":                       [],
-                "is_closed":                  "",
-                "application_diff":           "",
-                "received_diff":              "",
-                "application_received_diff":  "",
-                "is_relate_packing_task_sn":  "",
-                "is_add_tracking":            "",
-                "delivery_order_status":      [],
-                "box_type":                   "",
-                "is_uploaded_box":            "",
-                "sta_transportation_mode":    "",
-                "delivery_mode":              "",
-                "carrier_type":               "",
-                "create_uids":                [],
-                "principal_uids":             [],
-                "is_store_diff":              "",
-                "search_field":               search_field,
-                "shipment_status":            shipment_status or [],
-                "is_relate_shipment":         "",
-                "seniorSearchList":           [],
-                "shipment_type":              [],
-                "offset":                     offset,
-                "length":                     length,
-                "req_time_sequence":          f"/api/fba_shipment/showShipment_v2$${_seq_counter[0]}",
+            payload: dict[str, Any] = {
+                "search_field_time": search_field_time,
+                "is_sta": "",
+                "is_awd": "",
+                "ship_mode": transport_type or "",
+                "step": [],
+                "is_closed": "",
+                "application_diff": "",
+                "received_diff": "",
+                "application_received_diff": "",
+                "is_relate_packing_task_sn": "",
+                "is_add_tracking": "",
+                "delivery_order_status": [],
+                "box_type": "",
+                "is_uploaded_box": "",
+                "sta_transportation_mode": "",
+                "delivery_mode": "",
+                "carrier_type": "",
+                "create_uids": [],
+                "principal_uids": [],
+                "is_store_diff": "",
+                "search_field": search_field,
+                "shipment_status": shipment_status or [],
+                "is_relate_shipment": "",
+                "seniorSearchList": [],
+                "shipment_type": [],
+                "offset": offset,
+                "length": length,
+                "req_time_sequence": f"/api/fba_shipment/showShipment_v2$${_seq_counter[0]}",
             }
-            if _sids:        payload["sids"]         = _sids
-            if sku:          payload["msku"]         = sku
-            if start_date:   payload["start_date"]   = start_date
-            if end_date:     payload["end_date"]      = end_date
-            if search_value: payload["search_value"]  = search_value
+            if _sids:
+                payload["sids"] = _sids
+            if sku:
+                payload["msku"] = sku
+            if start_date:
+                payload["start_date"] = start_date
+            if end_date:
+                payload["end_date"] = end_date
+            if search_value:
+                payload["search_value"] = search_value
             return payload
 
         path = "/api/fba_shipment/showShipment_v2"
@@ -261,20 +272,22 @@ class LingxingClient(ERPClient):
         raw_data = resp.get("data", {})
         if isinstance(raw_data, dict):
             records = raw_data.get("list", raw_data.get("data", []))
-            total   = raw_data.get("total", 0)
+            total = raw_data.get("total", 0)
         elif isinstance(raw_data, list):
             records = raw_data
-            total   = resp.get("total", len(records))
+            total = resp.get("total", len(records))
         else:
             records = []
-            total   = 0
+            total = 0
 
         if not isinstance(records, list):
             records = []
 
         if not fetch_all:
-            logger.info(f"get_fba_shipment_tracking: {len(records)}/{total} records "
-                        f"(sku={sku}, {start_date}→{end_date})")
+            logger.info(
+                f"get_fba_shipment_tracking: {len(records)}/{total} records "
+                f"(sku={sku}, {start_date}→{end_date})"
+            )
             return records
 
         fetched = len(records)
@@ -292,8 +305,10 @@ class LingxingClient(ERPClient):
             records.extend(page_data)
             fetched += len(page_data)
 
-        logger.info(f"get_fba_shipment_tracking: fetched {len(records)}/{total} records "
-                    f"(sku={sku}, {start_date}→{end_date})")
+        logger.info(
+            f"get_fba_shipment_tracking: fetched {len(records)}/{total} records "
+            f"(sku={sku}, {start_date}→{end_date})"
+        )
         return records
 
     # ── Ad report ─────────────────────────────────────────────────────────────
@@ -302,7 +317,7 @@ class LingxingClient(ERPClient):
         self,
         profile_id: str,
         report_date: str,
-        asin: Optional[List[str]] = None,
+        asin: list[str] | None = None,
         search_type: str = "campaign_name",
         date_key: str = "day",
         is_daily: int = 1,
@@ -310,7 +325,7 @@ class LingxingClient(ERPClient):
         page: int = 1,
         length: int = 50,
         fetch_all: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Query Lingxing Sponsored Products campaign-level ad report.
 
@@ -338,15 +353,15 @@ class LingxingClient(ERPClient):
         length = max(25, min(500, length))
 
         def _build_payload(p: int) -> dict:
-            payload: Dict[str, Any] = {
-                "length":      length,
-                "page":        p,
-                "profile_id":  profile_id,
+            payload: dict[str, Any] = {
+                "length": length,
+                "page": p,
+                "profile_id": profile_id,
                 "report_date": report_date,
                 "search_type": search_type,
-                "date_key":    date_key,
-                "is_daily":    is_daily,
-                "record_key":  record_key,
+                "date_key": date_key,
+                "is_daily": is_daily,
+                "record_key": record_key,
             }
             if asin:
                 payload["asin"] = asin
@@ -360,15 +375,17 @@ class LingxingClient(ERPClient):
 
         all_data = list(resp.get("data", []))
         aggregate = all_data[:1] if all_data else []
-        daily     = all_data[1:]
-        total     = resp.get("total", len(all_data))
-        fetched   = len(all_data)
+        daily = all_data[1:]
+        total = resp.get("total", len(all_data))
+        fetched = len(all_data)
 
         while fetched < total:
             page += 1
             next_resp = self._ad_request(path, _build_payload(page))
             if not next_resp.get("success"):
-                logger.warning(f"get_sp_campaign_ad_report pagination stopped at page {page}: {next_resp}")
+                logger.warning(
+                    f"get_sp_campaign_ad_report pagination stopped at page {page}: {next_resp}"
+                )
                 break
             page_data = next_resp.get("data", [])
             daily.extend(page_data)

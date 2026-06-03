@@ -3,6 +3,7 @@ Integration test for _generate_charts step.
 Loads real item data from ad-diag-B0FXFGMD7Z-dev.json, runs chart generation,
 and uploads to R2. Prints chart_urls on success.
 """
+
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from dotenv import load_dotenv
+
 load_dotenv(os.path.join(os.path.dirname(__file__), "../.env"))
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")

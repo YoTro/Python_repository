@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 WorkflowSignalBus — decouples "batch completed" detection from workflow resumption.
 
@@ -10,7 +11,6 @@ Upgrade path: replace asyncio.Event with Redis Pub/Sub for distributed mode.
 
 import asyncio
 import logging
-from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +22,8 @@ class WorkflowSignalBus:
     """
 
     def __init__(self) -> None:
-        self._waiters: Dict[str, asyncio.Event] = {}
-        self._payloads: Dict[str, dict] = {}
+        self._waiters: dict[str, asyncio.Event] = {}
+        self._payloads: dict[str, dict] = {}
 
     def subscribe(self, job_id: str) -> asyncio.Event:
         """Return an asyncio.Event that fires when a signal arrives for job_id."""

@@ -1,7 +1,7 @@
 """Format registered tools into a categorized catalog string for the system prompt."""
+
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -17,7 +17,7 @@ _CATEGORY_LABELS = {
 }
 
 
-def format_tool_catalog(registry: "ToolRegistry") -> str:
+def format_tool_catalog(registry: ToolRegistry) -> str:
     """
     Group all registered tools by category and return a human-readable catalog.
 

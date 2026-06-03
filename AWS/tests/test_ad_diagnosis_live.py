@@ -41,18 +41,19 @@ Usage
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
-import sys
 import os
-import argparse
+import sys
 import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
+
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 logging.basicConfig(
@@ -65,12 +66,12 @@ logger = logging.getLogger("ad_diagnosis_test")
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Live ad_diagnosis workflow test")
-    p.add_argument("--asin",     default="B0FXFGMD7Z", help="ASIN to diagnose")
-    p.add_argument("--store-id", default="US",  help="Store/marketplace ID (default: US)")
-    p.add_argument("--region",   default="NA",  help="Ads API region (default: NA)")
-    p.add_argument("--days",     type=int, default=30, help="Report lookback days")
+    p.add_argument("--asin", default="B0FXFGMD7Z", help="ASIN to diagnose")
+    p.add_argument("--store-id", default="US", help="Store/marketplace ID (default: US)")
+    p.add_argument("--region", default="NA", help="Ads API region (default: NA)")
+    p.add_argument("--days", type=int, default=30, help="Report lookback days")
     p.add_argument("--no-xiyou", action="store_true", help="Skip Xiyouzhaoci enrichment")
-    p.add_argument("--no-llm",   action="store_true", help="Skip LLM diagnostic step")
+    p.add_argument("--no-llm", action="store_true", help="Skip LLM diagnostic step")
     p.add_argument(
         "--direct",
         action="store_true",
@@ -124,19 +125,43 @@ def _parse_args() -> argparse.Namespace:
 # Drop campaigns, campaign_ids, performance_records, keywords — large raw arrays
 # whose summaries are already captured in other fields.
 _LLM_SCALAR_FIELDS = [
-    "asin", "title", "brand", "size", "bullet_point_count",
-    "total_available", "can_sell_days", "inventory_risk",
-    "total_daily_budget", "bidding_strategies",
-    "total_spend", "total_sales", "total_orders", "total_clicks", "account_acos",
-    "budget_exhaustion_pct", "budget_likely_exhausted",
-    "keyword_count", "avg_bid", "min_bid", "max_bid", "match_type_dist",
-    "placement_performance", "placement_configured_pcts",
-    "change_event_count", "has_compound_change",
-    "lp_summary", "lp_top_allocations", "lp_zero_keywords", "lp_maxed_keywords",
+    "asin",
+    "title",
+    "brand",
+    "size",
+    "bullet_point_count",
+    "total_available",
+    "can_sell_days",
+    "inventory_risk",
+    "total_daily_budget",
+    "bidding_strategies",
+    "total_spend",
+    "total_sales",
+    "total_orders",
+    "total_clicks",
+    "account_acos",
+    "budget_exhaustion_pct",
+    "budget_likely_exhausted",
+    "keyword_count",
+    "avg_bid",
+    "min_bid",
+    "max_bid",
+    "match_type_dist",
+    "placement_performance",
+    "placement_configured_pcts",
+    "change_event_count",
+    "has_compound_change",
+    "lp_summary",
+    "lp_top_allocations",
+    "lp_zero_keywords",
+    "lp_maxed_keywords",
     # Xiyou traffic scores
-    "ad_traffic_ratio", "organic_traffic_ratio", "traffic_growth_7d",
+    "ad_traffic_ratio",
+    "organic_traffic_ratio",
+    "traffic_growth_7d",
     # Keyword signals (merged from fetch_keyword_signals)
-    "rank_tracked_keywords", "market_trends_meta",
+    "rank_tracked_keywords",
+    "market_trends_meta",
 ]
 
 
@@ -177,75 +202,75 @@ def _compress_item_for_llm(item: dict) -> dict:
 
 def _build_config(args: argparse.Namespace) -> dict:
     return {
-        "store_id":              args.store_id,
-        "region":                args.region,
-        "days":                  args.days,
-        "enable_xiyou":          not args.no_xiyou,
-        "inventory_risk_days":   30,
-        "acos_warn_threshold":   0.30,
-        "acos_crit_threshold":   0.50,
+        "store_id": args.store_id,
+        "region": args.region,
+        "days": args.days,
+        "enable_xiyou": not args.no_xiyou,
+        "inventory_risk_days": 30,
+        "acos_warn_threshold": 0.30,
+        "acos_crit_threshold": 0.50,
         "budget_exhaustion_pct": 0.90,
-        "min_clicks_for_cvr":    5,
-        "lp_headroom_factor":    3.0,
+        "min_clicks_for_cvr": 5,
+        "lp_headroom_factor": 3.0,
     }
 
 
 def _print_result(result, workflow_steps) -> None:
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Workflow completed in {result.total_duration_ms}ms")
     print(f"Steps executed: {len(result.step_reports)}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     print("── Step Reports ──")
     for r in result.step_reports:
         print(
-            f"  [{r.step_index+1}] {r.step_name:<30} "
+            f"  [{r.step_index + 1}] {r.step_name:<30} "
             f"{r.input_count} → {r.output_count} items  "
             f"({r.duration_ms}ms)"
         )
 
-    print(f"\n── Final Item Preview (truncated) ──")
+    print("\n── Final Item Preview (truncated) ──")
     if result.final_items:
         item = result.final_items[0]
         highlights = {
-            "asin":                    item.get("asin"),
-            "title":                   item.get("title"),
-            "brand":                   item.get("brand"),
-            "total_available":         item.get("total_available"),
-            "can_sell_days":           item.get("can_sell_days"),
-            "inventory_risk":          item.get("inventory_risk"),
-            "campaign_count":          len(item.get("campaigns", [])),
-            "total_daily_budget":      item.get("total_daily_budget"),
-            "bidding_strategies":      item.get("bidding_strategies"),
-            "total_spend":             item.get("total_spend"),
-            "total_sales":             item.get("total_sales"),
-            "account_acos":            item.get("account_acos"),
-            "budget_exhaustion_pct":   item.get("budget_exhaustion_pct"),
+            "asin": item.get("asin"),
+            "title": item.get("title"),
+            "brand": item.get("brand"),
+            "total_available": item.get("total_available"),
+            "can_sell_days": item.get("can_sell_days"),
+            "inventory_risk": item.get("inventory_risk"),
+            "campaign_count": len(item.get("campaigns", [])),
+            "total_daily_budget": item.get("total_daily_budget"),
+            "bidding_strategies": item.get("bidding_strategies"),
+            "total_spend": item.get("total_spend"),
+            "total_sales": item.get("total_sales"),
+            "account_acos": item.get("account_acos"),
+            "budget_exhaustion_pct": item.get("budget_exhaustion_pct"),
             "budget_likely_exhausted": item.get("budget_likely_exhausted"),
-            "keyword_count":           item.get("keyword_count"),
-            "avg_bid":                 item.get("avg_bid"),
-            "match_type_dist":         item.get("match_type_dist"),
-            "kw_performance_count":    len(item.get("keyword_performance", [])),
-            "lp_summary":              item.get("lp_summary"),
-            "lp_top_allocations":      item.get("lp_top_allocations", [])[:3],
-            "lp_zero_keywords":        item.get("lp_zero_keywords", [])[:5],
-            "lp_maxed_keywords":       item.get("lp_maxed_keywords", [])[:5],
-            "ad_traffic_ratio":        item.get("ad_traffic_ratio"),
-            "organic_traffic_ratio":   item.get("organic_traffic_ratio"),
-            "rank_tracked_keywords":   item.get("rank_tracked_keywords"),
-            "rank_series_days":        len(next(iter((item.get("natural_rank_series") or {}).values()), {})),
-            "market_trends_keywords":  list((item.get("market_trends") or {}).keys()),
-            "change_attributions":     len(item.get("change_attributions") or []),
-            "causal_consensus_sample": (item.get("change_attributions") or [{}])[0].get("consensus"),
+            "keyword_count": item.get("keyword_count"),
+            "avg_bid": item.get("avg_bid"),
+            "match_type_dist": item.get("match_type_dist"),
+            "kw_performance_count": len(item.get("keyword_performance", [])),
+            "lp_summary": item.get("lp_summary"),
+            "lp_top_allocations": item.get("lp_top_allocations", [])[:3],
+            "lp_zero_keywords": item.get("lp_zero_keywords", [])[:5],
+            "lp_maxed_keywords": item.get("lp_maxed_keywords", [])[:5],
+            "ad_traffic_ratio": item.get("ad_traffic_ratio"),
+            "organic_traffic_ratio": item.get("organic_traffic_ratio"),
+            "rank_tracked_keywords": item.get("rank_tracked_keywords"),
+            "rank_series_days": len(
+                next(iter((item.get("natural_rank_series") or {}).values()), {})
+            ),
+            "market_trends_keywords": list((item.get("market_trends") or {}).keys()),
+            "change_attributions": len(item.get("change_attributions") or []),
+            "causal_consensus_sample": (item.get("change_attributions") or [{}])[0].get(
+                "consensus"
+            ),
         }
         for k, v in highlights.items():
             print(f"  {k:<30} {json.dumps(v, ensure_ascii=False)}")
 
-        llm_output = (
-            item.get("ad_diagnosis_llm")
-            or item.get("llm_output")
-            or item.get("diagnosis")
-        )
+        llm_output = item.get("ad_diagnosis_llm") or item.get("llm_output") or item.get("diagnosis")
         if llm_output:
             print(f"\n── LLM Diagnosis ──\n{llm_output}\n")
 
@@ -257,14 +282,15 @@ def _print_result(result, workflow_steps) -> None:
 
 # ── Execution modes ───────────────────────────────────────────────────────────
 
+
 async def _run_direct(args: argparse.Namespace, job_id: str) -> None:
     """Bypass JobManager — direct workflow.execute() call."""
+    import src.workflows.definitions.ad_diagnosis  # noqa: F401
+    from src.core.errors.exceptions import BatchPendingError
+    from src.intelligence.router import IntelligenceRouter
+    from src.jobs.checkpoint import CheckpointManager
     from src.workflows.registry import WorkflowRegistry
     from src.workflows.steps.base import WorkflowContext
-    from src.jobs.checkpoint import CheckpointManager
-    from src.intelligence.router import IntelligenceRouter
-    from src.core.errors.exceptions import BatchPendingError
-    import src.workflows.definitions.ad_diagnosis  # noqa: F401
 
     checkpoint_mgr = CheckpointManager()
     if args.reset:
@@ -337,10 +363,10 @@ async def _run_direct(args: argparse.Namespace, job_id: str) -> None:
 
 async def _run_via_job_manager(args: argparse.Namespace, job_id: str) -> None:
     """Route through JobManager — handles SUSPENDED → BatchPoller → resume lifecycle."""
-    from src.jobs.manager import JobManager, JobStatus
-    from src.jobs.checkpoint import CheckpointManager
-    from src.core.models.request import UnifiedRequest
     import src.workflows.definitions.ad_diagnosis  # noqa: F401
+    from src.core.models.request import UnifiedRequest
+    from src.jobs.checkpoint import CheckpointManager
+    from src.jobs.manager import JobManager, JobStatus
 
     checkpoint_mgr = CheckpointManager()
     if args.reset:
@@ -377,9 +403,9 @@ async def _run_via_job_manager(args: argparse.Namespace, job_id: str) -> None:
     last_status = None
     suspended_since: float | None = None
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Polling job {job_id} every {args.poll_interval}s (timeout {args.timeout}s)")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     while True:
         record = job_mgr.get_status(job_id)
@@ -458,16 +484,17 @@ async def _run_via_job_manager(args: argparse.Namespace, job_id: str) -> None:
 
 # ── LLM-only mode ────────────────────────────────────────────────────────────
 
+
 async def _run_llm_only(args: argparse.Namespace, source_job_id: str) -> None:
     """
     Load an existing checkpoint, compress items, save a fresh checkpoint at
     <source_job_id>-llm, then run only ad_diagnosis_llm via JobManager.
     The original checkpoint is never modified.
     """
-    from src.jobs.checkpoint import CheckpointManager, WorkflowEvent
-    from src.jobs.manager import JobManager, JobStatus
-    from src.core.models.request import UnifiedRequest
     import src.workflows.definitions.ad_diagnosis  # noqa: F401
+    from src.core.models.request import UnifiedRequest
+    from src.jobs.checkpoint import CheckpointManager
+    from src.jobs.manager import JobManager, JobStatus
 
     checkpoint_mgr = CheckpointManager()
 
@@ -516,7 +543,7 @@ async def _run_llm_only(args: argparse.Namespace, source_job_id: str) -> None:
         "initial_items": compressed_items,
         **config,
     }
-    request = UnifiedRequest(workflow_name="ad_diagnosis", params=params)
+    UnifiedRequest(workflow_name="ad_diagnosis", params=params)
 
     job_mgr = JobManager(max_workers=1)
     job_mgr.resume_from_checkpoint(llm_job_id)
@@ -527,9 +554,9 @@ async def _run_llm_only(args: argparse.Namespace, source_job_id: str) -> None:
     last_status = None
     suspended_since: float | None = None
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Polling {llm_job_id} every {args.poll_interval}s")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     while True:
         record = job_mgr.get_status(llm_job_id)
@@ -597,11 +624,12 @@ async def _run_llm_only(args: argparse.Namespace, source_job_id: str) -> None:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+
 async def run_test(args: argparse.Namespace) -> None:
     job_id = args.job_id or f"ad-diag-{args.asin}-dev"
 
     logger.info(
-        f"\n{'='*60}\n"
+        f"\n{'=' * 60}\n"
         f"  ad_diagnosis workflow — live test\n"
         f"  ASIN      : {args.asin}\n"
         f"  Job ID    : {job_id}\n"
@@ -610,7 +638,7 @@ async def run_test(args: argparse.Namespace) -> None:
         f"  Xiyou     : {'enabled' if not args.no_xiyou else 'disabled'}\n"
         f"  LLM step  : {'enabled' if not args.no_llm else 'disabled'}\n"
         f"  Mode      : {'direct (workflow.execute)' if args.direct else 'JobManager + BatchPoller'}\n"
-        f"{'='*60}"
+        f"{'=' * 60}"
     )
 
     if args.llm_only:

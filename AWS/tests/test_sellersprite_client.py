@@ -1,12 +1,15 @@
 from __future__ import annotations
-import pytest
-from unittest.mock import patch, MagicMock
-from src.mcp.servers.market.sellersprite.client import SellerspriteAPI
 
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.mcp.servers.market.sellersprite.client import SellerspriteAPI
 
 # ---------------------------------------------------------------------------
 # Shared fixture
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def api():
@@ -39,32 +42,34 @@ def _err(status: int, text: str = "") -> MagicMock:
 # get_competing_lookup
 # ---------------------------------------------------------------------------
 
-class TestGetCompetingLookup:
 
+class TestGetCompetingLookup:
     def test_happy_path_returns_items(self, api):
         client, mock_request = api
-        mock_request.return_value = _ok({
-            "code": 0,
-            "data": {
-                "items": [
-                    {
-                        "asin": "B08N5WRWNW",
-                        "title": "Sample Product",
-                        "price": 19.99,
-                        "rating": 4.5,
-                        "reviewCount": 1234,
-                        "bsrRank": 42,
-                        "trends": [
-                            {"dk": "202508", "sales": 800},
-                            {"dk": "202509", "sales": 950},
-                        ],
-                    }
-                ],
-                "total": 1,
-                "page": 1,
-                "size": 100,
-            },
-        })
+        mock_request.return_value = _ok(
+            {
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "asin": "B08N5WRWNW",
+                            "title": "Sample Product",
+                            "price": 19.99,
+                            "rating": 4.5,
+                            "reviewCount": 1234,
+                            "bsrRank": 42,
+                            "trends": [
+                                {"dk": "202508", "sales": 800},
+                                {"dk": "202509", "sales": 950},
+                            ],
+                        }
+                    ],
+                    "total": 1,
+                    "page": 1,
+                    "size": 100,
+                },
+            }
+        )
 
         result = client.get_competing_lookup(
             market="US",
@@ -180,14 +185,16 @@ class TestGetCompetingLookup:
     def test_multiple_node_paths(self, api):
         """Supports passing multiple nodeIdPaths in one call."""
         client, mock_request = api
-        mock_request.return_value = _ok({
-            "data": {
-                "items": [{"asin": "AAA"}, {"asin": "BBB"}],
-                "total": 2,
-                "page": 1,
-                "size": 100,
+        mock_request.return_value = _ok(
+            {
+                "data": {
+                    "items": [{"asin": "AAA"}, {"asin": "BBB"}],
+                    "total": 2,
+                    "page": 1,
+                    "size": 100,
+                }
             }
-        })
+        )
 
         result = client.get_competing_lookup(
             market="US",
@@ -204,8 +211,8 @@ class TestGetCompetingLookup:
 # get_category_nodes
 # ---------------------------------------------------------------------------
 
-class TestGetCategoryNodes:
 
+class TestGetCategoryNodes:
     _NODES_RESPONSE = [
         {
             "nodeId": 553844,

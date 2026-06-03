@@ -1,15 +1,18 @@
-import re as _re
-import requests
-import logging
-import time
-import json
-import os
-import gzip
 import asyncio
+import gzip
+import json
+import logging
+import os
+import re as _re
+import time
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Any
+from typing import Any
+
+import requests
+
+from src.core.utils.decorators import EARLY_RETURN, exponential_backoff
+
 from .auth import AmazonAdsAuth
-from src.core.utils.decorators import exponential_backoff, EARLY_RETURN
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,7 @@ def _is_report_425(resp: requests.Response) -> bool:
 
 def _make_report_425_hook(label: str, start_date: str, end_date: str):
     """Return a response_hook that extracts a duplicate reportId from a 425 body."""
+
     def _hook(resp: requests.Response):
         if not _is_report_425(resp):
             return EARLY_RETURN
@@ -38,10 +42,14 @@ def _make_report_425_hook(label: str, start_date: str, end_date: str):
         m = _re.search(r"duplicate of\s*:\s*([0-9a-f\-]{30,})", detail, _re.I)
         if m:
             dup_id = m.group(1).strip()
-            logger.info(f"[{label}] 425 duplicate — reusing report {dup_id} ({start_date}→{end_date})")
+            logger.info(
+                f"[{label}] 425 duplicate — reusing report {dup_id} ({start_date}→{end_date})"
+            )
             return dup_id
         return EARLY_RETURN
+
     return _hook
+
 
 class AmazonAdsClient:
     """
@@ -52,23 +60,25 @@ class AmazonAdsClient:
     ENDPOINTS = {
         "NA": "https://advertising-api.amazon.com",
         "EU": "https://advertising-api-eu.amazon.com",
-        "FE": "https://advertising-api-fe.amazon.com"
+        "FE": "https://advertising-api-fe.amazon.com",
     }
 
-    _REPORT_POLL_INTERVAL = 10   # seconds between status checks
-    _REPORT_POLL_MAX      = 360  # max attempts → 60 min ceiling (large reports need > 30 min)
-    _REPORT_POLL_TIMEOUT  = 30   # per-request timeout for poll GET (seconds)
+    _REPORT_POLL_INTERVAL = 10  # seconds between status checks
+    _REPORT_POLL_MAX = 360  # max attempts → 60 min ceiling (large reports need > 30 min)
+    _REPORT_POLL_TIMEOUT = 30  # per-request timeout for poll GET (seconds)
 
-    def __init__(self, store_id: Optional[str] = None, region: str = "NA"):
+    def __init__(self, store_id: str | None = None, region: str = "NA"):
         self.auth = AmazonAdsAuth(store_id)
         self.base_url = self.ENDPOINTS.get(region.upper(), self.ENDPOINTS["NA"])
         self._owned_asin_cache = None
 
-    async def _get_owned_asin_fallback(self) -> Optional[str]:
+    async def _get_owned_asin_fallback(self) -> str | None:
         """
         Attempts to find a valid owned ASIN from the account.
         """
-        env_fallback = os.getenv(f"AMAZON_ADS_FALLBACK_ASIN_{self.auth.store_id}") or os.getenv("AMAZON_ADS_FALLBACK_ASIN")
+        env_fallback = os.getenv(f"AMAZON_ADS_FALLBACK_ASIN_{self.auth.store_id}") or os.getenv(
+            "AMAZON_ADS_FALLBACK_ASIN"
+        )
         if env_fallback:
             return env_fallback
 
@@ -76,19 +86,21 @@ class AmazonAdsClient:
             return self._owned_asin_cache
 
         logger.info("422 detected. Attempting automated discovery of an owned ASIN...")
-        
+
         url = f"{self.base_url}/sp/ads/list"
         headers = {
             "Authorization": f"Bearer {self.auth.get_access_token()}",
             "Amazon-Advertising-API-ClientId": self.auth.client_id,
             "Amazon-Advertising-API-Scope": self.auth.get_profile_id(),
             "Content-Type": "application/vnd.spad.v3+json",
-            "Accept": "application/vnd.spad.v3+json"
+            "Accept": "application/vnd.spad.v3+json",
         }
-        
+
         try:
             # Wrap request in to_thread since requests is synchronous
-            resp = await asyncio.to_thread(requests.post, url, json={"maxResults": 10}, headers=headers)
+            resp = await asyncio.to_thread(
+                requests.post, url, json={"maxResults": 10}, headers=headers
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 ads = data.get("ads", [])
@@ -100,45 +112,47 @@ class AmazonAdsClient:
                         return discovered_asin
         except Exception as e:
             logger.error(f"Owned ASIN discovery failed: {e}")
-        
+
         return None
 
     async def get_keyword_bid_recommendations(
-        self, 
-        keywords: List[Dict[str, str]], 
-        asins: Optional[List[str]] = None,
+        self,
+        keywords: list[dict[str, str]],
+        asins: list[str] | None = None,
         include_analysis: bool = False,
         strategy: str = "AUTO_FOR_SALES",
-        adjustments: Optional[List[Dict[str, Any]]] = None,
-        max_retries: int = 3
-    ) -> Dict[str, Any]:
+        adjustments: list[dict[str, Any]] | None = None,
+        max_retries: int = 3,
+    ) -> dict[str, Any]:
         """
         Fetch bid recommendations (Asynchronous).
         """
         endpoint = f"{self.base_url}/sp/targets/bid/recommendations"
         v5_media_type = "application/vnd.spthemebasedbidrecommendation.v5+json"
-        
+
         headers = {
             "Authorization": f"Bearer {self.auth.get_access_token()}",
             "Amazon-Advertising-API-ClientId": self.auth.client_id,
             "Amazon-Advertising-API-Scope": self.auth.get_profile_id(),
             "Content-Type": v5_media_type,
-            "Accept": v5_media_type
+            "Accept": v5_media_type,
         }
 
         match_map = {
             "EXACT": "KEYWORD_EXACT_MATCH",
             "PHRASE": "KEYWORD_PHRASE_MATCH",
-            "BROAD": "KEYWORD_BROAD_MATCH"
+            "BROAD": "KEYWORD_BROAD_MATCH",
         }
 
         targeting_expressions = []
         for kw in keywords:
             m_type = kw.get("matchType", "EXACT").upper()
-            targeting_expressions.append({
-                "type": match_map.get(m_type, "KEYWORD_EXACT_MATCH"),
-                "value": kw.get("keyword", kw.get("keywordText"))
-            })
+            targeting_expressions.append(
+                {
+                    "type": match_map.get(m_type, "KEYWORD_EXACT_MATCH"),
+                    "value": kw.get("keyword", kw.get("keywordText")),
+                }
+            )
 
         current_asins = asins or []
 
@@ -157,11 +171,13 @@ class AmazonAdsClient:
                     "asins": current_asins,
                     "targetingExpressions": targeting_expressions,
                     "bidding": {"strategy": strategy, "adjustments": adjustments},
-                    "includeAnalysis": include_analysis
+                    "includeAnalysis": include_analysis,
                 }
 
-                response = await asyncio.to_thread(requests.post, endpoint, json=payload, headers=headers)
-                
+                response = await asyncio.to_thread(
+                    requests.post, endpoint, json=payload, headers=headers
+                )
+
                 # Handle 422: any 422 while ASINs are in the payload may indicate an
                 # ownership mismatch (Amazon's message varies — don't rely on message text).
                 if response.status_code == 422:
@@ -183,11 +199,11 @@ class AmazonAdsClient:
                     wait_time = (attempt + 1) * 10
                     await asyncio.sleep(wait_time)
                     continue
-                
+
                 response.raise_for_status()
                 return response.json()
-                
-            except Exception as e:
+
+            except Exception:
                 if attempt == max_retries - 1:
                     raise
                 await asyncio.sleep(2)
@@ -196,7 +212,7 @@ class AmazonAdsClient:
 
     # ── helpers ────────────────────────────────────────────────────────────
 
-    def _v3_headers(self, media_type: str) -> Dict[str, str]:
+    def _v3_headers(self, media_type: str) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.auth.get_access_token()}",
             "Amazon-Advertising-API-ClientId": self.auth.client_id,
@@ -205,7 +221,7 @@ class AmazonAdsClient:
             "Accept": media_type,
         }
 
-    async def _post_list(self, path: str, media_type: str, body: Dict) -> Dict:
+    async def _post_list(self, path: str, media_type: str, body: dict) -> dict:
         url = f"{self.base_url}{path}"
         resp = await asyncio.to_thread(
             requests.post, url, json=body, headers=self._v3_headers(media_type)
@@ -222,9 +238,9 @@ class AmazonAdsClient:
 
     async def list_campaigns(
         self,
-        states: Optional[List[str]] = None,
+        states: list[str] | None = None,
         max_results: int = 100,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         List Sponsored Products campaigns (v3) with auto-pagination.
 
@@ -232,11 +248,11 @@ class AmazonAdsClient:
           campaign_id, name, state, daily_budget, start_date, end_date,
           bidding_strategy, placement_adjustments
         """
-        all_campaigns: List[Dict] = []
-        next_token: Optional[str] = None
+        all_campaigns: list[dict] = []
+        next_token: str | None = None
 
         while True:
-            body: Dict[str, Any] = {"maxResults": min(max_results, 100)}
+            body: dict[str, Any] = {"maxResults": min(max_results, 100)}
             if states:
                 body["stateFilter"] = {"include": [s.upper() for s in states]}
             if next_token:
@@ -260,17 +276,17 @@ class AmazonAdsClient:
 
     async def list_ad_groups(
         self,
-        campaign_ids: Optional[List[str]] = None,
-        states: Optional[List[str]] = None,
+        campaign_ids: list[str] | None = None,
+        states: list[str] | None = None,
         max_results: int = 100,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         List Sponsored Products ad groups (v3).
 
         Returns per-ad-group dict:
           ad_group_id, campaign_id, name, state, default_bid
         """
-        body: Dict[str, Any] = {"maxResults": max_results}
+        body: dict[str, Any] = {"maxResults": max_results}
         if campaign_ids:
             body["campaignIdFilter"] = {"include": campaign_ids}
         if states:
@@ -287,11 +303,11 @@ class AmazonAdsClient:
 
     async def list_keywords(
         self,
-        campaign_ids: Optional[List[str]] = None,
-        ad_group_ids: Optional[List[str]] = None,
-        states: Optional[List[str]] = None,
+        campaign_ids: list[str] | None = None,
+        ad_group_ids: list[str] | None = None,
+        states: list[str] | None = None,
         max_results: int = 200,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         List Sponsored Products keywords (v3).
 
@@ -299,11 +315,11 @@ class AmazonAdsClient:
           keyword_id, ad_group_id, campaign_id, keyword_text,
           match_type, state, bid
         """
-        all_keywords: List[Dict] = []
-        next_token: Optional[str] = None
+        all_keywords: list[dict] = []
+        next_token: str | None = None
 
         while True:
-            body: Dict[str, Any] = {"maxResults": min(max_results, 100)}
+            body: dict[str, Any] = {"maxResults": min(max_results, 100)}
             if campaign_ids:
                 body["campaignIdFilter"] = {"include": campaign_ids}
             if ad_group_ids:
@@ -332,12 +348,12 @@ class AmazonAdsClient:
     async def get_performance_report(
         self,
         report_type: str = "spKeywords",
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
         days: int = 30,
         time_unit: str = "SUMMARY",
-        filters: Optional[List[Dict]] = None,
-    ) -> List[Dict[str, Any]]:
+        filters: list[dict] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Request an async SP performance report and return parsed records.
 
@@ -361,15 +377,21 @@ class AmazonAdsClient:
         end = end_date or str(today - timedelta(days=1))
         start = start_date or str(today - timedelta(days=days))
 
-        type_filters: Optional[List[Dict]] = None
+        type_filters: list[dict] | None = None
         if report_type == "spSearchTerm":
             # spSearchTerm uses "cost" for spend and "keyword" for keyword text.
             # Filter to manual keyword types to exclude auto-targeting noise.
             metrics = [
-                "impressions", "clicks", "cost",
-                "purchases7d", "sales7d",
-                "keyword", "matchType", "keywordBid",
-                "campaignId", "adGroupId",
+                "impressions",
+                "clicks",
+                "cost",
+                "purchases7d",
+                "sales7d",
+                "keyword",
+                "matchType",
+                "keywordBid",
+                "campaignId",
+                "adGroupId",
             ]
             if time_unit == "DAILY":
                 metrics.append("date")
@@ -378,11 +400,18 @@ class AmazonAdsClient:
             # groupBy=["campaign","campaignPlacement"] + placementClassification column
             # returns one row per (campaign × placement bucket).
             metrics = [
-                "impressions", "clicks", "cost", "spend",
-                "purchases7d", "sales7d",
-                "clickThroughRate", "costPerClick",
-                "campaignId", "campaignName",
-                "campaignBiddingStrategy", "campaignBudgetAmount",
+                "impressions",
+                "clicks",
+                "cost",
+                "spend",
+                "purchases7d",
+                "sales7d",
+                "clickThroughRate",
+                "costPerClick",
+                "campaignId",
+                "campaignName",
+                "campaignBiddingStrategy",
+                "campaignBudgetAmount",
                 "placementClassification",
             ]
         elif report_type == "spAdvertisedProduct":
@@ -391,9 +420,14 @@ class AmazonAdsClient:
             # advertisedAsin filter is not supported; we filter client-side.
             # campaignStatus filter is required to include all campaign states.
             metrics = [
-                "impressions", "clicks", "cost",
-                "purchases7d", "sales7d",
-                "advertisedAsin", "campaignId", "campaignName",
+                "impressions",
+                "clicks",
+                "cost",
+                "purchases7d",
+                "sales7d",
+                "advertisedAsin",
+                "campaignId",
+                "campaignName",
             ]
             if time_unit == "DAILY":
                 metrics.append("date")
@@ -402,17 +436,23 @@ class AmazonAdsClient:
             ]
         else:
             metrics = [
-                "impressions", "clicks", "spend",
-                "purchases7d", "sales7d",
-                "campaignName", "campaignId",
+                "impressions",
+                "clicks",
+                "spend",
+                "purchases7d",
+                "sales7d",
+                "campaignName",
+                "campaignId",
             ]
             if time_unit == "DAILY":
                 metrics.append("date")
 
         # Merge report-type default filters with any caller-supplied filters.
-        combined_filters: Optional[List[Dict]] = (type_filters or []) + (filters or []) or None
+        combined_filters: list[dict] | None = (type_filters or []) + (filters or []) or None
 
-        report_id = await self._create_report(report_type, start, end, metrics, filters=combined_filters, time_unit=time_unit)
+        report_id = await self._create_report(
+            report_type, start, end, metrics, filters=combined_filters, time_unit=time_unit
+        )
         download_url = await self._poll_report(report_id)
         records = await self._download_report(download_url)
         return [_parse_report_record(r, report_type) for r in records]
@@ -422,8 +462,8 @@ class AmazonAdsClient:
         report_type: str,
         start_date: str,
         end_date: str,
-        metrics: List[str],
-        filters: Optional[List[Dict]] = None,
+        metrics: list[str],
+        filters: list[dict] | None = None,
         time_unit: str = "SUMMARY",
     ) -> str:
         url = f"{self.base_url}/reporting/reports"
@@ -444,14 +484,14 @@ class AmazonAdsClient:
         # response payload is always null — placementClassification is the real key.
         report_type_id = "spCampaigns" if report_type == "spCampaignsPlacement" else report_type
         group_by_map = {
-            "spCampaigns":          ["campaign"],
+            "spCampaigns": ["campaign"],
             "spCampaignsPlacement": ["campaign", "campaignPlacement"],
-            "spSearchTerm":         ["searchTerm"],
-            "spAdGroups":           ["adGroup"],
-            "spAdvertisedProduct":  ["advertiser"],
+            "spSearchTerm": ["searchTerm"],
+            "spAdGroups": ["adGroup"],
+            "spAdvertisedProduct": ["advertiser"],
         }
         ts = int(time.time())
-        configuration: Dict[str, Any] = {
+        configuration: dict[str, Any] = {
             "adProduct": "SPONSORED_PRODUCTS",
             "reportTypeId": report_type_id,
             "groupBy": group_by_map.get(report_type, ["campaign"]),
@@ -563,9 +603,11 @@ class AmazonAdsClient:
 
             await asyncio.sleep(self._REPORT_POLL_INTERVAL)
 
-        raise TimeoutError(f"Report {report_id} did not complete after {self._REPORT_POLL_MAX} polls.")
+        raise TimeoutError(
+            f"Report {report_id} did not complete after {self._REPORT_POLL_MAX} polls."
+        )
 
-    async def _download_report(self, url: str) -> List[Dict]:
+    async def _download_report(self, url: str) -> list[dict]:
         resp = await asyncio.to_thread(requests.get, url, timeout=60)
         resp.raise_for_status()
         raw = gzip.decompress(resp.content)
@@ -574,43 +616,43 @@ class AmazonAdsClient:
     # ── Ad-type config ────────────────────────────────────────────────────
     # Each entry describes how to construct a /reporting/reports request for
     # one sponsored-product type.  spend/orders/sales field names differ per type.
-    _AD_TYPE_CONFIG: Dict[str, Dict] = {
+    _AD_TYPE_CONFIG: dict[str, dict] = {
         "SP": {
-            "adProduct":    "SPONSORED_PRODUCTS",
+            "adProduct": "SPONSORED_PRODUCTS",
             "reportTypeId": "spCampaigns",
-            "groupBy":      ["campaign"],
-            "metrics":      ["spend", "clicks", "impressions", "purchases7d", "sales7d"],
-            "spend_field":  "spend",
+            "groupBy": ["campaign"],
+            "metrics": ["spend", "clicks", "impressions", "purchases7d", "sales7d"],
+            "spend_field": "spend",
             "orders_field": "purchases7d",
-            "sales_field":  "sales7d",
+            "sales_field": "sales7d",
         },
         "SB": {
-            "adProduct":    "SPONSORED_BRANDS",
+            "adProduct": "SPONSORED_BRANDS",
             "reportTypeId": "sbCampaigns",
-            "groupBy":      ["campaign"],
-            "metrics":      ["cost", "clicks", "impressions", "purchases14d", "sales14d"],
-            "spend_field":  "cost",
+            "groupBy": ["campaign"],
+            "metrics": ["cost", "clicks", "impressions", "purchases14d", "sales14d"],
+            "spend_field": "cost",
             "orders_field": "purchases14d",
-            "sales_field":  "sales14d",
+            "sales_field": "sales14d",
         },
         "SD": {
-            "adProduct":    "SPONSORED_DISPLAY",
+            "adProduct": "SPONSORED_DISPLAY",
             "reportTypeId": "sdCampaigns",
-            "groupBy":      ["campaign"],
-            "metrics":      ["cost", "clicks", "impressions", "purchases14d", "sales14d"],
-            "spend_field":  "cost",
+            "groupBy": ["campaign"],
+            "metrics": ["cost", "clicks", "impressions", "purchases14d", "sales14d"],
+            "spend_field": "cost",
             "orders_field": "purchases14d",
-            "sales_field":  "sales14d",
+            "sales_field": "sales14d",
         },
         "STV": {
-            "adProduct":    "SPONSORED_TELEVISION",
-            "reportTypeId": "stCampaigns",   # API uses "stCampaigns", not "stvCampaigns"
-            "groupBy":      ["campaign"],
+            "adProduct": "SPONSORED_TELEVISION",
+            "reportTypeId": "stCampaigns",  # API uses "stCampaigns", not "stvCampaigns"
+            "groupBy": ["campaign"],
             # STV reports no direct purchase attribution; omit orders/sales fields.
-            "metrics":      ["cost", "impressions"],
-            "spend_field":  "cost",
+            "metrics": ["cost", "impressions"],
+            "spend_field": "cost",
             "orders_field": None,
-            "sales_field":  None,
+            "sales_field": None,
         },
         # Product-level report types — used for per-ASIN order attribution (SB + SD).
         # SP is intentionally excluded: spPurchasedProduct groups by purchasedAsin
@@ -623,29 +665,37 @@ class AmazonAdsClient:
         # orders14d = 14-day attribution window (click + view-through).
         # No spend column in this report type.
         "SB_PRODUCT": {
-            "adProduct":    "SPONSORED_BRANDS",
+            "adProduct": "SPONSORED_BRANDS",
             "reportTypeId": "sbPurchasedProduct",
-            "groupBy":      ["purchasedAsin"],
-            "metrics":      ["purchasedAsin", "campaignId", "orders14d", "sales14d"],
-            "spend_field":  None,
+            "groupBy": ["purchasedAsin"],
+            "metrics": ["purchasedAsin", "campaignId", "orders14d", "sales14d"],
+            "spend_field": None,
             "orders_field": "orders14d",
-            "sales_field":  "sales14d",
-            "asin_field":   "purchasedAsin",
+            "sales_field": "sales14d",
+            "asin_field": "purchasedAsin",
         },
         # SD advertised product: reportTypeId=sdAdvertisedProduct, groupBy=["advertiser"].
         # ASIN field is "promotedAsin"; purchases are not broken out by attribution window
         # (no purchases14d) — "purchases" covers all attribution (click + view, ~14d).
         # Use "purchasesClicks" for click-only attribution comparable to SP's purchases7d.
         "SD_PRODUCT": {
-            "adProduct":    "SPONSORED_DISPLAY",
+            "adProduct": "SPONSORED_DISPLAY",
             "reportTypeId": "sdAdvertisedProduct",
-            "groupBy":      ["advertiser"],
-            "metrics":      ["promotedAsin", "cost", "clicks", "impressions",
-                             "purchases", "purchasesClicks", "sales", "salesClicks"],
-            "spend_field":  "cost",
+            "groupBy": ["advertiser"],
+            "metrics": [
+                "promotedAsin",
+                "cost",
+                "clicks",
+                "impressions",
+                "purchases",
+                "purchasesClicks",
+                "sales",
+                "salesClicks",
+            ],
+            "spend_field": "cost",
             "orders_field": "purchasesClicks",
-            "sales_field":  "salesClicks",
-            "asin_field":   "promotedAsin",
+            "sales_field": "salesClicks",
+            "asin_field": "promotedAsin",
         },
     }
 
@@ -656,7 +706,7 @@ class AmazonAdsClient:
         ad_type: str,
         start_date: str,
         end_date: str,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Create, poll, and download a SUMMARY campaign-level report for one ad type.
         Returns raw parsed records from the gzip-JSON payload.
@@ -671,13 +721,13 @@ class AmazonAdsClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        report_cfg: Dict[str, Any] = {
-            "adProduct":    cfg["adProduct"],
+        report_cfg: dict[str, Any] = {
+            "adProduct": cfg["adProduct"],
             "reportTypeId": cfg["reportTypeId"],
-            "groupBy":      cfg["groupBy"],
-            "columns":      cfg["metrics"],
-            "timeUnit":     "SUMMARY",
-            "format":       "GZIP_JSON",
+            "groupBy": cfg["groupBy"],
+            "columns": cfg["metrics"],
+            "timeUnit": "SUMMARY",
+            "format": "GZIP_JSON",
         }
         if cfg.get("filters"):
             report_cfg["filters"] = cfg["filters"]
@@ -695,7 +745,7 @@ class AmazonAdsClient:
             body = {
                 "name": f"{ad_type}_summary_{start_date}_{end_date}_{int(time.time())}",
                 "startDate": start_date,
-                "endDate":   end_date,
+                "endDate": end_date,
                 "configuration": report_cfg,
             }
             return await asyncio.to_thread(requests.post, url, json=body, headers=headers)
@@ -705,7 +755,9 @@ class AmazonAdsClient:
             report_id = result  # dup_id extracted from 425 body by _hook
         else:
             if not result.ok:
-                logger.warning(f"[{ad_type}] report creation failed {result.status_code}: {result.text[:300]}")
+                logger.warning(
+                    f"[{ad_type}] report creation failed {result.status_code}: {result.text[:300]}"
+                )
                 result.raise_for_status()
             report_id = result.json().get("reportId")
             if not report_id:
@@ -716,11 +768,11 @@ class AmazonAdsClient:
 
     async def get_ad_type_summary(
         self,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
         days: int = 30,
-        ad_types: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        ad_types: list[str] | None = None,
+    ) -> dict[str, Any]:
         """
         Fetch campaign-level SUMMARY reports for each ad type and compute
         cross-type spend share, clicks, ACOS, CTR, orders, sales.
@@ -760,7 +812,7 @@ class AmazonAdsClient:
         }
         """
         today = datetime.utcnow().date()
-        end   = end_date   or str(today - timedelta(days=1))
+        end = end_date or str(today - timedelta(days=1))
         start = start_date or str(today - timedelta(days=days))
 
         types = [t.upper() for t in (ad_types or ["SP", "SB", "SD"])]
@@ -780,67 +832,71 @@ class AmazonAdsClient:
 
         results = await asyncio.gather(*(_fetch_safe(t) for t in types))
 
-        by_type: Dict[str, Dict] = {}
-        errors:  Dict[str, str]  = {}
+        by_type: dict[str, dict] = {}
+        errors: dict[str, str] = {}
 
         for ad_type, records, error in results:
             if error:
                 errors[ad_type] = error
                 continue
             cfg = self._AD_TYPE_CONFIG[ad_type]
-            sf  = cfg["spend_field"]
-            of  = cfg["orders_field"]
-            vf  = cfg["sales_field"]
+            sf = cfg["spend_field"]
+            of = cfg["orders_field"]
+            vf = cfg["sales_field"]
 
-            spend  = sum(float(r.get(sf) or 0) for r in records) if sf else 0.0
-            clicks = sum(int(r.get("clicks")     or 0) for r in records)
-            impr   = sum(int(r.get("impressions") or 0) for r in records)
+            spend = sum(float(r.get(sf) or 0) for r in records) if sf else 0.0
+            clicks = sum(int(r.get("clicks") or 0) for r in records)
+            impr = sum(int(r.get("impressions") or 0) for r in records)
             orders = sum(int(r.get(of) or 0) for r in records) if of else 0
-            sales  = sum(float(r.get(vf) or 0) for r in records) if vf else 0.0
+            sales = sum(float(r.get(vf) or 0) for r in records) if vf else 0.0
 
             by_type[ad_type] = {
-                "spend":       round(spend,  2),
-                "clicks":      clicks,
+                "spend": round(spend, 2),
+                "clicks": clicks,
                 "impressions": impr,
-                "orders":      orders,
-                "sales":       round(sales, 2),
-                "acos_pct":    round(spend / sales * 100, 2) if sales > 0 else None,
-                "ctr_pct":     round(clicks / impr  * 100, 4) if impr  > 0 else None,
-                "cpc":         round(spend / clicks,        2) if clicks > 0 else None,
+                "orders": orders,
+                "sales": round(sales, 2),
+                "acos_pct": round(spend / sales * 100, 2) if sales > 0 else None,
+                "ctr_pct": round(clicks / impr * 100, 4) if impr > 0 else None,
+                "cpc": round(spend / clicks, 2) if clicks > 0 else None,
                 # share fields filled in below after totals are known
-                "spend_share_pct":  0.0,
+                "spend_share_pct": 0.0,
                 "clicks_share_pct": 0.0,
                 "campaign_count": len(records),
             }
 
         # Totals
-        total_spend  = sum(v["spend"]  for v in by_type.values())
+        total_spend = sum(v["spend"] for v in by_type.values())
         total_clicks = sum(v["clicks"] for v in by_type.values())
-        total_impr   = sum(v["impressions"] for v in by_type.values())
+        total_impr = sum(v["impressions"] for v in by_type.values())
         total_orders = sum(v["orders"] for v in by_type.values())
-        total_sales  = sum(v["sales"]  for v in by_type.values())
+        total_sales = sum(v["sales"] for v in by_type.values())
 
         # Back-fill share percentages
         for v in by_type.values():
-            v["spend_share_pct"]  = round(v["spend"]  / total_spend  * 100, 2) if total_spend  > 0 else 0.0
-            v["clicks_share_pct"] = round(v["clicks"] / total_clicks * 100, 2) if total_clicks > 0 else 0.0
+            v["spend_share_pct"] = (
+                round(v["spend"] / total_spend * 100, 2) if total_spend > 0 else 0.0
+            )
+            v["clicks_share_pct"] = (
+                round(v["clicks"] / total_clicks * 100, 2) if total_clicks > 0 else 0.0
+            )
 
-        total: Dict[str, Any] = {
-            "spend":       round(total_spend,  2),
-            "clicks":      total_clicks,
+        total: dict[str, Any] = {
+            "spend": round(total_spend, 2),
+            "clicks": total_clicks,
             "impressions": total_impr,
-            "orders":      total_orders,
-            "sales":       round(total_sales,  2),
-            "acos_pct":    round(total_spend / total_sales  * 100, 2) if total_sales  > 0 else None,
-            "ctr_pct":     round(total_clicks / total_impr  * 100, 4) if total_impr  > 0 else None,
-            "cpc":         round(total_spend  / total_clicks, 2)      if total_clicks > 0 else None,
+            "orders": total_orders,
+            "sales": round(total_sales, 2),
+            "acos_pct": round(total_spend / total_sales * 100, 2) if total_sales > 0 else None,
+            "ctr_pct": round(total_clicks / total_impr * 100, 4) if total_impr > 0 else None,
+            "cpc": round(total_spend / total_clicks, 2) if total_clicks > 0 else None,
         }
 
         return {
-            "period":   {"start_date": start, "end_date": end},
-            "by_type":  by_type,
-            "total":    total,
-            "errors":   errors,
+            "period": {"start_date": start, "end_date": end},
+            "by_type": by_type,
+            "total": total,
+            "errors": errors,
         }
 
     async def get_non_sp_orders_by_asin(
@@ -848,8 +904,8 @@ class AmazonAdsClient:
         asin: str,
         start_date: str,
         end_date: str,
-        ad_types: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        ad_types: list[str] | None = None,
+    ) -> dict[str, Any]:
         """
         Fetch SB and SD order counts for a specific ASIN using product-level reports.
 
@@ -882,29 +938,35 @@ class AmazonAdsClient:
 
         results = await asyncio.gather(*(_fetch_safe(t) for t in types))
 
-        out: Dict[str, Any] = {
-            "sb_ad_orders": None, "sb_ad_spend": None,
-            "sd_ad_orders": None, "sd_ad_spend": None,
+        out: dict[str, Any] = {
+            "sb_ad_orders": None,
+            "sb_ad_spend": None,
+            "sd_ad_orders": None,
+            "sd_ad_spend": None,
             "errors": {},
         }
         for ad_type, records, error in results:
             if error:
                 out["errors"][ad_type] = error
                 continue
-            cfg          = self._AD_TYPE_CONFIG[ad_type]
-            asin_field   = cfg["asin_field"]
+            cfg = self._AD_TYPE_CONFIG[ad_type]
+            asin_field = cfg["asin_field"]
             orders_field = cfg["orders_field"]
-            spend_field  = cfg["spend_field"]
-            asin_upper   = asin.upper()
+            spend_field = cfg["spend_field"]
+            asin_upper = asin.upper()
             matched = [r for r in records if (r.get(asin_field) or "").upper() == asin_upper]
-            orders  = sum(int(r.get(orders_field) or 0) for r in matched) if orders_field else 0
-            spend   = round(sum(float(r.get(spend_field) or 0) for r in matched), 2) if spend_field else None
+            orders = sum(int(r.get(orders_field) or 0) for r in matched) if orders_field else 0
+            spend = (
+                round(sum(float(r.get(spend_field) or 0) for r in matched), 2)
+                if spend_field
+                else None
+            )
             if ad_type == "SB_PRODUCT":
                 out["sb_ad_orders"] = orders
-                out["sb_ad_spend"]  = spend
+                out["sb_ad_spend"] = spend
             elif ad_type == "SD_PRODUCT":
                 out["sd_ad_orders"] = orders
-                out["sd_ad_spend"]  = spend
+                out["sd_ad_spend"] = spend
 
         logger.info(
             f"[non_sp_orders] {asin} ({start_date}→{end_date}): "
@@ -914,19 +976,19 @@ class AmazonAdsClient:
 
     # ── Change History ─────────────────────────────────────────────────────
 
-    _CH_BATCH_SIZE   = 10   # max campaign IDs per history request (API limit)
-    _CH_CONCURRENCY  = 1    # sequential batches — /history rate-limit is strict
+    _CH_BATCH_SIZE = 10  # max campaign IDs per history request (API limit)
+    _CH_CONCURRENCY = 1  # sequential batches — /history rate-limit is strict
 
     async def get_change_history(
         self,
         from_date: int,
         to_date: int,
-        campaign_ids: Optional[List[str]] = None,
-        event_types: Optional[Dict[str, Any]] = None,
+        campaign_ids: list[str] | None = None,
+        event_types: dict[str, Any] | None = None,
         count: int = 200,
         sort_direction: str = "DESC",
-        next_token: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        next_token: str | None = None,
+    ) -> dict[str, Any]:
         """
         Return change history for SP campaigns.
 
@@ -953,7 +1015,7 @@ class AmazonAdsClient:
         if int(to_date) - int(from_date) > _90_days_ms:
             raise ValueError(
                 f"Change history window exceeds 90 days: "
-                f"span={(int(to_date) - int(from_date)) // (24*3600*1000)} days"
+                f"span={(int(to_date) - int(from_date)) // (24 * 3600 * 1000)} days"
             )
 
         url = f"{self.base_url}/history"
@@ -963,27 +1025,30 @@ class AmazonAdsClient:
             "Amazon-Advertising-API-ClientId": self.auth.client_id,
             "Amazon-Advertising-API-Scope": self.auth.get_profile_id(),
             "Content-Type": "application/json",
-            "Accept": "application/vnd.historyresponse.v1.1+json" if needs_v11 else "application/json",
+            "Accept": "application/vnd.historyresponse.v1.1+json"
+            if needs_v11
+            else "application/json",
         }
 
         # Default event types. IN_BUDGET excluded — Amazon fires it automatically at midnight US
         # time on every budget-reset, making it equivalent to spend≈100%-of-cap; it carries no
         # intraday exhaustion timestamp and adds no signal beyond the 85%-threshold proxy already
         # used in _compute_campaign_budget_coverage. OUT_OF_BUDGET does not exist in this API.
-        default_et: Dict[str, Any] = {
-            "CAMPAIGN": {"filters": ["SMART_BIDDING_STRATEGY", "PLACEMENT_GROUP",
-                                     "BUDGET_AMOUNT", "STATUS"]},
+        default_et: dict[str, Any] = {
+            "CAMPAIGN": {
+                "filters": ["SMART_BIDDING_STRATEGY", "PLACEMENT_GROUP", "BUDGET_AMOUNT", "STATUS"]
+            },
             "AD_GROUP": {"filters": ["BID_AMOUNT", "STATUS"]},
-            "KEYWORD":  {"filters": ["STATUS"]},
+            "KEYWORD": {"filters": ["STATUS"]},
         }
         resolved_base = {**default_et, **(event_types or {})}
 
         count_clamped = min(max(50, count), 200)
-        base_fields: Dict[str, Any] = {
-            "count":    count_clamped,
+        base_fields: dict[str, Any] = {
+            "count": count_clamped,
             "fromDate": int(from_date),
-            "toDate":   int(to_date),
-            "sort":     {"direction": sort_direction.upper(), "key": "DATE"},
+            "toDate": int(to_date),
+            "sort": {"direction": sort_direction.upper(), "key": "DATE"},
         }
 
         def _history_is_retryable(resp: requests.Response) -> bool:
@@ -996,22 +1061,23 @@ class AmazonAdsClient:
             return False
 
         @exponential_backoff(
-            max_retries=5, base_delay=60.0, max_delay=300.0, jitter=False,
+            max_retries=5,
+            base_delay=60.0,
+            max_delay=300.0,
+            jitter=False,
             retry_on_status=(429,),
             is_retryable=_history_is_retryable,
         )
-        async def _post_with_retry(body_dict: Dict) -> Dict:
+        async def _post_with_retry(body_dict: dict) -> dict:
             body_bytes = json.dumps(body_dict).encode("utf-8")
-            resp = await asyncio.to_thread(
-                requests.post, url, data=body_bytes, headers=headers
-            )
+            resp = await asyncio.to_thread(requests.post, url, data=body_bytes, headers=headers)
             resp.raise_for_status()
             return resp.json()
 
-        async def _paginate(initial_body: Dict, label: str = "") -> List[Dict]:
+        async def _paginate(initial_body: dict, label: str = "") -> list[dict]:
             """Exhaust all pages for a given request body."""
-            events: List[Dict] = []
-            token: Optional[str] = None
+            events: list[dict] = []
+            token: str | None = None
             for page in range(20):
                 body = dict(initial_body)
                 if token:
@@ -1023,7 +1089,7 @@ class AmazonAdsClient:
                 total = data.get("totalRecords", len(events))
                 if label:
                     logger.debug(
-                        f"Change history {label} page {page+1}: "
+                        f"Change history {label} page {page + 1}: "
                         f"{len(page_events)} events (cum {len(events)}/{total})"
                     )
                 if not token or len(events) >= total:
@@ -1038,20 +1104,19 @@ class AmazonAdsClient:
             # using parents=[{id, type:CAMPAIGN}].  Max _CH_CONCURRENCY in
             # flight at once to stay well below rate-limit thresholds.
             batches = [
-                ids[i: i + self._CH_BATCH_SIZE]
-                for i in range(0, len(ids), self._CH_BATCH_SIZE)
+                ids[i : i + self._CH_BATCH_SIZE] for i in range(0, len(ids), self._CH_BATCH_SIZE)
             ]
             sem = asyncio.Semaphore(self._CH_CONCURRENCY)
 
-            async def _fetch_batch(batch: List[str]) -> List[Dict]:
+            async def _fetch_batch(batch: list[str]) -> list[dict]:
                 parents = [{"campaignId": cid} for cid in batch]
-                et_cfg  = {k: {**v, "parents": parents} for k, v in resolved_base.items()}
-                body    = {**base_fields, "eventTypes": et_cfg}
+                et_cfg = {k: {**v, "parents": parents} for k, v in resolved_base.items()}
+                body = {**base_fields, "eventTypes": et_cfg}
                 async with sem:
                     return await _paginate(body)
 
-            results   = await asyncio.gather(*(_fetch_batch(b) for b in batches))
-            all_events: List[Dict] = [ev for batch_evs in results for ev in batch_evs]
+            results = await asyncio.gather(*(_fetch_batch(b) for b in batches))
+            all_events: list[dict] = [ev for batch_evs in results for ev in batch_evs]
 
             # Re-sort globally (each batch is ordered; merge needs a global sort)
             desc = sort_direction.upper() == "DESC"
@@ -1066,8 +1131,8 @@ class AmazonAdsClient:
         else:
             # ── Profile-wide fallback ─────────────────────────────────────
             parents = [{"useProfileIdAdvertiser": True}]
-            et_cfg  = {k: {**v, "parents": parents} for k, v in resolved_base.items()}
-            body    = {**base_fields, "eventTypes": et_cfg}
+            et_cfg = {k: {**v, "parents": parents} for k, v in resolved_base.items()}
+            body = {**base_fields, "eventTypes": et_cfg}
             if next_token:
                 body["nextToken"] = next_token
             all_events = await _paginate(body, label="profile-wide")
@@ -1075,9 +1140,11 @@ class AmazonAdsClient:
 
         return {"events": all_events, "total": len(all_events)}
 
+
 # ── module-level parsers ────────────────────────────────────────────────────
 
-def _parse_campaign(c: Dict) -> Dict[str, Any]:
+
+def _parse_campaign(c: dict) -> dict[str, Any]:
     # v3 uses dynamicBidding instead of bidding
     db = c.get("dynamicBidding", {})
     adjustments = db.get("placementBidding", [])
@@ -1110,7 +1177,7 @@ def _parse_campaign(c: Dict) -> Dict[str, Any]:
     }
 
 
-def _parse_ad_group(g: Dict) -> Dict[str, Any]:
+def _parse_ad_group(g: dict) -> dict[str, Any]:
     return {
         "ad_group_id": g.get("adGroupId"),
         "campaign_id": g.get("campaignId"),
@@ -1120,7 +1187,7 @@ def _parse_ad_group(g: Dict) -> Dict[str, Any]:
     }
 
 
-def _parse_keyword(k: Dict) -> Dict[str, Any]:
+def _parse_keyword(k: dict) -> dict[str, Any]:
     return {
         "keyword_id": k.get("keywordId"),
         "ad_group_id": k.get("adGroupId"),
@@ -1132,7 +1199,7 @@ def _parse_keyword(k: Dict) -> Dict[str, Any]:
     }
 
 
-def _parse_report_record(r: Dict, report_type: str) -> Dict[str, Any]:
+def _parse_report_record(r: dict, report_type: str) -> dict[str, Any]:
     # spSearchTerm, spCampaignsPlacement, spAdvertisedProduct use "cost"; spCampaigns uses "spend"
     spend = r.get("spend") or r.get("cost") or 0
     sales = r.get("sales7d", 0) or 0
@@ -1144,7 +1211,7 @@ def _parse_report_record(r: Dict, report_type: str) -> Dict[str, Any]:
 
     base = {
         "campaign_id": r.get("campaignId"),
-        "date":        r.get("date"),
+        "date": r.get("date"),
         "impressions": impressions,
         "clicks": clicks,
         "spend": spend,
@@ -1154,27 +1221,33 @@ def _parse_report_record(r: Dict, report_type: str) -> Dict[str, Any]:
         "ctr": ctr,
     }
     if report_type == "spSearchTerm":
-        base.update({
-            "keyword_text": r.get("keyword"),
-            "match_type":   r.get("matchType"),
-            "keyword_bid":  r.get("keywordBid"),
-            "ad_group_id":  r.get("adGroupId"),
-            "search_term":  r.get("searchTerm"),
-        })
+        base.update(
+            {
+                "keyword_text": r.get("keyword"),
+                "match_type": r.get("matchType"),
+                "keyword_bid": r.get("keywordBid"),
+                "ad_group_id": r.get("adGroupId"),
+                "search_term": r.get("searchTerm"),
+            }
+        )
     elif report_type == "spCampaignsPlacement":
-        base.update({
-            "campaign_name":    r.get("campaignName"),
-            "placement":        r.get("placementClassification"),
-            "bidding_strategy": r.get("campaignBiddingStrategy"),
-            "daily_budget":     r.get("campaignBudgetAmount"),
-            "cpc":              r.get("costPerClick"),
-        })
+        base.update(
+            {
+                "campaign_name": r.get("campaignName"),
+                "placement": r.get("placementClassification"),
+                "bidding_strategy": r.get("campaignBiddingStrategy"),
+                "daily_budget": r.get("campaignBudgetAmount"),
+                "cpc": r.get("costPerClick"),
+            }
+        )
     elif report_type == "spAdvertisedProduct":
-        base.update({
-            "advertised_asin": r.get("advertisedAsin"),
-            "campaign_id":     r.get("campaignId"),
-            "campaign_name":   r.get("campaignName"),
-        })
+        base.update(
+            {
+                "advertised_asin": r.get("advertisedAsin"),
+                "campaign_id": r.get("campaignId"),
+                "campaign_name": r.get("campaignName"),
+            }
+        )
     else:
         base["campaign_name"] = r.get("campaignName")
     return base

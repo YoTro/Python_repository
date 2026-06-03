@@ -10,8 +10,8 @@ Run:
 """
 
 import importlib
-import pytest
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Module list — every importable module in src/
@@ -185,21 +185,13 @@ _REGISTRY = [
     "src.registry.prompts",
 ]
 
-ALL_MODULES = (
-    _CORE
-    + _GATEWAY
-    + _INTELLIGENCE
-    + _WORKFLOWS
-    + _AGENTS
-    + _JOBS
-    + _MCP
-    + _REGISTRY
-)
+ALL_MODULES = _CORE + _GATEWAY + _INTELLIGENCE + _WORKFLOWS + _AGENTS + _JOBS + _MCP + _REGISTRY
 
 
 # ---------------------------------------------------------------------------
 # Parametrized import test
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("module", ALL_MODULES)
 def test_module_importable(module):
@@ -211,15 +203,17 @@ def test_module_importable(module):
 # Public API surface tests — spot-check __init__ exports
 # ---------------------------------------------------------------------------
 
+
 def test_errors_public_api():
     from src.core.errors import (
-        AWSBaseError, ScraperError, ExtractorError, ConfigError,
-        WorkflowError, StepError, RetryableError, FatalError,
-        CheckpointError, BatchPendingError, JobSuspendedError,
-        ErrorCode, classify_http, classify_api_code,
-        classify_response_message, is_retryable, is_auth_error,
-        default_retry_after,
+        AWSBaseError,
+        BatchPendingError,
+        ErrorCode,
+        JobSuspendedError,
+        RetryableError,
+        is_retryable,
     )
+
     assert issubclass(RetryableError, AWSBaseError)
     assert issubclass(BatchPendingError, AWSBaseError)
     assert issubclass(JobSuspendedError, AWSBaseError)
@@ -229,7 +223,8 @@ def test_errors_public_api():
 
 
 def test_classify_http_provider_override():
-    from src.core.errors import classify_http, ErrorCode
+    from src.core.errors import ErrorCode, classify_http
+
     # Standard 406 → INVALID_HEADER
     assert classify_http(406) == ErrorCode.INVALID_HEADER
     # Gemini Exchange override: 406 → BILLING_INSUFFICIENT
@@ -241,7 +236,8 @@ def test_classify_http_provider_override():
 
 
 def test_classify_api_code():
-    from src.core.errors import classify_api_code, ErrorCode
+    from src.core.errors import ErrorCode, classify_api_code
+
     assert classify_api_code(-1, "lingxing") == ErrorCode.AUTH_TOKEN_EXPIRED
     assert classify_api_code(234042, "feishu") == ErrorCode.STORAGE_FULL
     assert classify_api_code("ERR_GLOBAL_403", "sellersprite") == ErrorCode.AUTH_IP_BLOCKED
@@ -250,25 +246,24 @@ def test_classify_api_code():
 
 
 def test_classify_response_message():
-    from src.core.errors import classify_response_message, ErrorCode
-    assert classify_response_message(
-        "Scope header is missing", "amazon_ads"
-    ) == ErrorCode.AUTH_SCOPE_MISSING
-    assert classify_response_message(
-        "authentication fails. wrong api key provided", "deepseek"
-    ) == ErrorCode.AUTH_FAILED
-    assert classify_response_message(
-        "market not open", "gemini_exchange"
-    ) == ErrorCode.SERVER_ERROR
-    assert classify_response_message(
-        "no match", "amazon_ads"
-    ) == ErrorCode.UNKNOWN
+    from src.core.errors import ErrorCode, classify_response_message
+
+    assert (
+        classify_response_message("Scope header is missing", "amazon_ads")
+        == ErrorCode.AUTH_SCOPE_MISSING
+    )
+    assert (
+        classify_response_message("authentication fails. wrong api key provided", "deepseek")
+        == ErrorCode.AUTH_FAILED
+    )
+    assert classify_response_message("market not open", "gemini_exchange") == ErrorCode.SERVER_ERROR
+    assert classify_response_message("no match", "amazon_ads") == ErrorCode.UNKNOWN
 
 
 def test_workflow_registry_not_empty():
-    from src.workflows import registry as reg_mod
     # Importing definitions triggers @WorkflowRegistry.register decorators
     import src.workflows.definitions  # noqa: F401
     from src.workflows.registry import WorkflowRegistry
+
     names = WorkflowRegistry.list_workflows()
     assert len(names) > 0, "WorkflowRegistry must contain at least one workflow"

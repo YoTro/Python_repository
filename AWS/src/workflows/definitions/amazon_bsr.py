@@ -3,19 +3,22 @@ Amazon BSR Workflow Definition
 
 Extracts Best Sellers Rank (BSR) products from a given category URL.
 """
+
 from __future__ import annotations
+
 import hashlib as _hl
 import logging
-from src.workflows.registry import WorkflowRegistry
-from src.workflows.engine import Workflow
-from src.workflows.steps.process import ProcessStep
-from src.workflows.steps.base import WorkflowContext, ComputeTarget
+
 from src.core.data_cache import data_cache as _data_cache
+from src.workflows.engine import Workflow
+from src.workflows.registry import WorkflowRegistry
+from src.workflows.steps.base import ComputeTarget, WorkflowContext
+from src.workflows.steps.process import ProcessStep
 
 logger = logging.getLogger(__name__)
 
 _L2_DOMAIN = "amazon_bsr"
-_TTL_BSR   = 1800   # 30 min — Amazon BSR refreshes approximately every hour
+_TTL_BSR = 1800  # 30 min — Amazon BSR refreshes approximately every hour
 
 
 def _l2_key(ctx: WorkflowContext, *parts) -> str:
@@ -33,7 +36,6 @@ def _l2_set(ctx: WorkflowContext, value, *parts) -> None:
 
 @WorkflowRegistry.register("amazon_bsr")
 def build_amazon_bsr(config: dict) -> Workflow:
-
     async def _extract_bsr(items: list, ctx: WorkflowContext) -> list:
         url = config.get("amazon_url")
         if not url:
@@ -49,18 +51,19 @@ def build_amazon_bsr(config: dict) -> Workflow:
             results = await ctx.mcp.call_tool_json("get_amazon_bestsellers", {"url": url})
         else:
             from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
+
             extractor = BestSellersExtractor()
             results = await extractor.get_bestsellers(url)
 
         _l2_set(ctx, results, "bsr", url_hash)
-        logger.info(f"[amazon_bsr] Fetched {len(results) if isinstance(results, list) else '?'} items, cached url_hash={url_hash}")
+        logger.info(
+            f"[amazon_bsr] Fetched {len(results) if isinstance(results, list) else '?'} items, cached url_hash={url_hash}"
+        )
         return results
 
     steps = [
         ProcessStep(
-            name="extract_bestsellers",
-            fn=_extract_bsr,
-            compute_target=ComputeTarget.PURE_PYTHON
+            name="extract_bestsellers", fn=_extract_bsr, compute_target=ComputeTarget.PURE_PYTHON
         )
     ]
 

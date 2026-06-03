@@ -1,15 +1,17 @@
-import pytest
 import asyncio
-import os
 import json
-import tempfile
 import logging
-from unittest.mock import MagicMock
+import os
+import tempfile
+
+import pytest
+
 from src.entry.feishu.client import FeishuClient
 from src.intelligence.dto import LLMResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 @pytest.mark.asyncio
 async def test_fixes():
@@ -17,7 +19,7 @@ async def test_fixes():
     Comprehensive test for recent Feishu and Workflow fixes.
     """
     client = FeishuClient()
-    
+
     print("\n--- 1. Testing Subscriptable Fix (Bitable Creation) ---")
     # This might fail if no token is set, but we want to see if the marshaling logic works
     res = client.create_bitable("Test_Fix_Table")
@@ -32,10 +34,10 @@ async def test_fixes():
         print(f"Skipping bitable functional check (Auth issue): {res.get('error')}")
 
     print("\n--- 2. Testing File Upload Fix (Error 234001) ---")
-    with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode='w', encoding='utf-8') as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w", encoding="utf-8") as tmp:
         tmp.write("# Test Fix\nContent should be stream.")
         tmp_path = tmp.name
-    
+
     try:
         upload_res = client.upload_file(tmp_path, "Fix_Verify.md", file_type="stream")
         if upload_res.get("success"):
@@ -50,12 +52,9 @@ async def test_fixes():
     print("\n--- 3. Testing Content Extraction Fix (LLMResponse check) ---")
     # Mock an LLMResponse object as returned by ProcessStep
     mock_response = LLMResponse(
-        text="Real Insight Content",
-        provider_name="gemini",
-        model_name="1.5-pro",
-        token_usage={}
+        text="Real Insight Content", provider_name="gemini", model_name="1.5-pro", token_usage={}
     )
-    
+
     # Logic from _prepare_report_artifact
     report_data = mock_response
     report_text = None
@@ -65,11 +64,12 @@ async def test_fixes():
         report_text = report_data.get("text")
     else:
         report_text = str(report_data)
-    
+
     print(f"Extracted Text: '{report_text}'")
     assert report_text == "Real Insight Content"
     assert "LLMResponse" not in report_text
     print("✅ Extraction Logic Verified!")
+
 
 if __name__ == "__main__":
     asyncio.run(test_fixes())

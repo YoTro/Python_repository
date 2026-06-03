@@ -1,13 +1,15 @@
 from __future__ import annotations
+
 import asyncio
+import json
 import logging
 import random
 import re
-import json
-from typing import Optional
+
 from bs4 import BeautifulSoup
-from src.core.scraper import AmazonBaseScraper
+
 from src.core.models.review import Review
+from src.core.scraper import AmazonBaseScraper
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +25,14 @@ class CommentsExtractor(AmazonBaseScraper):
         all_reviews = []
         next_page_token = None
         for page in range(1, max_pages + 1):
-            reviews, next_page_token = await self._fetch_reviews_via_ajax(asin, page, next_page_token)
+            reviews, next_page_token = await self._fetch_reviews_via_ajax(
+                asin, page, next_page_token
+            )
             if reviews is None:  # API failed, fallback to HTML
                 logger.warning(f"AJAX failed on page {page}, falling back to HTML scraping...")
-                reviews, next_page_token = await self._fetch_reviews_via_html(asin, page, next_page_token)
+                reviews, next_page_token = await self._fetch_reviews_via_html(
+                    asin, page, next_page_token
+                )
 
             if not reviews:
                 break
@@ -36,7 +42,7 @@ class CommentsExtractor(AmazonBaseScraper):
                 await asyncio.sleep(random.uniform(1.0, 2.5))
         return all_reviews
 
-    def _extract_next_page_token(self, soup: BeautifulSoup) -> Optional[str]:
+    def _extract_next_page_token(self, soup: BeautifulSoup) -> str | None:
         """Extract nextPageToken from pagination section."""
         # Method 1: Look for pagination 'Next' link
         next_li = soup.find("li", class_="a-last")
@@ -61,13 +67,15 @@ class CommentsExtractor(AmazonBaseScraper):
 
         return None
 
-    async def _acquire_csrf_token(self, asin: str) -> tuple[Optional[str], Optional[str]]:
+    async def _acquire_csrf_token(self, asin: str) -> tuple[str | None, str | None]:
         """
         Visit the product reviews page to let Amazon set the anti-csrftoken-a2z cookie via JS.
         Since curl_cffi doesn't execute JS, we parse the token from the HTML meta/script tags instead.
         Also extracts the initial nextPageToken for pagination.
         """
-        reviews_url = f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_dp_d_show_all_btm?ie=UTF8"
+        reviews_url = (
+            f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_dp_d_show_all_btm?ie=UTF8"
+        )
         html = await self.fetch(reviews_url)
         if not html:
             return None, None
@@ -78,19 +86,19 @@ class CommentsExtractor(AmazonBaseScraper):
 
         # Try to find the CSRF token embedded in the page HTML
         csrf_token = None
-        
+
         # Pattern 1: JSON-like config
         match = re.search(r'"csrfToken"\s*:\s*"([^"]+)"', html)
         if match:
             csrf_token = match.group(1)
-            #logger.info("Acquired CSRF token from 'csrfToken' JSON.")
-            
+            # logger.info("Acquired CSRF token from 'csrfToken' JSON.")
+
         # Pattern 2: anti-csrftoken-a2z explicit name
         if not csrf_token:
             match = re.search(r'anti-csrftoken-a2z["\s:]+([A-Za-z0-9%+/=]+)', html)
             if match:
                 csrf_token = match.group(1)
-                #logger.info("Acquired CSRF token from 'anti-csrftoken-a2z' string.")
+                # logger.info("Acquired CSRF token from 'anti-csrftoken-a2z' string.")
 
         # Pattern 3: Hidden input
         if not csrf_token:
@@ -98,7 +106,7 @@ class CommentsExtractor(AmazonBaseScraper):
             token_input = soup.find("input", {"name": "anti-csrftoken-a2z"})
             if token_input:
                 csrf_token = token_input.get("value")
-                #logger.info("Acquired CSRF token from hidden input.")
+                # logger.info("Acquired CSRF token from hidden input.")
 
         # If still missing, check session cookies
         if not csrf_token:
@@ -108,20 +116,20 @@ class CommentsExtractor(AmazonBaseScraper):
 
         # Fallback: check the login page as suggested by user
         if not csrf_token:
-            #logger.info("CSRF token not found on reviews page, checking login page...")
+            # logger.info("CSRF token not found on reviews page, checking login page...")
             login_url = "https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2F%3Fref_%3Dnav_signin&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
             login_html = await self.fetch(login_url)
             if login_html:
                 match = re.search(r'anti-csrftoken-a2z["\s:]+([A-Za-z0-9%+/=]+)', login_html)
                 if match:
                     csrf_token = match.group(1)
-                    #logger.info("Acquired CSRF token from login page.")
+                    # logger.info("Acquired CSRF token from login page.")
                 else:
                     soup = BeautifulSoup(login_html, "html.parser")
                     token_input = soup.find("input", {"name": "anti-csrftoken-a2z"})
                     if token_input:
                         csrf_token = token_input.get("value")
-                        #logger.info("Acquired CSRF token from login page hidden input.")
+                        # logger.info("Acquired CSRF token from login page hidden input.")
 
         if not csrf_token:
             logger.warning("Failed to find CSRF token in HTML or cookies. AJAX will likely fail.")
@@ -131,7 +139,9 @@ class CommentsExtractor(AmazonBaseScraper):
 
         return csrf_token, next_token
 
-    async def _fetch_reviews_via_ajax(self, asin: str, page: int, next_page_token: Optional[str] = None) -> tuple[Optional[list[Review]], Optional[str]]:
+    async def _fetch_reviews_via_ajax(
+        self, asin: str, page: int, next_page_token: str | None = None
+    ) -> tuple[list[Review] | None, str | None]:
         """
         Attempt to fetch reviews using the undocumented AJAX endpoint.
         Returns (None, None) on failure to signal a fallback.
@@ -149,7 +159,9 @@ class CommentsExtractor(AmazonBaseScraper):
                 return None, None
 
             url = f"https://www.amazon.com/portal/customer-reviews/ajax/reviews/get/ref=cm_cr_arp_d_paging_btm_next_{page}"
-            referrer = f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_dp_d_show_all_btm?ie=UTF8"
+            referrer = (
+                f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_dp_d_show_all_btm?ie=UTF8"
+            )
             if next_page_token:
                 referrer += f"&nextPageToken={next_page_token}"
 
@@ -207,7 +219,9 @@ class CommentsExtractor(AmazonBaseScraper):
                     if isinstance(data, list) and len(data) >= 3:
                         if data[0] == "append" and data[1] == "#cm_cr-review_list":
                             html_content += data[2]
-                        elif (data[0] == "set" or data[0] == "update") and data[1] == "#cm_cr-pagination_bar":
+                        elif (data[0] == "set" or data[0] == "update") and data[
+                            1
+                        ] == "#cm_cr-pagination_bar":
                             pagination_soup = BeautifulSoup(data[2], "html.parser")
                             next_token = self._extract_next_page_token(pagination_soup)
                 except (json.JSONDecodeError, IndexError):
@@ -229,7 +243,9 @@ class CommentsExtractor(AmazonBaseScraper):
             logger.error(f"Error in AJAX review fetch: {e}")
             return None, None
 
-    async def _fetch_reviews_via_html(self, asin: str, page: int, next_page_token: Optional[str] = None) -> tuple[list[Review], Optional[str]]:
+    async def _fetch_reviews_via_html(
+        self, asin: str, page: int, next_page_token: str | None = None
+    ) -> tuple[list[Review], str | None]:
         """
         Fallback method to scrape the full HTML review page.
         """
@@ -243,7 +259,9 @@ class CommentsExtractor(AmazonBaseScraper):
 
             # Detect actual login wall (not just nav bar signin links)
             if 'name="password"' in html_content or 'id="ap_password"' in html_content:
-                logger.error(f"LOGIN REQUIRED (HTML Fallback): Amazon is requesting login for {asin}.")
+                logger.error(
+                    f"LOGIN REQUIRED (HTML Fallback): Amazon is requesting login for {asin}."
+                )
                 return [], None
 
             soup = BeautifulSoup(html_content, "html.parser")
@@ -263,7 +281,8 @@ class CommentsExtractor(AmazonBaseScraper):
                 author = el.find("span", class_="a-profile-name").get_text(strip=True)
                 rating = int(
                     re.search(
-                        r"(\d)", el.find("i", {"data-hook": "review-star-rating"}).get_text(strip=True)
+                        r"(\d)",
+                        el.find("i", {"data-hook": "review-star-rating"}).get_text(strip=True),
                     ).group(1)
                 )
                 title = el.find("a", {"data-hook": "review-title"}).get_text(strip=True)

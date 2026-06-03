@@ -2,7 +2,8 @@ import asyncio
 import functools
 import logging
 import random
-from typing import Any, Callable, Optional, Tuple, Type
+from collections.abc import Callable
+from typing import Any
 
 import requests
 
@@ -15,11 +16,11 @@ def exponential_backoff(
     max_retries: int = 5,
     base_delay: float = 1.0,
     max_delay: float = 60.0,
-    retry_on_status: Tuple[int, ...] = (429,),
-    retry_on_exceptions: Tuple[Type[Exception], ...] = (requests.RequestException,),
+    retry_on_status: tuple[int, ...] = (429,),
+    retry_on_exceptions: tuple[type[Exception], ...] = (requests.RequestException,),
     jitter: bool = True,
-    is_retryable: Optional[Callable[[requests.Response], bool]] = None,
-    response_hook: Optional[Callable[[requests.Response], Any]] = None,
+    is_retryable: Callable[[requests.Response], bool] | None = None,
+    response_hook: Callable[[requests.Response], Any] | None = None,
 ):
     """
     Decorator for async functions to perform exponential backoff retries.
@@ -41,6 +42,7 @@ def exponential_backoff(
         • Return _SENTINEL (default)    → proceed with normal retry/return logic.
         Import the sentinel as ``from src.core.utils.decorators import EARLY_RETURN``.
     """
+
     def decorator(func: Callable):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
@@ -64,7 +66,7 @@ def exponential_backoff(
 
                         if should_retry:
                             if attempt < max_retries:
-                                delay = min(max_delay, base_delay * (2 ** attempt))
+                                delay = min(max_delay, base_delay * (2**attempt))
                                 if jitter:
                                     delay *= 0.5 + random.random()
                                 logger.warning(
@@ -89,10 +91,12 @@ def exponential_backoff(
                             raise
 
                     if attempt == max_retries:
-                        logger.error(f"Max retries reached for {func.__name__} after exception: {e}")
+                        logger.error(
+                            f"Max retries reached for {func.__name__} after exception: {e}"
+                        )
                         raise
 
-                    delay = min(max_delay, base_delay * (2 ** attempt))
+                    delay = min(max_delay, base_delay * (2**attempt))
                     if jitter:
                         delay *= 0.5 + random.random()
                     logger.warning(
@@ -105,6 +109,7 @@ def exponential_backoff(
                 raise last_exception
 
         return wrapper
+
     return decorator
 
 

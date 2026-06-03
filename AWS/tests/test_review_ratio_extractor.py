@@ -1,18 +1,21 @@
 from __future__ import annotations
+
 """
 Unit tests for ReviewRatioExtractor.
 
 All tests mock AmazonBaseScraper.fetch to avoid real network calls.
 """
 
-import pytest
 from unittest.mock import AsyncMock, patch
-from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
 
+import pytest
+
+from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _patch_fetch(html: str | None):
     """Patch AmazonBaseScraper.fetch to return the given HTML (or None)."""
@@ -26,8 +29,8 @@ ASIN = "B0CTQDTF1V"
 # Primary path: data-hook="cr-filter-info-review-rating-count"
 # ---------------------------------------------------------------------------
 
-class TestPrimaryPath:
 
+class TestPrimaryPath:
     @pytest.mark.asyncio
     async def test_both_counts_present(self):
         html = """
@@ -120,8 +123,8 @@ class TestPrimaryPath:
 # Fallback A: bare regex on raw HTML
 # ---------------------------------------------------------------------------
 
-class TestFallbackA:
 
+class TestFallbackA:
     @pytest.mark.asyncio
     async def test_raw_html_regex_fallback(self):
         """No data-hook element, but 'global ratings' text exists elsewhere in page."""
@@ -136,8 +139,8 @@ class TestFallbackA:
 # Fallback B: cr-filter-info-section pagination text
 # ---------------------------------------------------------------------------
 
-class TestFallbackB:
 
+class TestFallbackB:
     @pytest.mark.asyncio
     async def test_pagination_written_reviews(self):
         """No primary element; written count extracted from filter-info-section."""
@@ -158,8 +161,8 @@ class TestFallbackB:
 # Fallback C: legacy acrCustomerReviewText span
 # ---------------------------------------------------------------------------
 
-class TestFallbackC:
 
+class TestFallbackC:
     @pytest.mark.asyncio
     async def test_legacy_acr_span(self):
         """No other signals; global ratings parsed from legacy /dp/ span."""
@@ -176,8 +179,8 @@ class TestFallbackC:
 # Edge cases
 # ---------------------------------------------------------------------------
 
-class TestEdgeCases:
 
+class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_fetch_returns_none(self):
         with _patch_fetch(None):

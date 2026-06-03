@@ -1,12 +1,15 @@
 from __future__ import annotations
+
 import datetime
 import logging
 import math
 import statistics
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any
+
 from src.workflows.config import merge_config
 
 logger = logging.getLogger(__name__)
+
 
 class CategoryMonopolyAnalyzer:
     """
@@ -14,19 +17,21 @@ class CategoryMonopolyAnalyzer:
     based on Top 100 BSR data, seller details, and keyword traffic.
     """
 
-    def __init__(self, custom_weights: Optional[Dict[str, float]] = None):
+    def __init__(self, custom_weights: dict[str, float] | None = None):
         config = merge_config("category_monopoly_analysis")
         self.weights = custom_weights or config.get("weights", {})
         self.thresholds = config.get("thresholds", {})
 
-    def analyze(self,
-                products: List[Dict[str, Any]],
-                keyword_data: Optional[Dict[str, Any]] = None,
-                ad_data: Optional[Dict[str, Any]] = None,
-                external_data: Optional[Dict[str, Any]] = None,
-                historical_data: Optional[Dict[str, List[Dict[str, Any]]]] = None,
-                bsr_snapshots: Optional[Dict[str, List[Dict[str, Any]]]] = None,
-                keyword_weekly_trends: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def analyze(
+        self,
+        products: list[dict[str, Any]],
+        keyword_data: dict[str, Any] | None = None,
+        ad_data: dict[str, Any] | None = None,
+        external_data: dict[str, Any] | None = None,
+        historical_data: dict[str, list[dict[str, Any]]] | None = None,
+        bsr_snapshots: dict[str, list[dict[str, Any]]] | None = None,
+        keyword_weekly_trends: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Main analysis entry point.
 
@@ -55,53 +60,82 @@ class CategoryMonopolyAnalyzer:
         social_score, deal_score = self._analyze_external_intensity(external_data)
         churn_result = self._analyze_market_churn(sorted_products, historical_data)
         if keyword_weekly_trends:
-            seasonality_result = self._analyze_seasonality_from_keyword_trends(keyword_weekly_trends)
+            seasonality_result = self._analyze_seasonality_from_keyword_trends(
+                keyword_weekly_trends
+            )
         else:
             seasonality_result = self._analyze_seasonality(historical_data)
         bsr_churn_result = self._analyze_bsr_churn(bsr_snapshots or {})
 
         metrics = {
-            "sales_curve_top3": sales_scores["top3_concentration"], "sales_survival_space": sales_scores["survival_space"],
-            "brand_concentration": brand_score, "seller_background": seller_score, "review_curve": review_score,
-            "keyword_traffic": keyword_score, "price_compression": price_score, "ad_traffic_ratio": ad_score,
-            "social_promotion_intensity": social_score, "deal_promotion_intensity": deal_score
+            "sales_curve_top3": sales_scores["top3_concentration"],
+            "sales_survival_space": sales_scores["survival_space"],
+            "brand_concentration": brand_score,
+            "seller_background": seller_score,
+            "review_curve": review_score,
+            "keyword_traffic": keyword_score,
+            "price_compression": price_score,
+            "ad_traffic_ratio": ad_score,
+            "social_promotion_intensity": social_score,
+            "deal_promotion_intensity": deal_score,
         }
 
         total_score, details = self._calculate_weighted_score(metrics)
-        status = self._interpret_score(total_score, churn_result, seasonality_result, bsr_churn_result)
+        status = self._interpret_score(
+            total_score, churn_result, seasonality_result, bsr_churn_result
+        )
 
         return {
-            "overall_score": round(total_score, 2), "status": status, "dimension_details": details,
+            "overall_score": round(total_score, 2),
+            "status": status,
+            "dimension_details": details,
             "summary_metrics": {
-                "cr3": sales_scores.get("cr3"), "price_cv": sales_scores.get("price_cv"),
-                "avg_rating": sales_scores.get("avg_rating")
+                "cr3": sales_scores.get("cr3"),
+                "price_cv": sales_scores.get("price_cv"),
+                "avg_rating": sales_scores.get("avg_rating"),
             },
             "niche_benchmarks": {
-                "median_price": statistics.median([p.get("price", 0) for p in products if p.get("price", 0) > 0]) if products else 0,
-                "avg_reviews_top10": int(statistics.mean([p.get("review_count", 0) for p in sorted_products[:10]])) if len(sorted_products) >= 10 else 0,
-                "avg_reviews_bottom50": int(statistics.mean([p.get("review_count", 0) for p in sorted_products[50:]])) if len(sorted_products) > 50 else 0,
-                "total_estimated_monthly_units": int(sum(p.get("sales", 0) for p in products))
+                "median_price": statistics.median(
+                    [p.get("price", 0) for p in products if p.get("price", 0) > 0]
+                )
+                if products
+                else 0,
+                "avg_reviews_top10": int(
+                    statistics.mean([p.get("review_count", 0) for p in sorted_products[:10]])
+                )
+                if len(sorted_products) >= 10
+                else 0,
+                "avg_reviews_bottom50": int(
+                    statistics.mean([p.get("review_count", 0) for p in sorted_products[50:]])
+                )
+                if len(sorted_products) > 50
+                else 0,
+                "total_estimated_monthly_units": int(sum(p.get("sales", 0) for p in products)),
             },
             "market_churn": churn_result,
             "seasonality": seasonality_result,
             "bsr_churn": bsr_churn_result,
         }
 
-    def _calculate_weighted_score(self, metrics: Dict[str, float]) -> tuple[float, Dict[str, Any]]:
+    def _calculate_weighted_score(self, metrics: dict[str, float]) -> tuple[float, dict[str, Any]]:
         total_score, details = 0.0, {}
         for key, value in metrics.items():
             weight = self.weights.get(key, 0.0)
             contribution = value * weight
             total_score += contribution
-            details[key] = {"raw_score": round(value, 2), "weight": weight, "weighted_contribution": round(contribution, 2)}
+            details[key] = {
+                "raw_score": round(value, 2),
+                "weight": weight,
+                "weighted_contribution": round(contribution, 2),
+            }
         return total_score, details
 
     def _interpret_score(
         self,
         score: float,
-        churn_result: Optional[Dict[str, Any]] = None,
-        seasonality_result: Optional[Dict[str, Any]] = None,
-        bsr_churn_result: Optional[Dict[str, Any]] = None,
+        churn_result: dict[str, Any] | None = None,
+        seasonality_result: dict[str, Any] | None = None,
+        bsr_churn_result: dict[str, Any] | None = None,
     ) -> str:
         # BSR churn (listing metabolism) overrides when strongly signalled
         if bsr_churn_result and bsr_churn_result.get("snapshots_available"):
@@ -150,7 +184,7 @@ class CategoryMonopolyAnalyzer:
             return f"{base} + Seasonal ({seasonality_result.get('pattern', '')})"
         return base
 
-    def _analyze_sales_distribution(self, products: List[Dict[str, Any]]) -> Dict[str, float]:
+    def _analyze_sales_distribution(self, products: list[dict[str, Any]]) -> dict[str, float]:
         total_sales = sum(p.get("sales") or 0 for p in products) or 1
         top3_sales = sum(p.get("sales") or 0 for p in products[:3])
         survival_sales = sum(p.get("sales") or 0 for p in products[19:50])
@@ -159,27 +193,37 @@ class CategoryMonopolyAnalyzer:
         conc_score = min(100, (cr3 / cr3_limit) * 100)
         survival_ratio = survival_sales / total_sales
         survival_score = max(0, 100 - (survival_ratio / 0.20) * 100)
-        return {"top3_concentration": conc_score, "survival_space": survival_score, "cr3": round(cr3, 4)}
+        return {
+            "top3_concentration": conc_score,
+            "survival_space": survival_score,
+            "cr3": round(cr3, 4),
+        }
 
-    def _analyze_brand_concentration(self, products: List[Dict[str, Any]]) -> float:
+    def _analyze_brand_concentration(self, products: list[dict[str, Any]]) -> float:
         brands = [p.get("brand") for p in products if p.get("brand")]
-        if not brands: return 50
+        if not brands:
+            return 50
         counts = {b: brands.count(b) for b in set(brands)}
         brand_ratio = len(counts) / len(products)
         return max(0, 100 - (brand_ratio * 150))
 
-    def _analyze_seller_background(self, products: List[Dict[str, Any]]) -> float:
-        amazon_count = sum(1 for p in products if p.get("seller_type") in ["Amazon", "AMZ", "Retail"])
+    def _analyze_seller_background(self, products: list[dict[str, Any]]) -> float:
+        amazon_count = sum(
+            1 for p in products if p.get("seller_type") in ["Amazon", "AMZ", "Retail"]
+        )
         mega_seller_feedback = self.thresholds.get("mega_seller_feedback", 10000)
-        large_seller_count = sum(1 for p in products if p.get("feedback_count", 0) > mega_seller_feedback)
+        large_seller_count = sum(
+            1 for p in products if p.get("feedback_count", 0) > mega_seller_feedback
+        )
         amz_ratio = amazon_count / len(products)
         large_ratio = large_seller_count / len(products)
         return min(100, (amz_ratio * 300) + (large_ratio * 100))
 
-    def _analyze_review_barrier(self, products: List[Dict[str, Any]]) -> float:
-        if len(products) < 20: return 50
+    def _analyze_review_barrier(self, products: list[dict[str, Any]]) -> float:
+        if len(products) < 20:
+            return 50
         top_10 = products[:10]
-        bottom_50 = products[49:] if len(products) > 50 else products[len(products)//2:]
+        bottom_50 = products[49:] if len(products) > 50 else products[len(products) // 2 :]
         avg_reviews_top = statistics.mean([p.get("review_count", 0) for p in top_10]) or 1
         avg_reviews_bottom = statistics.mean([p.get("review_count", 0) for p in bottom_50]) or 1
         review_disparity = avg_reviews_top / avg_reviews_bottom
@@ -187,26 +231,32 @@ class CategoryMonopolyAnalyzer:
         review_score = min(100, (review_disparity / disparity_threshold) * 100)
         avg_rating_top = statistics.mean([p.get("rating", 0) for p in top_10]) or 4.0
         rating_cap = self.thresholds.get("rating_hard_barrier", 4.5)
-        rating_score = max(0, (avg_rating_top - 4.0) / (rating_cap - 4.0) * 100) if avg_rating_top > 4.0 else 0
+        rating_score = (
+            max(0, (avg_rating_top - 4.0) / (rating_cap - 4.0) * 100) if avg_rating_top > 4.0 else 0
+        )
         return (review_score * 0.7) + (rating_score * 0.3)
 
-    def _analyze_price_convergence(self, products: List[Dict[str, Any]]) -> float:
+    def _analyze_price_convergence(self, products: list[dict[str, Any]]) -> float:
         prices = [p.get("price") for p in products if p.get("price")]
-        if len(prices) < 5: return 50
+        if len(prices) < 5:
+            return 50
         avg_price, std_dev = statistics.mean(prices), statistics.stdev(prices)
         cv = std_dev / avg_price
         cv_threshold = self.thresholds.get("price_cv_compression", 0.15)
-        if cv < cv_threshold: return 100
+        if cv < cv_threshold:
+            return 100
         return max(0, 100 - (cv / 0.6 * 100))
 
-    def _analyze_keyword_monopoly(self, keyword_data: Optional[Dict[str, Any]]) -> float:
-        if not keyword_data or "top_asins" not in keyword_data: return 50
+    def _analyze_keyword_monopoly(self, keyword_data: dict[str, Any] | None) -> float:
+        if not keyword_data or "top_asins" not in keyword_data:
+            return 50
         top3_shares = sum(item.get("clickShare", 0) for item in keyword_data["top_asins"][:3])
         return min(100, (top3_shares / 0.50) * 100)
 
-    def _analyze_ad_competition(self, ad_data: Optional[Dict[str, Any]]) -> float:
-        if not ad_data: return 50
-        
+    def _analyze_ad_competition(self, ad_data: dict[str, Any] | None) -> float:
+        if not ad_data:
+            return 50
+
         # 1. Search Result Ad Ratio (Visibility Competition)
         # Reflects how crowded the first page is with ads
         ratio = ad_data.get("ad_ratio") or 0.3
@@ -228,21 +278,21 @@ class CategoryMonopolyAnalyzer:
             bid = ad_data.get("avg_bid", 0)
             high_bid_threshold = self.thresholds.get("high_bid_barrier", 2.50)
             bid_barrier_score = min(100, (bid / high_bid_threshold) * 100) if bid > 0 else 50
-        
-        # Combined score: 
+
+        # Combined score:
         # 20% Visibility (Current heat)
         # 20% Dependency (How hard winners have to pay)
         # 60% Bid Barrier (Capital requirement to displace winners)
         return (visibility_score * 0.2) + (dependency_score * 0.2) + (bid_barrier_score * 0.6)
 
-    def _calculate_bid_barrier_score(self, detailed_bids: Dict[str, Any]) -> float:
+    def _calculate_bid_barrier_score(self, detailed_bids: dict[str, Any]) -> float:
         """
         Calculates a barrier score based on multiple keywords and match types.
         Identifies high-barrier keywords.
         """
         all_suggested_bids = []
         high_barrier_keywords = []
-        
+
         # Process Legacy for Sales as the most conservative/baseline strategy
         legacy_recs = detailed_bids.get("LEGACY_FOR_SALES", [])
         for rec in legacy_recs:
@@ -250,7 +300,7 @@ class CategoryMonopolyAnalyzer:
                 bid = expr.get("suggestedBid", {}).get("amount", 0)
                 kw = expr.get("targetingExpression", {}).get("value", "unknown")
                 m_type = expr.get("targetingExpression", {}).get("type", "unknown")
-                
+
                 if bid > 0:
                     all_suggested_bids.append(bid)
                     # Threshold for a single high-barrier keyword
@@ -263,16 +313,19 @@ class CategoryMonopolyAnalyzer:
         avg_bid = statistics.mean(all_suggested_bids)
         # 3.0 USD as a benchmark for high-competition barrier in US marketplace
         barrier_threshold = self.thresholds.get("high_bid_barrier", 3.0)
-        
+
         score = min(100, (avg_bid / barrier_threshold) * 100)
         # Bonus penalty if multiple keywords are high-barrier
         if len(set(high_barrier_keywords)) >= 2:
             score = min(100, score + 15)
-            
+
         return score
 
-    def _analyze_external_intensity(self, external_data: Optional[Dict[str, Any]]) -> tuple[float, float]:
-        if not external_data: return 50.0, 50.0
+    def _analyze_external_intensity(
+        self, external_data: dict[str, Any] | None
+    ) -> tuple[float, float]:
+        if not external_data:
+            return 50.0, 50.0
         social_psi = external_data.get("social_psi", 0)
         social_score = min(100, social_psi)
         deal_intensity = external_data.get("deal_intensity", 0)
@@ -281,8 +334,8 @@ class CategoryMonopolyAnalyzer:
 
     def _analyze_bsr_churn(
         self,
-        snapshots: Dict[str, List[Dict[str, Any]]],
-    ) -> Dict[str, Any]:
+        snapshots: dict[str, list[dict[str, Any]]],
+    ) -> dict[str, Any]:
         """
         Calculate BSR listing churn rate by comparing Top-100 ASIN
         sets across 4 monthly snapshots: T, T-3, T-6, T-12.
@@ -319,7 +372,7 @@ class CategoryMonopolyAnalyzer:
 
         moderate_competitive  all other cases.
         """
-        _empty: Dict[str, Any] = {
+        _empty: dict[str, Any] = {
             "churn_3m": None,
             "churn_6m": None,
             "churn_12m": None,
@@ -330,7 +383,9 @@ class CategoryMonopolyAnalyzer:
         if not snapshots:
             return _empty
 
-        sorted_months = sorted(snapshots.keys())  # chronological, e.g. ["202502","202508","202511","202602"]
+        sorted_months = sorted(
+            snapshots.keys()
+        )  # chronological, e.g. ["202502","202508","202511","202602"]
         latest = sorted_months[-1]
         latest_set = {p["asin"] for p in snapshots[latest] if p.get("asin")}
         if not latest_set:
@@ -338,7 +393,7 @@ class CategoryMonopolyAnalyzer:
 
         latest_y, latest_mo = int(latest[:4]), int(latest[4:])
 
-        def churn_vs(older_ym: str) -> Optional[float]:
+        def churn_vs(older_ym: str) -> float | None:
             if older_ym not in snapshots:
                 return None
             older_set = {p["asin"] for p in snapshots[older_ym] if p.get("asin")}
@@ -388,9 +443,9 @@ class CategoryMonopolyAnalyzer:
 
     def _analyze_market_churn(
         self,
-        products: List[Dict[str, Any]],
-        historical_data: Optional[Dict[str, List[Dict[str, Any]]]],
-    ) -> Dict[str, Any]:
+        products: list[dict[str, Any]],
+        historical_data: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
         """
         Detect high-mortality / predatory competition patterns.
 
@@ -408,9 +463,9 @@ class CategoryMonopolyAnalyzer:
           - normal: no abnormal signals
         """
         # Coerce None → 0 / 0.0 so comparisons never raise TypeError
-        new_product_ratio = sum(
-            1 for p in products if (p.get("review_count") or 0) < 50
-        ) / max(len(products), 1)
+        new_product_ratio = sum(1 for p in products if (p.get("review_count") or 0) < 50) / max(
+            len(products), 1
+        )
 
         raw_ratings = [float(p["rating"]) for p in products if (p.get("rating") or 0) > 0]
         avg_rating = statistics.mean(raw_ratings) if raw_ratings else 4.0
@@ -439,10 +494,8 @@ class CategoryMonopolyAnalyzer:
         collapse_rate = collapse_count / total_tracked if total_tracked else 0.0
         rating_depression = max(0.0, (4.0 - avg_rating) / 0.5 * 50) if avg_rating < 4.0 else 0.0
 
-        churn_score = min(100,
-            collapse_rate * 60
-            + new_product_ratio * 100 * 0.3
-            + rating_depression * 0.1
+        churn_score = min(
+            100, collapse_rate * 60 + new_product_ratio * 100 * 0.3 + rating_depression * 0.1
         )
 
         if new_product_ratio > 0.4 and collapse_rate > 0.3:
@@ -465,8 +518,8 @@ class CategoryMonopolyAnalyzer:
 
     def _analyze_seasonality(
         self,
-        historical_data: Optional[Dict[str, List[Dict[str, Any]]]],
-    ) -> Dict[str, Any]:
+        historical_data: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
         """
         Detect organic seasonal demand patterns from BSR time series.
 
@@ -493,11 +546,16 @@ class CategoryMonopolyAnalyzer:
           - strong_seasonal:     amplitude ≥ 0.50 and peak months span ≤ 3 months
           - multi_peak_seasonal: amplitude ≥ 0.50 and peak months span > 3 months
         """
-        _no_data: Dict[str, Any] = {
-            "seasonality_score": 0, "is_seasonal": False, "peak_months": [],
-            "pattern": "unknown", "monthly_amplitude": 0,
-            "platform_event_dampened": [], "platform_event_in_peak": False,
-            "source": "bsr_daily_trends", "n_data_points": 0,
+        _no_data: dict[str, Any] = {
+            "seasonality_score": 0,
+            "is_seasonal": False,
+            "peak_months": [],
+            "pattern": "unknown",
+            "monthly_amplitude": 0,
+            "platform_event_dampened": [],
+            "platform_event_in_peak": False,
+            "source": "bsr_daily_trends",
+            "n_data_points": 0,
         }
         if not historical_data:
             return _no_data
@@ -505,7 +563,7 @@ class CategoryMonopolyAnalyzer:
         PLATFORM_EVENT_MONTHS = {7, 11}  # Prime Day, Black Friday
 
         # ── Step 1: aggregate log(BSR) by (year, month) ───────────────────
-        monthly_log_bsr: Dict[Tuple[int, int], List[float]] = {}
+        monthly_log_bsr: dict[tuple[int, int], list[float]] = {}
         for daily_records in historical_data.values():
             for record in daily_records:
                 bsr = record.get("bsr") or record.get("bestSellerRank")
@@ -530,15 +588,16 @@ class CategoryMonopolyAnalyzer:
         t_vals = list(range(n))
         v_vals = [monthly_median[k] for k in sorted_keys]
         mean_t, mean_v = statistics.mean(t_vals), statistics.mean(v_vals)
-        cov_tv = sum((t - mean_t) * (v - mean_v) for t, v in zip(t_vals, v_vals))
+        cov_tv = sum((t - mean_t) * (v - mean_v) for t, v in zip(t_vals, v_vals, strict=False))
         var_t = sum((t - mean_t) ** 2 for t in t_vals) or 1.0
         slope = cov_tv / var_t
         intercept = mean_v - slope * mean_t
-        detrended = {k: monthly_median[k] - (slope * i + intercept)
-                     for i, k in enumerate(sorted_keys)}
+        detrended = {
+            k: monthly_median[k] - (slope * i + intercept) for i, k in enumerate(sorted_keys)
+        }
 
         # ── Step 4: group by calendar month; dampen platform event months ─
-        calendar_residuals: Dict[int, List[float]] = {}
+        calendar_residuals: dict[int, list[float]] = {}
         for (_, month), residual in detrended.items():
             weight = 0.3 if month in PLATFORM_EVENT_MONTHS else 1.0
             calendar_residuals.setdefault(month, []).append(residual * weight)
@@ -588,8 +647,8 @@ class CategoryMonopolyAnalyzer:
 
     def _analyze_seasonality_from_keyword_trends(
         self,
-        keyword_weekly_trends: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        keyword_weekly_trends: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         Detect organic seasonal demand patterns from ABA weekly search-volume data.
 
@@ -617,19 +676,25 @@ class CategoryMonopolyAnalyzer:
              residual = good rank = peak sales).
           5. Circular arc span — same winter-product fix as _analyze_seasonality.
         """
-        _no_data: Dict[str, Any] = {
-            "seasonality_score": 0, "is_seasonal": False, "peak_months": [],
-            "pattern": "unknown", "monthly_amplitude": 0,
-            "platform_event_dampened": [], "platform_event_in_peak": False,
-            "source": "keyword_weekly_trends", "n_data_points": 0,
+        _no_data: dict[str, Any] = {
+            "seasonality_score": 0,
+            "is_seasonal": False,
+            "peak_months": [],
+            "pattern": "unknown",
+            "monthly_amplitude": 0,
+            "platform_event_dampened": [],
+            "platform_event_in_peak": False,
+            "source": "keyword_weekly_trends",
+            "n_data_points": 0,
         }
 
         try:
             terms = keyword_weekly_trends.get("searchTerms") or []
             if not terms:
                 return _no_data
-            week_search: List[float] = [
-                float(v) for v in (terms[0].get("trends") or {}).get("weekSearch") or []
+            week_search: list[float] = [
+                float(v)
+                for v in (terms[0].get("trends") or {}).get("weekSearch") or []
                 if v is not None
             ]
         except (KeyError, IndexError, TypeError):
@@ -645,7 +710,7 @@ class CategoryMonopolyAnalyzer:
         # ── Step 1: assign calendar dates to each weekly bucket ───────────
         # Position 0 is oldest; position n-1 is this week.
         # date(i) = today − (n − 1 − i) × 7 days
-        monthly_log_vol: Dict[Tuple[int, int], List[float]] = {}
+        monthly_log_vol: dict[tuple[int, int], list[float]] = {}
         for i, vol in enumerate(week_search):
             if vol <= 0:
                 continue
@@ -665,15 +730,16 @@ class CategoryMonopolyAnalyzer:
         t_vals = list(range(nk))
         v_vals = [monthly_median[k] for k in sorted_keys]
         mean_t, mean_v = statistics.mean(t_vals), statistics.mean(v_vals)
-        cov_tv = sum((t - mean_t) * (v - mean_v) for t, v in zip(t_vals, v_vals))
+        cov_tv = sum((t - mean_t) * (v - mean_v) for t, v in zip(t_vals, v_vals, strict=False))
         var_t = sum((t - mean_t) ** 2 for t in t_vals) or 1.0
         slope = cov_tv / var_t
         intercept = mean_v - slope * mean_t
-        detrended = {k: monthly_median[k] - (slope * i + intercept)
-                     for i, k in enumerate(sorted_keys)}
+        detrended = {
+            k: monthly_median[k] - (slope * i + intercept) for i, k in enumerate(sorted_keys)
+        }
 
         # ── Step 4: group by calendar month; dampen platform event months ─
-        calendar_residuals: Dict[int, List[float]] = {}
+        calendar_residuals: dict[int, list[float]] = {}
         for (_, month), residual in detrended.items():
             weight = 0.3 if month in PLATFORM_EVENT_MONTHS else 1.0
             calendar_residuals.setdefault(month, []).append(residual * weight)
@@ -722,7 +788,7 @@ class CategoryMonopolyAnalyzer:
         }
 
     @staticmethod
-    def _circular_arc_span(months: List[int]) -> int:
+    def _circular_arc_span(months: list[int]) -> int:
         """
         Minimum arc length (in month-steps) on a circular 12-month calendar.
 

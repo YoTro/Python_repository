@@ -26,8 +26,8 @@ import pytest
 # causes an INTERNALERROR during collection. Exclude them permanently.
 # ---------------------------------------------------------------------------
 collect_ignore: list[str] = [
-    "test_beta_cvr_redis.py",    # module-level Redis reads + sys.exit
-    "test_inventory_gate.py",    # module-level Redis reads + sys.exit
+    "test_beta_cvr_redis.py",  # module-level Redis reads + sys.exit
+    "test_inventory_gate.py",  # module-level Redis reads + sys.exit
     "test_summary_snapshot.py",  # imports removed private symbol _build_kw_to_campaign_map
 ]
 
@@ -37,27 +37,32 @@ collect_ignore: list[str] = [
 # ---------------------------------------------------------------------------
 
 # live marker: needs credentials or real network calls
-_LIVE_FILES: frozenset[str] = frozenset({
-    "test_amazon_ads_full_bids.py",       # Amazon Ads API credentials
-    "test_erp_sp_campaign_ad_report.py",  # Lingxing ERP credentials
-    "test_feishu_upload_actual.py",       # Feishu credentials + real upload
-    "test_generate_charts_upload.py",     # R2 upload + real item data
-    "test_comments_with_login.py",        # browser login flow
-    "test_deal_history_debug.py",         # live Amazon scraping
-    "test_xiyou_daily_cycle.py",          # Xiyouzhaoci live session
-    "test_profitability_search.py",       # live Amazon scraping
-})
+_LIVE_FILES: frozenset[str] = frozenset(
+    {
+        "test_amazon_ads_full_bids.py",  # Amazon Ads API credentials
+        "test_erp_sp_campaign_ad_report.py",  # Lingxing ERP credentials
+        "test_feishu_upload_actual.py",  # Feishu credentials + real upload
+        "test_generate_charts_upload.py",  # R2 upload + real item data
+        "test_comments_with_login.py",  # browser login flow
+        "test_deal_history_debug.py",  # live Amazon scraping
+        "test_xiyou_daily_cycle.py",  # Xiyouzhaoci live session
+        "test_profitability_search.py",  # live Amazon scraping
+    }
+)
 
 # redis marker: needs a Redis server with real cached data
-_REDIS_FILES: frozenset[str] = frozenset({
-    "test_summary_snapshot.py",   # reads from aws:cache:ad_diag:* keys
-    "test_inventory_gate.py",     # reads campaign/kw_perf from Redis
-})
+_REDIS_FILES: frozenset[str] = frozenset(
+    {
+        "test_summary_snapshot.py",  # reads from aws:cache:ad_diag:* keys
+        "test_inventory_gate.py",  # reads campaign/kw_perf from Redis
+    }
+)
 
 
 # ---------------------------------------------------------------------------
 # Auto-marker hook
 # ---------------------------------------------------------------------------
+
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:

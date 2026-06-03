@@ -1,10 +1,10 @@
 from __future__ import annotations
+
 import contextlib
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional
 
 from src.core.utils.config_helper import ConfigHelper
 
@@ -14,9 +14,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class _TokenBucket:
     """Token bucket for Layer 3 source-level throttling."""
+
     capacity: float
     tokens: float
-    refill_rate: float          # tokens per second
+    refill_rate: float  # tokens per second
     last_refill: float = field(default_factory=time.monotonic)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -36,7 +37,7 @@ class RateLimiter:
                             even if the job crashes mid-execution.
     """
 
-    _instance: Optional[RateLimiter] = None
+    _instance: RateLimiter | None = None
     _init_lock = threading.Lock()
 
     def __new__(cls) -> RateLimiter:
@@ -54,7 +55,7 @@ class RateLimiter:
         logger.debug("[RateLimiter] Loaded rate_limits config from ConfigHelper")
 
         # Layer 3: one token bucket per source (key: source_limits)
-        self._source_buckets: Dict[str, _TokenBucket] = {}
+        self._source_buckets: dict[str, _TokenBucket] = {}
         for source, cfg in self._config.get("source_limits", {}).items():
             rpm = float(cfg.get("requests_per_minute", 60))
             burst = float(cfg.get("burst", max(1, rpm // 10)))
@@ -65,17 +66,17 @@ class RateLimiter:
             )
 
         # Layer 2: daily counters  {tenant_id: {"YYYY-MM-DD": count}}
-        self._tenant_counters: Dict[str, Dict[str, int]] = {}
+        self._tenant_counters: dict[str, dict[str, int]] = {}
         self._tenant_lock = threading.Lock()
 
         # Layer 1a: last trigger timestamp per chat_id  {chat_id: monotonic_ts}
-        self._chat_last: Dict[str, float] = {}
+        self._chat_last: dict[str, float] = {}
         self._chat_lock = threading.Lock()
 
         # Layer 1b: concurrency counters (single dict, two key patterns)
         #   global:   entry_type            → int
         #   per-chat: f"{entry_type}:{chat_id}" → int
-        self._concurrent: Dict[str, int] = {}
+        self._concurrent: dict[str, int] = {}
         self._concurrent_lock = threading.Lock()
 
     # ── Layer 3: Source token bucket ─────────────────────────────────────
@@ -120,9 +121,7 @@ class RateLimiter:
     def _check_tenant_quota(self, tenant_id: str, plan_tier: str) -> bool:
         """Increment daily counter and return False if limit exceeded."""
         daily_limit: int = (
-            self._config.get("tenant_quotas", {})
-            .get(plan_tier, {})
-            .get("daily_requests", -1)
+            self._config.get("tenant_quotas", {}).get(plan_tier, {}).get("daily_requests", -1)
         )
         if daily_limit == -1:
             return True  # unlimited
@@ -166,7 +165,7 @@ class RateLimiter:
     # ── Layer 1b: Concurrent slot context manager ─────────────────────────
 
     @contextlib.asynccontextmanager
-    async def concurrent_slot(self, entry_type: Optional[str], chat_id: Optional[str]):
+    async def concurrent_slot(self, entry_type: str | None, chat_id: str | None):
         """
         Async context manager that holds a concurrency slot for the duration of job execution.
         Used inside JobManager._run_job() — NOT at the gateway dispatch point.
@@ -240,9 +239,9 @@ class RateLimiter:
 
     def check_limit(
         self,
-        identity: Dict[str, str],
+        identity: dict[str, str],
         request_type: str = "cli_workflow",
-        chat_id: Optional[str] = None,
+        chat_id: str | None = None,
     ) -> bool:
         """
         Fast gate at dispatch time — checks cooldown debounce and daily tenant quota.
@@ -256,9 +255,7 @@ class RateLimiter:
 
         # Layer 1a: per-chat cooldown debounce
         cooldown = (
-            self._config.get("entry_limits", {})
-            .get(request_type, {})
-            .get("cooldown_seconds", 0)
+            self._config.get("entry_limits", {}).get(request_type, {}).get("cooldown_seconds", 0)
         )
         if not self._check_chat_cooldown(chat_id or "", cooldown):
             return False

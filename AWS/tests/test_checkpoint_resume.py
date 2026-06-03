@@ -8,20 +8,21 @@ Run:
     pytest tests/test_checkpoint_resume.py -v
 """
 
-import pytest
-import tempfile
 import shutil
-from typing import List, Dict, Any
+import tempfile
+from typing import Any
 
+import pytest
+
+from src.core.errors.exceptions import StepError
 from src.jobs.checkpoint import CheckpointManager
 from src.workflows.engine import Workflow
-from src.workflows.steps.base import Step, StepResult, WorkflowContext, ComputeTarget
-from src.core.errors.exceptions import StepError
-
+from src.workflows.steps.base import ComputeTarget, Step, StepResult, WorkflowContext
 
 # ---------------------------------------------------------------------------
 # Test Steps
 # ---------------------------------------------------------------------------
+
 
 class AddFieldStep(Step):
     """Adds a field to every item."""
@@ -31,7 +32,7 @@ class AddFieldStep(Step):
         self.field_name = field_name
         self.field_value = field_value
 
-    async def run(self, items: List[Dict[str, Any]], ctx: WorkflowContext) -> StepResult:
+    async def run(self, items: list[dict[str, Any]], ctx: WorkflowContext) -> StepResult:
         out = [{**item, self.field_name: self.field_value} for item in items]
         return StepResult(
             items=out,
@@ -46,7 +47,7 @@ class FailOnceStep(Step):
         super().__init__(name="fail_once", compute_target=ComputeTarget.PURE_PYTHON)
         self.has_failed = False
 
-    async def run(self, items: List[Dict[str, Any]], ctx: WorkflowContext) -> StepResult:
+    async def run(self, items: list[dict[str, Any]], ctx: WorkflowContext) -> StepResult:
         if not self.has_failed:
             self.has_failed = True
             raise RuntimeError("Simulated transient failure at fail_once step")
@@ -65,7 +66,7 @@ class FilterStep(Step):
         self.field_name = field_name
         self.value = value
 
-    async def run(self, items: List[Dict[str, Any]], ctx: WorkflowContext) -> StepResult:
+    async def run(self, items: list[dict[str, Any]], ctx: WorkflowContext) -> StepResult:
         kept = [item for item in items if item.get(self.field_name) == self.value]
         return StepResult(
             items=kept,
@@ -80,6 +81,7 @@ class FilterStep(Step):
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def checkpoint_dir():
@@ -105,6 +107,7 @@ def initial_items():
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_checkpoint_save_and_load(checkpoint_mgr):
@@ -162,10 +165,10 @@ async def test_workflow_resume_after_failure(checkpoint_mgr, initial_items):
     fail_step = FailOnceStep()
 
     steps = [
-        AddFieldStep("status", "active"),   # step 0
-        fail_step,                           # step 1 — fails first run
-        AddFieldStep("score", 42),           # step 2
-        FilterStep("status", "active"),      # step 3
+        AddFieldStep("status", "active"),  # step 0
+        fail_step,  # step 1 — fails first run
+        AddFieldStep("score", 42),  # step 2
+        FilterStep("status", "active"),  # step 3
     ]
     workflow = Workflow(name="resume_test", steps=steps)
     job_id = "test-resume-001"
@@ -175,7 +178,10 @@ async def test_workflow_resume_after_failure(checkpoint_mgr, initial_items):
     # ── First run: should fail at step 1 ──
     with pytest.raises(StepError):
         await workflow.execute(
-            job_id=job_id, params=params, ctx=ctx, checkpoint_mgr=checkpoint_mgr,
+            job_id=job_id,
+            params=params,
+            ctx=ctx,
+            checkpoint_mgr=checkpoint_mgr,
         )
 
     # Verify checkpoint saved at step 0 (last successful step)
@@ -187,7 +193,10 @@ async def test_workflow_resume_after_failure(checkpoint_mgr, initial_items):
 
     # ── Second run: should resume from step 1 and complete ──
     result = await workflow.execute(
-        job_id=job_id, params=params, ctx=ctx, checkpoint_mgr=checkpoint_mgr,
+        job_id=job_id,
+        params=params,
+        ctx=ctx,
+        checkpoint_mgr=checkpoint_mgr,
     )
 
     assert result.completed

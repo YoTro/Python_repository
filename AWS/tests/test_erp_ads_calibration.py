@@ -7,23 +7,27 @@ orders / spend / clicks day-by-day at ASIN level (aggregated across campaigns).
 Run:
     PYTHONPATH=. venv311/bin/python3 tests/test_erp_ads_calibration.py
 """
+
 import json
 import os
 import sys
 from collections import defaultdict
+
 from dotenv import load_dotenv
 
 load_dotenv("/Users/jin/Documents/GitHub/Python_repository/AWS/.env")
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import redis
+
 from src.mcp.servers.erp.lingxing.client import LingxingClient
 
 PROFILE_ID = os.getenv("AMAZON_ADS_PROFILE_ID_US", "3134479135518484")
-REDIS_URL   = os.getenv("REDIS_URL", "redis://localhost:6379")
-METRICS     = ["orders", "spend", "clicks"]
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+METRICS = ["orders", "spend", "clicks"]
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _load_redis_daily(asin: str) -> dict[str, dict]:
     """date → {orders, spend, clicks} aggregated across all campaigns."""
@@ -33,7 +37,7 @@ def _load_redis_daily(asin: str) -> dict[str, dict]:
     if not raw:
         return {}
     rows = json.loads(raw).get("data", [])
-    by_date: dict[str, dict] = defaultdict(lambda: {m: 0.0 for m in METRICS})
+    by_date: dict[str, dict] = defaultdict(lambda: dict.fromkeys(METRICS, 0.0))
     for row in rows:
         d = row.get("date")
         if not d:
@@ -59,13 +63,13 @@ def _load_erp_daily(client: LingxingClient, asin: str, date_range: str) -> dict[
         print(f"  ERP call failed: {resp}")
         return {}
 
-    by_date: dict[str, dict] = defaultdict(lambda: {m: 0.0 for m in METRICS})
+    by_date: dict[str, dict] = defaultdict(lambda: dict.fromkeys(METRICS, 0.0))
     for row in resp.get("data", []):
         d = row.get("date_day")
         if not d:
             continue  # skip aggregate row (date_day=null)
         by_date[d]["orders"] += float(row.get("orders") or 0)
-        by_date[d]["spend"]  += float(row.get("spends") or 0)   # ERP field = spends
+        by_date[d]["spend"] += float(row.get("spends") or 0)  # ERP field = spends
         by_date[d]["clicks"] += float(row.get("clicks") or 0)
     return dict(by_date)
 
@@ -82,15 +86,15 @@ def _report_asin(asin: str, ads: dict, erp: dict):
     ads_only = sorted(set(ads) - set(erp))
     erp_only = sorted(set(erp) - set(ads))
 
-    print(f"\n{'─'*70}")
+    print(f"\n{'─' * 70}")
     print(f"ASIN: {asin}")
     print(f"  Ads API dates : {len(ads)} days")
     print(f"  ERP dates     : {len(erp)} days")
     print(f"  Common dates  : {len(common_dates)}")
     if ads_only:
-        print(f"  Ads-only dates: {ads_only[:5]}{'...' if len(ads_only)>5 else ''}")
+        print(f"  Ads-only dates: {ads_only[:5]}{'...' if len(ads_only) > 5 else ''}")
     if erp_only:
-        print(f"  ERP-only dates: {erp_only[:5]}{'...' if len(erp_only)>5 else ''}")
+        print(f"  ERP-only dates: {erp_only[:5]}{'...' if len(erp_only) > 5 else ''}")
 
     if not common_dates:
         print("  ⚠  No overlapping dates — cannot compare.")
@@ -109,12 +113,14 @@ def _report_asin(asin: str, ads: dict, erp: dict):
         total_erp = sum(erp_vals)
         mean_abs_err = sum(diffs) / len(diffs)
         # MAPE relative to Ads API (skip days where ads=0)
-        mape_vals = [abs(a - e) / a for a, e in zip(ads_vals, erp_vals) if a > 0]
+        mape_vals = [abs(a - e) / a for a, e in zip(ads_vals, erp_vals, strict=False) if a > 0]
         mape = (sum(mape_vals) / len(mape_vals) * 100) if mape_vals else float("nan")
 
         symbol = "✅" if mape < 5 else ("⚠️ " if mape < 15 else "❌")
-        print(f"  {symbol} {metric:<8}  Ads={total_ads:>10.2f}  ERP={total_erp:>10.2f}"
-              f"  MAE/day={mean_abs_err:>7.2f}  MAPE={mape:>5.1f}%")
+        print(
+            f"  {symbol} {metric:<8}  Ads={total_ads:>10.2f}  ERP={total_erp:>10.2f}"
+            f"  MAE/day={mean_abs_err:>7.2f}  MAPE={mape:>5.1f}%"
+        )
 
     # Show worst 5 days by orders diff
     order_diffs = []
@@ -123,7 +129,7 @@ def _report_asin(asin: str, ads: dict, erp: dict):
         order_diffs.append((diff, d, a, e))
     order_diffs.sort(reverse=True)
     if order_diffs:
-        print(f"\n  Top-5 divergent days (orders):")
+        print("\n  Top-5 divergent days (orders):")
         print(f"  {'date':<12} {'ads':>8} {'erp':>8} {'diff':>8}")
         for diff, d, a, e in order_diffs[:5]:
             flag = " ⚠️" if diff > 1 else ""
@@ -131,6 +137,7 @@ def _report_asin(asin: str, ads: dict, erp: dict):
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
+
 
 def main():
     print("=== Ads API vs ERP Calibration Check ===\n")
@@ -158,7 +165,7 @@ def main():
 
         _report_asin(asin, ads, erp)
 
-    print(f"\n{'═'*70}")
+    print(f"\n{'═' * 70}")
     print("Calibration legend: MAPE < 5% ✅  5-15% ⚠️  >15% ❌")
     print("If ✅ across both ASINs → ERP is safe to use as YoY baseline source.")
 

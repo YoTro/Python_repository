@@ -1,21 +1,21 @@
 from __future__ import annotations
+
 import fcntl
 import json
 import logging
 import os
 import tempfile
 import time
-from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # Per-step history stored here; keyed by step_name, value = list of durations (s)
 _HISTORY_PATH = os.path.join(os.path.dirname(__file__), "step_history.json")
 _HISTORY_LOCK_PATH = _HISTORY_PATH + ".lock"
-_HISTORY_MAX_SAMPLES = 20   # rolling window per step
+_HISTORY_MAX_SAMPLES = 20  # rolling window per step
 
 
-def _load_history() -> Dict[str, List[float]]:
+def _load_history() -> dict[str, list[float]]:
     try:
         with open(_HISTORY_PATH, encoding="utf-8") as f:
             return json.load(f)
@@ -40,7 +40,7 @@ def _append_step(step_key: str, duration: float) -> None:
         # 'a' mode creates the lock file if absent without truncating it.
         with open(_HISTORY_LOCK_PATH, "a") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
-            history = _load_history()          # re-read under lock for latest state
+            history = _load_history()  # re-read under lock for latest state
             samples = history.setdefault(step_key, [])
             samples.append(duration)
             if len(samples) > _HISTORY_MAX_SAMPLES:
@@ -74,7 +74,7 @@ class TimeEstimator:
     AGENT_BASELINE_PER_ITERATION = 6.0
 
     @classmethod
-    def estimate_workflow(cls, workflow_name: str, params: Optional[dict] = None) -> str:
+    def estimate_workflow(cls, workflow_name: str, params: dict | None = None) -> str:
         base_time = cls.WORKFLOW_AVERAGES.get(workflow_name, 30.0)
         return f"~{int(base_time)}秒"
 
@@ -111,14 +111,14 @@ class TelemetryTracker:
         self.workflow_name = workflow_name
         self.current_step = 0
         self.start_time = time.monotonic()
-        self.step_times: List[float] = []
-        self.step_names: List[str] = []
+        self.step_times: list[float] = []
+        self.step_names: list[str] = []
         self.last_step_time = self.start_time
-        self._history: Dict[str, List[float]] = _load_history()
+        self._history: dict[str, list[float]] = _load_history()
         # Name of the step that is currently executing (started but not yet finished).
         # on_progress is called before a step runs, so the measured duration on the
         # *next* call belongs to this pending name, not the incoming one.
-        self._pending_step_name: Optional[str] = None
+        self._pending_step_name: str | None = None
 
     def record_step(self, step_name: str = "") -> None:
         now = time.monotonic()
@@ -168,7 +168,7 @@ class TelemetryTracker:
 
     # ── ETA methods ──────────────────────────────────────────────────────
 
-    def _elapsed_ratio_eta(self) -> Optional[float]:
+    def _elapsed_ratio_eta(self) -> float | None:
         """eta = elapsed × remaining / completed  (download-bar method)."""
         if self.current_step == 0:
             return None
@@ -176,7 +176,7 @@ class TelemetryTracker:
         remaining = self.total_steps - self.current_step
         return elapsed * remaining / self.current_step
 
-    def _historical_eta(self, remaining_step_names: List[str]) -> Optional[float]:
+    def _historical_eta(self, remaining_step_names: list[str]) -> float | None:
         """Sum of historical averages for the remaining steps."""
         if not remaining_step_names:
             return None
@@ -194,7 +194,7 @@ class TelemetryTracker:
         total *= len(remaining_step_names) / covered
         return total
 
-    def _min_history_samples(self, remaining_step_names: List[str]) -> int:
+    def _min_history_samples(self, remaining_step_names: list[str]) -> int:
         """Minimum number of samples across remaining steps (confidence proxy)."""
         mins = []
         for name in remaining_step_names:
@@ -204,8 +204,8 @@ class TelemetryTracker:
 
     def get_dynamic_eta(
         self,
-        remaining_step_names: Optional[List[str]] = None,
-    ) -> Optional[str]:
+        remaining_step_names: list[str] | None = None,
+    ) -> str | None:
         """
         Return a human-readable ETA string, or None when estimate is unavailable.
 

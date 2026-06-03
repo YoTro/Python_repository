@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 CSVCallback — writes workflow results to a CSV file.
 """
@@ -18,8 +19,13 @@ class CSVCallback(JobCallback):
         self.output_path = output_path
 
     async def on_progress(
-        self, step_index: int, total_steps: int, step_name: str, message: str = "",
-        remaining_step_names=None, workflow_name: str = "",
+        self,
+        step_index: int,
+        total_steps: int,
+        step_name: str,
+        message: str = "",
+        remaining_step_names=None,
+        workflow_name: str = "",
     ) -> None:
         logger.info(f"[{step_index}/{total_steps}] {step_name} {message}")
 
@@ -33,11 +39,13 @@ class CSVCallback(JobCallback):
 
         try:
             from src.core.utils.csv_helper import CSVHelper
+
             CSVHelper.save_to_csv(items, self.output_path)
             logger.info(f"Results saved to {self.output_path} ({len(items)} items)")
         except ImportError:
             # Fallback if csv_helper not moved yet
             from src.core.utils.csv_helper import CSVHelper
+
             CSVHelper.save_to_csv(items, self.output_path)
             logger.info(f"Results saved to {self.output_path} ({len(items)} items)")
 

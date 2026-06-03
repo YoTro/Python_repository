@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Feishu (Lark) API error code mappings.
 Reference: https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/file/create

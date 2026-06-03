@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import Any, Optional, TYPE_CHECKING
+
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.core.errors.codes import ErrorCode
@@ -31,8 +32,8 @@ class AWSBaseError(Exception):
     def __init__(
         self,
         message: str = "",
-        details: Optional[dict] = None,
-        code: Optional["ErrorCode"] = None,
+        details: dict | None = None,
+        code: ErrorCode | None = None,
     ):
         self.message = message
         self.details = details or {}
@@ -42,21 +43,25 @@ class AWSBaseError(Exception):
 
 class ScraperError(AWSBaseError):
     """HTTP, TLS fingerprinting, or network-level failure."""
+
     pass
 
 
 class ExtractorError(AWSBaseError):
     """Data extraction or parsing failure within an extractor."""
+
     pass
 
 
 class ConfigError(AWSBaseError):
     """Configuration loading or validation failure."""
+
     pass
 
 
 class WorkflowError(AWSBaseError):
     """Workflow-level execution failure."""
+
     pass
 
 
@@ -66,7 +71,9 @@ class StepError(WorkflowError):
     def __init__(self, message: str = "", step_name: str = "", step_index: int = -1, **kwargs):
         self.step_name = step_name
         self.step_index = step_index
-        super().__init__(message, details={"step_name": step_name, "step_index": step_index, **kwargs})
+        super().__init__(
+            message, details={"step_name": step_name, "step_index": step_index, **kwargs}
+        )
 
 
 class RetryableError(AWSBaseError):
@@ -84,9 +91,9 @@ class RetryableError(AWSBaseError):
         self,
         message: str = "",
         retry_after_seconds: float = 0,
-        http_status: Optional[int] = None,
+        http_status: int | None = None,
         provider: str = "",
-        code: Optional["ErrorCode"] = None,
+        code: ErrorCode | None = None,
         **kwargs,
     ):
         self.retry_after_seconds = retry_after_seconds
@@ -96,11 +103,16 @@ class RetryableError(AWSBaseError):
         # Auto-derive canonical code from HTTP status when not explicitly set
         if code is None and http_status is not None:
             from src.core.errors.codes import classify_http
+
             code = classify_http(http_status, provider)
 
         super().__init__(
             message,
-            details={"retry_after_seconds": retry_after_seconds, "http_status": http_status, **kwargs},
+            details={
+                "retry_after_seconds": retry_after_seconds,
+                "http_status": http_status,
+                **kwargs,
+            },
             code=code,
         )
 
@@ -110,11 +122,13 @@ class FatalError(AWSBaseError):
     Non-recoverable failure. Do not retry.
     Examples: invalid configuration, missing credentials, unsupported operation.
     """
+
     pass
 
 
 class CheckpointError(AWSBaseError):
     """Checkpoint save or load failure."""
+
     pass
 
 
@@ -127,15 +141,16 @@ class BatchPendingError(AWSBaseError):
     payload) to the event log, then re-raises so WorkflowEngine → JobManager
     can transition the job to SUSPENDED.
     """
+
     def __init__(
         self,
         message: str,
         batch_job_id: str,
-        handle: Any,                  # BatchJobHandle instance
-        requests: Optional[list] = None,        # [{"custom_id": str, "item_idx": int}]
-        items_snapshot: Optional[list] = None,  # full items list at submission time
-        output_field: Optional[str] = None,
-        schema_path: Optional[str] = None,      # "module.ClassName" or None
+        handle: Any,  # BatchJobHandle instance
+        requests: list | None = None,  # [{"custom_id": str, "item_idx": int}]
+        items_snapshot: list | None = None,  # full items list at submission time
+        output_field: str | None = None,
+        schema_path: str | None = None,  # "module.ClassName" or None
     ):
         self.batch_job_id = batch_job_id
         self.handle = handle
@@ -151,6 +166,7 @@ class JobSuspendedError(AWSBaseError):
     Raised when a job needs to be suspended for human intervention
     (e.g., waiting for QR code scan).
     """
+
     def __init__(self, message: str, signal: dict):
         super().__init__(message)
         self.signal = signal

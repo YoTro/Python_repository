@@ -190,7 +190,7 @@ Each snapshot is slimmed to `{asin, rank, brand}` only. The churn labels are:
 *   **`get_deal_history`**: Fetches off-Amazon deal history for a given ASIN or keyword from multiple top-tier deal sites (currently Slickdeals and DealNews), supporting multi-page scraping. Returns a structured list of historical promotions (price, discount, date, site, type).
 
 ### Standard: Implicit Context Resolution
-To keep tool calls concise for LLMs, domain servers (especially `finance` and `output`) should implement **Implicit Context Resolution**. If a primary parameter like `asin` or `receive_id` is missing from the `arguments` dict, the handler should attempt to resolve it via `ContextPropagator.get("field_name")`. 
+To keep tool calls concise for LLMs, domain servers (especially `finance` and `output`) should implement **Implicit Context Resolution**. If a primary parameter like `asin` or `receive_id` is missing from the `arguments` dict, the handler should attempt to resolve it via `ContextPropagator.get("field_name")`.
 
 Example (Finance):
 ```python
@@ -229,4 +229,3 @@ Currently registered providers: `lingxing` (领星ERP).
 ### Compliance核查 (L2)
 *   **`check_amazon_restriction`**: Keyword-based lookup in local Amazon restricted products database.
 *   **`check_epa`**: Checks if product keywords trigger EPA FIFRA pesticide device regulations.
-

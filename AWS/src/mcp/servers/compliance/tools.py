@@ -2,38 +2,39 @@ import json
 import logging
 import os
 import re
-from typing import List, Dict, Any, Optional
-from mcp.types import Tool, TextContent
-from src.registry.tools import tool_registry
+from typing import Any
 
+from mcp.types import TextContent, Tool
 from src.mcp.servers.compliance.cpsc_recalls import CPSCRecallScraper
-from src.mcp.servers.compliance.fda_client import FDAClient
 from src.mcp.servers.compliance.epa_client import EPAClient
+from src.mcp.servers.compliance.fda_client import FDAClient
+from src.registry.tools import tool_registry
 
 logger = logging.getLogger("mcp-compliance")
 
 # --- Helper Functions ---
 
-def load_json(filename: str) -> Dict[str, Any]:
+
+def load_json(filename: str) -> dict[str, Any]:
     try:
         base_path = os.path.dirname(__file__)
         path = os.path.join(base_path, filename)
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.error(f"Failed to load compliance data {filename}: {e}")
         return {}
 
-def keyword_match(keyword: str, text_list: List[str]) -> bool:
+
+def keyword_match(keyword: str, text_list: list[str]) -> bool:
     if not keyword:
         return False
     pattern = re.compile(re.escape(keyword), re.IGNORECASE)
-    for text in text_list:
-        if pattern.search(text):
-            return True
-    return False
+    return any(pattern.search(text) for text in text_list)
+
 
 # --- Core Logic ---
+
 
 async def handle_compliance_tool(name: str, arguments: dict) -> list[TextContent]:
     amazon_data = load_json("amazon_restricted_products.json")
@@ -43,124 +44,220 @@ async def handle_compliance_tool(name: str, arguments: dict) -> list[TextContent
     if name == "check_certification":
         category = arguments.get("category", "").lower()
         findings = []
-        
+
         for req in req_data.get("requirements", []):
             if any(match.lower() in category for match in req["category_match"]):
-                findings.append({
-                    "category_group": req["category_match"],
-                    "certification_required": req["required"],
-                    "required_certifications": req["certifications"],
-                    "description": req["description"]
-                })
-        
+                findings.append(
+                    {
+                        "category_group": req["category_match"],
+                        "certification_required": req["required"],
+                        "required_certifications": req["certifications"],
+                        "description": req["description"],
+                    }
+                )
+
         if not findings:
             default = req_data.get("default", {})
-            return [TextContent(type="text", text=json.dumps({
-                "status": "general",
-                "category": category,
-                "certification_required": default.get("required"),
-                "suggested_certifications": default.get("certifications"),
-                "description": default.get("description")
-            }, indent=2, ensure_ascii=False))]
-            
-        return [TextContent(type="text", text=json.dumps({
-            "status": "matched",
-            "category": category,
-            "findings": findings
-        }, indent=2, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "status": "general",
+                            "category": category,
+                            "certification_required": default.get("required"),
+                            "suggested_certifications": default.get("certifications"),
+                            "description": default.get("description"),
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"status": "matched", "category": category, "findings": findings},
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+            )
+        ]
 
     elif name == "check_epa":
         keyword = arguments.get("keyword", "").lower()
         results = []
-        
+
         # Check EPA Specific Data
         for cat in epa_data.get("regulated_device_categories", []):
-            if keyword in cat["category"].lower() or any(keyword in ex.lower() for ex in cat.get("examples", [])):
-                results.append({
-                    "type": "EPA Regulated Device",
-                    "category": cat["category"],
-                    "description": cat["description"],
-                    "conditions": cat.get("conditions")
-                })
-        
+            if keyword in cat["category"].lower() or any(
+                keyword in ex.lower() for ex in cat.get("examples", [])
+            ):
+                results.append(
+                    {
+                        "type": "EPA Regulated Device",
+                        "category": cat["category"],
+                        "description": cat["description"],
+                        "conditions": cat.get("conditions"),
+                    }
+                )
+
         for item in epa_data.get("not_devices_commonly_mistaken", []):
             if keyword in item["product_type"].lower():
-                results.append({
-                    "type": "EPA Registered Pesticide (NOT Device)",
-                    "product_type": item["product_type"],
-                    "reason": item["reason"],
-                    "regulation": item["regulation"]
-                })
+                results.append(
+                    {
+                        "type": "EPA Registered Pesticide (NOT Device)",
+                        "product_type": item["product_type"],
+                        "reason": item["reason"],
+                        "regulation": item["regulation"],
+                    }
+                )
 
         if not results:
-            return [TextContent(type="text", text=json.dumps({"status": "clean", "message": f"No specific EPA pesticide device restrictions found for '{keyword}' in local database."}, indent=2, ensure_ascii=False))]
-        
-        return [TextContent(type="text", text=json.dumps({"status": "warning", "findings": results}, indent=2, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "status": "clean",
+                            "message": f"No specific EPA pesticide device restrictions found for '{keyword}' in local database.",
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"status": "warning", "findings": results}, indent=2, ensure_ascii=False
+                ),
+            )
+        ]
 
     elif name == "check_amazon_restriction":
         keyword = arguments.get("keyword", "").lower()
         findings = []
-        
+
         for cat in amazon_data.get("restricted_categories", []):
             # Match category name or any prohibited/allowed examples
             match = False
-            if keyword in cat["name"].lower():
+            if (
+                keyword in cat["name"].lower()
+                or any(keyword in p.lower() for p in cat.get("prohibited", []))
+                or any(keyword in a.lower() for a in cat.get("allowed", []))
+            ):
                 match = True
-            elif any(keyword in p.lower() for p in cat.get("prohibited", [])):
-                match = True
-            elif any(keyword in a.lower() for a in cat.get("allowed", [])):
-                match = True
-            
+
             if match:
-                findings.append({
-                    "category": cat["name"],
-                    "approval_required": cat["approval_required"],
-                    "prohibited_examples": [p for p in cat.get("prohibited", []) if keyword in p.lower()][:3],
-                    "seller_central_link": cat.get("seller_central_ref")
-                })
+                findings.append(
+                    {
+                        "category": cat["name"],
+                        "approval_required": cat["approval_required"],
+                        "prohibited_examples": [
+                            p for p in cat.get("prohibited", []) if keyword in p.lower()
+                        ][:3],
+                        "seller_central_link": cat.get("seller_central_ref"),
+                    }
+                )
 
         if not findings:
-            return [TextContent(type="text", text=json.dumps({"status": "pass", "message": "No direct matches in Amazon restricted categories."}, indent=2, ensure_ascii=False))]
-        
-        return [TextContent(type="text", text=json.dumps({"status": "restricted_or_flagged", "findings": findings}, indent=2, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "status": "pass",
+                            "message": "No direct matches in Amazon restricted categories.",
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"status": "restricted_or_flagged", "findings": findings},
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+            )
+        ]
 
     elif name == "get_regulations":
         category_query = arguments.get("category", "").lower()
         regulations = []
-        
+
         for cat in amazon_data.get("restricted_categories", []):
             if category_query in cat["name"].lower():
-                regulations.append({
-                    "category": cat["name"],
-                    "approval_required": cat["approval_required"],
-                    "allowed_summary": cat.get("allowed", [])[:5],
-                    "prohibited_summary": cat.get("prohibited", [])[:5],
-                    "ref": cat.get("seller_central_ref")
-                })
-        
+                regulations.append(
+                    {
+                        "category": cat["name"],
+                        "approval_required": cat["approval_required"],
+                        "allowed_summary": cat.get("allowed", [])[:5],
+                        "prohibited_summary": cat.get("prohibited", [])[:5],
+                        "ref": cat.get("seller_central_ref"),
+                    }
+                )
+
         if not regulations:
-            return [TextContent(type="text", text=json.dumps({"message": f"No regulation info found for category: {category_query}"}, indent=2, ensure_ascii=False))]
-            
-        return [TextContent(type="text", text=json.dumps({"regulations": regulations}, indent=2, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {"message": f"No regulation info found for category: {category_query}"},
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"regulations": regulations}, indent=2, ensure_ascii=False),
+            )
+        ]
 
     elif name == "check_patent":
         # Simplified patent risk check based on known prohibited items in restricted categories
         # (e.g. products defeating emissions, odometer rollback, etc.)
         keyword = arguments.get("keyword", "").lower()
         findings = []
-        
+
         # Look for keywords that often imply legal/patent/IP risk in the prohibited list
         for cat in amazon_data.get("restricted_categories", []):
             for p in cat.get("prohibited", []):
-                if keyword in p.lower() and ("copyright" in p.lower() or "trademark" in p.lower() or "unlicensed" in p.lower() or "counterfeit" in p.lower()):
-                    findings.append({
-                        "risk_type": "IP/Copyright/Trademark",
-                        "context": p,
-                        "category": cat["name"]
-                    })
+                if keyword in p.lower() and (
+                    "copyright" in p.lower()
+                    or "trademark" in p.lower()
+                    or "unlicensed" in p.lower()
+                    or "counterfeit" in p.lower()
+                ):
+                    findings.append(
+                        {
+                            "risk_type": "IP/Copyright/Trademark",
+                            "context": p,
+                            "category": cat["name"],
+                        }
+                    )
 
         status = "high" if findings else "low"
-        return [TextContent(type="text", text=json.dumps({"risk_level": status, "findings": findings}, indent=2, ensure_ascii=False))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"risk_level": status, "findings": findings}, indent=2, ensure_ascii=False
+                ),
+            )
+        ]
 
     elif name == "check_cpsc_recall":
         keyword = arguments.get("keyword", "")
@@ -168,34 +265,48 @@ async def handle_compliance_tool(name: str, arguments: dict) -> list[TextContent
         scraper = CPSCRecallScraper(lang=lang)
         # 1. Search for recalls
         recalls = await scraper.search_recalls(keyword)
-        
+
         results = []
         # 2. Process results
-        for recall in recalls[:5]: # Limit to top 5
+        for recall in recalls[:5]:  # Limit to top 5
             if recall.get("is_scrape"):
                 # If it's a scraped list, we need to fetch details
                 detail = await scraper.get_recall_detail(recall["link"])
                 recall.update(detail)
             # If it's from API, all fields are already there
             results.append(recall)
-            
+
         if not results:
-            return [TextContent(type="text", text=json.dumps({
-                "status": "clean", 
-                "message": f"No CPSC product safety recalls found for '{keyword}'."
-            }, indent=2, ensure_ascii=False))]
-            
-        return [TextContent(type="text", text=json.dumps({
-            "status": "recalled", 
-            "count": len(recalls),
-            "findings": results
-        }, indent=2, ensure_ascii=False))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "status": "clean",
+                            "message": f"No CPSC product safety recalls found for '{keyword}'.",
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                )
+            ]
+
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"status": "recalled", "count": len(recalls), "findings": results},
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+            )
+        ]
 
     elif name == "search_fda":
         keyword = arguments.get("keyword", "")
         domain = arguments.get("domain", "device")
         client = FDAClient()
-        
+
         if domain == "device":
             res = client.search_device(keyword)
         elif domain == "drug":
@@ -204,7 +315,7 @@ async def handle_compliance_tool(name: str, arguments: dict) -> list[TextContent
             res = client.search_food_recall(keyword)
         else:
             return [TextContent(type="text", text=f"Invalid FDA domain: {domain}")]
-            
+
         return [TextContent(type="text", text=json.dumps(res, indent=2, ensure_ascii=False))]
 
     elif name == "search_epa_ppls":
@@ -212,17 +323,18 @@ async def handle_compliance_tool(name: str, arguments: dict) -> list[TextContent
         search_by = arguments.get("search_by", "name")
         is_partial = arguments.get("partial", True)
         client = EPAClient()
-        
+
         if search_by == "name":
             res = client.search_by_name(keyword, partial=is_partial)
         elif search_by == "reg_num":
             res = client.search_by_registration_number(keyword, partial=is_partial)
         else:
             return [TextContent(type="text", text=f"Invalid search_by method: {search_by}")]
-            
+
         return [TextContent(type="text", text=json.dumps(res, indent=2, ensure_ascii=False))]
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
+
 
 # --- Tool Definitions ---
 
@@ -238,10 +350,13 @@ compliance_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "category": {"type": "string", "description": "Product category or name (e.g. 'Toy', 'Power Bank', 'Laser pointer')"}
+                "category": {
+                    "type": "string",
+                    "description": "Product category or name (e.g. 'Toy', 'Power Bank', 'Laser pointer')",
+                }
             },
-            "required": ["category"]
-        }
+            "required": ["category"],
+        },
     ),
     Tool(
         name="check_epa",
@@ -255,10 +370,13 @@ compliance_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "Product type or keyword (e.g. 'UV lamp', 'ozone generator', 'pesticide spray')"}
+                "keyword": {
+                    "type": "string",
+                    "description": "Product type or keyword (e.g. 'UV lamp', 'ozone generator', 'pesticide spray')",
+                }
             },
-            "required": ["keyword"]
-        }
+            "required": ["keyword"],
+        },
     ),
     Tool(
         name="check_amazon_restriction",
@@ -272,10 +390,13 @@ compliance_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "Product name or keyword (e.g. 'alcohol', 'stun gun', 'weight loss supplement')"}
+                "keyword": {
+                    "type": "string",
+                    "description": "Product name or keyword (e.g. 'alcohol', 'stun gun', 'weight loss supplement')",
+                }
             },
-            "required": ["keyword"]
-        }
+            "required": ["keyword"],
+        },
     ),
     Tool(
         name="check_patent",
@@ -288,10 +409,13 @@ compliance_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "Product keyword to check for IP/counterfeit risk (e.g. 'Nike', 'Disney')"}
+                "keyword": {
+                    "type": "string",
+                    "description": "Product keyword to check for IP/counterfeit risk (e.g. 'Nike', 'Disney')",
+                }
             },
-            "required": ["keyword"]
-        }
+            "required": ["keyword"],
+        },
     ),
     Tool(
         name="get_regulations",
@@ -305,10 +429,13 @@ compliance_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "category": {"type": "string", "description": "Category name (e.g. 'Electronics', 'Medical Devices', 'Dietary Supplements')"}
+                "category": {
+                    "type": "string",
+                    "description": "Category name (e.g. 'Electronics', 'Medical Devices', 'Dietary Supplements')",
+                }
             },
-            "required": ["category"]
-        }
+            "required": ["category"],
+        },
     ),
     Tool(
         name="check_cpsc_recall",
@@ -322,11 +449,18 @@ compliance_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "Product keyword or brand to check for recalls (e.g., 'Greater Goods', 'kitchen scale')"},
-                "lang": {"type": "string", "enum": ["en", "zh"], "description": "Language for search (en for English, zh for Chinese). Defaults to 'en'."}
+                "keyword": {
+                    "type": "string",
+                    "description": "Product keyword or brand to check for recalls (e.g., 'Greater Goods', 'kitchen scale')",
+                },
+                "lang": {
+                    "type": "string",
+                    "enum": ["en", "zh"],
+                    "description": "Language for search (en for English, zh for Chinese). Defaults to 'en'.",
+                },
             },
-            "required": ["keyword"]
-        }
+            "required": ["keyword"],
+        },
     ),
     Tool(
         name="search_fda",
@@ -339,11 +473,18 @@ compliance_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "Keyword to search for (e.g. 'Aspirin', 'cardiac stent', 'romaine lettuce')"},
-                "domain": {"type": "string", "enum": ["device", "drug", "food"], "description": "FDA domain: 'device' (510K/PMA), 'drug' (NDA), or 'food' (recall). Defaults to 'device'."}
+                "keyword": {
+                    "type": "string",
+                    "description": "Keyword to search for (e.g. 'Aspirin', 'cardiac stent', 'romaine lettuce')",
+                },
+                "domain": {
+                    "type": "string",
+                    "enum": ["device", "drug", "food"],
+                    "description": "FDA domain: 'device' (510K/PMA), 'drug' (NDA), or 'food' (recall). Defaults to 'device'.",
+                },
             },
-            "required": ["keyword"]
-        }
+            "required": ["keyword"],
+        },
     ),
     Tool(
         name="search_epa_ppls",
@@ -356,13 +497,23 @@ compliance_tools = [
         inputSchema={
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "Product name or EPA registration number (e.g. 'RAID', '66551-1')"},
-                "search_by": {"type": "string", "enum": ["name", "reg_num"], "description": "Search by product name or EPA registration number. Defaults to 'name'."},
-                "partial": {"type": "boolean", "description": "Allow partial string matching. Defaults to true."}
+                "keyword": {
+                    "type": "string",
+                    "description": "Product name or EPA registration number (e.g. 'RAID', '66551-1')",
+                },
+                "search_by": {
+                    "type": "string",
+                    "enum": ["name", "reg_num"],
+                    "description": "Search by product name or EPA registration number. Defaults to 'name'.",
+                },
+                "partial": {
+                    "type": "boolean",
+                    "description": "Allow partial string matching. Defaults to true.",
+                },
             },
-            "required": ["keyword"]
-        }
-    )
+            "required": ["keyword"],
+        },
+    ),
 ]
 
 _COMPLIANCE_META = {

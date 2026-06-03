@@ -10,6 +10,7 @@ Steps:
 Run:
     python3 tests/test_past_month_sales_batch_live.py
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,6 +23,7 @@ _ROOT = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _ROOT)
 
 from dotenv import load_dotenv
+
 load_dotenv(os.path.join(_ROOT, ".env"))
 
 logging.basicConfig(
@@ -43,8 +45,10 @@ def _divider(title: str) -> None:
 
 # ── Step 1: collect ASINs from BSR ──────────────────────────────────────────
 
+
 async def collect_asins(max_asins: int = 100) -> list[str]:
     from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
+
     _divider(f"Step 1 — fetch BSR ASINs (target={max_asins})")
     products = await BestSellersExtractor().get_bestsellers(BSR_URL, max_pages=2)
     asins = [
@@ -59,20 +63,22 @@ async def collect_asins(max_asins: int = 100) -> list[str]:
 
 # ── Step 2: batch fetch ──────────────────────────────────────────────────────
 
+
 async def run_batch(asins: list[str]) -> dict[str, int | None]:
     from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
+
     _divider(f"Step 2 — batch fetch ({len(asins)} ASINs, chunk={BATCH_SIZE})")
     extractor = PastMonthSalesExtractor()
     t0 = time.perf_counter()
     results = await extractor.get_batch_sales(asins)
     elapsed = time.perf_counter() - t0
 
-    hits   = {k: v for k, v in results.items() if v is not None}
+    hits = {k: v for k, v in results.items() if v is not None}
     misses = [k for k, v in results.items() if v is None]
     print(f"  elapsed : {elapsed:.1f}s")
-    print(f"  hit     : {len(hits)}/{len(asins)}  ({len(hits)/len(asins):.0%})")
+    print(f"  hit     : {len(hits)}/{len(asins)}  ({len(hits) / len(asins):.0%})")
     print(f"  miss    : {len(misses)}")
-    print(f"\n  Top hits:")
+    print("\n  Top hits:")
     for asin, sales in sorted(hits.items(), key=lambda x: x[1], reverse=True)[:10]:
         print(f"    {asin}  {sales:,}")
     if misses:
@@ -82,8 +88,10 @@ async def run_batch(asins: list[str]) -> dict[str, int | None]:
 
 # ── Step 3: single-product fallback for misses ───────────────────────────────
 
+
 async def run_fallback(misses: list[str], sample: int = 5) -> dict[str, int | None]:
     from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
+
     if not misses:
         _divider("Step 3 — fallback: no misses, skipping")
         return {}
@@ -105,6 +113,7 @@ async def run_fallback(misses: list[str], sample: int = 5) -> dict[str, int | No
 
 # ── Runner ───────────────────────────────────────────────────────────────────
 
+
 async def main() -> None:
     asins = await collect_asins(max_asins=100)
     if not asins:
@@ -117,7 +126,7 @@ async def main() -> None:
 
     _divider("Summary")
     hits = sum(1 for v in batch_results.values() if v is not None)
-    print(f"  Batch hit rate : {hits}/{len(asins)} ({hits/len(asins):.0%})")
+    print(f"  Batch hit rate : {hits}/{len(asins)} ({hits / len(asins):.0%})")
     print(f"  Misses         : {len(misses)}")
     print(
         "  Note: misses may be products without 'bought in past month' badge "

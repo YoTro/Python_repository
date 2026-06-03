@@ -1,10 +1,13 @@
 from __future__ import annotations
+
 import asyncio
-import logging
 import json
-import re
+import logging
 import random
+import re
+
 from bs4 import BeautifulSoup
+
 from src.core.scraper import AmazonBaseScraper
 
 logger = logging.getLogger(__name__)
@@ -95,11 +98,15 @@ class ProductsNumExtractor(AmazonBaseScraper):
                 if match:
                     return int(match.group(1))
 
-                logger.warning(f"Could not find productsTotalCount in response for seller {seller_id}")
+                logger.warning(
+                    f"Could not find productsTotalCount in response for seller {seller_id}"
+                )
                 return 0
 
             except Exception as e:
-                logger.warning(f"Attempt {attempt + 1}/{max_retries}: Failed to fetch product count for {seller_id}: {e}")
+                logger.warning(
+                    f"Attempt {attempt + 1}/{max_retries}: Failed to fetch product count for {seller_id}: {e}"
+                )
                 await asyncio.sleep(random.uniform(2, 5))
                 headers["User-Agent"] = self._get_random_ua()
 

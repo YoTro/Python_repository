@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class ERPClient(ABC):
@@ -14,7 +15,7 @@ class ERPClient(ABC):
     """
 
     @abstractmethod
-    def get_inventory(self, sku: str) -> Dict[str, Any]:
+    def get_inventory(self, sku: str) -> dict[str, Any]:
         """
         Return inventory snapshot for a single SKU.
 
@@ -25,33 +26,33 @@ class ERPClient(ABC):
 
     def get_purchase_orders(
         self,
-        sku: Optional[str] = None,
-        status: Optional[str] = None,
+        sku: str | None = None,
+        status: str | None = None,
         **kwargs,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Purchase orders (inbound shipments). Override if supported."""
         raise NotImplementedError(f"{type(self).__name__} does not implement get_purchase_orders")
 
     def get_sales_orders(
         self,
-        sku: Optional[str] = None,
+        sku: str | None = None,
         days: int = 30,
         **kwargs,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Sales orders for a SKU over the past N days. Override if supported."""
         raise NotImplementedError(f"{type(self).__name__} does not implement get_sales_orders")
 
     def get_fba_shipment_tracking(
         self,
-        sku: Optional[str] = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        transport_type: Optional[str] = None,
-        shipment_status: Optional[List[str]] = None,
+        sku: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        transport_type: str | None = None,
+        shipment_status: list[str] | None = None,
         search_field: str = "shipment_id",
-        search_value: Optional[str] = None,
+        search_value: str | None = None,
         **kwargs,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Historical FBA shipment records with stage timestamps.
 
@@ -67,4 +68,6 @@ class ERPClient(ABC):
           shipment_id, destination_fulfillment_center_id,
           product_sku, fnsku, asin, parent_asin, product_name
         """
-        raise NotImplementedError(f"{type(self).__name__} does not implement get_fba_shipment_tracking")
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement get_fba_shipment_tracking"
+        )

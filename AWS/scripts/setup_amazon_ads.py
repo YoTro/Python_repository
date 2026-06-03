@@ -20,7 +20,7 @@ def setup_ads_auth():
     client_id = os.getenv("AMAZON_ADS_CLIENT_ID")
     client_secret = os.getenv("AMAZON_ADS_CLIENT_SECRET")
     store_id = os.getenv("AMAZON_ADS_DEFAULT_STORE", "US").upper()
-    
+
     if not client_id or not client_secret:
         print("❌ Error: Please set AMAZON_ADS_CLIENT_ID and AMAZON_ADS_CLIENT_SECRET in your .env first.")
         return
@@ -36,16 +36,16 @@ def setup_ads_auth():
     print("!"*60)
 
     # 1. Construct Authorization URL
-    redirect_uri = "http://localhost:3000/callback" 
+    redirect_uri = "http://localhost:3000/callback"
     scope = "advertising::campaign_management"
-    
+
     params = {
         "client_id": client_id,
         "scope": scope,
         "response_type": "code",
         "redirect_uri": redirect_uri
     }
-    
+
     auth_url = f"https://www.amazon.com/ap/oa?{urllib.parse.urlencode(params)}"
 
     print("\n" + "="*60)
@@ -61,16 +61,16 @@ def setup_ads_auth():
     print("3. Find the string after 'code='. It looks like a long random string.")
     print("   Example: http://localhost:3000/callback?code=ANxx...&scope=...")
     print("\nEnter the 'code' value from the address bar:")
-    
+
     auth_code = input("> ").strip()
-    
+
     if not auth_code:
         print("❌ No code entered. Aborting.")
         return
 
     # 2. Exchange code for Refresh Token
     print("\nExchanging code for Refresh Token...")
-    
+
     token_url = "https://api.amazon.com/auth/o2/token"
     payload = {
         "grant_type": "authorization_code",
@@ -79,15 +79,15 @@ def setup_ads_auth():
         "client_id": client_id,
         "client_secret": client_secret
     }
-    
+
     try:
         response = requests.post(token_url, data=payload)
         response.raise_for_status()
         token_data = response.json()
-        
+
         refresh_token = token_data.get("refresh_token")
         access_token = token_data.get("access_token")
-        
+
         print("\n" + "✅"*5 + " Refresh Token Acquired! " + "✅"*5)
         print(f"AMAZON_ADS_REFRESH_TOKEN_{store_id}={refresh_token}")
 
@@ -105,7 +105,7 @@ def setup_ads_auth():
             "JP": "https://advertising-api-fe.amazon.com"
         }
         base_url = region_map.get(store_id, "https://advertising-api.amazon.com")
-        
+
         profiles_url = f"{base_url}/v2/profiles"
         headers = {
             "Authorization": f"Bearer {access_token}",
@@ -123,7 +123,7 @@ def setup_ads_auth():
             print("\nAvailable Profiles (Pick the one matching your store):")
             for p in profiles:
                 print(f"- Name: {p.get('accountInfo', {}).get('name')} | ID: {p.get('profileId')} | Country: {p.get('countryCode')}")
-            
+
             # Suggest the first one
             first_id = profiles[0].get('profileId')
             print(f"\nRecommended for .env:")
@@ -133,12 +133,12 @@ def setup_ads_auth():
         print("SETUP COMPLETE")
         print("="*60)
         print("Please update your .env file with the values above.")
-        
+
     except Exception as e:
         print(f"\n❌ Setup failed: {e}")
         if hasattr(e, 'response') and e.response is not None:
             print(f"Response details: {e.response.text}")
-        
+
         print("\nTROUBLESHOOTING:")
         print("1. 'unknown scope': You must apply for Advertising API access at https://advertising.amazon.com/api-solutions")
         print("2. 'redirect_uri_mismatch': Ensure 'http://localhost:3000/callback' is in your LWA Allowed Return URLs.")

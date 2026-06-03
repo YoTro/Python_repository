@@ -1,21 +1,26 @@
 from __future__ import annotations
+
 import logging
 import random
+import re
 import threading
 import time
-import re
+
 import requests
 from bs4 import BeautifulSoup
-from .auth import SellerspriteAuth
-from src.gateway.rate_limit import RateLimiter
+
 from src.core.errors.exceptions import RetryableError
+from src.gateway.rate_limit import RateLimiter
+
+from .auth import SellerspriteAuth
 
 logger = logging.getLogger(__name__)
 
 # Process-level lock: only one thread may call login_extension() at a time.
 # Cooldown duration is read from config/settings.json → rate_limits.source_limits.sellersprite.login_cooldown_seconds.
 _LOGIN_LOCK = threading.Lock()
-_LOGIN_LAST_ATTEMPT: dict[str, float] = {}   # tenant_id → monotonic seconds
+_LOGIN_LAST_ATTEMPT: dict[str, float] = {}  # tenant_id → monotonic seconds
+
 
 class SellerspriteAPI:
     """
@@ -69,7 +74,9 @@ class SellerspriteAPI:
         Sprite-X-Token values do not shadow the freshly-set ones.
         """
         with _LOGIN_LOCK:
-            cooldown = RateLimiter().get_source_config("sellersprite").get("login_cooldown_seconds", 60)
+            cooldown = (
+                RateLimiter().get_source_config("sellersprite").get("login_cooldown_seconds", 60)
+            )
             now = time.monotonic()
             last = _LOGIN_LAST_ATTEMPT.get(self.tenant_id, 0.0)
             if now - last < cooldown:
@@ -99,13 +106,19 @@ class SellerspriteAPI:
         limiter = RateLimiter()
         for attempt in range(3):
             if not limiter.acquire_source("sellersprite"):
-                raise RetryableError("sellersprite source rate limit timeout", retry_after_seconds=60)
+                raise RetryableError(
+                    "sellersprite source rate limit timeout", retry_after_seconds=60
+                )
 
             response = self.session.request(method, url, **kwargs)
 
             if response.status_code == 429:
-                wait = int(response.headers.get("Retry-After", 2 ** (attempt + 1))) + random.uniform(0, 1)
-                logger.warning(f"[sellersprite] 429 rate limited — waiting {wait:.1f}s (attempt {attempt + 1}/3)")
+                wait = int(
+                    response.headers.get("Retry-After", 2 ** (attempt + 1))
+                ) + random.uniform(0, 1)
+                logger.warning(
+                    f"[sellersprite] 429 rate limited — waiting {wait:.1f}s (attempt {attempt + 1}/3)"
+                )
                 time.sleep(wait)
                 continue
 
@@ -116,7 +129,9 @@ class SellerspriteAPI:
 
             return response
 
-        raise RetryableError("sellersprite still rate limited after 3 retries", retry_after_seconds=120)
+        raise RetryableError(
+            "sellersprite still rate limited after 3 retries", retry_after_seconds=120
+        )
 
     def get_keepa_data(self, asin: str) -> dict:
         """
@@ -137,17 +152,17 @@ class SellerspriteAPI:
 
         logger.info(f"Fetching Keepa data for {asin}")
         res = self._request("GET", url, headers=headers)
-        response_data = {'times': [], 'bsr': [], 'subRanks': []}
+        response_data = {"times": [], "bsr": [], "subRanks": []}
 
         if res.status_code == 200:
             data = res.json()
-            if 'data' in data and 'keepa' in data['data']:
-                keepa = data['data']['keepa']
-                response_data['bsr'] = keepa.get('bsr', [])
-                response_data['times'] = data['data'].get('times', [])
-                sub_ranks = keepa.get('subRanks', {})
+            if "data" in data and "keepa" in data["data"]:
+                keepa = data["data"]["keepa"]
+                response_data["bsr"] = keepa.get("bsr", [])
+                response_data["times"] = data["data"].get("times", [])
+                sub_ranks = keepa.get("subRanks", {})
                 if sub_ranks:
-                    response_data['subRanks'] = list(sub_ranks.values())[0]
+                    response_data["subRanks"] = list(sub_ranks.values())[0]
         else:
             logger.error(f"Failed to fetch Keepa data: {res.text}")
 
@@ -223,12 +238,16 @@ class SellerspriteAPI:
             res = self._request("POST", url, json=payload, headers=headers)
 
             if res.status_code != 200:
-                logger.error(f"[sellersprite] competing-lookup failed {res.status_code}: {res.text}")
+                logger.error(
+                    f"[sellersprite] competing-lookup failed {res.status_code}: {res.text}"
+                )
                 return {"items": [], "total": 0, "page": page, "size": size}
 
             body = res.json()
             if not isinstance(body, dict):
-                logger.error(f"[sellersprite] competing-lookup unexpected body type={type(body).__name__}: {body!r:.200}")
+                logger.error(
+                    f"[sellersprite] competing-lookup unexpected body type={type(body).__name__}: {body!r:.200}"
+                )
                 return {"items": [], "total": 0, "page": page, "size": size}
 
             data = body.get("data") or {}
@@ -296,7 +315,9 @@ class SellerspriteAPI:
         }
         params = {"marketId": market_id, "table": table, "nodeLabelPath": query}
 
-        logger.info(f"[sellersprite] resolve-node marketId={market_id} nodeLabelPath={query!r} table={table}")
+        logger.info(
+            f"[sellersprite] resolve-node marketId={market_id} nodeLabelPath={query!r} table={table}"
+        )
 
         for attempt in range(2):
             res = self._request("GET", url, params=params, headers=headers)
@@ -307,14 +328,18 @@ class SellerspriteAPI:
 
             body = res.json()
             if not isinstance(body, dict):
-                logger.error(f"[sellersprite] resolve-node unexpected body type={type(body).__name__}: {body!r:.200}")
+                logger.error(
+                    f"[sellersprite] resolve-node unexpected body type={type(body).__name__}: {body!r:.200}"
+                )
                 return []
 
             # Soft-401: data field contains login redirect URL
             data_field = body.get("data")
             if isinstance(data_field, str) and "/user/login" in data_field:
                 if attempt == 0:
-                    logger.warning("[sellersprite] resolve-node soft-401 — re-logging in and retrying")
+                    logger.warning(
+                        "[sellersprite] resolve-node soft-401 — re-logging in and retrying"
+                    )
                     self._safe_relogin()
                     continue
                 logger.error("[sellersprite] resolve-node still getting soft-401 after re-login")
@@ -322,7 +347,9 @@ class SellerspriteAPI:
 
             items = body.get("items") or []
             if not items:
-                logger.warning(f"[sellersprite] resolve_node_path: no match for query={query!r} in table={table}")
+                logger.warning(
+                    f"[sellersprite] resolve_node_path: no match for query={query!r} in table={table}"
+                )
             return items
 
         return []
@@ -377,14 +404,18 @@ class SellerspriteAPI:
 
             body = res.json()
             if not isinstance(body, dict):
-                logger.error(f"[sellersprite] category-nodes unexpected body type={type(body).__name__}: {body!r:.200}")
+                logger.error(
+                    f"[sellersprite] category-nodes unexpected body type={type(body).__name__}: {body!r:.200}"
+                )
                 return []
 
             # Soft-401: data field contains login redirect URL
             data_field = body.get("data")
             if isinstance(data_field, str) and "/user/login" in data_field:
                 if attempt == 0:
-                    logger.warning("[sellersprite] category-nodes soft-401 — re-logging in and retrying")
+                    logger.warning(
+                        "[sellersprite] category-nodes soft-401 — re-logging in and retrying"
+                    )
                     self._safe_relogin()
                     continue
                 logger.error("[sellersprite] category-nodes still getting soft-401 after re-login")
@@ -465,26 +496,75 @@ class SellerspriteAPI:
 
         # Add empty fields to match the raw form data from curl exactly
         empty_fields = [
-            "departmentKeyword", "minAvgSales", "maxAvgSales", "minAvgBsr", "maxAvgBsr",
-            "minAvgWeight", "maxAvgWeight", "minHeadListingAvgBsr", "maxHeadListingAvgBsr",
-            "minTotalProducts", "maxTotalProducts", "minAvgRevenue", "maxAvgRevenue",
-            "minAvgPrice", "maxAvgPrice", "minAvgVolume", "maxAvgVolume",
-            "minHeadListingAvgSales", "maxHeadListingAvgSales", "minAvgReviews", "maxAvgReviews",
-            "minAvgRating", "maxAvgRating", "minAvgProfit", "maxAvgProfit",
-            "minHeadListingAvgRevenue", "maxHeadListingAvgRevenue", "minBrands", "maxBrands",
-            "minHeadListingProductCrn", "maxHeadListingProductCrn", "minEbcRatio", "maxEbcRatio",
-            "minAmzRatio", "maxAmzRatio", "minSellers", "maxSellers",
-            "minHeadListingBrandCrn", "maxHeadListingBrandCrn", "minFbaRatio", "maxFbaRatio",
-            "sellerNations", "minAvgSellers", "maxAvgSellers", "minHeadListingSellerCrn",
-            "maxHeadListingSellerCrn", "minFbmRatio", "maxFbmRatio", "minNewRatio", "maxNewRatio",
-            "minNewAvgPrice", "maxNewAvgPrice", "minNewAvgRevenue", "maxNewAvgRevenue",
-            "minNewCount", "maxNewCount", "minNewAvgRating", "maxNewAvgRating",
-            "minNewAvgReviews", "maxNewAvgReviews", "minNewAvgSales", "maxNewAvgSales"
+            "departmentKeyword",
+            "minAvgSales",
+            "maxAvgSales",
+            "minAvgBsr",
+            "maxAvgBsr",
+            "minAvgWeight",
+            "maxAvgWeight",
+            "minHeadListingAvgBsr",
+            "maxHeadListingAvgBsr",
+            "minTotalProducts",
+            "maxTotalProducts",
+            "minAvgRevenue",
+            "maxAvgRevenue",
+            "minAvgPrice",
+            "maxAvgPrice",
+            "minAvgVolume",
+            "maxAvgVolume",
+            "minHeadListingAvgSales",
+            "maxHeadListingAvgSales",
+            "minAvgReviews",
+            "maxAvgReviews",
+            "minAvgRating",
+            "maxAvgRating",
+            "minAvgProfit",
+            "maxAvgProfit",
+            "minHeadListingAvgRevenue",
+            "maxHeadListingAvgRevenue",
+            "minBrands",
+            "maxBrands",
+            "minHeadListingProductCrn",
+            "maxHeadListingProductCrn",
+            "minEbcRatio",
+            "maxEbcRatio",
+            "minAmzRatio",
+            "maxAmzRatio",
+            "minSellers",
+            "maxSellers",
+            "minHeadListingBrandCrn",
+            "maxHeadListingBrandCrn",
+            "minFbaRatio",
+            "maxFbaRatio",
+            "sellerNations",
+            "minAvgSellers",
+            "maxAvgSellers",
+            "minHeadListingSellerCrn",
+            "maxHeadListingSellerCrn",
+            "minFbmRatio",
+            "maxFbmRatio",
+            "minNewRatio",
+            "maxNewRatio",
+            "minNewAvgPrice",
+            "maxNewAvgPrice",
+            "minNewAvgRevenue",
+            "maxNewAvgRevenue",
+            "minNewCount",
+            "maxNewCount",
+            "minNewAvgRating",
+            "maxNewAvgRating",
+            "minNewAvgReviews",
+            "maxNewAvgReviews",
+            "minNewAvgSales",
+            "maxNewAvgSales",
         ]
         for field in empty_fields:
             data[field] = ""
 
-        logger.info(f"[sellersprite] market-research marketId={market_id} node={node_id_path} page={page} size={size}")
+        logger.info(
+            f"[sellersprite] market-research marketId={market_id} node={node_id_path} page={page} size={size}"
+        )
 
         if page == 1:
             # Page 1 uses POST with full form data
@@ -494,8 +574,8 @@ class SellerspriteAPI:
             # Use the same headers but remove Content-Type for GET
             get_headers = headers.copy()
             get_headers.pop("Content-Type", None)
-            
-            # Prepare GET params from the data dict (filtering out empty ones if desired, 
+
+            # Prepare GET params from the data dict (filtering out empty ones if desired,
             # but keeping it simple to match the user's curl)
             params = {
                 "marketId": market_id,
@@ -508,7 +588,7 @@ class SellerspriteAPI:
                 "topn": topn,
                 "newReleaseNum": new_release_num,
                 "page": page,
-                "size": size
+                "size": size,
             }
             res = self._request("GET", url, params=params, headers=get_headers)
 
@@ -522,6 +602,7 @@ class SellerspriteAPI:
 # ---------------------------------------------------------------------------
 # HTML parser for /v2/market-research (module-level, independently testable)
 # ---------------------------------------------------------------------------
+
 
 def _parse_market_research_html(html: str, parent_node_id_path: str) -> dict:
     """
@@ -546,7 +627,6 @@ def _parse_market_research_html(html: str, parent_node_id_path: str) -> dict:
           ]
         }
     """
-    
 
     soup = BeautifulSoup(html, "html.parser")
     results: dict = {"total_products": 0, "items": []}
@@ -564,7 +644,9 @@ def _parse_market_research_html(html: str, parent_node_id_path: str) -> dict:
     # ── table rows ────────────────────────────────────────────────────────────
     table = soup.find("table", class_="loose-table")
     if not table:
-        logger.warning(f"[sellersprite] market-research: no loose-table found (html_len={len(html)})")
+        logger.warning(
+            f"[sellersprite] market-research: no loose-table found (html_len={len(html)})"
+        )
         return results
 
     tbody = table.find("tbody")
@@ -575,7 +657,7 @@ def _parse_market_research_html(html: str, parent_node_id_path: str) -> dict:
     # Rows come in pairs: [main_row, expansion_row, main_row, expansion_row, ...]
     for i in range(0, len(all_rows) - 1, 2):
         main_row = all_rows[i]
-        exp_row  = all_rows[i + 1]
+        exp_row = all_rows[i + 1]
 
         # ── node_id + category_name (from main row) ───────────────────────
         span = main_row.find("span", class_=lambda c: c and "market-analysis" in c)
@@ -589,9 +671,11 @@ def _parse_market_research_html(html: str, parent_node_id_path: str) -> dict:
         tds = main_row.find_all("td", class_="align-middle")
         for td in reversed(tds):
             divs = td.find_all("div", class_="mr-2")
-            vals = [d.get_text(strip=True) for d in divs if re.match(r"[\d.]+%", d.get_text(strip=True))]
+            vals = [
+                d.get_text(strip=True) for d in divs if re.match(r"[\d.]+%", d.get_text(strip=True))
+            ]
             if len(vals) >= 2:
-                return_rate_pct     = float(re.sub(r"[^\d.]", "", vals[0]))
+                return_rate_pct = float(re.sub(r"[^\d.]", "", vals[0]))
                 avg_return_rate_pct = float(re.sub(r"[^\d.]", "", vals[1]))
                 break
             elif len(vals) == 1:
@@ -620,13 +704,15 @@ def _parse_market_research_html(html: str, parent_node_id_path: str) -> dict:
         if not node_id:
             continue
 
-        results["items"].append({
-            "node_id":               node_id,
-            "category_name":         category_name,
-            "search_to_buy_ratio_pm": stb_pm,
-            "return_rate_pct":         return_rate_pct,
-            "avg_return_rate_pct":     avg_return_rate_pct,
-        })
+        results["items"].append(
+            {
+                "node_id": node_id,
+                "category_name": category_name,
+                "search_to_buy_ratio_pm": stb_pm,
+                "return_rate_pct": return_rate_pct,
+                "avg_return_rate_pct": avg_return_rate_pct,
+            }
+        )
 
     logger.info(
         f"[sellersprite] market-research parsed: "

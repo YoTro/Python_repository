@@ -11,16 +11,17 @@ Usage:
     venv311/bin/python tests/test_xiyou_asin_keywords_live.py
     venv311/bin/python tests/test_xiyou_asin_keywords_live.py --asin B0FVLPXRNY
 """
+
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
+
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -33,14 +34,14 @@ WARN = "⚠"
 
 def _parse(args=None):
     p = argparse.ArgumentParser()
-    p.add_argument("--asin",    default="B0FVLPXRNY")
+    p.add_argument("--asin", default="B0FVLPXRNY")
     p.add_argument("--country", default="US")
     return p.parse_args(args)
 
 
 def _summarise(result: dict, label: str) -> bool:
     kw_list = result.get("list") or []
-    avail   = result.get("availableDate") or {}
+    avail = result.get("availableDate") or {}
     if not kw_list:
         logger.warning(f"  {WARN} [{label}] returned 0 keywords — empty window or auth issue")
         logger.warning(f"       availableDate: {avail}")
@@ -53,7 +54,7 @@ def _summarise(result: dict, label: str) -> bool:
     top_asins = (sample.get("topAsins") or {}).get("list") or []
     logger.info(
         f"       Sample kw: '{sample.get('searchTerm')}' "
-        f"vol={( sample.get('searchTermReport') or {}).get('weeklySearchVolume')} "
+        f"vol={(sample.get('searchTermReport') or {}).get('weeklySearchVolume')} "
         f"topAsins={[a.get('asin') for a in top_asins]}"
     )
     return True
@@ -62,6 +63,7 @@ def _summarise(result: dict, label: str) -> bool:
 def main():
     args = _parse()
     from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
+
     api = XiyouZhaociAPI()
 
     if not api.auth_token:
@@ -69,10 +71,10 @@ def main():
         sys.exit(1)
 
     cases = [
-        ("monthly_standard",   "2026-01-01", "2026-01-31"),
-        ("cross_month",        "2026-01-01", "2026-04-21"),
-        ("daily_sub_month",    "2026-04-01", "2026-04-21"),  # KEY: is daily granularity accepted?
-        ("single_day",         "2026-04-21", "2026-04-21"),
+        ("monthly_standard", "2026-01-01", "2026-01-31"),
+        ("cross_month", "2026-01-01", "2026-04-21"),
+        ("daily_sub_month", "2026-04-01", "2026-04-21"),  # KEY: is daily granularity accepted?
+        ("single_day", "2026-04-21", "2026-04-21"),
     ]
 
     results = {}
@@ -92,13 +94,13 @@ def main():
             logger.error(f"  {FAIL} [{label}] Exception: {e}")
             results[label] = f"ERROR: {e}"
 
-    print(f"\n{'='*55}")
+    print(f"\n{'=' * 55}")
     print("  xiyou_get_asin_keywords date-granularity test results")
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
     for label, status in results.items():
         icon = PASS if status == "PASS" else (WARN if status == "EMPTY" else FAIL)
         print(f"  {icon}  {label:<25} {status}")
-    print(f"{'='*55}\n")
+    print(f"{'=' * 55}\n")
 
     # Verdict on daily granularity
     daily_status = results.get("daily_sub_month", "")

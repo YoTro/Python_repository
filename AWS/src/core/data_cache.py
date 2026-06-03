@@ -1,10 +1,11 @@
 from __future__ import annotations
-import os
+
 import json
 import logging
+import os
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
 from datetime import datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -13,13 +14,14 @@ logger = logging.getLogger(__name__)
 # Storage backends
 # ---------------------------------------------------------------------------
 
+
 class _CacheBackend(ABC):
     @abstractmethod
-    def get_raw(self, domain: str, key: str) -> Optional[Dict[str, Any]]:
+    def get_raw(self, domain: str, key: str) -> dict[str, Any] | None:
         """Return the raw envelope {data, updated_at} or None."""
 
     @abstractmethod
-    def set_raw(self, domain: str, key: str, envelope: Dict[str, Any]) -> None:
+    def set_raw(self, domain: str, key: str, envelope: dict[str, Any]) -> None:
         """Persist the raw envelope."""
 
     @abstractmethod
@@ -33,7 +35,7 @@ class _JsonFileBackend(_CacheBackend):
     def __init__(self, cache_dir: str):
         self._cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
-        self._mem: Dict[str, Dict[str, Any]] = {}
+        self._mem: dict[str, dict[str, Any]] = {}
 
     def _path(self, domain: str) -> str:
         return os.path.join(self._cache_dir, f"{domain}.json")
@@ -44,7 +46,7 @@ class _JsonFileBackend(_CacheBackend):
         path = self._path(domain)
         if os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     self._mem[domain] = json.load(f)
             except Exception as e:
                 logger.error(f"[cache] corrupt file for domain '{domain}': {e} — resetting")
@@ -56,11 +58,11 @@ class _JsonFileBackend(_CacheBackend):
         else:
             self._mem[domain] = {}
 
-    def get_raw(self, domain: str, key: str) -> Optional[Dict[str, Any]]:
+    def get_raw(self, domain: str, key: str) -> dict[str, Any] | None:
         self._load(domain)
         return self._mem[domain].get(key)
 
-    def set_raw(self, domain: str, key: str, envelope: Dict[str, Any]) -> None:
+    def set_raw(self, domain: str, key: str, envelope: dict[str, Any]) -> None:
         self._load(domain)
         self._mem[domain][key] = envelope
         try:
@@ -79,6 +81,7 @@ class _RedisBackend(_CacheBackend):
 
     def __init__(self, url: str):
         import redis
+
         self._url = url
         # decode_responses=True returns strings instead of bytes
         self._r = redis.from_url(url, decode_responses=True)
@@ -87,7 +90,7 @@ class _RedisBackend(_CacheBackend):
     def _key(self, domain: str, key: str) -> str:
         return f"aws:cache:{domain}:{key}"
 
-    def get_raw(self, domain: str, key: str) -> Optional[Dict[str, Any]]:
+    def get_raw(self, domain: str, key: str) -> dict[str, Any] | None:
         try:
             raw = self._r.get(self._key(domain, key))
             return json.loads(raw) if raw else None
@@ -95,7 +98,7 @@ class _RedisBackend(_CacheBackend):
             logger.error(f"[cache] Redis get failed: {e}")
             return None
 
-    def set_raw(self, domain: str, key: str, envelope: Dict[str, Any]) -> None:
+    def set_raw(self, domain: str, key: str, envelope: dict[str, Any]) -> None:
         try:
             self._r.set(self._key(domain, key), json.dumps(envelope, ensure_ascii=False))
         except Exception as e:
@@ -113,6 +116,7 @@ class _RedisBackend(_CacheBackend):
 # Public DataCache — interface unchanged
 # ---------------------------------------------------------------------------
 
+
 class DataCache:
     """
     Core Data Cache for L1/L2 orchestration.
@@ -123,7 +127,7 @@ class DataCache:
     Backend is swappable (JsonFile by default, Redis if REDIS_URL is set).
     """
 
-    def __init__(self, backend: Optional[_CacheBackend] = None, cache_dir: Optional[str] = None):
+    def __init__(self, backend: _CacheBackend | None = None, cache_dir: str | None = None):
         if backend is not None:
             self._backend = backend
         else:
@@ -132,15 +136,15 @@ class DataCache:
                 try:
                     self._backend = _RedisBackend(redis_url)
                 except Exception as e:
-                    logger.error(f"[cache] Failed to initialize RedisBackend: {e} — falling back to JsonFile")
+                    logger.error(
+                        f"[cache] Failed to initialize RedisBackend: {e} — falling back to JsonFile"
+                    )
                     self._backend = self._init_json_backend(cache_dir)
             else:
                 self._backend = self._init_json_backend(cache_dir)
 
-    def _init_json_backend(self, cache_dir: Optional[str] = None) -> _JsonFileBackend:
-        _dir = cache_dir or os.path.join(
-            os.path.dirname(__file__), "..", "..", "data", "cache"
-        )
+    def _init_json_backend(self, cache_dir: str | None = None) -> _JsonFileBackend:
+        _dir = cache_dir or os.path.join(os.path.dirname(__file__), "..", "..", "data", "cache")
         return _JsonFileBackend(_dir)
 
     @staticmethod
@@ -157,21 +161,28 @@ class DataCache:
         return value
 
     def set(self, domain: str, key: str, value: Any) -> None:
-        envelope = {"data": self._to_serializable(value), "updated_at": datetime.utcnow().isoformat()}
+        envelope = {
+            "data": self._to_serializable(value),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
         self._backend.set_raw(domain, key, envelope)
 
-    def get(self, domain: str, key: str, ttl_seconds: Optional[int] = None) -> Optional[Any]:
+    def get(self, domain: str, key: str, ttl_seconds: int | None = None) -> Any | None:
         envelope = self._backend.get_raw(domain, key)
         if not envelope:
             return None
         if ttl_seconds:
-            age = (datetime.utcnow() - datetime.fromisoformat(envelope["updated_at"])).total_seconds()
+            age = (
+                datetime.utcnow() - datetime.fromisoformat(envelope["updated_at"])
+            ).total_seconds()
             if age > ttl_seconds:
                 logger.info(f"[cache] {domain}:{key} expired ({int(age)}s > {ttl_seconds}s ttl)")
                 return None
         return envelope["data"]
 
-    def get_model(self, domain: str, key: str, model_class: Any, ttl_seconds: Optional[int] = None) -> Optional[Any]:
+    def get_model(
+        self, domain: str, key: str, model_class: Any, ttl_seconds: int | None = None
+    ) -> Any | None:
         data = self.get(domain, key, ttl_seconds=ttl_seconds)
         if data is None:
             return None

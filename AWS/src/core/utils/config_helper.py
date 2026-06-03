@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 import json
-import os
 import logging
-from typing import Any, Dict, Optional
+import os
+from typing import Any
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -29,7 +31,7 @@ class ConfigHelper:
     runtime (useful in tests or when hot-reloading config without restart).
     """
 
-    _config: Dict[str, Any] = {}
+    _config: dict[str, Any] = {}
     _is_loaded: bool = False
     _config_path: str = _DEFAULT_CONFIG_PATH
 
@@ -40,12 +42,14 @@ class ConfigHelper:
         """Load (or reload) configuration from *config_path*."""
         cls._config_path = config_path
         if not os.path.exists(config_path):
-            logger.warning(f"[ConfigHelper] Config file not found: {config_path}. Using empty defaults.")
+            logger.warning(
+                f"[ConfigHelper] Config file not found: {config_path}. Using empty defaults."
+            )
             cls._config = {}
             cls._is_loaded = True
             return
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 cls._config = json.load(f)
             logger.info(f"[ConfigHelper] Loaded config from {config_path}")
         except Exception as e:
@@ -91,7 +95,7 @@ class ConfigHelper:
     # ── Feishu helpers ────────────────────────────────────────────────────────
 
     @classmethod
-    def get_feishu_bot(cls, bot_name: str) -> Optional[Dict[str, str]]:
+    def get_feishu_bot(cls, bot_name: str) -> dict[str, str] | None:
         """
         Load Feishu bot credentials from environment variables.
         Naming convention: FEISHU_{BOT_NAME_UPPER}_{FIELD}
@@ -102,8 +106,8 @@ class ConfigHelper:
         if not app_id:
             return None
         return {
-            "app_id":             app_id,
-            "app_secret":         os.getenv(f"{prefix}APP_SECRET", ""),
-            "user_access_token":  os.getenv(f"{prefix}USER_ACCESS_TOKEN", ""),
-            "webhook_url":        os.getenv(f"{prefix}WEBHOOK_URL", ""),
+            "app_id": app_id,
+            "app_secret": os.getenv(f"{prefix}APP_SECRET", ""),
+            "user_access_token": os.getenv(f"{prefix}USER_ACCESS_TOKEN", ""),
+            "webhook_url": os.getenv(f"{prefix}WEBHOOK_URL", ""),
         }

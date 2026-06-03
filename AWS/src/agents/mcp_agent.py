@@ -1,20 +1,21 @@
 from __future__ import annotations
+
 import json
 import logging
-from typing import Any, Optional
+
 from src.agents.base_agent import BaseAgent
+from src.agents.prompts.prompt_builder import PromptBuilder
+from src.agents.session import AgentSession, AgentSessionManager
+from src.core.errors.exceptions import JobSuspendedError
+from src.core.utils.context import ContextPropagator
 from src.intelligence.providers.base import BaseLLMProvider
 from src.intelligence.router import TaskCategory
 from src.mcp.client import get_mcp_client
-from src.agents.session import AgentSessionManager, AgentSession
-from src.agents.prompts.prompt_builder import PromptBuilder
 from src.registry.tools import tool_registry
-from src.core.utils.context import ContextPropagator
-from src.core.errors.exceptions import JobSuspendedError
 
 logger = logging.getLogger(__name__)
 
-_MAX_DUPLICATE_CALLS = 2   # abort tool loop after N identical consecutive calls
+_MAX_DUPLICATE_CALLS = 2  # abort tool loop after N identical consecutive calls
 _DEFAULT_TOKEN_BUDGET = 1000000  # cumulative *cloud* token threshold before switching to batch
 _LOCAL_PROVIDERS = {"local", "llama_cpp", "llama"}  # provider names that run locally (free)
 
@@ -30,10 +31,11 @@ class MCPAgent(BaseAgent):
       - When cloud usage exceeds the budget, the agent forces a final summary
         and notifies the user that remaining work switches to batch API.
     """
+
     def __init__(
         self,
         provider: BaseLLMProvider,
-        session_mgr: Optional[AgentSessionManager] = None,
+        session_mgr: AgentSessionManager | None = None,
         token_budget: int = _DEFAULT_TOKEN_BUDGET,
     ):
         super().__init__(provider)
@@ -49,19 +51,19 @@ class MCPAgent(BaseAgent):
         """Accumulate token usage and monetary cost."""
         if not response_obj:
             return
-            
+
         if response_obj.token_usage:
             session.token_usage += response_obj.token_usage
             if response_obj.provider_name not in _LOCAL_PROVIDERS:
                 session.cloud_token_usage += response_obj.token_usage
-        
+
         if hasattr(response_obj, "cost") and response_obj.cost:
             session.total_cost += response_obj.cost
             if hasattr(response_obj, "currency"):
                 session.currency = response_obj.currency
 
     @staticmethod
-    def _parse_tool_call(response: str) -> tuple[Optional[str], Optional[dict]]:
+    def _parse_tool_call(response: str) -> tuple[str | None, dict | None]:
         """Extract (action, action_input) from an LLM response. Returns (None, None) on failure."""
         if not response or not isinstance(response, str):
             return None, None
@@ -69,17 +71,20 @@ class MCPAgent(BaseAgent):
         try:
             # Use unified logic from OutputParser
             from src.intelligence.parsers.markdown_cleaner import OutputParser
+
             call = OutputParser.parse_dirty_json(response)
-            
+
             if not call:
                 # Only warn if it looks like a tool call but failed to parse
                 if "{" in response and "action" in response:
-                    logger.warning(f"Failed to extract tool call from response: {response[:200]}...")
+                    logger.warning(
+                        f"Failed to extract tool call from response: {response[:200]}..."
+                    )
                 return None, None
-                
+
             action = call.get("action")
             action_input = call.get("action_input", {})
-            
+
             if action:
                 logger.debug(f"Successfully parsed tool call: {action}")
             return action, action_input
@@ -88,13 +93,16 @@ class MCPAgent(BaseAgent):
             logger.error(f"Critical error in _parse_tool_call: {e}. Raw snippet: {response[:500]}")
             return None, None
 
-    async def _force_final_answer(self, session: AgentSession, system_message: str, reason: str) -> str:
+    async def _force_final_answer(
+        self, session: AgentSession, system_message: str, reason: str
+    ) -> str:
         """
         Ask the LLM one last time to produce a Final Answer using
         all the data it has already collected.
         """
         session.add_message(
-            role="tool", name="system",
+            role="tool",
+            name="system",
             content=(
                 f"SYSTEM: {reason} "
                 "You MUST now produce your Final Answer using ALL the data you have collected so far. "
@@ -117,23 +125,21 @@ class MCPAgent(BaseAgent):
     # ── main loop ─────────────────────────────────────────────────────────
 
     async def run(
-        self, 
-        query: str, 
-        session_id: str = "default_session", 
+        self,
+        query: str,
+        session_id: str = "default_session",
         tenant_id: str = "default",
         user_id: str = "default",
         callback=None,
-        context: Optional[dict] = None
+        context: dict | None = None,
     ) -> str:
         # 1. Load or Create Session
         session = self.session_mgr.load(session_id)
         if not session:
             session = self.session_mgr.create(
-                session_id=session_id,
-                tenant_id=tenant_id,
-                user_id=user_id
+                session_id=session_id, tenant_id=tenant_id, user_id=user_id
             )
-        
+
         # Merge external context (chat_id, etc.) if provided
         if context:
             session.context.update(context)
@@ -150,8 +156,8 @@ class MCPAgent(BaseAgent):
         last_tool_call = None
         duplicate_count = 0
         budget_exceeded = False
-        step_extensions = 0          # number of grace-period extensions granted
-        _MAX_EXTENSIONS = 2          # hard cap: at most 2 extensions (10 extra steps total)
+        step_extensions = 0  # number of grace-period extensions granted
+        _MAX_EXTENSIONS = 2  # hard cap: at most 2 extensions (10 extra steps total)
 
         # 2. Execution Loop
         token = ContextPropagator.set_all(session.context)
@@ -165,30 +171,39 @@ class MCPAgent(BaseAgent):
                 )
 
                 # ── Step limit and Token budget management ────────────────────
-                
+
                 # Scenario A: Steps exceeded but Token budget is healthy (>20% left)
                 if session.current_step > session.max_steps:
-                    if session.cloud_token_usage < (self.token_budget * 0.8) and step_extensions < _MAX_EXTENSIONS:
+                    if (
+                        session.cloud_token_usage < (self.token_budget * 0.8)
+                        and step_extensions < _MAX_EXTENSIONS
+                    ):
                         # Grant a grace period of 5 steps
                         step_extensions += 1
                         old_max = session.max_steps
                         session.max_steps += 5
-                        logger.info(f"Step limit {old_max} reached, but budget is healthy. Extending to {session.max_steps} (extension {step_extensions}/{_MAX_EXTENSIONS}).")
+                        logger.info(
+                            f"Step limit {old_max} reached, but budget is healthy. Extending to {session.max_steps} (extension {step_extensions}/{_MAX_EXTENSIONS})."
+                        )
                         session.add_message(
-                            role="tool", name="system",
+                            role="tool",
+                            name="system",
                             content=(
                                 f"SYSTEM: You have reached the initial step limit ({old_max}). "
                                 "Because you still have sufficient token budget, I have granted you 5 more steps. "
                                 f"This is grace extension {step_extensions}/{_MAX_EXTENSIONS}. "
                                 "Please focus on CONVERGING your research and provide a Final Answer soon."
-                            )
+                            ),
                         )
                     else:
                         # Token budget is tight or steps really exhausted — force closure
-                        logger.warning(f"Step limit {session.max_steps} reached and budget is low. Forcing final answer.")
+                        logger.warning(
+                            f"Step limit {session.max_steps} reached and budget is low. Forcing final answer."
+                        )
                         answer = await self._force_final_answer(
-                            session, system_message,
-                            reason=f"Step limit ({session.max_steps}) reached. Please summarize your findings."
+                            session,
+                            system_message,
+                            reason=f"Step limit ({session.max_steps}) reached. Please summarize your findings.",
                         )
                         session.status = "completed"
                         self.session_mgr.save(session)
@@ -236,7 +251,8 @@ class MCPAgent(BaseAgent):
                             pass
 
                     answer = await self._force_final_answer(
-                        session, system_message,
+                        session,
+                        system_message,
                         reason=(
                             f"Cloud token budget exhausted ({session.cloud_token_usage} cloud tokens used). "
                             "Remaining analysis will be processed via batch API."
@@ -250,7 +266,9 @@ class MCPAgent(BaseAgent):
                 conversation = session.format_history_as_text()
 
                 response_obj = await self.router.route_and_execute(
-                    conversation, system_message=system_message, category=TaskCategory.DEEP_REASONING
+                    conversation,
+                    system_message=system_message,
+                    category=TaskCategory.DEEP_REASONING,
                 )
                 response = response_obj.text if response_obj else ""
                 self._accum_tokens(session, response_obj)
@@ -270,33 +288,40 @@ class MCPAgent(BaseAgent):
                     # Skip auto-export if the agent already called export_md explicitly
                     # (session.context["report_file_path"] was set by the tool interception below).
                     _CARD_LIMIT_BYTES = 28_000
-                    if (len(final_answer.encode("utf-8")) > _CARD_LIMIT_BYTES
-                            and not session.context.get("report_file_path")):
+                    if len(
+                        final_answer.encode("utf-8")
+                    ) > _CARD_LIMIT_BYTES and not session.context.get("report_file_path"):
                         try:
-                            import re as _re, datetime as _dt, json as _json
+                            import datetime as _dt
+                            import json as _json
+                            import re as _re
+
                             slug = _re.sub(r"\W+", "_", session.session_id[:8])
                             filename = f"report_{slug}_{_dt.date.today()}.md"
                             export_res = await self.mcp.call_tool_json(
                                 "export_md",
-                                {"content": final_answer, "filename": filename,
-                                 "_metadata": {"tenant_id": session.tenant_id,
-                                               "job_id": session.session_id}}
+                                {
+                                    "content": final_answer,
+                                    "filename": filename,
+                                    "_metadata": {
+                                        "tenant_id": session.tenant_id,
+                                        "job_id": session.session_id,
+                                    },
+                                },
                             )
                             file_path = None
                             if isinstance(export_res, dict):
                                 file_path = export_res.get("file_path")
                             elif isinstance(export_res, list) and export_res:
-                                file_path = _json.loads(
-                                    export_res[0].get("text", "{}")
-                                ).get("file_path")
+                                file_path = _json.loads(export_res[0].get("text", "{}")).get(
+                                    "file_path"
+                                )
                             if file_path:
                                 # Store for _run_agent_mode to forward to on_complete
                                 session.context["report_file_path"] = file_path
                                 session.context["report_filename"] = filename
                                 preview = final_answer[:500].rstrip()
-                                final_answer = (
-                                    f"{preview}\n\n…（内容较长，完整报告已保存为附件：`{filename}`）"
-                                )
+                                final_answer = f"{preview}\n\n…（内容较长，完整报告已保存为附件：`{filename}`）"
                                 logger.info(
                                     f"Oversized Final Answer ({len(final_answer)} chars) "
                                     f"auto-exported to {file_path}"
@@ -323,7 +348,8 @@ class MCPAgent(BaseAgent):
                                 f"{action}({action_input}). Injecting hint."
                             )
                             session.add_message(
-                                role="tool", name="system",
+                                role="tool",
+                                name="system",
                                 content=(
                                     f"ERROR: You have called {action} with identical arguments "
                                     f"{duplicate_count} times. The result will be the same. "
@@ -345,7 +371,7 @@ class MCPAgent(BaseAgent):
                             "tenant_id": session.tenant_id,
                             "user_id": session.user_id,
                             "job_id": session.session_id,
-                            "chat_id": session.context.get("feishu_chat_id")
+                            "chat_id": session.context.get("feishu_chat_id"),
                         }
                         result = await self.mcp.call_tool_json(action, action_input)
 
@@ -366,20 +392,25 @@ class MCPAgent(BaseAgent):
 
                         # --- INTERACTION SIGNAL INTERCEPTION ---
                         # If the tool returned a structural interaction signal, intercept it.
-                        if isinstance(result, dict) and result.get("_type") == "INTERACTION_REQUIRED":
-                            logger.info(f"Tool {action} returned an interaction signal. Pausing agent loop.")
-                            
+                        if (
+                            isinstance(result, dict)
+                            and result.get("_type") == "INTERACTION_REQUIRED"
+                        ):
+                            logger.info(
+                                f"Tool {action} returned an interaction signal. Pausing agent loop."
+                            )
+
                             # Log the interaction request to the session history so the agent knows what happened
                             session.add_message(
-                                role="tool", 
-                                content=f"Sent interaction request to user: {result.get('fallback_text')}", 
-                                name=action
+                                role="tool",
+                                content=f"Sent interaction request to user: {result.get('fallback_text')}",
+                                name=action,
                             )
-                            
+
                             # Mark session as suspended waiting for human input
                             session.status = "suspended_for_human"
                             self.session_mgr.save(session)
-                            
+
                             # If we have a callback (like Feishu), forward the RAW signal directly to it
                             if callback:
                                 try:
@@ -387,12 +418,14 @@ class MCPAgent(BaseAgent):
                                     # We use on_progress to push the interactive card immediately
                                     await callback._send_progress(signal_json)
                                 except Exception as e:
-                                    logger.error(f"Failed to forward interaction signal to callback: {e}")
-                            
+                                    logger.error(
+                                        f"Failed to forward interaction signal to callback: {e}"
+                                    )
+
                             # Raise exception to signal suspension to the JobManager
                             raise JobSuspendedError(
                                 message=result.get("fallback_text", "Interaction required."),
-                                signal=result
+                                signal=result,
                             )
 
                         observation = json.dumps(result, ensure_ascii=False)

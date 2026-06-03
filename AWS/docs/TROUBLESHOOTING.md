@@ -99,7 +99,7 @@ This guide provides solutions to common issues you might encounter while develop
 
 *   **Agent task hangs indefinitely after scanning QR code**:
     *   **Cause**: The webhook from the Feishu card click didn't reach your server, or the `JobManager` failed to resume the job.
-    *   **Solution**: 
+    *   **Solution**:
         1. Check the bot listener logs for `Received card action trigger: VERIFY_XIYOU_LOGIN`.
         2. Ensure the `JobManager` Reaper task hasn't already cancelled the job (timeout is 120-300 seconds).
         3. Verify that `job_mgr.resume(job_id)` is returning `True`.

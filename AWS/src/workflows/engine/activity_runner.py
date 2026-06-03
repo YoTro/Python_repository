@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 ActivityRunner — execution isolation layer inspired by Temporal's Activity concept.
 
@@ -16,27 +17,26 @@ instead of:
     result = await step.run(items, ctx)
 """
 
-import time
 import logging
+import time
 from dataclasses import asdict
-from typing import Optional, List, Dict, Any
+from typing import Any
 
-from src.workflows.steps.base import Step, StepResult, WorkflowContext
-from src.jobs.checkpoint import CheckpointManager, WorkflowEvent
 from src.core.errors.exceptions import BatchPendingError
+from src.jobs.checkpoint import CheckpointManager, WorkflowEvent
+from src.workflows.steps.base import Step, StepResult, WorkflowContext
 
 logger = logging.getLogger(__name__)
 
 
 class ActivityRunner:
-
-    def __init__(self, checkpoint_mgr: Optional[CheckpointManager], job_id: str) -> None:
+    def __init__(self, checkpoint_mgr: CheckpointManager | None, job_id: str) -> None:
         self.checkpoint_mgr = checkpoint_mgr
         self.job_id = job_id
 
     # ── Private helpers ───────────────────────────────────────────────────
 
-    def _find_latest(self, step_name: str, event_type: str) -> Optional[WorkflowEvent]:
+    def _find_latest(self, step_name: str, event_type: str) -> WorkflowEvent | None:
         """Scan event log (newest-first) for the requested event."""
         if not self.checkpoint_mgr:
             return None
@@ -51,19 +51,22 @@ class ActivityRunner:
     def _append(self, step_name: str, event_type: str, payload: dict) -> None:
         if not self.checkpoint_mgr:
             return
-        self.checkpoint_mgr.append_event(self.job_id, WorkflowEvent(
-            timestamp=time.time(),
-            event_type=event_type,
-            step_name=step_name,
-            payload=payload,
-        ))
+        self.checkpoint_mgr.append_event(
+            self.job_id,
+            WorkflowEvent(
+                timestamp=time.time(),
+                event_type=event_type,
+                step_name=step_name,
+                payload=payload,
+            ),
+        )
 
     # ── Public interface ──────────────────────────────────────────────────
 
     async def run(
         self,
         step: Step,
-        items: List[Dict[str, Any]],
+        items: list[dict[str, Any]],
         ctx: WorkflowContext,
         step_index: int = -1,
     ) -> StepResult:
@@ -92,14 +95,17 @@ class ActivityRunner:
                 # BatchPoller wrote results into the event log — use them
                 r = batch_completed.payload["result"]
                 result = StepResult(items=r["items"], metadata=r["metadata"])
-                self._append(step.name, "ACTIVITY_COMPLETED", {
-                    "result": {"items": result.items, "metadata": result.metadata}
-                })
+                self._append(
+                    step.name,
+                    "ACTIVITY_COMPLETED",
+                    {"result": {"items": result.items, "metadata": result.metadata}},
+                )
                 logger.info(f"[ActivityRunner] Batch result applied for step '{step.name}'")
                 return result
             else:
                 # Still waiting for BatchPoller signal
                 from src.intelligence.dto import BatchJobHandle
+
                 handle = BatchJobHandle(**batch_submitted.payload["handle"])
                 raise BatchPendingError(
                     f"Batch '{handle.job_id}' still pending for step '{step.name}'",
@@ -118,15 +124,19 @@ class ActivityRunner:
         try:
             result = await step.run(items, ctx)
         except BatchPendingError as e:
-            self._append(step.name, "BATCH_SUBMITTED", {
-                "handle": asdict(e.handle),
-                "step_index": step_index,             # WorkflowEngine resume position
-                "request_count": len(e.requests),     # for completeness validation
-                "requests": e.requests,
-                "items_snapshot": e.items_snapshot,
-                "output_field": e.output_field,
-                "schema_path": e.schema_path,
-            })
+            self._append(
+                step.name,
+                "BATCH_SUBMITTED",
+                {
+                    "handle": asdict(e.handle),
+                    "step_index": step_index,  # WorkflowEngine resume position
+                    "request_count": len(e.requests),  # for completeness validation
+                    "requests": e.requests,
+                    "items_snapshot": e.items_snapshot,
+                    "output_field": e.output_field,
+                    "schema_path": e.schema_path,
+                },
+            )
             logger.info(
                 f"[ActivityRunner] Batch submitted for step '{step.name}' "
                 f"(index={step_index}): batch_id={e.batch_job_id}, "
@@ -135,7 +145,9 @@ class ActivityRunner:
             raise
 
         # 5. Persist successful result so future replays skip the API call
-        self._append(step.name, "ACTIVITY_COMPLETED", {
-            "result": {"items": result.items, "metadata": result.metadata}
-        })
+        self._append(
+            step.name,
+            "ACTIVITY_COMPLETED",
+            {"result": {"items": result.items, "metadata": result.metadata}},
+        )
         return result

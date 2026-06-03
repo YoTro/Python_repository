@@ -15,18 +15,19 @@ Last    : SP-API FBA Inbound Shipments v0 — no date fields; not usable for
 Quarterly binning is by the domestic ship-out date so that seasonality effects
 (e.g. pre-CNY rush) are attributed to the correct dispatch period.
 """
+
 from __future__ import annotations
 
 import logging
 from collections import defaultdict
 from datetime import date, datetime
-from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 # ── date helpers ──────────────────────────────────────────────────────────────
 
-def _to_date(val: Optional[str]) -> Optional[date]:
+
+def _to_date(val: str | None) -> date | None:
     """Parse date string or epoch-second int → date. Returns None on failure.
 
     Handles formats:
@@ -35,7 +36,7 @@ def _to_date(val: Optional[str]) -> Optional[date]:
     """
     if val is None:
         return None
-    if isinstance(val, (int, float)):
+    if isinstance(val, int | float):
         try:
             return datetime.utcfromtimestamp(val).date()
         except (OSError, ValueError, OverflowError):
@@ -64,31 +65,35 @@ def _quarter(d: date) -> str:
 
 # ── distribution helper ───────────────────────────────────────────────────────
 
-def _distribution(values: List[float]) -> Dict:
+
+def _distribution(values: list[float]) -> dict:
     """Compute summary statistics for a list of day-counts."""
     if not values:
         return {"n": 0}
     s = sorted(values)
     n = len(s)
+
     def _pct(p: float) -> float:
         idx = (n - 1) * p
         lo, hi = int(idx), min(int(idx) + 1, n - 1)
         return round(s[lo] + (s[hi] - s[lo]) * (idx - lo), 1)
+
     return {
-        "n":      n,
-        "min":    round(s[0], 1),
-        "p25":    _pct(0.25),
+        "n": n,
+        "min": round(s[0], 1),
+        "p25": _pct(0.25),
         "median": _pct(0.50),
-        "p75":    _pct(0.75),
-        "p90":    _pct(0.90),
-        "max":    round(s[-1], 1),
-        "mean":   round(sum(s) / n, 1),
+        "p75": _pct(0.75),
+        "p90": _pct(0.90),
+        "max": round(s[-1], 1),
+        "mean": round(sum(s) / n, 1),
     }
 
 
 # ── core analysis ─────────────────────────────────────────────────────────────
 
-def _shipment_days(d_start: Optional[str], d_end: Optional[str]) -> Optional[float]:
+
+def _shipment_days(d_start: str | None, d_end: str | None) -> float | None:
     """Return calendar days between two date strings, or None if either is missing."""
     s, e = _to_date(d_start), _to_date(d_end)
     if s is None or e is None:
@@ -98,24 +103,24 @@ def _shipment_days(d_start: Optional[str], d_end: Optional[str]) -> Optional[flo
 
 
 def compute_quarterly_lead_times(
-    shipments: List[Dict],
+    shipments: list[dict],
     *,
-    sea_start_field:  str = "domestic_ship_date",
-    sea_end_field:    str = "overseas_arrival_date",
-    ovs_start_field:  str = "overseas_ship_date",
-    ovs_end_field:    str = "fba_received_date",
-    local_start_field: Optional[str] = None,
-    local_end_field:   Optional[str] = None,
-    quarter_field:    str = "domestic_ship_date",
-    transport_field:  str = "transport_type",
-    sea_transport_values: Tuple[str, ...] = ("SEA", "ocean", "OCEAN", "sea"),
-    sea_min_days:   float = 5.0,
-    sea_max_days:   float = 120.0,
-    ovs_min_days:   float = 0.0,
-    ovs_max_days:   float = 60.0,
+    sea_start_field: str = "domestic_ship_date",
+    sea_end_field: str = "overseas_arrival_date",
+    ovs_start_field: str = "overseas_ship_date",
+    ovs_end_field: str = "fba_received_date",
+    local_start_field: str | None = None,
+    local_end_field: str | None = None,
+    quarter_field: str = "domestic_ship_date",
+    transport_field: str = "transport_type",
+    sea_transport_values: tuple[str, ...] = ("SEA", "ocean", "OCEAN", "sea"),
+    sea_min_days: float = 5.0,
+    sea_max_days: float = 120.0,
+    ovs_min_days: float = 0.0,
+    ovs_max_days: float = 60.0,
     local_min_days: float = 0.0,
     local_max_days: float = 12.0,
-) -> Dict:
+) -> dict:
     """
     Compute quarterly lead-time distributions from a list of shipment records.
 
@@ -157,24 +162,24 @@ def compute_quarterly_lead_times(
       "total_input": N,
     }
     """
-    sea_all:   List[float] = []
-    ovs_all:   List[float] = []
-    local_all: List[float] = []
-    sea_by_q:   Dict[str, List[float]] = defaultdict(list)
-    ovs_by_q:   Dict[str, List[float]] = defaultdict(list)
-    local_by_q: Dict[str, List[float]] = defaultdict(list)
-    total_by_q: Dict[str, int]         = defaultdict(int)
+    sea_all: list[float] = []
+    ovs_all: list[float] = []
+    local_all: list[float] = []
+    sea_by_q: dict[str, list[float]] = defaultdict(list)
+    ovs_by_q: dict[str, list[float]] = defaultdict(list)
+    local_by_q: dict[str, list[float]] = defaultdict(list)
+    total_by_q: dict[str, int] = defaultdict(int)
     skipped = 0
 
     compute_local = local_start_field is not None and local_end_field is not None
 
     for s in shipments:
         transport = str(s.get(transport_field) or "").upper()
-        is_sea    = (not transport) or any(t.upper() in transport for t in sea_transport_values)
+        is_sea = (not transport) or any(t.upper() in transport for t in sea_transport_values)
 
         # Quarter bin key
         q_date = _to_date(s.get(quarter_field))
-        q_key  = _quarter(q_date) if q_date else None
+        q_key = _quarter(q_date) if q_date else None
         if q_key:
             total_by_q[q_key] += 1
 
@@ -207,42 +212,42 @@ def compute_quarterly_lead_times(
     all_quarters = sorted(set(sea_by_q) | set(ovs_by_q) | set(local_by_q) | set(total_by_q))
     by_q_summary = {}
     for q in all_quarters:
-        sea_vals   = sea_by_q[q]
-        ovs_vals   = ovs_by_q[q]
+        sea_vals = sea_by_q[q]
+        ovs_vals = ovs_by_q[q]
         local_vals = local_by_q[q]
-        entry: Dict = {
-            "sea_transit_median":     _distribution(sea_vals).get("median"),
-            "sea_transit_p25":        _distribution(sea_vals).get("p25"),
-            "sea_transit_p75":        _distribution(sea_vals).get("p75"),
+        entry: dict = {
+            "sea_transit_median": _distribution(sea_vals).get("median"),
+            "sea_transit_p25": _distribution(sea_vals).get("p25"),
+            "sea_transit_p75": _distribution(sea_vals).get("p75"),
             "overseas_to_fba_median": _distribution(ovs_vals).get("median"),
-            "overseas_to_fba_p25":    _distribution(ovs_vals).get("p25"),
-            "overseas_to_fba_p75":    _distribution(ovs_vals).get("p75"),
-            "sea_shipment_count":     len(sea_vals),
-            "total_shipment_count":   total_by_q[q],
+            "overseas_to_fba_p25": _distribution(ovs_vals).get("p25"),
+            "overseas_to_fba_p75": _distribution(ovs_vals).get("p75"),
+            "sea_shipment_count": len(sea_vals),
+            "total_shipment_count": total_by_q[q],
         }
         if compute_local:
             entry["local_to_fba_median"] = _distribution(local_vals).get("median")
-            entry["local_to_fba_p25"]    = _distribution(local_vals).get("p25")
-            entry["local_to_fba_p75"]    = _distribution(local_vals).get("p75")
+            entry["local_to_fba_p25"] = _distribution(local_vals).get("p25")
+            entry["local_to_fba_p75"] = _distribution(local_vals).get("p75")
             entry["local_shipment_count"] = len(local_vals)
         by_q_summary[q] = entry
 
-    result: Dict = {
+    result: dict = {
         "sea_transit": {
-            "overall":    _distribution(sea_all),
+            "overall": _distribution(sea_all),
             "by_quarter": {q: _distribution(sea_by_q[q]) for q in sorted(sea_by_q)},
         },
         "overseas_to_fba": {
-            "overall":    _distribution(ovs_all),
+            "overall": _distribution(ovs_all),
             "by_quarter": {q: _distribution(ovs_by_q[q]) for q in sorted(ovs_by_q)},
         },
         "by_quarter_summary": by_q_summary,
-        "skipped":     skipped,
+        "skipped": skipped,
         "total_input": len(shipments),
     }
     if compute_local:
         result["local_to_fba"] = {
-            "overall":    _distribution(local_all),
+            "overall": _distribution(local_all),
             "by_quarter": {q: _distribution(local_by_q[q]) for q in sorted(local_by_q)},
         }
     return result
@@ -250,10 +255,11 @@ def compute_quarterly_lead_times(
 
 # ── SP-API adapter ────────────────────────────────────────────────────────────
 
+
 def adapt_sp_api_shipments(
-    sp_shipments: List[Dict],
-    shipment_items_by_id: Optional[Dict[str, List[Dict]]] = None,
-) -> List[Dict]:
+    sp_shipments: list[dict],
+    shipment_items_by_id: dict[str, list[dict]] | None = None,
+) -> list[dict]:
     """
     Normalise SP-API FBA inbound shipment records to the common schema.
 
@@ -273,27 +279,30 @@ def adapt_sp_api_shipments(
 
         fba_received_date = last_updated if status in ("CLOSED", "RECEIVING") else None
 
-        out.append({
-            "shipment_id":           sid,
-            "shipment_name":         s.get("ShipmentName") or s.get("shipmentName", ""),
-            "transport_type":        "SEA",          # unknown from SP-API; default sea for transit analysis
-            "domestic_ship_date":    created,        # creation ≈ earliest known date
-            "overseas_arrival_date": None,           # not available from SP-API
-            "overseas_ship_date":    None,           # not available from SP-API
-            "fba_received_date":     fba_received_date,
-            "status":                status,
-            "destination_fc":        s.get("DestinationFulfillmentCenterId"),
-        })
+        out.append(
+            {
+                "shipment_id": sid,
+                "shipment_name": s.get("ShipmentName") or s.get("shipmentName", ""),
+                "transport_type": "SEA",  # unknown from SP-API; default sea for transit analysis
+                "domestic_ship_date": created,  # creation ≈ earliest known date
+                "overseas_arrival_date": None,  # not available from SP-API
+                "overseas_ship_date": None,  # not available from SP-API
+                "fba_received_date": fba_received_date,
+                "status": status,
+                "destination_fc": s.get("DestinationFulfillmentCenterId"),
+            }
+        )
     return out
 
 
 # ── SP-API Inbound Plans adapter (2024-03-20) ─────────────────────────────────
 
+
 def adapt_sp_api_plans(
-    plans: List[Dict],
+    plans: list[dict],
     cn_only: bool = True,
     shipped_only: bool = True,
-) -> List[Dict]:
+) -> list[dict]:
     """
     Normalise SP-API Inbound Plans (2024-03-20) records to the common schema.
 
@@ -327,34 +336,36 @@ def adapt_sp_api_plans(
         if cn_only and country != "CN":
             continue
 
-        created_at    = p.get("createdAt")
-        last_updated  = p.get("lastUpdatedAt")
+        created_at = p.get("createdAt")
+        last_updated = p.get("lastUpdatedAt")
 
-        out.append({
-            "shipment_id":           p.get("inboundPlanId", ""),
-            "shipment_name":         p.get("name", ""),
-            "transport_type":        "SEA",       # CN-source plans assumed sea freight
-            "domestic_ship_date":    created_at,  # proxy: plan creation date
-            "overseas_arrival_date": None,
-            "overseas_ship_date":    None,
-            "fba_received_date":     last_updated,  # proxy: last status change
-            "status":                status,
-            "source_country":        country,
-        })
+        out.append(
+            {
+                "shipment_id": p.get("inboundPlanId", ""),
+                "shipment_name": p.get("name", ""),
+                "transport_type": "SEA",  # CN-source plans assumed sea freight
+                "domestic_ship_date": created_at,  # proxy: plan creation date
+                "overseas_arrival_date": None,
+                "overseas_ship_date": None,
+                "fba_received_date": last_updated,  # proxy: last status change
+                "status": status,
+                "source_country": country,
+            }
+        )
     return out
 
 
 # ── Lingxing adapter ──────────────────────────────────────────────────────────
 
 # ship_mode integer encoding used by showShipment_v2
-_LINGXING_SHIP_MODE: Dict[int, str] = {
+_LINGXING_SHIP_MODE: dict[int, str] = {
     1: "SEA",
     2: "AIR",
     3: "EXPRESS",
 }
 
 
-def adapt_lingxing_shipments(raw: List[Dict]) -> List[Dict]:
+def adapt_lingxing_shipments(raw: list[dict]) -> list[dict]:
     """
     Normalise Lingxing FBA shipment tracking records (showShipment_v2) to the
     common schema.
@@ -378,9 +389,11 @@ def adapt_lingxing_shipments(raw: List[Dict]) -> List[Dict]:
 
     SKU is extracted from item_list[0].msku when not present at the top level.
     """
-    _field = lambda d, *keys: next((d[k] for k in keys if d.get(k)), None)
 
-    def _date_info(r: Dict) -> Dict[str, Optional[str]]:
+    def _field(d, *keys):
+        return next((d[k] for k in keys if d.get(k)), None)
+
+    def _date_info(r: dict) -> dict[str, str | None]:
         di = r.get("date_info")
         if not isinstance(di, list):
             return {}
@@ -390,7 +403,7 @@ def adapt_lingxing_shipments(raw: List[Dict]) -> List[Dict]:
             if isinstance(entry, dict) and entry.get("status_name")
         }
 
-    def _first_item(r: Dict, *keys):
+    def _first_item(r: dict, *keys):
         for item in (r.get("item_list") or [])[:1]:
             for k in keys:
                 v = item.get(k)
@@ -402,45 +415,39 @@ def adapt_lingxing_shipments(raw: List[Dict]) -> List[Dict]:
     for r in raw:
         di = _date_info(r)
 
-        domestic_ship = (
-            _field(r, "ship_date", "shipDate", "domestic_ship_date")
-            or di.get("SHIPPED")
+        domestic_ship = _field(r, "ship_date", "shipDate", "domestic_ship_date") or di.get(
+            "SHIPPED"
         )
-        overseas_arrive = (
-            _field(r, "overseas_arrive_date", "overseasArriveDate")
-            or di.get("RECEIVING")
+        overseas_arrive = _field(r, "overseas_arrive_date", "overseasArriveDate") or di.get(
+            "RECEIVING"
         )
         overseas_ship = _field(r, "overseas_ship_date", "overseasShipDate")
-        fba_received = (
-            _field(r, "fba_receive_date", "receiveDate", "fbaReceiveDate")
-            or di.get("CLOSED")
+        fba_received = _field(r, "fba_receive_date", "receiveDate", "fbaReceiveDate") or di.get(
+            "CLOSED"
         )
 
         ship_mode_raw = r.get("ship_mode")
-        transport_type = (
-            _field(r, "transport_type", "transportType", "logistics_type")
-            or _LINGXING_SHIP_MODE.get(ship_mode_raw)
+        transport_type = _field(
+            r, "transport_type", "transportType", "logistics_type"
+        ) or _LINGXING_SHIP_MODE.get(ship_mode_raw)
+
+        sku = _field(r, "msku", "sku", "seller_sku") or _first_item(r, "msku", "sku", "seller_sku")
+        quantity = _field(r, "quantity", "qty", "ship_qty") or _first_item(
+            r, "quantity_shipped", "quantity", "qty"
         )
 
-        sku = (
-            _field(r, "msku", "sku", "seller_sku")
-            or _first_item(r, "msku", "sku", "seller_sku")
+        out.append(
+            {
+                "shipment_id": _field(r, "shipment_id", "amazon_shipment_id", "shipmentId"),
+                "shipment_name": _field(r, "shipment_name", "shipmentName", "name"),
+                "sku": sku,
+                "quantity": quantity,
+                "transport_type": transport_type,
+                "domestic_ship_date": domestic_ship,
+                "overseas_arrival_date": overseas_arrive,
+                "overseas_ship_date": overseas_ship,
+                "fba_received_date": fba_received,
+                "status": _field(r, "shipment_status", "status", "shipmentStatus"),
+            }
         )
-        quantity = (
-            _field(r, "quantity", "qty", "ship_qty")
-            or _first_item(r, "quantity_shipped", "quantity", "qty")
-        )
-
-        out.append({
-            "shipment_id":           _field(r, "shipment_id", "amazon_shipment_id", "shipmentId"),
-            "shipment_name":         _field(r, "shipment_name", "shipmentName", "name"),
-            "sku":                   sku,
-            "quantity":              quantity,
-            "transport_type":        transport_type,
-            "domestic_ship_date":    domestic_ship,
-            "overseas_arrival_date": overseas_arrive,
-            "overseas_ship_date":    overseas_ship,
-            "fba_received_date":     fba_received,
-            "status":                _field(r, "shipment_status", "status", "shipmentStatus"),
-        })
     return out

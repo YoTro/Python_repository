@@ -1,12 +1,14 @@
 from __future__ import annotations
+
+import base64
+import json
 import logging
 import os
-import json
 import uuid
-import base64
-from curl_cffi import requests
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
 from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from curl_cffi import requests
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,15 @@ class LingxingAuth:
     BASE_URL = "https://gw.lingxingerp.com/newadmin/api/passport"
 
     _DEFAULT_TOKEN_FILE = os.path.join(
-        os.path.dirname(__file__), "..", "..", "..", "..", "..", "config", "auth", "lingxing_token.json"
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "..",
+        "..",
+        "..",
+        "config",
+        "auth",
+        "lingxing_token.json",
     )
 
     def __init__(self, token_file: str = None):
@@ -61,10 +71,12 @@ class LingxingAuth:
         return base64.b64encode(encryptor.update(padded) + encryptor.finalize()).decode("utf-8")
 
     def login(self, account: str = None, password: str = None) -> str:
-        account  = account  or os.getenv("LINGXING_ACCOUNT", "")
+        account = account or os.getenv("LINGXING_ACCOUNT", "")
         password = password or os.getenv("LINGXING_PASSWORD", "")
         if not account or not password:
-            logger.error("Lingxing credentials not provided. Set LINGXING_ACCOUNT / LINGXING_PASSWORD.")
+            logger.error(
+                "Lingxing credentials not provided. Set LINGXING_ACCOUNT / LINGXING_PASSWORD."
+            )
             return None
 
         secret_id, secret_key = self.get_secret_key()
@@ -91,12 +103,15 @@ class LingxingAuth:
             if data.get("code") == 1:
                 token = data.get("token")
                 if token:
-                    self._save_token(token, meta={
-                        "uid":        data.get("uid", ""),
-                        "zid":        str(data.get("zid", "")),
-                        "env_key":    data.get("envKey", ""),
-                        "company_id": data.get("companyId", ""),
-                    })
+                    self._save_token(
+                        token,
+                        meta={
+                            "uid": data.get("uid", ""),
+                            "zid": str(data.get("zid", "")),
+                            "env_key": data.get("envKey", ""),
+                            "company_id": data.get("companyId", ""),
+                        },
+                    )
                     logger.info("Lingxing login successful")
                     return token
                 logger.error(f"Token not found in login response: {list(data.keys())}")
@@ -120,7 +135,7 @@ class LingxingAuth:
 
     def load_token(self) -> str:
         try:
-            with open(self.token_file, "r", encoding="utf-8") as f:
+            with open(self.token_file, encoding="utf-8") as f:
                 return json.load(f).get("auth_token")
         except (FileNotFoundError, json.JSONDecodeError):
             return None
@@ -128,7 +143,7 @@ class LingxingAuth:
     def load_meta(self) -> dict:
         """Return saved identity fields (uid, zid, env_key, company_id)."""
         try:
-            with open(self.token_file, "r", encoding="utf-8") as f:
+            with open(self.token_file, encoding="utf-8") as f:
                 d = json.load(f)
             return {k: d.get(k, "") for k in ("uid", "zid", "env_key", "company_id")}
         except (FileNotFoundError, json.JSONDecodeError):

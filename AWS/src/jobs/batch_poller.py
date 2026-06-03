@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 BatchPoller — background service that polls provider batch jobs and resumes workflows.
 
@@ -37,15 +38,14 @@ import logging
 import math
 import random
 import time
-from typing import Dict, Optional
 
-_GEMINI_BATCH_TTL = 86400   # Gemini batch jobs expire after 24 h
-_CLAUDE_BATCH_TTL = 86400   # Claude batch jobs expire after 24 h
+_GEMINI_BATCH_TTL = 86400  # Gemini batch jobs expire after 24 h
+_CLAUDE_BATCH_TTL = 86400  # Claude batch jobs expire after 24 h
 
-_INITIAL_INTERVAL = 60      # seconds before the first poll
-_MAX_INTERVAL     = 600     # cap: 10 minutes
-_MULTIPLIER       = 1.5     # backoff factor per missed poll
-_JITTER           = 0.10    # ±10% random jitter
+_INITIAL_INTERVAL = 60  # seconds before the first poll
+_MAX_INTERVAL = 600  # cap: 10 minutes
+_MULTIPLIER = 1.5  # backoff factor per missed poll
+_JITTER = 0.10  # ±10% random jitter
 
 from src.intelligence.dto import BatchJobHandle, LLMResponse
 from src.jobs.checkpoint import CheckpointManager, WorkflowEvent
@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 def _next_interval(current: float) -> float:
     """Compute the next backoff interval with jitter."""
     raw = min(current * _MULTIPLIER, _MAX_INTERVAL)
-    jitter = raw * _JITTER * (2 * random.random() - 1)   # ±10%
+    jitter = raw * _JITTER * (2 * random.random() - 1)  # ±10%
     return raw + jitter
 
 
@@ -68,12 +68,12 @@ class BatchPoller:
         self,
         checkpoint_mgr: CheckpointManager,
         signal_bus: WorkflowSignalBus,
-        job_manager,          # JobManager — circular import avoided via late binding
+        job_manager,  # JobManager — circular import avoided via late binding
     ) -> None:
         self.checkpoint_mgr = checkpoint_mgr
         self.signal_bus = signal_bus
         self.job_manager = job_manager
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._poll_loop())
@@ -110,7 +110,7 @@ class BatchPoller:
         if not checkpoint:
             return
 
-        submitted: Dict[str, WorkflowEvent] = {}
+        submitted: dict[str, WorkflowEvent] = {}
         completed_steps: set = set()
 
         for event in checkpoint.events:
@@ -119,9 +119,7 @@ class BatchPoller:
             elif event.event_type == "BATCH_COMPLETED":
                 completed_steps.add(event.step_name)
 
-        pending = {
-            name: ev for name, ev in submitted.items() if name not in completed_steps
-        }
+        pending = {name: ev for name, ev in submitted.items() if name not in completed_steps}
 
         for step_name, event in pending.items():
             await self._poll_step(job_id, step_name, event, checkpoint.events)
@@ -145,18 +143,21 @@ class BatchPoller:
                 f"batch_id={handle.job_id} age={age:.0f}s > ttl={ttl}s. "
                 f"Marking job FAILED."
             )
-            self.checkpoint_mgr.append_event(job_id, WorkflowEvent(
-                timestamp=time.time(),
-                event_type="BATCH_FAILED",
-                step_name=step_name,
-                payload={"reason": "expired", "batch_id": handle.job_id, "age_sec": age},
-            ))
+            self.checkpoint_mgr.append_event(
+                job_id,
+                WorkflowEvent(
+                    timestamp=time.time(),
+                    event_type="BATCH_FAILED",
+                    step_name=step_name,
+                    payload={"reason": "expired", "batch_id": handle.job_id, "age_sec": age},
+                ),
+            )
             self.job_manager.cancel(job_id)
             return
 
         # ── Backoff gate: check if it is time to poll ─────────────────────────
         # Read latest BATCH_POLLING_HEARTBEAT for this step (newest-first)
-        last_heartbeat: Optional[WorkflowEvent] = None
+        last_heartbeat: WorkflowEvent | None = None
         for ev in reversed(all_events):
             if ev.event_type == "BATCH_POLLING_HEARTBEAT" and ev.step_name == step_name:
                 last_heartbeat = ev
@@ -221,25 +222,27 @@ class BatchPoller:
         final_items = self._reconstruct(payload, results)
 
         # Append BATCH_COMPLETED event
-        self.checkpoint_mgr.append_event(job_id, WorkflowEvent(
-            timestamp=time.time(),
-            event_type="BATCH_COMPLETED",
-            step_name=step_name,
-            payload={
-                "result": {
-                    "items": final_items,
-                    "metadata": {
-                        "batch_id": handle.job_id,
-                        "provider": handle.provider,
-                        "batch_size": len(results),
-                    },
-                }
-            },
-        ))
+        self.checkpoint_mgr.append_event(
+            job_id,
+            WorkflowEvent(
+                timestamp=time.time(),
+                event_type="BATCH_COMPLETED",
+                step_name=step_name,
+                payload={
+                    "result": {
+                        "items": final_items,
+                        "metadata": {
+                            "batch_id": handle.job_id,
+                            "provider": handle.provider,
+                            "batch_size": len(results),
+                        },
+                    }
+                },
+            ),
+        )
 
         logger.info(
-            f"[BatchPoller] Batch complete — job={job_id} step={step_name} "
-            f"items={len(final_items)}"
+            f"[BatchPoller] Batch complete — job={job_id} step={step_name} items={len(final_items)}"
         )
         self.signal_bus.publish(job_id, {"status": "completed", "batch_id": handle.job_id})
         self.job_manager.resume(job_id)
@@ -249,23 +252,26 @@ class BatchPoller:
     def _write_heartbeat(
         self, job_id: str, step_name: str, next_interval: float, status: str
     ) -> None:
-        self.checkpoint_mgr.append_event(job_id, WorkflowEvent(
-            timestamp=time.time(),
-            event_type="BATCH_POLLING_HEARTBEAT",
-            step_name=step_name,
-            payload={
-                "next_poll_at":      time.time() + next_interval,
-                "current_interval":  next_interval,
-                "status":            status,
-            },
-        ))
+        self.checkpoint_mgr.append_event(
+            job_id,
+            WorkflowEvent(
+                timestamp=time.time(),
+                event_type="BATCH_POLLING_HEARTBEAT",
+                step_name=step_name,
+                payload={
+                    "next_poll_at": time.time() + next_interval,
+                    "current_interval": next_interval,
+                    "status": status,
+                },
+            ),
+        )
 
     # ── Reconstruction ─────────────────────────────────────────────────────────
 
     def _reconstruct(
         self,
         payload: dict,
-        results: Dict[str, LLMResponse],
+        results: dict[str, LLMResponse],
     ) -> list:
         """
         Map LLM responses back onto items_snapshot using the stored request index.
@@ -274,7 +280,7 @@ class BatchPoller:
         items = [dict(item) for item in payload.get("items_snapshot", [])]
         output_field = payload.get("output_field") or "result"
         schema_path = payload.get("schema_path")
-        requests = payload.get("requests", [])   # [{custom_id, item_idx}]
+        requests = payload.get("requests", [])  # [{custom_id, item_idx}]
 
         schema_cls = self._load_schema(schema_path)
 
@@ -289,9 +295,7 @@ class BatchPoller:
                 logger.warning(f"[BatchPoller] No result for custom_id={custom_id}")
                 continue
 
-            items[item_idx][output_field] = self._parse_response(
-                llm_response.text, schema_cls
-            )
+            items[item_idx][output_field] = self._parse_response(llm_response.text, schema_cls)
 
         return items
 
@@ -305,7 +309,7 @@ class BatchPoller:
         return text
 
     @staticmethod
-    def _load_schema(schema_path: Optional[str]):
+    def _load_schema(schema_path: str | None):
         if not schema_path:
             return None
         try:
@@ -322,6 +326,7 @@ class BatchPoller:
     def _get_provider(provider_name: str):
         try:
             from src.intelligence.providers.factory import ProviderFactory
+
             return ProviderFactory.get_provider(provider_name)
         except Exception as e:
             logger.error(f"[BatchPoller] Cannot create provider '{provider_name}': {e}")

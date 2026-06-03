@@ -1,18 +1,29 @@
 from __future__ import annotations
+
 import logging
+
 from mcp.types import TextContent
 from src.registry.tools import tool_registry
 
+from .create_doc import handle_create_doc
+from .create_doc import tools as doc_tools
+from .export_csv import handle_export_csv
+from .export_csv import tools as csv_tools
+from .export_html import handle_export_html
+from .export_html import tools as html_tools
+from .export_json import handle_export_json
+from .export_json import tools as json_tools
+from .export_md import handle_export_md
+from .export_md import tools as md_tools
+from .send_card import handle_send_card
+from .send_card import tools as messaging_tools
+
 # Import sub-handlers
-from .write_bitable import handle_write_bitable, tools as bitable_tools
-from .send_card import handle_send_card, tools as messaging_tools
-from .create_doc import handle_create_doc, tools as doc_tools
-from .export_csv import handle_export_csv, tools as csv_tools
-from .export_json import handle_export_json, tools as json_tools
-from .export_md import handle_export_md, tools as md_tools
-from .export_html import handle_export_html, tools as html_tools
+from .write_bitable import handle_write_bitable
+from .write_bitable import tools as bitable_tools
 
 logger = logging.getLogger("mcp-output-aggregator")
+
 
 async def handle_output_tool(name: str, arguments: dict) -> list[TextContent]:
     """
@@ -39,10 +50,14 @@ async def handle_output_tool(name: str, arguments: dict) -> list[TextContent]:
     except Exception as e:
         logger.error(f"Error in output domain routing for {name}: {e}")
         import json
+
         return [TextContent(type="text", text=json.dumps({"success": False, "error": str(e)}))]
 
+
 # Aggregate and Register all tools
-all_output_tools = bitable_tools + messaging_tools + doc_tools + csv_tools + json_tools + md_tools + html_tools
+all_output_tools = (
+    bitable_tools + messaging_tools + doc_tools + csv_tools + json_tools + md_tools + html_tools
+)
 
 _OUTPUT_RETURNS = {
     "list_feishu_bitable_records": "list of Bitable records",
@@ -59,7 +74,7 @@ _OUTPUT_RETURNS = {
     "create_feishu_doc": "new document URL",
     "export_csv": "local CSV file path",
     "export_json": "local JSON file path",
-    "export_md":   "local Markdown file path",
+    "export_md": "local Markdown file path",
     "export_html": "local HTML file path",
 }
 

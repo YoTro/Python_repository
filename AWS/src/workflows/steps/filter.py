@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 FilterStep — declarative rule-based filtering of items.
 
@@ -9,10 +10,10 @@ FilterStep tracks rejection reasons for reporting.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
 from collections import Counter
+from typing import Any
 
-from src.workflows.steps.base import Step, StepResult, WorkflowContext, ComputeTarget
+from src.workflows.steps.base import ComputeTarget, Step, StepResult, WorkflowContext
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Rule primitives
 # ---------------------------------------------------------------------------
+
 
 class Rule(ABC):
     """Abstract rule that checks a single item."""
@@ -41,7 +43,7 @@ class Rule(ABC):
 class RangeRule(Rule):
     """Check that field value is within [min_val, max_val]. None means no bound."""
 
-    def __init__(self, field: str, min_val: Optional[float] = None, max_val: Optional[float] = None):
+    def __init__(self, field: str, min_val: float | None = None, max_val: float | None = None):
         super().__init__(field)
         self.min_val = min_val
         self.max_val = max_val
@@ -72,7 +74,7 @@ class RangeRule(Rule):
 class ThresholdRule(Rule):
     """Check that field value meets a minimum or maximum threshold."""
 
-    def __init__(self, field: str, min_val: Optional[float] = None, max_val: Optional[float] = None):
+    def __init__(self, field: str, min_val: float | None = None, max_val: float | None = None):
         super().__init__(field)
         self.min_val = min_val
         self.max_val = max_val
@@ -103,7 +105,7 @@ class ThresholdRule(Rule):
 class EnumRule(Rule):
     """Check that field value is in the allowed set."""
 
-    def __init__(self, field: str, allowed: List[Any]):
+    def __init__(self, field: str, allowed: list[Any]):
         super().__init__(field)
         self.allowed = set(allowed)
 
@@ -120,7 +122,7 @@ class EnumRule(Rule):
 class CompositeRule(Rule):
     """Combine multiple rules with AND (all) or OR (any) logic."""
 
-    def __init__(self, field: str, rules: List[Rule], mode: str = "all"):
+    def __init__(self, field: str, rules: list[Rule], mode: str = "all"):
         super().__init__(field)
         self.rules = rules
         self.mode = mode  # "all" or "any"
@@ -139,6 +141,7 @@ class CompositeRule(Rule):
 # FilterStep
 # ---------------------------------------------------------------------------
 
+
 class FilterStep(Step):
     """
     Declarative filter step that applies rules to each item.
@@ -146,12 +149,12 @@ class FilterStep(Step):
     Tracks which rules caused rejections for funnel reporting.
     """
 
-    def __init__(self, name: str, rules: List[Rule], **kwargs):
+    def __init__(self, name: str, rules: list[Rule], **kwargs):
         kwargs.pop("compute_target", None)  # Force PURE_PYTHON
         super().__init__(name=name, compute_target=ComputeTarget.PURE_PYTHON, **kwargs)
         self.rules = rules
 
-    async def run(self, items: List[Dict[str, Any]], ctx: WorkflowContext) -> StepResult:
+    async def run(self, items: list[dict[str, Any]], ctx: WorkflowContext) -> StepResult:
         start = self._start_timer()
         logger.info(f"[{self.name}] Filtering {len(items)} items with {len(self.rules)} rules")
 

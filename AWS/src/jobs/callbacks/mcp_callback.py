@@ -1,10 +1,10 @@
 from __future__ import annotations
+
 """
 MCPCallback — stores results for retrieval by MCP tool handlers.
 """
 
 import logging
-from typing import Optional
 
 from src.jobs.callbacks.base import JobCallback
 
@@ -20,11 +20,16 @@ class MCPCallback(JobCallback):
     def __init__(self):
         self._result = None
         self._error = None
-        self._failed_job_id: Optional[str] = None
+        self._failed_job_id: str | None = None
 
     async def on_progress(
-        self, step_index: int, total_steps: int, step_name: str, message: str = "",
-        remaining_step_names=None, workflow_name: str = "",
+        self,
+        step_index: int,
+        total_steps: int,
+        step_name: str,
+        message: str = "",
+        remaining_step_names=None,
+        workflow_name: str = "",
     ) -> None:
         logger.info(f"[MCP] [{step_index}/{total_steps}] {step_name} {message}")
 
@@ -38,7 +43,7 @@ class MCPCallback(JobCallback):
         self._failed_job_id = job_id
         logger.error(f"[MCP] Workflow failed: {error}" + (f" (job_id={job_id})" if job_id else ""))
 
-    def get_result(self) -> Optional[dict]:
+    def get_result(self) -> dict | None:
         """Retrieve stored result for MCP response."""
         if self._error:
             payload: dict = {"success": False, "error": str(self._error)}
