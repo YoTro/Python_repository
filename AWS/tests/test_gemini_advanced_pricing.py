@@ -77,6 +77,7 @@ class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
         # 2. Mock SDK Response Metadata
         mock_response = MagicMock()
         mock_response.text = "Thinking complete."
+        mock_response.total_tokens = 500  # returned by count_tokens via asyncio.to_thread
         # Simulate usage metadata from the new GenAI SDK
         mock_response.usage_metadata = MagicMock(
             prompt_token_count=1000,

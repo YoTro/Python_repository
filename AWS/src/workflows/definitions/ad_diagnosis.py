@@ -60,7 +60,7 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from datetime import date as _date_cls
-from enum import Enum
+from enum import StrEnum
 from zoneinfo import ZoneInfo
 
 import matplotlib
@@ -448,8 +448,9 @@ async def _ensure_non_sp_orders(ctx: WorkflowContext, asin: str) -> dict:
 
 
 @_l2_cached(
-    l1_key_fn=lambda ctx,
-    campaign_ids: f"{_KEY_CHANGE_HISTORY}:{_campaign_ids_hash(list(campaign_ids))}",
+    l1_key_fn=lambda ctx, campaign_ids: (
+        f"{_KEY_CHANGE_HISTORY}:{_campaign_ids_hash(list(campaign_ids))}"
+    ),
     l2_ttl=_TTL_CHANGE,
     l2_parts_fn=lambda ctx, campaign_ids: (
         "change_history",
@@ -1503,7 +1504,7 @@ def _compute_campaign_budget_coverage(
     return results, cap_by_date
 
 
-class CampaignReadiness(str, Enum):
+class CampaignReadiness(StrEnum):
     ACTIVE = "active"  # has clicks — proceed with CVR estimation
     NEW = "new"  # no clicks, impressions below threshold — too early to judge
     INVISIBLE = "invisible"  # impressions present but no clicks — CTR/bid structural issue
@@ -4894,9 +4895,9 @@ def _generate_charts(items: list[dict], ctx: WorkflowContext) -> list[dict]:
                 ("daily_trend", lambda _i=item, _p=daily_perf: _chart_daily_trend(_i, _p)),
                 (
                     "its_causal",
-                    lambda _i=item,
-                    _p=daily_perf,
-                    _m=ctx.config.get("causal_metric", "orders"): _chart_its_causal(_i, _p, _m),
+                    lambda _i=item, _p=daily_perf, _m=ctx.config.get("causal_metric", "orders"): (
+                        _chart_its_causal(_i, _p, _m)
+                    ),
                 ),
                 ("kw_quadrant", lambda _i=item: _chart_kw_quadrant(_i)),
                 ("placement_donut", lambda _i=item: _chart_placement_donut(_i)),

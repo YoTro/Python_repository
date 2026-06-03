@@ -45,9 +45,12 @@ class SPAPIClient:
             resp.raise_for_status()
             return resp.json()
         except requests.HTTPError as e:
-            logger.error(
-                f"SP-API POST {path} → HTTP {e.response.status_code}: {e.response.text[:400]}"
-            )
+            if e.response is not None:
+                logger.error(
+                    f"SP-API POST {path} → HTTP {e.response.status_code}: {e.response.text[:400]}"
+                )
+            else:
+                logger.error(f"SP-API POST {path} → {e}")
             raise
         except Exception as e:
             logger.error(f"SP-API POST {path} failed: {e}")
@@ -60,9 +63,12 @@ class SPAPIClient:
             resp.raise_for_status()
             return resp.json()
         except requests.HTTPError as e:
-            logger.error(
-                f"SP-API GET {path} → HTTP {e.response.status_code}: {e.response.text[:400]}"
-            )
+            if e.response is not None:
+                logger.error(
+                    f"SP-API GET {path} → HTTP {e.response.status_code}: {e.response.text[:400]}"
+                )
+            else:
+                logger.error(f"SP-API GET {path} → {e}")
             raise
         except Exception as e:
             logger.error(f"SP-API GET {path} failed: {e}")

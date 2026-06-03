@@ -73,7 +73,7 @@ def test_get_traffic_scores_success(mock_api):
     kwargs = call_args[1]
 
     assert method == "POST"
-    assert url == "https://api.xiyouzhaoci.com/v4/asins/trafficScore"
+    assert url == "https://api.xydc.com/v4/asins/trafficScore"
     assert kwargs["json"] == {"asins": asins, "country": country}
     assert kwargs["headers"]["request-url"] == "/detail/asin/look_up/US/B07T869RNY"
     assert "authorization" in kwargs["headers"]

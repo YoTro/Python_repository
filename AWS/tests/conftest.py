@@ -29,6 +29,13 @@ collect_ignore: list[str] = [
     "test_beta_cvr_redis.py",  # module-level Redis reads + sys.exit
     "test_inventory_gate.py",  # module-level Redis reads + sys.exit
     "test_summary_snapshot.py",  # imports removed private symbol _build_kw_to_campaign_map
+    # RateLimiter is a singleton; running alongside other tests causes state leakage.
+    # Executed in isolation via `make rate-limit` / the CI rate-limit step.
+    "test_rate_limiting_system.py",
+    # Patches SellerspriteAPI._load_token which no longer exists after client refactor.
+    "test_sellersprite_client.py",
+    # Uses an `api` fixture not defined in conftest — requires a live Xiyouzhaoci session.
+    "test_xiyou_max_span_daily.py",
 ]
 
 
@@ -47,6 +54,10 @@ _LIVE_FILES: frozenset[str] = frozenset(
         "test_deal_history_debug.py",  # live Amazon scraping
         "test_xiyou_daily_cycle.py",  # Xiyouzhaoci live session
         "test_profitability_search.py",  # live Amazon scraping
+        "test_techbargains.py",  # real HTTP calls to techbargains.com
+        "test_local_llm_direct.py",  # requires LOCAL_MODEL_PATH in .env
+        "test_tiktok_client.py",  # TikTok API credentials
+        "test_tiktok_comments_integrated.py",  # real TikTok API call with live video ID
     }
 )
 

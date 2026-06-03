@@ -73,13 +73,13 @@ def test_export_compare_data_flow(mock_api, tmpdir):
 
         # Call 1: Initiate comparison
         init_call = mock_request.call_args_list[0]
-        assert init_call.args[1] == "https://api.xiyouzhaoci.com/v4/asins/compare/list/resource"
+        assert init_call.args[1] == "https://api.xydc.com/v4/asins/compare/list/resource"
         assert init_call.kwargs["json"]["cycleFilter"]["period"] == "last30days"
         assert init_call.kwargs["json"]["asins"] == asins
 
         # Call 3: Final status check
         status_call_done = mock_request.call_args_list[2]
-        assert status_call_done.args[1] == "https://api.xiyouzhaoci.com/v4/resource/status"
+        assert status_call_done.args[1] == "https://api.xydc.com/v4/resource/status"
         assert status_call_done.kwargs["json"]["resourceId"] == "123456789"
 
         # Check that download was called

@@ -127,5 +127,12 @@ async def test_claude_provider_cost_population():
         assert response.token_usage == 3000
         assert response.metadata["cache_read_tokens"] == 500
         provider.price_manager.calculate_cost.assert_called_once_with(
-            model_name=provider.model_name, input_tokens=2000, output_tokens=1000, total_tokens=2000
+            model_name=provider.model_name,
+            input_tokens=2000,
+            output_tokens=1000,
+            thought_token_count=0,
+            cached_content_token_count=0,
+            is_batch=False,
+            cache_read_tokens=500,
+            cache_creation_tokens=0,
         )

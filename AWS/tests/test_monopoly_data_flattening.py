@@ -79,7 +79,9 @@ async def test_data_flattening_logic():
         formatted_prompt = ctx.router.route_and_execute.call_args[0][0]
         print(f"Formatted Prompt: {formatted_prompt}")
 
-        assert "$125,000" in formatted_prompt  # 50 * 2500 = 125000
+        assert (
+            "$53,400" in formatted_prompt
+        )  # 1000 units * $50 * (0.30+0.30+0.25) + $2000 overhead, ×1.20 buffer
         assert "test espresso machine" in formatted_prompt
         assert "0.99" in formatted_prompt
 
