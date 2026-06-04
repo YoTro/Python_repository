@@ -14,6 +14,7 @@ from lark_oapi.api.im.v1 import (
 
 from src.core.utils.config_helper import ConfigHelper
 from src.core.utils.context import ContextPropagator
+from src.core.errors import ErrorCode, classify_api_code
 from src.entry.feishu.const import feishu_error_msg
 
 logger = logging.getLogger(__name__)
@@ -222,8 +223,14 @@ class FeishuClient:
 
             if not response.success():
                 msg = feishu_error_msg(response.code, response.msg)
+                error_code = classify_api_code(response.code, "feishu")
                 logger.error(f"Feishu upload file failed: {response.code}, {msg}")
-                return {"success": False, "error": msg, "code": response.code}
+                return {
+                    "success": False,
+                    "error": msg,
+                    "code": response.code,
+                    "error_code": error_code if error_code != ErrorCode.UNKNOWN else None,
+                }
 
             return {"success": True, "file_key": file_key}
         except Exception as e:

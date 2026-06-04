@@ -3,9 +3,14 @@ from __future__ import annotations
 """
 Feishu (Lark) API error code mappings.
 Reference: https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/file/create
+
+Display strings only — canonical ErrorCode classification lives in
+src/core/errors/codes._API_CODE_MAP["feishu"]. Keep both tables in sync
+when adding new codes.
 """
 
-# IM / file upload error codes
+# IM / file upload error codes — human-readable descriptions for logging/UI.
+# Canonical classification (ErrorCode): use classify_api_code(code, "feishu").
 UPLOAD_ERROR_MAP: dict[int, str] = {
     232096: "App meta writing has stopped, please try again later.",
     234001: "Invalid request param — check file_type (opus/mp4/pdf/doc/xls/ppt/stream) and file_name.",
