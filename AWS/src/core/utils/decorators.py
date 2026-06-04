@@ -3,44 +3,30 @@ import functools
 import logging
 import random
 from collections.abc import Callable
-from typing import Any
 
 import requests
 
-logger = logging.getLogger(__name__)
+from src.core.errors import RetryableError
 
-_SENTINEL = object()  # marks "no early-return value"
+logger = logging.getLogger(__name__)
 
 
 def exponential_backoff(
     max_retries: int = 5,
     base_delay: float = 1.0,
     max_delay: float = 60.0,
-    retry_on_status: tuple[int, ...] = (429,),
-    retry_on_exceptions: tuple[type[Exception], ...] = (requests.RequestException,),
+    retry_on_exceptions: tuple[type[Exception], ...] = (
+        requests.ConnectionError,
+        requests.Timeout,
+    ),
     jitter: bool = True,
-    is_retryable: Callable[[requests.Response], bool] | None = None,
-    response_hook: Callable[[requests.Response], Any] | None = None,
 ):
     """
-    Decorator for async functions to perform exponential backoff retries.
-    Specifically useful for Amazon SP-API and Ads-API rate limiting.
+    Decorator for async functions that perform exponential backoff retries.
 
-    The wrapped function should return a requests.Response object or raise.
-
-    Extra parameters
-    ----------------
-    is_retryable(response) -> bool
-        Called when response.status_code is NOT in retry_on_status.
-        Return True to treat the response as retryable anyway (e.g. HTTP 200
-        with {"code":"425"} in the body).
-
-    response_hook(response) -> Any | _SENTINEL
-        Called on every response before the retry/return decision.
-        • Return a non-_SENTINEL value  → use it as the final result immediately
-          (skips retry logic entirely — useful for extracting a duplicate ID).
-        • Return _SENTINEL (default)    → proceed with normal retry/return logic.
-        Import the sentinel as ``from src.core.utils.decorators import EARLY_RETURN``.
+    The wrapped function signals a transient failure by raising RetryableError
+    (from src.core.errors). Any other AWSBaseError propagates immediately.
+    Pure network-level failures matching retry_on_exceptions are also retried.
     """
 
     def decorator(func: Callable):
@@ -50,52 +36,25 @@ def exponential_backoff(
 
             for attempt in range(max_retries + 1):
                 try:
-                    result = await func(*args, **kwargs)
+                    return await func(*args, **kwargs)
 
-                    if isinstance(result, requests.Response):
-                        # Optional hook: may return an early value (e.g. duplicate reportId)
-                        if response_hook is not None:
-                            hook_val = response_hook(result)
-                            if hook_val is not _SENTINEL:
-                                return hook_val
-
-                        # Determine whether this response should trigger a retry
-                        should_retry = result.status_code in retry_on_status
-                        if not should_retry and is_retryable is not None:
-                            should_retry = is_retryable(result)
-
-                        if should_retry:
-                            if attempt < max_retries:
-                                delay = min(max_delay, base_delay * (2**attempt))
-                                if jitter:
-                                    delay *= 0.5 + random.random()
-                                logger.warning(
-                                    f"SP-API/Ads-API retryable response on {func.__name__} "
-                                    f"(attempt {attempt + 1}/{max_retries}), retrying in {delay:.2f}s…"
-                                )
-                                await asyncio.sleep(delay)
-                                continue
-                            else:
-                                logger.error(f"Max retries reached for {func.__name__}")
-                                result.raise_for_status()
-
-                        return result
-
-                    return result
+                except RetryableError as e:
+                    last_exception = e
+                    if attempt == max_retries:
+                        raise
+                    delay = min(max_delay, base_delay * (2**attempt))
+                    if jitter:
+                        delay *= 0.5 + random.random()
+                    logger.warning(
+                        f"Retrying {func.__name__} [{e.code}] "
+                        f"(attempt {attempt + 1}/{max_retries}, waiting {delay:.2f}s)"
+                    )
+                    await asyncio.sleep(delay)
 
                 except retry_on_exceptions as e:
                     last_exception = e
-
-                    if isinstance(e, requests.HTTPError) and e.response is not None:
-                        if e.response.status_code not in retry_on_status:
-                            raise
-
                     if attempt == max_retries:
-                        logger.error(
-                            f"Max retries reached for {func.__name__} after exception: {e}"
-                        )
                         raise
-
                     delay = min(max_delay, base_delay * (2**attempt))
                     if jitter:
                         delay *= 0.5 + random.random()
@@ -111,7 +70,3 @@ def exponential_backoff(
         return wrapper
 
     return decorator
-
-
-# Public sentinel so callers can signal "no early return" from response_hook
-EARLY_RETURN = _SENTINEL

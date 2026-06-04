@@ -9,6 +9,7 @@ from typing import Any
 from curl_cffi import requests
 from curl_cffi.requests.errors import RequestsError
 
+from src.core.errors import ErrorCode, ScraperError
 from src.core.utils.cookie_helper import AmazonCookieHelper
 
 logger = logging.getLogger(__name__)
@@ -98,11 +99,14 @@ class AmazonBaseScraper:
                 response_text = response.text
 
                 if validator and not validator(response_text):
-                    raise ValueError("Content validation failed (soft block detected).")
+                    raise ScraperError(
+                        "Content validation failed (soft block detected).",
+                        code=ErrorCode.SOFT_BLOCKED,
+                    )
 
                 return response_text
 
-            except (RequestsError, ValueError) as e:
+            except (RequestsError, ScraperError) as e:
                 logger.warning(f"Attempt {attempt + 1}/{max_retries} failed for {url}: {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(random.uniform(2, 5))

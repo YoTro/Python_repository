@@ -9,6 +9,7 @@ from typing import Any
 
 import requests
 
+from src.core.errors import RetryableError, classify_http, is_retryable
 from src.core.utils.decorators import exponential_backoff
 
 from .auth import SPAPIAuth
@@ -83,6 +84,9 @@ class SPAPIClient:
         resp = await asyncio.to_thread(
             requests.get, url, headers=self._headers(), params=params, timeout=30
         )
+        code = classify_http(resp.status_code)
+        if not resp.ok and is_retryable(code):
+            raise RetryableError(resp.text[:200], code=code)
         resp.raise_for_status()
         return resp.json()
 

@@ -10,7 +10,8 @@ from typing import Any
 
 import requests
 
-from src.core.utils.decorators import EARLY_RETURN, exponential_backoff
+from src.core.errors import ErrorCode, RetryableError, classify_http, classify_api_code, is_retryable
+from src.core.utils.decorators import exponential_backoff
 
 from .auth import AmazonAdsAuth
 
@@ -23,32 +24,23 @@ def _is_report_425(resp: requests.Response) -> bool:
         return True
     if resp.ok:
         try:
-            return str(resp.json().get("code", "")) == "425"
+            return (
+                classify_api_code(str(resp.json().get("code", "")), "amazon_ads")
+                == ErrorCode.DUPLICATE_REQUEST
+            )
         except Exception:
             pass
     return False
 
 
-def _make_report_425_hook(label: str, start_date: str, end_date: str):
-    """Return a response_hook that extracts a duplicate reportId from a 425 body."""
-
-    def _hook(resp: requests.Response):
-        if not _is_report_425(resp):
-            return EARLY_RETURN
-        try:
-            detail = resp.json().get("detail", "")
-        except Exception:
-            return EARLY_RETURN
+def _extract_dup_report_id(resp: requests.Response) -> str | None:
+    """Extract the existing reportId from a 425 duplicate response body, or None."""
+    try:
+        detail = resp.json().get("detail", "")
         m = _re.search(r"duplicate of\s*:\s*([0-9a-f\-]{30,})", detail, _re.I)
-        if m:
-            dup_id = m.group(1).strip()
-            logger.info(
-                f"[{label}] 425 duplicate — reusing report {dup_id} ({start_date}→{end_date})"
-            )
-            return dup_id
-        return EARLY_RETURN
-
-    return _hook
+        return m.group(1).strip() if m else None
+    except Exception:
+        return None
 
 
 class AmazonAdsClient:
@@ -178,9 +170,10 @@ class AmazonAdsClient:
                     requests.post, endpoint, json=payload, headers=headers
                 )
 
+                resp_code = classify_http(response.status_code, "amazon_ads")
                 # Handle 422: any 422 while ASINs are in the payload may indicate an
                 # ownership mismatch (Amazon's message varies — don't rely on message text).
-                if response.status_code == 422:
+                if resp_code == ErrorCode.INVALID_PARAMS:
                     error_details = response.text
                     if current_asins:
                         logger.warning(
@@ -195,7 +188,7 @@ class AmazonAdsClient:
                     logger.error(f"API 422 Error: {error_details}")
                     response.raise_for_status()
 
-                if response.status_code == 429:
+                if resp_code == ErrorCode.RATE_LIMITED:
                     wait_time = (attempt + 1) * 10
                     await asyncio.sleep(wait_time)
                     continue
@@ -223,16 +216,19 @@ class AmazonAdsClient:
 
     async def _post_list(self, path: str, media_type: str, body: dict) -> dict:
         url = f"{self.base_url}{path}"
-        resp = await asyncio.to_thread(
-            requests.post, url, json=body, headers=self._v3_headers(media_type)
-        )
-        if resp.status_code == 429:
-            await asyncio.sleep(10)
+
+        @exponential_backoff(max_retries=2, base_delay=10.0, max_delay=30.0, jitter=False)
+        async def _do() -> dict:
             resp = await asyncio.to_thread(
                 requests.post, url, json=body, headers=self._v3_headers(media_type)
             )
-        resp.raise_for_status()
-        return resp.json()
+            code = classify_http(resp.status_code, "amazon_ads")
+            if not resp.ok and is_retryable(code):
+                raise RetryableError(resp.text[:100], code=code)
+            resp.raise_for_status()
+            return resp.json()
+
+        return await _do()
 
     # ── Campaigns ──────────────────────────────────────────────────────────
 
@@ -507,29 +503,34 @@ class AmazonAdsClient:
             "endDate": end_date,
             "configuration": configuration,
         }
-        _hook = _make_report_425_hook(report_type, start_date, end_date)
-
-        @exponential_backoff(
-            max_retries=5,
-            base_delay=30.0,
-            max_delay=180.0,
-            jitter=False,
-            is_retryable=_is_report_425,
-            response_hook=_hook,
-        )
-        async def _post() -> requests.Response:
+        @exponential_backoff(max_retries=5, base_delay=30.0, max_delay=180.0, jitter=False)
+        async def _post() -> requests.Response | str:
             nonlocal body
             body["name"] = f"{report_type}_{start_date}_{end_date}_{int(time.time())}"
             resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
-            if not resp.ok and not _is_report_425(resp):
+            if _is_report_425(resp):
+                dup_id = _extract_dup_report_id(resp)
+                if dup_id:
+                    logger.info(
+                        f"[{report_type}] 425 duplicate — reusing report {dup_id}"
+                        f" ({start_date}→{end_date})"
+                    )
+                    return dup_id
+                raise RetryableError(
+                    "425 duplicate without extractable reportId",
+                    code=ErrorCode.DUPLICATE_REQUEST,
+                )
+            code = classify_http(resp.status_code, "amazon_ads")
+            if not resp.ok:
+                if is_retryable(code):
+                    raise RetryableError(resp.text[:200], code=code)
                 logger.error(f"Report creation failed {resp.status_code}: {resp.text[:500]}")
+                resp.raise_for_status()
             return resp
 
         result = await _post()
-        # _hook may have returned a dup reportId string directly
         if isinstance(result, str):
             return result
-        result.raise_for_status()
         report_id = result.json().get("reportId")
         if not report_id:
             raise ValueError(f"No reportId in response: {result.text[:200]}")
@@ -566,7 +567,8 @@ class AmazonAdsClient:
                 await asyncio.sleep(self._REPORT_POLL_INTERVAL)
                 continue
 
-            if resp.status_code == 401:
+            poll_code = classify_http(resp.status_code, "amazon_ads")
+            if poll_code == ErrorCode.AUTH_TOKEN_EXPIRED:
                 logger.info(f"Poll got 401 on attempt {attempt + 1}, refreshing token and retrying")
                 self.auth._token_cache.pop(self.auth.store_id, None)
                 headers = self._build_poll_headers()
@@ -578,8 +580,9 @@ class AmazonAdsClient:
                     logger.warning(f"Token-refresh poll also failed: {net_err}, retrying")
                     await asyncio.sleep(self._REPORT_POLL_INTERVAL)
                     continue
+                poll_code = classify_http(resp.status_code, "amazon_ads")
 
-            if resp.status_code in (500, 502, 503, 504):
+            if poll_code == ErrorCode.SERVER_ERROR:
                 logger.warning(
                     f"Poll attempt {attempt + 1} for {report_id} got {resp.status_code}, "
                     f"retrying after {self._REPORT_POLL_INTERVAL}s"
@@ -732,33 +735,41 @@ class AmazonAdsClient:
         if cfg.get("filters"):
             report_cfg["filters"] = cfg["filters"]
 
-        _hook = _make_report_425_hook(ad_type, start_date, end_date)
-
-        @exponential_backoff(
-            max_retries=4,
-            base_delay=5.0,
-            max_delay=60.0,
-            is_retryable=_is_report_425,
-            response_hook=_hook,
-        )
-        async def _post() -> requests.Response:
+        @exponential_backoff(max_retries=4, base_delay=5.0, max_delay=60.0)
+        async def _post() -> requests.Response | str:
             body = {
                 "name": f"{ad_type}_summary_{start_date}_{end_date}_{int(time.time())}",
                 "startDate": start_date,
                 "endDate": end_date,
                 "configuration": report_cfg,
             }
-            return await asyncio.to_thread(requests.post, url, json=body, headers=headers)
+            resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
+            if _is_report_425(resp):
+                dup_id = _extract_dup_report_id(resp)
+                if dup_id:
+                    logger.info(
+                        f"[{ad_type}] 425 duplicate — reusing report {dup_id}"
+                        f" ({start_date}→{end_date})"
+                    )
+                    return dup_id
+                raise RetryableError(
+                    "425 duplicate without extractable reportId",
+                    code=ErrorCode.DUPLICATE_REQUEST,
+                )
+            code = classify_http(resp.status_code, "amazon_ads")
+            if not resp.ok:
+                if is_retryable(code):
+                    raise RetryableError(resp.text[:200], code=code)
+                logger.warning(
+                    f"[{ad_type}] report creation failed {resp.status_code}: {resp.text[:300]}"
+                )
+                resp.raise_for_status()
+            return resp
 
         result = await _post()
         if isinstance(result, str):
-            report_id = result  # dup_id extracted from 425 body by _hook
+            report_id = result
         else:
-            if not result.ok:
-                logger.warning(
-                    f"[{ad_type}] report creation failed {result.status_code}: {result.text[:300]}"
-                )
-                result.raise_for_status()
             report_id = result.json().get("reportId")
             if not report_id:
                 raise ValueError(f"[{ad_type}] no reportId in response: {result.text[:200]}")
@@ -1051,26 +1062,19 @@ class AmazonAdsClient:
             "sort": {"direction": sort_direction.upper(), "key": "DATE"},
         }
 
-        def _history_is_retryable(resp: requests.Response) -> bool:
-            if resp.status_code == 401:
-                # Token expired during a long retry sequence — refresh and retry once.
-                logger.info("change_history got 401 — refreshing access token before retry")
-                self.auth._token_cache.pop(self.auth.store_id, None)
-                headers["Authorization"] = f"Bearer {self.auth.get_access_token()}"
-                return True
-            return False
-
-        @exponential_backoff(
-            max_retries=5,
-            base_delay=60.0,
-            max_delay=300.0,
-            jitter=False,
-            retry_on_status=(429,),
-            is_retryable=_history_is_retryable,
-        )
+        @exponential_backoff(max_retries=5, base_delay=60.0, max_delay=300.0, jitter=False)
         async def _post_with_retry(body_dict: dict) -> dict:
             body_bytes = json.dumps(body_dict).encode("utf-8")
             resp = await asyncio.to_thread(requests.post, url, data=body_bytes, headers=headers)
+            code = classify_http(resp.status_code, "amazon_ads")
+            if code == ErrorCode.AUTH_TOKEN_EXPIRED:
+                # Refresh token before the decorator retries
+                logger.info("change_history got 401 — refreshing access token before retry")
+                self.auth._token_cache.pop(self.auth.store_id, None)
+                headers["Authorization"] = f"Bearer {self.auth.get_access_token()}"
+                raise RetryableError("Token expired (401), refreshed", code=code)
+            if not resp.ok and is_retryable(code):
+                raise RetryableError(resp.text[:200], code=code)
             resp.raise_for_status()
             return resp.json()
 
