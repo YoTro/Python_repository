@@ -12,9 +12,9 @@ from lark_oapi.api.im.v1 import (
     PatchMessageRequestBody,
 )
 
+from src.core.errors import ErrorCode, classify_api_code
 from src.core.utils.config_helper import ConfigHelper
 from src.core.utils.context import ContextPropagator
-from src.core.errors import ErrorCode, classify_api_code
 from src.entry.feishu.const import feishu_error_msg
 
 logger = logging.getLogger(__name__)

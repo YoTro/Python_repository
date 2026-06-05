@@ -10,7 +10,13 @@ from typing import Any
 
 import requests
 
-from src.core.errors import ErrorCode, RetryableError, classify_http, classify_api_code, is_retryable
+from src.core.errors import (
+    ErrorCode,
+    RetryableError,
+    classify_api_code,
+    classify_http,
+    is_retryable,
+)
 from src.core.utils.decorators import exponential_backoff
 
 from .auth import AmazonAdsAuth
@@ -503,6 +509,7 @@ class AmazonAdsClient:
             "endDate": end_date,
             "configuration": configuration,
         }
+
         @exponential_backoff(max_retries=5, base_delay=30.0, max_delay=180.0, jitter=False)
         async def _post() -> requests.Response | str:
             nonlocal body

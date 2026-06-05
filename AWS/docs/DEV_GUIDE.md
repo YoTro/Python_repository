@@ -143,6 +143,7 @@ Config keys for the Lingxing provider:
 | `恢复任务 <job_id>` | `ResumeJobCommand` | Resumes a failed workflow from its last checkpoint |
 | `获取 <Category> BSR` | `ExtractBSRCommand` | Kicks off BSR extraction workflow |
 | `分析垄断度 <URL>` | `AnalyzeCategoryMonopolyCommand` | Starts category monopoly analysis |
+| `Listing诊断 <ASIN>` | `ListingDiagnosisCommand` | Runs listing quality diagnosis: scores all modules, benchmarks against competitors, and delivers a Markdown report as a file attachment |
 | *(fallback)* | `AgentExploreCommand` | Routes to MCP Agent for open-ended exploration |
 
 **Adding a new bot command:**
