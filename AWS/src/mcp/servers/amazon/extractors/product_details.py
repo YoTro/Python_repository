@@ -89,7 +89,25 @@ class ProductDetailsExtractor(AmazonBaseScraper):
         if fba_span and "Amazon" in fba_span.get_text():
             product.is_fba = True
 
+        # 6. A+ Content
+        if product.has_a_plus_content is None:
+            product.has_a_plus_content = bool(soup.find("div", class_="aplus-content-wrapper"))
+
+        if product.has_a_plus_content:
+            product.aplus_images = self._extract_aplus_images(soup)
+            logger.info(f"Found {len(product.aplus_images)} A+ images for {product.asin}")
+
         return product
+
+    @staticmethod
+    def _extract_aplus_images(soup: BeautifulSoup) -> list[str]:
+        """Extract image URLs from A+ premium background sections."""
+        urls: list[str] = []
+        for img in soup.select("div.premium-background-wrapper div.background-image img[src]"):
+            src = img.get("src", "").strip()
+            if src and src.startswith("http"):
+                urls.append(src)
+        return urls
 
     def _extract_asin(self, text: str) -> str:
         asin_match = re.search(r"/dp/([A-Z0-9]{10})", text)

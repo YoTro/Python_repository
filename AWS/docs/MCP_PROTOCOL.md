@@ -79,7 +79,7 @@ This script automatically detects your OS and injects the `aws-market-intelligen
 ### Amazon Data Extraction (L1)
 *   **`search_profitability_products`**: Fast, ad-free product search using the internal Profitability Calculator API. Returns rich organic metadata (ASIN, title, brand, dimensions, weight, price, category rank, reviews). Ideal for bulk, precise data extraction without HTML parsing overhead.
 *   **`search_products`**: Standard Amazon keyword search returning basic product lists, reflecting the actual customer search page (including sponsored positions).
-*   **`get_product_details`**: Deep-dive extraction for a specific ASIN, fetching high-fidelity data like feature bullets, full descriptions, and fulfillment status (FBA/FBM).
+*   **`get_product_details`**: Deep-dive extraction for a specific ASIN, fetching high-fidelity data like feature bullets, full descriptions, fulfillment status (FBA/FBM), A+ content flag (`has_a_plus_content`), and A+ premium background image URLs (`aplus_images`).
 *   **`get_amazon_bestsellers`**: Scrapes Best Sellers lists (up to 100 items) with pagination support, returning ranked products.
 *   **`get_stock_estimate`**: Estimates remaining inventory for an ASIN using the sophisticated 999 Add-to-Cart method to bypass limits.
 *   **`get_batch_past_month_sales`**: Fetches the "X bought in past month" badge for one or more ASINs via Amazon search (`/s/?k=ASIN1|ASIN2...`). Accepts `asins: array`. Returns `{ASIN: int|null}`. Batches up to 20 ASINs per request; hit rate ~98% on BSR products.

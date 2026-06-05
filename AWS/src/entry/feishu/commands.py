@@ -359,6 +359,54 @@ class LpValidationCommand(BotCommand):
         asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
 
 
+class ListingDiagnosisCommand(BotCommand):
+    """
+    Handles 'Listing诊断 <ASIN>' messages.
+
+    Dispatches the listing_diagnosis workflow which fetches main product details,
+    discovers top competitors, scores all listings, and produces an LLM diagnosis report.
+    """
+
+    _PATTERN = re.compile(r"[Ll]isting诊断\s+([A-Z0-9]{10})", re.IGNORECASE)
+
+    def match(self, text: str) -> bool:
+        return bool(self._PATTERN.search(text))
+
+    def execute(self, text: str, chat_id: str):
+        match = self._PATTERN.search(text)
+        asin = match.group(1).upper()
+
+        feishu_client = FeishuClient(bot_name=self.bot_name)
+        eta = TimeEstimator.estimate_workflow("listing_diagnosis", params={"asin": asin})
+        feishu_client.send_text_message(
+            "chat_id",
+            chat_id,
+            f"🔍 开始诊断 {asin} Listing 质量...\n⏱️ 预计耗时: {eta}\n"
+            "将抓取主品及竞品详情、评分 Listing 质量并生成专业诊断报告，请稍候。",
+        )
+
+        async def _dispatch_job():
+            try:
+                from src.gateway import APIGateway
+
+                job_id = APIGateway.dispatch_feishu_command(
+                    workflow_name="listing_diagnosis",
+                    params={"asin": asin},
+                    chat_id=chat_id,
+                    bot_name=self.bot_name,
+                )
+                logger.info(
+                    f"Listing diagnosis routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
+            except Exception as e:
+                logger.error(f"Listing diagnosis dispatch failed: {e}")
+                feishu_client.send_text_message(
+                    "chat_id", chat_id, f"❌ Listing 诊断任务启动失败: {e}"
+                )
+
+        asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+
+
 class HelpCommand(BotCommand):
     """响应'常用命令'菜单，列出所有可用指令。"""
 
@@ -383,6 +431,10 @@ class HelpCommand(BotCommand):
         "📈 **广告诊断**\n"
         "　触发词：`广告诊断 <ASIN>`\n"
         "　示例：`广告诊断 B0FXFGMD7Z`\n\n"
+        "🏷️ **Listing 诊断**\n"
+        "　触发词：`Listing诊断 <ASIN>`\n"
+        "　示例：`Listing诊断 B0FXFGMD7Z`\n"
+        "　作用：抓取主品竞品详情、质量评分并生成含改进计划的专业诊断报告\n\n"
         "📐 **LP 模型验证**\n"
         "　触发词：`验证LP <ASIN> <快照日期> [<天数>]`\n"
         "　示例：`验证LP B0FXFGMD7Z 2026-05-29`\n"
@@ -438,6 +490,7 @@ class CommandDispatcher:
             AnalyzeCategoryMonopolyCommand(bot_name, loop),
             ProductScreeningCommand(bot_name, loop),
             AdDiagnosisCommand(bot_name, loop),
+            ListingDiagnosisCommand(bot_name, loop),
             LpValidationCommand(bot_name, loop),
             AgentExploreCommand(bot_name, loop),  # fallback — must stay last
         ]

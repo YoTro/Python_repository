@@ -32,7 +32,7 @@ def exponential_backoff(
     def decorator(func: Callable):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
-            last_exception = None
+            last_exception: Exception | None = None
 
             for attempt in range(max_retries + 1):
                 try:

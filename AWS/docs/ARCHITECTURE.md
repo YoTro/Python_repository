@@ -103,6 +103,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |    "competitor_monitor"      |             |  | allowed_tools[ ]          |     |
 |    "review_analysis"         |             |  | max_steps: N (display)    |     |
 |    "category_monopoly"       |             |  | token_budget: N (cloud)   |     |
+|    "listing_diagnosis"       |             |  | cumulative_cost: $ (cloud)|     |
 |    ...register(name, fn)     |             |  | cumulative_cost: $ (cloud)|     |
 |                              |             |  | dynamic_step_extension    |     |
 |  Execution Engine:           |             |  | convergence_hints: true   |     |

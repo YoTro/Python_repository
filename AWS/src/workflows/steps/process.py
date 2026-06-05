@@ -42,6 +42,7 @@ class ProcessStep(Step):
         output_field: str = None,
         compute_target: ComputeTarget = ComputeTarget.PURE_PYTHON,
         batch_threshold: int | None = None,
+        system_prompt_field: str | None = None,
         **kwargs,
     ):
         super().__init__(name=name, compute_target=compute_target, **kwargs)
@@ -52,6 +53,7 @@ class ProcessStep(Step):
         self.batch_threshold = (
             batch_threshold if batch_threshold is not None else self.BATCH_THRESHOLD
         )
+        self.system_prompt_field = system_prompt_field
 
     async def run(self, items: list[dict[str, Any]], ctx: WorkflowContext) -> StepResult:
         start = self._start_timer()
@@ -183,11 +185,13 @@ class ProcessStep(Step):
             for prompt, (_item, cache_key, original_idx) in zip(
                 prompts_to_process, items_to_process, strict=False
             ):
+                sys_msg = _item.get(self.system_prompt_field) if self.system_prompt_field else None
                 api_requests.append(
                     _BatchRequest(
                         custom_id=cache_key,
                         prompt=prompt,
                         schema=self.output_schema,
+                        system_message=sys_msg,
                     )
                 )
                 event_requests.append({"custom_id": cache_key, "item_idx": original_idx})
@@ -216,8 +220,15 @@ class ProcessStep(Step):
                     category=category,
                     schema=self.output_schema,
                     session_id=ctx.job_id,
+                    **(
+                        {"system_message": item.get(self.system_prompt_field)}
+                        if self.system_prompt_field and item.get(self.system_prompt_field)
+                        else {}
+                    ),
                 )
-                for prompt in prompts_to_process
+                for prompt, (item, _cache_key, _idx) in zip(
+                    prompts_to_process, items_to_process, strict=False
+                )
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 

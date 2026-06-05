@@ -44,3 +44,12 @@ review_analysis:
        - Analyze the 'Rating Distribution' (Is it top-heavy with 5 stars, or suspicious?).
        - Evaluate the 'Time to Competitive Barrier' (Is this niche realistic for a new entry?).
     6. Unmet Needs (Bonus): What do users wish this product had?
+
+listing_quality_sop:
+  title: "Listing Quality SOP Framework"
+  content: |
+    - **Title Optimization**: Optimal length (80-120 chars), 4 pillars (Brand, Type, Features, Specs), no spammy symbols.
+    - **Five Bullet Points**: 5 bullets, first 3 focusing on pain points/benefits, last 2 on materials/guarantee. 3-6x keyword density.
+    - **Visual Hierarchy**: 7+ images, 1000px+ resolution, main image on pure white.
+    - **Social Proof**: 4.3+ rating, <15% 1-2 star reviews, high VP ratio, media in reviews.
+    - **A+ Content**: Essential for conversion and brand story.

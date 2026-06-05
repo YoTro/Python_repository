@@ -1,0 +1,60 @@
+id: listing_diagnosis
+version: 0.2.0
+scope: batch
+token_budget: 64000
+role_id: product_manager
+framework_ids:
+  - listing_quality_sop
+include_system_in_prompt: true
+required_vars:
+  - asin
+  - title
+  - description
+  - features
+  - competitor_data
+  - review_summary
+template: |
+  # Listing Quality Diagnosis Report
+
+  Target ASIN: {asin}
+  Target Title: {title}
+
+  Target Description:
+  {description}
+
+  Target Features:
+  {features}
+
+  ## Comparative Analysis (Control Group)
+
+  Below is data for top competing products in the same category:
+  {competitor_data}
+
+  ## Instructions
+
+  Analyze the target listing against the competitors above and produce a professional seller report.
+  Use **exactly** the five Markdown sections below — no extra sections, no preamble.
+
+  ## 1. Visual Content Analysis
+  Evaluate the main product's images and video against competitors.
+  Comment on richness (lifestyle images, infographics, high-quality video) and any critical gaps.
+
+  ## 2. Copywriting & SEO
+  Compare the title, description, and bullet points to the competitors.
+  Assess persuasiveness, keyword coverage, and whether a clear USP is communicated.
+
+  ## 3. Social Proof & Trust
+  The following review intelligence was extracted from actual customer reviews:
+
+  {review_summary}
+
+  Using the data above, evaluate sentiment quality, manipulation risk, and velocity relative to
+  competitors. Note any trust signals that are missing or weaker than the market average.
+
+  ## 4. Gap Analysis
+  Identify the top 3-5 specific areas where competitors outperform the target listing.
+  Be precise — name the competitor ASIN and the advantage it holds.
+
+  ## 5. Actionable Roadmap
+  Provide exactly 3-5 high-impact, immediately actionable improvements as a bullet list.
+  Each item must state: what to change, why it matters, and the expected impact.

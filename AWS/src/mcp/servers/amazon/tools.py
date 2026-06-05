@@ -508,7 +508,8 @@ amazon_tools = [
             "Fetch full product details from an Amazon listing page. "
             "Returns Product model with: asin, title, features (bullet points), description, "
             "price, sales_rank (BSR), review_count, rating (out of 5), main_image_url, "
-            "category_name, category_node_id, past_month_sales, stock_level, is_fba. "
+            "category_name, category_node_id, past_month_sales, stock_level, is_fba, "
+            "has_a_plus_content (bool), aplus_images (list of A+ premium background image URLs). "
             "Result is written to DataCache under domain='amazon', key=ASIN."
         ),
         inputSchema={
@@ -1154,7 +1155,10 @@ amazon_tools = [
 _AMAZON_META = {
     "refresh_amazon_cookies": ("DATA", "confirmation of session refresh"),
     "get_amazon_bestsellers": ("DATA", "list of bestseller products with ASIN, title, rank, price"),
-    "get_product_details": ("DATA", "full product details: title, price, brand, ratings, features"),
+    "get_product_details": (
+        "DATA",
+        "full product details: title, price, brand, ratings, features, A+ content flag and image URLs",
+    ),
     "search_products": ("DATA", "list of products matching keyword with ASIN, title, price"),
     "search_profitability_products": (
         "DATA",

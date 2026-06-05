@@ -4,6 +4,7 @@ from . import (  # noqa: F401  — side-effect imports that register workflows v
     amazon_bsr,
     category_monopoly_analysis,
     cli_test,
+    listing_diagnosis,
     lp_validation,
     product_screening,
 )
