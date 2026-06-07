@@ -71,6 +71,10 @@ ad_diagnosis:
   stock_gate_days: 21           # effective_stock_days < N → downgrade scale-up actions to P2
   inbound_lead_days: 30         # assumed FBA replenishment lead time (days)
 
+  # ── Causal inference ─────────────────────────────────────────────────────
+  ci_pe_outlier_multiplier: 5   # threshold = daily_sales * N; |point_effect| > threshold → "Skipped (outlier)"
+  ci_pe_outlier_floor: 50       # absolute minimum threshold when daily_sales is zero or missing
+
   # ── Xiyou / organic rank ──────────────────────────────────────────────────
   enable_xiyou: true            # fetch keyword rank and market trend data
   rank_lookback_months: 6       # months of rank history to fetch (max 24)
