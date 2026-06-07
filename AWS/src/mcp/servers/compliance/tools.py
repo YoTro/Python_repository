@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from mcp.types import TextContent, Tool
+
 from src.mcp.servers.compliance.cpsc_recalls import CPSCRecallScraper
 from src.mcp.servers.compliance.epa_client import EPAClient
 from src.mcp.servers.compliance.fda_client import FDAClient

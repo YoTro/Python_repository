@@ -4,6 +4,7 @@ import logging
 import os
 
 from mcp.types import TextContent, Tool
+
 from src.registry.tools import tool_registry
 
 logger = logging.getLogger("mcp-market")

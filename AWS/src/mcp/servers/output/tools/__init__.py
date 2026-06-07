@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from mcp.types import TextContent
+
 from src.registry.tools import tool_registry
 
 from .create_doc import handle_create_doc

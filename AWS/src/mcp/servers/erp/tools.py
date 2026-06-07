@@ -2,6 +2,7 @@ import json
 import logging
 
 from mcp.types import TextContent, Tool
+
 from src.intelligence.processors.shipment_lead_time import (
     adapt_lingxing_shipments,
     compute_quarterly_lead_times,

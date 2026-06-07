@@ -4,8 +4,8 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from mcp.types import TextContent
+
 from src.mcp.servers.market.tools import handle_market_tool, market_tools
 
 

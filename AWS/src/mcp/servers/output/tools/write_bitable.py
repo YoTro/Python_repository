@@ -5,6 +5,7 @@ import json
 import logging
 
 from mcp.types import TextContent, Tool
+
 from src.entry.feishu.client import FeishuClient
 
 logger = logging.getLogger("mcp-output-bitable")
