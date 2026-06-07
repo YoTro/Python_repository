@@ -80,8 +80,8 @@ class AmazonBaseScraper:
         """
         from src.gateway.rate_limit import RateLimiter  # lazy import — avoids circular deps
 
-        if not RateLimiter().acquire_source("crawler"):
-            logger.warning(f"[scraper] crawler token-bucket timeout, skipping fetch: {url}")
+        if not await RateLimiter().async_acquire_source("amazon_scraper"):
+            logger.warning(f"[scraper] amazon_scraper token-bucket timeout, skipping: {url}")
             return None
 
         if self.session is None:
@@ -104,6 +104,8 @@ class AmazonBaseScraper:
                         code=ErrorCode.SOFT_BLOCKED,
                     )
 
+                # Inter-request jitter — randomises timing to avoid detectable regular patterns.
+                await asyncio.sleep(random.uniform(1.0, 3.0))
                 return response_text
 
             except (RequestsError, ScraperError) as e:

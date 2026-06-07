@@ -104,6 +104,24 @@ class BaseLLMProvider(ABC):
                     f"custom_id={req.custom_id})"
                 )
 
+    # ── Vision API (optional — vision-capable providers override this) ───────
+
+    async def generate_vision_structured(
+        self,
+        image_urls: list[str],
+        prompt: str,
+        schema: Any,
+        system_message: str | None = None,
+        max_tokens: int = 1024,
+    ) -> Any:
+        """
+        Evaluate image content and return a structured Pydantic object.
+        Providers that support vision must override this method.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support vision-structured generation."
+        )
+
     # ── Batch API (optional — providers that support it override these) ───────
 
     def supports_batch(self) -> bool:

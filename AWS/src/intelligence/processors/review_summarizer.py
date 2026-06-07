@@ -211,14 +211,46 @@ class ReviewSummarizer:
         logger.info(f"Summarizing {len(selected_reviews)} unique/truncated reviews...")
 
         # 6. Synthesis
-        summary: ReviewSummary = await self.provider.generate_structured(
+        # generate_structured returns an LLMResponse (JSON in .text) for real providers.
+        # Normalise to a ReviewSummary, tolerating providers/mocks that already return one.
+        raw = await self.provider.generate_structured(
             prompt=user_prompt, schema=ReviewSummary, system_message=system_msg
         )
+        summary = self._coerce_summary(raw)
 
         # 7. Final response enrichment
         summary.review_velocity = stats["velocity"]
-        summary.rating_distribution = stats["distribution"]
+        summary.rating_breakdown = stats["distribution"]
         summary.competitive_barrier_months = stats["barrier_months"]
         summary.manipulation_risk = risk
 
         return summary
+
+    @staticmethod
+    def _coerce_summary(raw: Any) -> ReviewSummary:
+        """
+        Normalise the provider's structured-generation result into a ReviewSummary.
+
+        Providers return an LLMResponse whose .text holds the JSON payload; test
+        mocks and any future provider may return a ReviewSummary or dict directly.
+        """
+        from src.core.models.review import ReviewSummary as _RS
+
+        if isinstance(raw, _RS):
+            return raw
+        if isinstance(raw, dict):
+            return _RS(**raw)
+
+        text = getattr(raw, "text", None)
+        if text is None:
+            raise ValueError(
+                f"ReviewSummarizer: cannot coerce {type(raw).__name__} into ReviewSummary "
+                "(no .text payload)."
+            )
+
+        from src.intelligence.parsers.markdown_cleaner import OutputParser
+
+        data = OutputParser.parse_dirty_json(text)
+        if not data:
+            raise ValueError("ReviewSummarizer: provider returned unparsable JSON for ReviewSummary.")
+        return _RS(**data)

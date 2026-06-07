@@ -73,8 +73,8 @@ async def test_summarize_integration(mock_provider):
 
     # 验证
     assert result.review_velocity > 0
-    assert result.rating_distribution[5] == 1
-    assert result.rating_distribution[1] == 1
+    assert result.rating_breakdown[5] == 1
+    assert result.rating_breakdown[1] == 1
     assert result.competitive_barrier_months is not None
 
     # 验证 Prompt 渲染是否包含了量化数据 (检查 mock 调用参数)

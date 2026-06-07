@@ -239,9 +239,7 @@ class ProcessStep(Step):
                     logger.warning(f"[{self.name}] LLM call failed for item: {result}")
                     item[self.output_field] = None
                 else:
-                    item[self.output_field] = (
-                        result.model_dump() if hasattr(result, "model_dump") else result
-                    )
+                    item[self.output_field] = self._normalize_llm_result(result)
                     ctx.cache[cache_key] = item[self.output_field]
 
         except Exception as e:
@@ -250,3 +248,38 @@ class ProcessStep(Step):
                 item[self.output_field] = None
 
         return items
+
+    def _normalize_llm_result(self, result: Any) -> Any:
+        """
+        Convert a router result into the value stored on the item.
+
+        When this step declares an output_schema, the router's LLMResponse carries
+        the structured payload as JSON in .text — parse it into the schema and return
+        its model_dump() so downstream steps receive a plain dict.
+
+        When no schema is declared, preserve the existing contract: already-parsed
+        Pydantic objects are dumped; everything else (including the raw LLMResponse)
+        is stored unchanged so callers that read .text continue to work.
+        """
+        if self.output_schema:
+            # Already the right shape (provider/mocks returning parsed objects).
+            if isinstance(result, self.output_schema):
+                return result.model_dump()
+
+            text = getattr(result, "text", None)
+            if text is not None:
+                from src.intelligence.parsers.markdown_cleaner import OutputParser
+
+                data = OutputParser.parse_dirty_json(text)
+                if data:
+                    try:
+                        return self.output_schema(**data).model_dump()
+                    except Exception as e:
+                        logger.warning(
+                            f"[{self.name}] Failed to parse LLM output into "
+                            f"{self.output_schema.__name__}: {e}"
+                        )
+                return None
+
+        # No schema (or unrecognised result): preserve original behaviour.
+        return result.model_dump() if hasattr(result, "model_dump") else result

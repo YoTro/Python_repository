@@ -135,6 +135,39 @@ class ClaudeProvider(BaseLLMProvider):
             "Claude structured generation via Pydantic is not implemented in this version."
         )
 
+    async def generate_vision_structured(
+        self,
+        image_urls: list[str],
+        prompt: str,
+        schema: Any,
+        system_message: str | None = None,
+        max_tokens: int = 1024,
+    ) -> Any:
+        """
+        Pass image URLs + text prompt to Claude and parse the response into *schema*.
+        Images are passed as URL-sourced content blocks — no download required.
+        """
+        from src.intelligence.parsers.markdown_cleaner import OutputParser
+
+        content: list[dict] = [
+            {"type": "image", "source": {"type": "url", "url": url}} for url in image_urls
+        ]
+        content.append({"type": "text", "text": prompt})
+
+        api_kwargs: dict = {
+            "model": self.model_name,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": content}],
+        }
+        if system_message:
+            api_kwargs["system"] = system_message
+
+        response = await self.client.messages.create(**api_kwargs)
+        text = "".join(block.text for block in response.content if block.type == "text")
+
+        data = OutputParser.parse_dirty_json(text)
+        return schema(**data)
+
     # ── Batch API ─────────────────────────────────────────────────────────────
     # Limits: 100,000 requests OR 256 MB per batch; expires after 24 h if not
     # completed; individual requests can also expire within a completed batch.

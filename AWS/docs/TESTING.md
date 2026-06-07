@@ -157,7 +157,7 @@ tests/test_gemini_advanced_pricing.py  # Unit: PriceManager for Gemini
 tests/test_feishu_full_flow.py     # Integration: Gateway → Job → MCP
 tests/test_ad_diagnosis_live.py    # Live: real Redis, real Ads API data
 tests/test_summary_snapshot.py     # Live + snapshot: golden JSON comparison
-tests/test_listing_diagnosis_workflow.py  # Unit: listing_diagnosis 8-step pipeline (mocked extractors + ReviewSummarizer)
+tests/test_listing_diagnosis_workflow.py  # Unit: listing_diagnosis pipeline (mocked extractors, ReviewSummarizer, vision LLM)
 tests/test_listing_quality_scorer.py      # Unit: ListingQualityScorer module scores and improvement plan
 ```
 

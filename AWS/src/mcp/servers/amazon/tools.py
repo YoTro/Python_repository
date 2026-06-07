@@ -6,6 +6,7 @@ import logging
 import os
 
 from mcp.types import TextContent, Tool
+
 from src.core.data_cache import data_cache
 from src.core.models.review import Review
 from src.core.utils.cookie_helper import AmazonCookieHelper
@@ -507,9 +508,12 @@ amazon_tools = [
         description=(
             "Fetch full product details from an Amazon listing page. "
             "Returns Product model with: asin, title, features (bullet points), description, "
-            "price, sales_rank (BSR), review_count, rating (out of 5), main_image_url, "
+            "price, sales_rank (BSR), review_count, rating (out of 5), "
+            "main_image_url (primary image URL), images (all gallery image URLs sorted by resolution descending), "
+            "videos (MP4/HLS URLs when detectable, otherwise placeholder × video_count), "
             "category_name, category_node_id, past_month_sales, stock_level, is_fba, "
-            "has_a_plus_content (bool), aplus_images (list of A+ premium background image URLs). "
+            "has_a_plus_content (bool), aplus_images (A+ premium background image URLs). "
+            "Image count = len(images); video count = len(videos). "
             "Result is written to DataCache under domain='amazon', key=ASIN."
         ),
         inputSchema={
@@ -1157,7 +1161,7 @@ _AMAZON_META = {
     "get_amazon_bestsellers": ("DATA", "list of bestseller products with ASIN, title, rank, price"),
     "get_product_details": (
         "DATA",
-        "full product details: title, price, brand, ratings, features, A+ content flag and image URLs",
+        "full product details: title, price, brand, ratings, features, images (gallery URLs + count), videos (URLs + count), A+ content flag and image URLs",
     ),
     "search_products": ("DATA", "list of products matching keyword with ASIN, title, price"),
     "search_profitability_products": (
