@@ -87,13 +87,12 @@ class RateLimiter:
 
     def acquire_source(self, source: str, timeout: float = 30.0) -> bool:
         """
-        Block until a token is available for *source*, then consume it.
-        Returns False if *timeout* is exceeded — caller should abort or raise.
-        Call this at the start of each external API _request() method.
+        Synchronous blocking acquire. Use only from non-async call sites.
+        Prefer async_acquire_source() inside coroutines to avoid blocking the event loop.
         """
         bucket = self._source_buckets.get(source)
         if bucket is None:
-            return True  # unconfigured source — allow freely
+            return True
 
         deadline = time.monotonic() + timeout
         while True:
@@ -115,6 +114,40 @@ class RateLimiter:
                 )
                 return False
             time.sleep(min(wait, 0.5))
+
+    async def async_acquire_source(self, source: str, timeout: float = 30.0) -> bool:
+        """
+        Async-native token-bucket acquire for use inside coroutines.
+        Yields to the event loop with asyncio.sleep() instead of blocking with time.sleep(),
+        so concurrent tasks continue making progress while this one waits for a token.
+        Returns False if timeout is exceeded.
+        """
+        import asyncio
+
+        bucket = self._source_buckets.get(source)
+        if bucket is None:
+            return True
+
+        deadline = time.monotonic() + timeout
+        while True:
+            with bucket.lock:
+                now = time.monotonic()
+                bucket.tokens = min(
+                    bucket.capacity,
+                    bucket.tokens + (now - bucket.last_refill) * bucket.refill_rate,
+                )
+                bucket.last_refill = now
+                if bucket.tokens >= 1.0:
+                    bucket.tokens -= 1.0
+                    return True
+                wait = (1.0 - bucket.tokens) / bucket.refill_rate
+
+            if time.monotonic() + wait > deadline:
+                logger.warning(
+                    f"[RateLimiter] Source '{source}' async token-bucket timeout after {timeout:.0f}s"
+                )
+                return False
+            await asyncio.sleep(min(wait, 0.5))
 
     # ── Layer 2: Tenant daily quota ───────────────────────────────────────
 

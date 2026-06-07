@@ -32,11 +32,11 @@
             "enterprise": { "daily_requests": 999999 }
         },
         "source_limits": {
-            "xiyouzhaoci":  { "requests_per_minute": 60,  "burst": 5  },
-            "sellersprite": { "requests_per_minute": 40,  "burst": 3,  "login_cooldown_seconds": 60 },
-            "crawler":      { "requests_per_minute": 6,   "burst": 2  },
-            "amazon_ads":   { "requests_per_minute": 100, "burst": 20 },
-            "tiktok":       { "requests_per_minute": 12,  "burst": 3  }
+            "xiyouzhaoci":    { "requests_per_minute": 60,  "burst": 5  },
+            "sellersprite":   { "requests_per_minute": 40,  "burst": 3,  "login_cooldown_seconds": 60 },
+            "amazon_scraper": { "requests_per_minute": 12,  "burst": 3  },
+            "amazon_ads":     { "requests_per_minute": 100, "burst": 20 },
+            "tiktok":         { "requests_per_minute": 12,  "burst": 3  }
         }
     }
 }

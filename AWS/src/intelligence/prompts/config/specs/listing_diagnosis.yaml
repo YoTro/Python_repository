@@ -11,8 +11,12 @@ required_vars:
   - title
   - description
   - features
+  - target_image_count
+  - target_video_count
   - competitor_data
   - review_summary
+  - competitive_gap
+  - semantic_scoring
 template: |
   # Listing Quality Diagnosis Report
 
@@ -25,10 +29,24 @@ template: |
   Target Features:
   {features}
 
+  Target Visual Content: {target_image_count} images, {target_video_count} videos
+
   ## Comparative Analysis (Control Group)
 
   Below is data for top competing products in the same category:
   {competitor_data}
+
+  ## Deterministic Score Comparison (Target vs. Competitor Avg)
+
+  {competitive_gap}
+
+  ## Semantic Quality Assessment (LLM Layer 2)
+
+  The following scores and rationales were produced by an earlier LLM pass rating each
+  dimension 0–100. Use these findings — especially the rationales — to ground your
+  qualitative analysis below. Do not simply repeat them; synthesise them into insights.
+
+  {semantic_scoring}
 
   ## Instructions
 
@@ -36,12 +54,14 @@ template: |
   Use **exactly** the five Markdown sections below — no extra sections, no preamble.
 
   ## 1. Visual Content Analysis
-  Evaluate the main product's images and video against competitors.
-  Comment on richness (lifestyle images, infographics, high-quality video) and any critical gaps.
+  Evaluate the main product's images and video against competitors. Reference the Visual
+  Semantics scores above (image quality, content diversity, lifestyle representation,
+  purchase confidence) and comment on richness and any critical gaps.
 
   ## 2. Copywriting & SEO
-  Compare the title, description, and bullet points to the competitors.
-  Assess persuasiveness, keyword coverage, and whether a clear USP is communicated.
+  Compare the title, description, and bullet points to the competitors. Reference the Title
+  and Bullet Semantics scores above (USP presence, specificity, buyer language alignment)
+  and assess persuasiveness, keyword coverage, and whether a clear USP is communicated.
 
   ## 3. Social Proof & Trust
   The following review intelligence was extracted from actual customer reviews:

@@ -15,7 +15,7 @@ _MOCK_REVIEW_SUMMARY = ReviewSummary(
     top_complaints=["Slips on hardwood"],
     buyer_persona="Yoga enthusiasts aged 25-40",
     review_velocity=45.3,
-    rating_distribution={1: 2, 2: 3, 3: 10, 4: 30, 5: 55},
+    rating_breakdown={1: 2, 2: 3, 3: 10, 4: 30, 5: 55},
     competitive_barrier_months=8.2,
     manipulation_risk={"score": 12.0, "verdict": "SAFE", "metrics": {}},
 )

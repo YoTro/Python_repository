@@ -58,6 +58,9 @@ _LIVE_FILES: frozenset[str] = frozenset(
         "test_local_llm_direct.py",  # requires LOCAL_MODEL_PATH in .env
         "test_tiktok_client.py",  # TikTok API credentials
         "test_tiktok_comments_integrated.py",  # real TikTok API call with live video ID
+        "test_sp_api_inbound_shipments.py",  # SP-API credentials + real inbound data
+        "test_placement_columns.py",  # Amazon Ads API credentials
+        "test_placement_report.py",  # Amazon Ads API credentials
     }
 )
 

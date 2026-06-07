@@ -332,8 +332,11 @@ class GeminiProvider(BaseLLMProvider):
             raw_schema = schema.model_json_schema()
             clean = self._clean_schema(raw_schema)
 
-            # Filter out internal metadata from kwargs
+            # Filter out internal metadata from kwargs.
+            # temperature (and any other GenerateContentConfig field) must go inside
+            # the config object, not as a top-level generate_content() kwarg.
             filtered_kwargs = self._filter_kwargs(kwargs)
+            temp = filtered_kwargs.pop("temperature", 0.2)
 
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
@@ -343,6 +346,7 @@ class GeminiProvider(BaseLLMProvider):
                     system_instruction=system_message,
                     response_mime_type="application/json",
                     response_schema=clean,
+                    temperature=temp,
                 ),
                 **filtered_kwargs,
             )
@@ -368,3 +372,63 @@ class GeminiProvider(BaseLLMProvider):
         except Exception as e:
             logger.error(f"Structured generation failed on {self.model_name}: {e}")
             raise
+
+    async def generate_vision_structured(
+        self,
+        image_urls: list[str],
+        prompt: str,
+        schema: Any,
+        system_message: str | None = None,
+        max_tokens: int = 1024,
+    ) -> Any:
+        """
+        Download image bytes in parallel, pass them as inline Blob parts alongside
+        the text prompt, and return a structured Pydantic object via response_schema.
+        Gemini does not support external HTTP image URLs directly — bytes required.
+        """
+        import aiohttp
+
+        async def _fetch_bytes(url: str) -> bytes | None:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                        if r.status == 200:
+                            return await r.read()
+            except Exception as e:
+                logger.warning(f"[vision] Failed to download image {url}: {e}")
+            return None
+
+        raw_bytes = await asyncio.gather(*[_fetch_bytes(u) for u in image_urls])
+        parts: list = [
+            types.Part(inline_data=types.Blob(mime_type="image/jpeg", data=b))
+            for b in raw_bytes
+            if b is not None
+        ]
+        if not parts:
+            raise ValueError("No images could be downloaded for vision scoring.")
+        parts.append(types.Part(text=prompt))
+
+        raw_schema = schema.model_json_schema()
+        clean = self._clean_schema(raw_schema)
+
+        response = await asyncio.to_thread(
+            self.client.models.generate_content,
+            model=self.model_name,
+            contents=types.Content(role="user", parts=parts),
+            config=types.GenerateContentConfig(
+                system_instruction=system_message,
+                response_mime_type="application/json",
+                response_schema=clean,
+                max_output_tokens=max_tokens,
+            ),
+        )
+
+        from src.intelligence.parsers.markdown_cleaner import OutputParser
+
+        data = OutputParser.parse_dirty_json(response.text or "")
+        if not data:
+            raise ValueError(
+                f"Vision model returned unparsable JSON (len={len(response.text or '')}): "
+                f"{(response.text or '')[:200]!r}"
+            )
+        return schema(**data)

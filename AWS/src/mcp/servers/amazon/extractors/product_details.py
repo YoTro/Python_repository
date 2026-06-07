@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -97,7 +98,87 @@ class ProductDetailsExtractor(AmazonBaseScraper):
             product.aplus_images = self._extract_aplus_images(soup)
             logger.info(f"Found {len(product.aplus_images)} A+ images for {product.asin}")
 
+        # 7. Main images — extract URLs and resolution metadata from the same soup pass.
+        if not product.images:
+            product.images, product.images_metadata = self._extract_main_images(soup, html_content)
+            if product.images and not product.main_image_url:
+                product.main_image_url = product.images[0]
+            logger.info(f"Extracted {len(product.images)} image(s) for {product.asin}")
+
+        # 8. Videos
+        if not product.videos:
+            video_urls, video_count = self._extract_video_meta(soup, html_content)
+            if video_urls:
+                product.videos = video_urls
+            elif video_count:
+                product.videos = ["has_video_placeholder"] * video_count
+            if product.videos:
+                logger.info(f"Found {len(product.videos)} video(s) for {product.asin}")
+
         return product
+
+    @staticmethod
+    def _extract_main_images(soup: BeautifulSoup, html: str) -> tuple[list[str], dict[str, dict]]:
+        """
+        Extract main image URLs and their {width, height} metadata from the same parse pass.
+        Returns (urls, metadata) — no extra HTTP request needed.
+        """
+        # Method A: data-a-dynamic-image — JSON map of URL → [width, height]
+        img_el = soup.find("img", id="landingImage")
+        if img_el and img_el.get("data-a-dynamic-image"):
+            try:
+                img_data: dict[str, list[int]] = json.loads(img_el["data-a-dynamic-image"])
+                urls = sorted(img_data, key=lambda k: img_data[k][0] * img_data[k][1], reverse=True)
+                metadata = {
+                    url: {"width": img_data[url][0], "height": img_data[url][1]} for url in img_data
+                }
+                return urls, metadata
+            except Exception:
+                pass
+
+        # Method B: imgTagWrapperId wrapper (no dimension data available)
+        wrapper = soup.find("div", id="imgTagWrapperId")
+        if wrapper:
+            img = wrapper.find("img")
+            if img and img.get("src"):
+                return [img["src"]], {}
+
+        # Method C: hiRes key in embedded JS blob (no dimension data available)
+        m = re.search(r'"hiRes"\s*:\s*"(https://[^"]+)"', html)
+        if m:
+            return [m.group(1)], {}
+
+        return [], {}
+
+    @staticmethod
+    def _extract_video_meta(soup: BeautifulSoup, html: str) -> tuple[list[str], int]:
+        """
+        Return (video_urls, count).
+        video_urls contains real MP4/HLS URLs when detectable from embedded JS;
+        count is the fallback used when only presence/quantity can be determined.
+        """
+        url_re = re.compile(
+            r'"(?:videoUrl|contentUrl|url)"\s*:\s*"(https://[^"]+\.(?:mp4|m3u8)[^"]*)"'
+        )
+        video_urls = list(dict.fromkeys(m.group(1) for m in url_re.finditer(html)))
+        if video_urls:
+            return video_urls, len(video_urls)
+
+        # Fallback: detect presence / count only
+        count = 0
+        count_span = soup.find("span", class_="video-count")
+        if count_span:
+            m = re.search(r"(\d+)", count_span.get_text(strip=True))
+            count = int(m.group(1)) if m else 1
+        elif soup.find("div", id="video-block") or soup.find("div", class_="video-container"):
+            count = 1
+        else:
+            m = re.search(r'class="[^"]*video-count[^"]*"[^>]*>(.*?)</span>', html, re.S)
+            if m:
+                n = re.search(r"(\d+)", m.group(1))
+                count = int(n.group(1)) if n else 1
+
+        return [], count
 
     @staticmethod
     def _extract_aplus_images(soup: BeautifulSoup) -> list[str]:
