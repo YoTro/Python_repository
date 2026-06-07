@@ -5429,7 +5429,12 @@ def _render_change_attribution_table(item: dict) -> str:
             return "—"
         # Defense-in-depth: reject values that survived serialisation from
         # a pre-fix run (BSTS divergence → degenerate counterfactual).
-        if abs(pe) > 1_000:
+        # Scale with baseline so the guard works for both small and large accounts.
+        _multiplier = item.get("ci_pe_outlier_multiplier", 5)
+        _floor = item.get("ci_pe_outlier_floor", 50)
+        _daily_sales = item.get("daily_sales") or 0
+        pe_outlier_threshold = max(_daily_sales * _multiplier, _floor)
+        if abs(pe) > pe_outlier_threshold:
             return "Skipped (outlier)"
         return f"{pe:+.2f} [{lo:.1f}–{hi:.1f}]"
 
