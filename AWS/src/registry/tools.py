@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from mcp.types import TextContent, Tool
+
 from src.mcp.exceptions import ToolNotFoundError
 
 logger = logging.getLogger(__name__)
