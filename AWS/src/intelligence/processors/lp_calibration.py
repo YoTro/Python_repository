@@ -20,11 +20,18 @@ import fcntl
 import json
 import logging
 import os
+import threading
 from datetime import date as _date_cls
 
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# Per-ASIN locks serialise the read-compute-write cycle in _maybe_update.
+# Without these, two threads can both read the same last_trigger_at, compute
+# the same window, and each apply *1.1 — doubling the intended adjustment.
+_ASIN_LOCKS: dict[str, threading.Lock] = {}
+_ASIN_LOCKS_GUARD = threading.Lock()
 
 _CAL_DIR = os.path.join("config", "lp_calibration")
 _SNAP_ROOT = os.path.join("data", "intelligence", "lp_snapshots")
@@ -244,8 +251,16 @@ def compute_update(asin: str, current_params: dict | None = None) -> dict | None
     return params
 
 
+def _asin_lock(asin: str) -> threading.Lock:
+    with _ASIN_LOCKS_GUARD:
+        if asin not in _ASIN_LOCKS:
+            _ASIN_LOCKS[asin] = threading.Lock()
+        return _ASIN_LOCKS[asin]
+
+
 def _maybe_update(asin: str) -> None:
     """Internal: compute and persist update if trigger has fired."""
-    new_params = compute_update(asin)
-    if new_params is not None:
-        save_calibration(asin, new_params)
+    with _asin_lock(asin):
+        new_params = compute_update(asin)
+        if new_params is not None:
+            save_calibration(asin, new_params)
