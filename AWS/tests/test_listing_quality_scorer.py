@@ -65,3 +65,88 @@ def test_excellent_product():
     # Should be high score
     assert result["overall_quality_score"] >= 80
     assert result["status"] in ["Good", "Excellent"]
+
+
+def test_brand_keyword_suppression():
+    """Third-party brand names must not appear in the improvement plan."""
+    scorer = ListingQualityScorer()
+
+    product = Product(
+        asin="B001",
+        title="AcmeCo Rodent Repellent Pouches for Car Engine",
+        brand="AcmeCo",
+        features=[
+            "Natural peppermint oil repels mice and rodents effectively",
+            "Safe for use in cars, trucks, and RVs without chemicals",
+            "Easy to place under hood or in cabin for lasting protection",
+            "Long-lasting formula stays effective for up to 30 days per pouch",
+            "Satisfaction guarantee — replacement or full refund on any order",
+        ],
+        rating=4.4,
+        review_count=80,
+        is_fba=True,
+        has_a_plus_content=True,
+        images=["i.jpg"] * 7,
+        videos=["v.mp4"],
+    )
+    competitors = [
+        Product(asin="B002", title="Vamoose Rodent Repelling Pouches Natural Deterrent"),
+        Product(asin="B003", title="MouseOut Car Rodent Repellent Sachets Peppermint"),
+        Product(asin="B004", title="RodentShield Peppermint Mouse Repellent Pouches"),
+    ]
+    # keyword_config simulates Xiyouzhaoci returning branded + generic terms
+    keyword_config = {
+        "core": [
+            "rodent repellent",  # generic — should be flagged if missing
+            "vamoose",  # pure brand — must be suppressed
+            "vamoose rodent repellent",  # brand phrase — must be suppressed
+        ],
+        "modifiers": ["peppermint car repellent", "vamoose rodent-repelling pouches"],
+        "scenes": [],
+    }
+
+    result = scorer.score(product, keyword_config=keyword_config, competitors=competitors)
+    plan = result["improvement_plan"]
+
+    # Brand-only terms must not appear in any improvement plan item
+    for item in plan:
+        assert "vamoose" not in item.lower(), f"Brand 'vamoose' leaked into plan: {item!r}"
+
+    # Generic terms that are absent from the listing should still be flagged
+    # ("rodent repellent" is in title, so no flag expected here; verify no crash)
+    assert isinstance(plan, list)
+
+
+def test_build_token_freq_map():
+    scorer = ListingQualityScorer()
+    product = Product(
+        asin="B001",
+        title="AcmeCo Rodent Repellent Pouches",
+        features=["Peppermint oil repels mice"],
+    )
+    competitors = [
+        Product(asin="B002", title="MouseOut Rodent Repellent Sachets"),
+        Product(asin="B003", title="RodentShield Peppermint Repellent Pouches"),
+    ]
+    freq = scorer._build_token_freq_map(product, competitors)
+
+    # "repellent" appears in main product + both competitors → freq 3
+    assert freq["repellent"] >= 3
+    # "vamoose" appears in none of the sources → freq 0
+    assert freq.get("vamoose", 0) == 0
+    # brand-unique tokens score low
+    assert freq.get("mouseout", 0) == 1
+
+
+def test_is_generic_keyword():
+    scorer = ListingQualityScorer()
+    from collections import Counter
+
+    freq = Counter({"rodent": 3, "repellent": 3, "peppermint": 2, "vamoose": 1, "pouches": 3})
+
+    assert scorer._is_generic_keyword("rodent repellent", freq, min_sources=2) is True
+    assert scorer._is_generic_keyword("peppermint pouches", freq, min_sources=2) is True
+    assert scorer._is_generic_keyword("vamoose", freq, min_sources=2) is False
+    assert scorer._is_generic_keyword("vamoose rodent repellent", freq, min_sources=2) is False
+    # stop-word-only / empty → generic by default
+    assert scorer._is_generic_keyword("for the", freq, min_sources=2) is True

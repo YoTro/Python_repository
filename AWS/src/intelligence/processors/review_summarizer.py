@@ -252,5 +252,7 @@ class ReviewSummarizer:
 
         data = OutputParser.parse_dirty_json(text)
         if not data:
-            raise ValueError("ReviewSummarizer: provider returned unparsable JSON for ReviewSummary.")
+            raise ValueError(
+                "ReviewSummarizer: provider returned unparsable JSON for ReviewSummary."
+            )
         return _RS(**data)

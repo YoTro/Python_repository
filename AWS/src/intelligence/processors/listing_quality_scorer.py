@@ -236,6 +236,10 @@ _BULLET_VAGUE_PHRASES: frozenset[str] = frozenset(
 )
 
 
+def _tokenize(text: str) -> set[str]:
+    return {w for w in re.findall(r"\b[a-z]{3,}\b", text.lower()) if w not in _STOP_WORDS}
+
+
 class ListingQualityScorer:
     """
     Pure compute processor to evaluate Amazon Listing quality based on
@@ -260,16 +264,24 @@ class ListingQualityScorer:
         video_metadata: dict[str, dict[str, Any]] | None = None,
         review_summary: ReviewSummary | None = None,
         weights: dict[str, float] | None = None,
+        competitors: list[Product | dict] | None = None,
     ) -> dict[str, Any]:
         """
         Scores a product listing from 0 to 100 based on weighted modules.
+
+        Pass competitors to enable brand-keyword filtering: keywords whose tokens
+        appear in only one corpus source (likely a third-party brand name) are
+        excluded from the improvement plan rather than flagged as missing.
         """
         logger.info(f"Scoring product listing for ASIN: {product.asin}")
         weights = weights or self.DEFAULT_WEIGHTS
+        freq_map: Counter | None = (
+            self._build_token_freq_map(product, competitors) if competitors else None
+        )
 
         # Calculate individual module scores (each out of 100)
-        title_res = self._score_title(product, required_keywords, keyword_config)
-        features_res = self._score_features(product, required_keywords, keyword_config)
+        title_res = self._score_title(product, required_keywords, keyword_config, freq_map)
+        features_res = self._score_features(product, required_keywords, keyword_config, freq_map)
         media_res = self._score_media(product, image_metadata, video_metadata)
         social_res = self._score_social_proof(product, review_summary)
         aplus_res = self._score_aplus(product)
@@ -318,7 +330,9 @@ class ListingQualityScorer:
             },
         }
 
-    def _score_title(self, product: Product, required_keywords, keyword_config) -> dict[str, Any]:
+    def _score_title(
+        self, product: Product, required_keywords, keyword_config, freq_map: Counter | None = None
+    ) -> dict[str, Any]:
         score = 100
         issues = []
         metrics = {}
@@ -439,7 +453,10 @@ class ListingQualityScorer:
             kw_penalty = 0
             for cat, pts in [("core", 10), ("modifiers", 5), ("scenes", 3)]:
                 missing = [
-                    kw for kw in keyword_config.get(cat, []) if kw.lower() not in title_lower
+                    kw
+                    for kw in keyword_config.get(cat, [])
+                    if kw.lower() not in title_lower
+                    and (freq_map is None or self._is_generic_keyword(kw, freq_map))
                 ]
                 if missing:
                     kw_penalty += len(missing) * pts
@@ -449,7 +466,11 @@ class ListingQualityScorer:
         return {"score": max(0, score), "issues": issues, "metrics": metrics}
 
     def _score_features(
-        self, product: Product, required_keywords, keyword_config
+        self,
+        product: Product,
+        required_keywords,
+        keyword_config,
+        freq_map: Counter | None = None,
     ) -> dict[str, Any]:
         score = 100
         issues = []
@@ -524,9 +545,13 @@ class ListingQualityScorer:
         # ── 5. Keyword coverage (presence-based, capped penalty) ──────────
         # Measures how many bullets contain the keyword rather than raw occurrence count,
         # which was gameable via repetition in one bullet and punished sparse-but-correct use.
+        # Brand-owned keywords (freq_map token check) are silently skipped — recommending
+        # a seller adopt a competitor's brand name is both wrong and a policy violation.
         main_kws = keyword_config.get("core", []) if keyword_config else (required_keywords or [])
         kw_penalty = 0
         for kw in main_kws:
+            if freq_map is not None and not self._is_generic_keyword(kw, freq_map):
+                continue
             kw_lower = kw.lower()
             bullets_with_kw = sum(1 for f in features if kw_lower in f.lower())
             if bullets_with_kw == 0:
@@ -767,6 +792,56 @@ class ListingQualityScorer:
             )
 
         return {"score": max(0, score), "issues": issues, "metrics": metrics}
+
+    @staticmethod
+    def _build_token_freq_map(
+        product: Product,
+        competitors: list[Product | dict],
+    ) -> Counter:
+        """
+        Count how many distinct sources contain each token.
+
+        Sources: main product (title + features + description) counts as one source;
+        each competitor title counts as one source.  A token that appears in N sources
+        has freq N.  Tokens with freq >= min_sources in _is_generic_keyword are
+        treated as ownable category terms; single-source tokens are likely brand names.
+        """
+        sources: list[set[str]] = []
+
+        main_tokens: set[str] = set()
+        if product.title:
+            main_tokens |= _tokenize(product.title)
+        for f in product.features or []:
+            main_tokens |= _tokenize(f)
+        if product.description:
+            main_tokens |= _tokenize(product.description)
+        sources.append(main_tokens)
+
+        for c in competitors:
+            title = c.title if isinstance(c, Product) else (c.get("title") or "")
+            if title:
+                sources.append(_tokenize(title))
+
+        freq: Counter = Counter()
+        for token_set in sources:
+            for token in token_set:
+                freq[token] += 1
+        return freq
+
+    @staticmethod
+    def _is_generic_keyword(kw: str, freq_map: Counter, min_sources: int = 2) -> bool:
+        """
+        Return True if every content token in kw appears in >= min_sources corpus sources.
+
+        A keyword whose tokens are all present across multiple product titles / the main
+        listing is a generic category term and should be flagged as missing.  A keyword
+        containing a token that only appears in one source (or zero) is likely a
+        third-party brand identifier and must not be recommended for adoption.
+        """
+        tokens = [w for w in re.findall(r"\b[a-z]{3,}\b", kw.lower()) if w not in _STOP_WORDS]
+        if not tokens:
+            return True
+        return all(freq_map.get(t, 0) >= min_sources for t in tokens)
 
     def batch_score(self, products: list[Product]) -> list[dict[str, Any]]:
         logger.info(f"Batch scoring {len(products)} products...")

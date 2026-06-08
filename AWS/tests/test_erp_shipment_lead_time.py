@@ -46,7 +46,7 @@ def _dump(label: str, obj) -> None:
     print(f"\n{'─' * 60}")
     print(f"  {label}")
     print("─" * 60)
-    if isinstance(obj, (dict, list)):
+    if isinstance(obj, dict | list):
         print(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
     else:
         print(pformat(obj))
