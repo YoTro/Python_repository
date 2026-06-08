@@ -5,6 +5,7 @@ import json
 import logging
 import random
 import re
+import time
 
 from bs4 import BeautifulSoup
 
@@ -24,6 +25,7 @@ class CommentsExtractor(AmazonBaseScraper):
     async def get_all_comments(self, asin: str, max_pages: int = 3) -> list[Review]:
         all_reviews = []
         next_page_token = None
+        seen_review_ids: set[str] = set()
         for page in range(1, max_pages + 1):
             reviews, next_page_token = await self._fetch_reviews_via_ajax(
                 asin, page, next_page_token
@@ -37,7 +39,18 @@ class CommentsExtractor(AmazonBaseScraper):
             if not reviews:
                 break
 
-            all_reviews.extend(reviews)
+            # Deduplicate: HTML fallback without nextPageToken repeats page 1 silently
+            new_reviews = [r for r in reviews if (r.author, r.title) not in seen_review_ids]
+            if not new_reviews:
+                logger.info(f"Page {page} returned only already-seen reviews — stopping early.")
+                break
+            seen_review_ids.update((r.author, r.title) for r in new_reviews)
+            all_reviews.extend(new_reviews)
+
+            if not next_page_token and page < max_pages:
+                logger.info(f"No nextPageToken after page {page} — cannot paginate further.")
+                break
+
             if page < max_pages:
                 await asyncio.sleep(random.uniform(1.0, 2.5))
         return all_reviews
@@ -73,10 +86,18 @@ class CommentsExtractor(AmazonBaseScraper):
         Since curl_cffi doesn't execute JS, we parse the token from the HTML meta/script tags instead.
         Also extracts the initial nextPageToken for pagination.
         """
+        # Primary URL; falls back to the HTML-fallback URL if it returns nothing,
+        # which happens on some ASINs where the dp-sourced ref tag redirects to 404.
         reviews_url = (
             f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_dp_d_show_all_btm?ie=UTF8"
         )
         html = await self.fetch(reviews_url)
+        if not html:
+            reviews_url = (
+                f"https://www.amazon.com/product-reviews/{asin}"
+                f"?ie=UTF8&reviewerType=all_reviews&pageNumber=1"
+            )
+            html = await self.fetch(reviews_url)
         if not html:
             return None, None
 
@@ -93,12 +114,11 @@ class CommentsExtractor(AmazonBaseScraper):
             csrf_token = match.group(1)
             # logger.info("Acquired CSRF token from 'csrfToken' JSON.")
 
-        # Pattern 2: anti-csrftoken-a2z explicit name
+        # Pattern 2: anti-csrftoken-a2z — require ≥20 chars to avoid matching HTML attr fragments
         if not csrf_token:
-            match = re.search(r'anti-csrftoken-a2z["\s:]+([A-Za-z0-9%+/=]+)', html)
+            match = re.search(r'anti-csrftoken-a2z["\s:=]+([A-Za-z0-9%+/]{20,})', html)
             if match:
                 csrf_token = match.group(1)
-                # logger.info("Acquired CSRF token from 'anti-csrftoken-a2z' string.")
 
         # Pattern 3: Hidden input
         if not csrf_token:
@@ -114,22 +134,21 @@ class CommentsExtractor(AmazonBaseScraper):
             if csrf_token:
                 logger.info("Acquired CSRF token from session cookies.")
 
-        # Fallback: check the login page as suggested by user
+        # Fallback: login page always exposes the token in an <input> field
         if not csrf_token:
-            # logger.info("CSRF token not found on reviews page, checking login page...")
             login_url = "https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2F%3Fref_%3Dnav_signin&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
             login_html = await self.fetch(login_url)
             if login_html:
-                match = re.search(r'anti-csrftoken-a2z["\s:]+([A-Za-z0-9%+/=]+)', login_html)
-                if match:
-                    csrf_token = match.group(1)
-                    # logger.info("Acquired CSRF token from login page.")
-                else:
-                    soup = BeautifulSoup(login_html, "html.parser")
-                    token_input = soup.find("input", {"name": "anti-csrftoken-a2z"})
-                    if token_input:
-                        csrf_token = token_input.get("value")
-                        # logger.info("Acquired CSRF token from login page hidden input.")
+                login_soup = BeautifulSoup(login_html, "html.parser")
+                token_input = login_soup.find("input", {"name": "anti-csrftoken-a2z"})
+                if token_input:
+                    csrf_token = token_input.get("value")
+                if not csrf_token:
+                    match = re.search(
+                        r'anti-csrftoken-a2z["\s:=]+([A-Za-z0-9%+/]{20,})', login_html
+                    )
+                    if match:
+                        csrf_token = match.group(1)
 
         if not csrf_token:
             logger.warning("Failed to find CSRF token in HTML or cookies. AJAX will likely fail.")
@@ -158,13 +177,15 @@ class CommentsExtractor(AmazonBaseScraper):
                 logger.warning("Missing 'anti-csrftoken-a2z'. AJAX call will likely fail.")
                 return None, None
 
-            url = f"https://www.amazon.com/portal/customer-reviews/ajax/reviews/get/ref=cm_cr_arp_d_paging_btm_next_{page}"
+            reftag = f"cm_cr_getr_d_paging_btm_{page}"
+            url = f"https://www.amazon.com/portal/customer-reviews/ajax/reviews/get/ref={reftag}"
             referrer = (
                 f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_dp_d_show_all_btm?ie=UTF8"
             )
             if next_page_token:
                 referrer += f"&nextPageToken={next_page_token}"
 
+            should_append = "true" if page > 1 else "false"
             headers = {
                 "accept": "text/html,*/*",
                 "accept-encoding": "gzip, deflate, br, zstd",
@@ -188,15 +209,15 @@ class CommentsExtractor(AmazonBaseScraper):
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
                 "viewport-width": "1280",
+                "x-amzn-flow-closure-id": str(int(time.time())),
                 "x-requested-with": "XMLHttpRequest",
                 "referer": referrer,
             }
 
-            reftag = f"cm_cr_arp_d_paging_btm_next_{page}"
             body = (
                 f"sortBy=&reviewerType=all_reviews&formatType=&mediaType=&filterByStar="
                 f"&filterByAge=&pageNumber={page}&filterByLanguage=&filterByKeyword="
-                f"&shouldAppend=undefined&deviceType=desktop&canShowIntHeader=undefined"
+                f"&shouldAppend={should_append}&deviceType=desktop&canShowIntHeader=true"
                 f"&reviewsShown=undefined&reftag={reftag}&pageSize=10&asin={asin}&scope=reviewsAjax1"
             )
             if next_page_token:
@@ -257,6 +278,18 @@ class CommentsExtractor(AmazonBaseScraper):
             if not html_content:
                 return [], None
 
+            # Detect bot-detection redirect: Amazon returns the homepage (HTTP 200)
+            # instead of a review page when the session is blocked or rate-limited.
+            if 'data-hook="review"' not in html_content and (
+                "Spend less. Smile more." in html_content
+                or "<title>Amazon.com</title>" in html_content
+            ):
+                logger.warning(
+                    f"Bot detection triggered for {asin} page {page} — "
+                    "Amazon returned homepage instead of reviews."
+                )
+                return [], None
+
             # Detect actual login wall (not just nav bar signin links)
             if 'name="password"' in html_content or 'id="ap_password"' in html_content:
                 logger.error(
@@ -285,7 +318,14 @@ class CommentsExtractor(AmazonBaseScraper):
                         el.find("i", {"data-hook": "review-star-rating"}).get_text(strip=True),
                     ).group(1)
                 )
-                title = el.find("a", {"data-hook": "review-title"}).get_text(strip=True)
+                title_anchor = el.find("a", {"data-hook": "review-title"})
+                # The anchor contains an <i data-hook="review-star-rating"> child whose
+                # text ("5.0 out of 5 stars") would be prepended to the title by get_text().
+                # Decompose it so only the actual title <span> text is returned.
+                star_i = title_anchor.find("i", {"data-hook": "review-star-rating"})
+                if star_i:
+                    star_i.decompose()
+                title = title_anchor.get_text(strip=True)
                 content = el.find("span", {"data-hook": "review-body"}).get_text(strip=True)
                 date = el.find("span", {"data-hook": "review-date"}).get_text(strip=True)
                 is_verified = el.find("span", {"data-hook": "avp-badge"}) is not None
