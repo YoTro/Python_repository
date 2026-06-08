@@ -528,6 +528,9 @@ def _run_scoring(items: list[dict], ctx: WorkflowContext) -> list[dict]:
     for item in items:
         keyword_config: dict | None = item.get("keyword_config")
 
+        comp_data: list[dict] = item.get("competitor_data") or []
+        comp_products = [Product(**c) for c in comp_data if isinstance(c, dict)]
+
         if "product_data" in item:
             p = Product(**item["product_data"])
             rs_raw = item.get("review_summary")
@@ -544,6 +547,7 @@ def _run_scoring(items: list[dict], ctx: WorkflowContext) -> list[dict]:
                 keyword_config=keyword_config,
                 review_summary=review_summary,
                 image_metadata=image_metadata,
+                competitors=comp_products,
             )
             item["main_score"] = res
             logger.info(
@@ -552,8 +556,7 @@ def _run_scoring(items: list[dict], ctx: WorkflowContext) -> list[dict]:
                 f"[keywords: {'xiyouzhaoci' if keyword_config else 'none'}]"
             )
 
-        if "competitor_data" in item:
-            comp_data = item["competitor_data"]
+        if comp_data:
             comp_summaries: dict[str, dict] = item.get("competitor_review_summaries", {})
             scores = [
                 scorer.score(
