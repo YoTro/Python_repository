@@ -14,6 +14,46 @@ This guide provides solutions to common issues you might encounter while develop
     *   **Solution 2**: Use a VPN or proxy. Configure proxies in `config/settings.json` and enable `use_proxy` in your `AmazonBaseScraper` instance or CLI arguments.
     *   **Solution 3**: Force a cookie refresh (`refresh_amazon_cookies` MCP tool) to get a new session.
 
+*   **Reviews AJAX endpoint always returns `403` even with valid cookies**:
+    *   **Cause**: Amazon WAF binds the `aws-waf-token` cookie to the **TLS JA3 fingerprint** of the browser that solved the WAF JS challenge. When curl_cffi's `impersonate` target (e.g., `chrome136`) differs from the real Chrome binary that captured the token, the WAF detects the fingerprint mismatch and rejects the AJAX request. Changing the `User-Agent` header alone does not fix this — JA3 is derived from the TLS handshake, not HTTP headers.
+    *   **Diagnosis**: Check if the AJAX `403` body is Amazon's "Page Not Found" HTML (not a WAF block page). If so, the WAF accepted the connection but the CSRF token (`anti-csrftoken-a2z`) is absent — see the entry below.
+    *   **Solution**: Install a Chrome version that matches a curl_cffi built-in impersonation target. As of curl_cffi 0.15.x the highest available target is **`chrome146`**. Install Chrome 146 so that DrissionPage (the browser fallback tier) and curl_cffi both present identical Chrome 146 JA3/Akamai fingerprints:
+        ```bash
+        # Upgrade curl_cffi first (0.15.x adds chrome142/chrome145/chrome146 targets)
+        pip install 'curl_cffi>=0.15.0'
+        # Then install Chrome 146 and update config/cookies.json UA:
+        # "user_agent": "Mozilla/5.0 ... Chrome/146.0.0.0 Safari/537.36"
+        ```
+        If your installed Chrome is newer than any curl_cffi built-in target, use the custom `ja3=` / `akamai=` parameters (available in curl_cffi ≥ 0.15.1) with the fingerprint captured from `https://tls.browserleaks.com/json` via DrissionPage, and pass it to `AsyncSession(ja3=..., akamai=...)` in `src/core/scraper.py`.
+
+*   **`aws-waf-token` not issued / still `MISSING` after login and reviews page warmup**:
+    *   **Cause**: The WAF suppresses token issuance when the User-Agent version does not match the TLS JA3 fingerprint. For example, sending a `Chrome/122` UA through a Chrome 146 TLS handshake is a detectable inconsistency — Amazon's WAF treats the session as suspicious and withholds the token.
+    *   **How the system auto-resolves this**: `AMAZON_UA` in `src/core/utils/cookie_helper.py` is no longer a hardcoded string — it is computed at startup by detecting the installed Chrome binary version and mapping it to the nearest curl_cffi target in `_CFFI_TARGETS`. Both the HTTP `User-Agent` header and the curl_cffi `impersonate` target are derived from the same resolved version, so they always agree. No manual update is needed when Chrome is upgraded.
+
+*   **AJAX tier returns `403` for Chrome versions between curl_cffi targets (e.g. Chrome 126)**:
+    *   **Cause**: curl_cffi has built-in impersonation targets only for specific Chrome versions: `119, 120, 124, 131, 136, 142, 146`. If the installed Chrome is version 126 (between `124` and `131`), DrissionPage presents the real Chrome 126 JA3 fingerprint to Amazon's WAF, and the `aws-waf-token` is bound to that JA3. curl_cffi has no `chrome126` target — it falls back to `chrome124` — so its JA3 differs from the token's JA3 and every AJAX request gets `403`. This is a fundamental limitation, not a configuration mistake.
+    *   **Solution**: Install Chrome at one of the supported target versions. The highest available target is always preferred: **Chrome 146** as of curl_cffi 0.15.x. When the mismatch is detected at startup, the log will show:
+        ```
+        ⚠️  Chrome 126 installed but nearest curl_cffi target is chrome124.
+            AJAX tier may get 403. Install Chrome 146 to eliminate the mismatch.
+        ```
+    *   **Advanced**: If upgrading Chrome is not an option, use curl_cffi's `ja3=` parameter (available ≥ 0.15.1) with the actual JA3 captured from `https://tls.browserleaks.com/json` via DrissionPage after login, and pass it to `AsyncSession(ja3=..., akamai=...)` in `src/core/scraper.py`.
+
+*   **Reviews AJAX `403` after fixing JA3 — `anti-csrftoken-a2z` missing**:
+    *   **Cause**: The `anti-csrftoken-a2z` header required by Amazon's AJAX endpoint is **not a browser cookie** — it is generated client-side by Amazon's JavaScript (`P.register`) and is not present in the static HTML that curl_cffi fetches. It cannot be extracted from HTML alone and is not captured by CDP `Network.getAllCookies`.
+    *   **Solution**: The browser fallback tier (Tier 3 in `CommentsExtractor`) captures this token automatically on the first "Show 10 more" button click via DrissionPage's network listener and persists it to `config/cookies.json`. **On a cold start (fresh install, cookie expiry, or Chrome reinstall), trigger the browser tier once** by calling `get_all_comments` with `max_pages ≥ 2` when both AJAX and HTML are blocked — the system bootstraps automatically. After the first successful browser run, the token is on disk and all subsequent cold-start AJAX calls will include it.
+    *   **Manual trigger**: Refresh cookies via either entry point — both call `AmazonCookieHelper.fetch_fresh_cookies(wait_for_manual=True)`, open a browser window, wait for login, and save all cookies (including `aws-waf-token`) to `config/cookies.json`:
+        - **CLI**: `PYTHONPATH=. venv311/bin/python main.py --refresh-cookies`
+        - **Feishu bot**: send `更新亚马逊 Cookies`
+
+*   **`0 reviews` returned after reinstalling or upgrading Chrome**:
+    *   **Cause**: The saved `aws-waf-token` in `config/cookies.json` was issued for the old Chrome binary's JA3 fingerprint. After a Chrome version change the token is no longer valid for either the browser (new JA3) or curl_cffi. Additionally, Amazon session cookies may have expired or been invalidated.
+    *   **Solution**: Refresh cookies via either entry point:
+        - **CLI**: `PYTHONPATH=. venv311/bin/python main.py --refresh-cookies`
+        - **Feishu bot**: send `更新亚马逊 Cookies`
+
+        Log in when the browser window opens. `AmazonCookieHelper` saves fresh cookies tied to the newly installed Chrome's JA3. Also update the `AMAZON_UA` constant in `src/core/utils/cookie_helper.py` to match the new Chrome version — this keeps the UA, JA3, and curl_cffi impersonation target consistent across all code paths.
+
 *   **`TypeError: 'Product' object is not callable` in Agent code**:
     *   **Cause**: This usually happens when you try to `await asyncio.to_thread(product_object)` instead of `await asyncio.to_thread(extractor.enrich_product, product_object)`.
     *   **Solution**: Ensure you are passing the function reference and its arguments to `asyncio.to_thread`, not the result of a function call.

@@ -37,6 +37,7 @@ def reset_limiter() -> RateLimiter:
     for bucket in rl._source_buckets.values():
         with bucket.lock:
             bucket.tokens = bucket.capacity
+            bucket.last_refill = time.monotonic()  # prevent stale refill on first acquire
     return rl
 
 

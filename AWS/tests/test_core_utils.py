@@ -47,17 +47,23 @@ def test_parser_helper():
 
 
 def test_config_helper():
-    ConfigHelper._config = {}
-    ConfigHelper._is_loaded = False
+    saved_config = ConfigHelper._config
+    saved_loaded = ConfigHelper._is_loaded
+    try:
+        ConfigHelper._config = {}
+        ConfigHelper._is_loaded = False
 
-    mock_config = {"scraper": {"max_retries": 3}}
-    with (
-        patch("os.path.exists", return_value=True),
-        patch("builtins.open", mock_open(read_data=json.dumps(mock_config))),
-    ):
-        assert ConfigHelper.get("scraper.max_retries") == 3
-        assert ConfigHelper.get("nonexistent.key", default="fallback") == "fallback"
+        mock_config = {"scraper": {"max_retries": 3}}
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("builtins.open", mock_open(read_data=json.dumps(mock_config))),
+        ):
+            assert ConfigHelper.get("scraper.max_retries") == 3
+            assert ConfigHelper.get("nonexistent.key", default="fallback") == "fallback"
 
-    with patch.dict(os.environ, {"FEISHU_TEST_APP_ID": "123"}):
-        creds = ConfigHelper.get_feishu_bot("test")
-        assert creds["app_id"] == "123"
+        with patch.dict(os.environ, {"FEISHU_TEST_APP_ID": "123"}):
+            creds = ConfigHelper.get_feishu_bot("test")
+            assert creds["app_id"] == "123"
+    finally:
+        ConfigHelper._config = saved_config
+        ConfigHelper._is_loaded = saved_loaded

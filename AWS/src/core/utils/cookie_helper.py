@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import random
+import re
+import subprocess
 import sys
 import time
 
@@ -15,6 +17,78 @@ logger = logging.getLogger(__name__)
 # User connects via:  ssh -L 9222:localhost:9222 user@server
 # Then open:          http://localhost:9222  in their local Chrome.
 _REMOTE_DEBUG_PORT = 9222
+
+# ASIN used for WAF warmup after login: navigate to its reviews page so the
+# WAF JS challenge fires (issuing aws-waf-token) and click "Show 10 more" to
+# capture anti-csrftoken-a2z via the network listener.
+_WARMUP_ASIN = "B0CPJ37XZH"
+
+# curl_cffi built-in Chrome impersonation targets (highest → lowest).
+# The JA3 fingerprint is only correct for these exact major versions.
+# Versions between targets (e.g. Chrome 126 between 124 and 131) will have
+# a JA3 mismatch between DrissionPage and curl_cffi — AJAX tier will get 403.
+_CFFI_TARGETS: list[int] = [146, 142, 136, 131, 124, 120, 119]
+
+
+def _detect_chrome_major() -> int | None:
+    """Return the installed Chrome major version, or None if undetectable."""
+    candidates = (
+        [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+        if sys.platform == "darwin"
+        else ["google-chrome", "chromium-browser", "chromium"]
+    )
+    for bin_path in candidates:
+        try:
+            out = subprocess.check_output(
+                [bin_path, "--version"], stderr=subprocess.DEVNULL, timeout=5
+            ).decode()
+            m = re.search(r"Chrome[/\s](\d+)", out)
+            if m:
+                return int(m.group(1))
+        except Exception:
+            continue
+    return None
+
+
+def _nearest_cffi_target(major: int) -> int:
+    """Return the highest curl_cffi target version that is <= *major*."""
+    for t in _CFFI_TARGETS:
+        if major >= t:
+            return t
+    return _CFFI_TARGETS[-1]
+
+
+def _build_ua(chrome_major: int) -> str:
+    return (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        f"Chrome/{chrome_major}.0.0.0 Safari/537.36"
+    )
+
+
+def _resolve_amazon_ua() -> tuple[str, bool]:
+    """Return (ua_string, has_mismatch).
+
+    ua_string is built from the nearest curl_cffi target so that the HTTP
+    User-Agent header and the TLS JA3 fingerprint always agree.
+    has_mismatch is True when the installed Chrome version is between targets,
+    meaning DrissionPage's real JA3 won't match curl_cffi's impersonated JA3.
+    """
+    actual = _detect_chrome_major()
+    if actual is None:
+        return _build_ua(146), False  # fallback — assume Chrome 146
+    target = _nearest_cffi_target(actual)
+    mismatch = actual != target
+    return _build_ua(target), mismatch
+
+
+# Canonical UA for all Amazon requests: auto-derived from the installed Chrome
+# version, mapped to the nearest curl_cffi target so JA3 and UA always agree.
+# No manual update needed — reinstall/upgrade Chrome and restart the service.
+AMAZON_UA, _CHROME_TARGET_MISMATCH = _resolve_amazon_ua()
 
 
 def _is_headless_linux() -> bool:
@@ -38,7 +112,9 @@ class AmazonCookieHelper:
         self.cache_file = cache_file
         self.headless = headless
 
-    def fetch_fresh_cookies(self, wait_for_manual: bool = False) -> dict[str, str]:
+    def fetch_fresh_cookies(
+        self, wait_for_manual: bool = False, warmup_asin: str = _WARMUP_ASIN
+    ) -> dict[str, str]:
         """
         Launch a browser to fetch fresh cookies.
         :param wait_for_manual:
@@ -175,11 +251,12 @@ class AmazonCookieHelper:
             if effective_headless:
                 co.set_argument("--headless=new")
 
-        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ua = AMAZON_UA
         co.set_user_agent(ua)
 
         page = None
         cookies_dict = {}
+        anti_csrf_token: str | None = None
 
         try:
             page = ChromiumPage(co)
@@ -201,6 +278,94 @@ class AmazonCookieHelper:
                     raise RuntimeError(
                         f"Login timeout — no login detected within {timeout_sec} seconds."
                     )
+                if _CHROME_TARGET_MISMATCH:
+                    actual = _detect_chrome_major()
+                    target = _nearest_cffi_target(actual)
+                    logger.warning(
+                        f"⚠️  Chrome {actual} is installed but the nearest curl_cffi target "
+                        f"is chrome{target}. DrissionPage will present Chrome {actual} JA3; "
+                        f"curl_cffi will present Chrome {target} JA3. "
+                        f"The aws-waf-token issued here won't work for AJAX requests — "
+                        f"install Chrome {_CFFI_TARGETS[0]} to eliminate the mismatch."
+                    )
+
+                # Amazon auto-redirects to the homepage after login.
+                # Wait for the homepage JS (including WAF challenge) to finish.
+                time.sleep(20)
+
+                # ── WAF warmup ──────────────────────────────────────────────
+                # aws-waf-token is only issued after the WAF JS challenge runs
+                # on a product/review page (not on the sign-in page or homepage).
+                # anti-csrftoken-a2z is generated by Amazon's JS — not a cookie —
+                # and can only be captured by intercepting the "Show 10 more"
+                # AJAX request via a network listener.
+                if warmup_asin:
+                    reviews_url = (
+                        f"https://www.amazon.com/product-reviews/{warmup_asin}"
+                        f"?reviewerType=all_reviews&pageNumber=1"
+                    )
+                    logger.info(f"🔥 WAF warmup: navigating to reviews/{warmup_asin}...")
+                    # Switch to normal load mode so the full page JS executes —
+                    # including the WAF challenge that issues aws-waf-token.
+                    # eager mode stops at DOM-ready, before WAF JS has run.
+                    page.set.load_mode.normal()
+                    page.get(reviews_url, timeout=60)
+                    page.set.load_mode.eager()
+                    time.sleep(5)
+
+                    warmup_html = page.html
+                    has_reviews = 'data-hook="review"' in warmup_html
+                    try:
+                        _mid = page.run_cdp("Network.getAllCookies")
+                        _mid_names = {c["name"] for c in _mid.get("cookies", [])}
+                    except Exception:
+                        _mid_names = set()
+                    logger.info(
+                        f"  warmup page URL: {page.url[:80]} | has_reviews={has_reviews} | "
+                        f"aws-waf-token: {'PRESENT' if 'aws-waf-token' in _mid_names else 'MISSING'}"
+                    )
+
+                    try:
+                        page.listen.start("portal/customer-reviews/ajax")
+                        show_more = (
+                            page.ele("@@data-hook=show-more-button", timeout=5)
+                            or page.ele('xpath://a[@data-hook="show-more-button"]', timeout=3)
+                            or page.ele(".cm-cr-show-more", timeout=3)
+                        )
+                        if show_more:
+                            show_more.click()
+                            packet = page.listen.wait(timeout=15)
+                            page.listen.stop()
+                            if packet:
+                                req_headers = (
+                                    getattr(getattr(packet, "request", None), "headers", {}) or {}
+                                )
+                                anti_csrf_token = req_headers.get(
+                                    "anti-csrftoken-a2z"
+                                ) or req_headers.get("Anti-Csrftoken-A2z")
+                                if anti_csrf_token:
+                                    logger.info(
+                                        f"✅ Captured anti-csrftoken-a2z ({len(anti_csrf_token)} chars)"
+                                    )
+                                else:
+                                    logger.warning(
+                                        "  AJAX intercepted but anti-csrftoken-a2z header absent."
+                                    )
+                        else:
+                            page.listen.stop()
+                            logger.warning(
+                                "  No show-more-button found on warmup reviews page — "
+                                "anti-csrftoken-a2z will be captured on first CommentsExtractor run."
+                            )
+                    except Exception as warmup_exc:
+                        logger.warning(f"WAF warmup AJAX interception failed: {warmup_exc}")
+                        try:
+                            page.listen.stop()
+                        except Exception:
+                            pass
+                    # WAF JS sets aws-waf-token asynchronously after the AJAX call —
+                    # wait for it to complete before the CDP cookie snapshot.
+                    time.sleep(5)
             else:
                 time.sleep(5)
                 continue_btn = page.ele("text:Continue shopping", timeout=2)
@@ -208,7 +373,14 @@ class AmazonCookieHelper:
                     continue_btn.click()
                     time.sleep(2)
 
-            raw_cookies = page.cookies()
+            # Use CDP Network.getAllCookies to capture every cookie the browser holds,
+            # including HttpOnly and WAF-challenge cookies (e.g. aws-waf-token) that
+            # page.cookies() silently omits due to domain/HttpOnly filtering.
+            try:
+                cdp_result = page.run_cdp("Network.getAllCookies")
+                raw_cookies = cdp_result.get("cookies", [])
+            except Exception:
+                raw_cookies = page.cookies()
             cookies_dict = {c.get("name"): c.get("value") for c in raw_cookies}
 
             if "session-id" not in cookies_dict:
@@ -219,6 +391,8 @@ class AmazonCookieHelper:
 
             cookies_dict["i18n-prefs"] = "USD"
             cookies_dict["lc-main"] = "en_US"
+            if anti_csrf_token:
+                cookies_dict["anti-csrftoken-a2z"] = anti_csrf_token
             self._save_to_cache(
                 {
                     "cookies": cookies_dict,
@@ -227,7 +401,9 @@ class AmazonCookieHelper:
                 }
             )
             logger.info(
-                f"💾 Captured {len(cookies_dict)} cookies. Session saved to {self.cache_file}."
+                f"💾 Captured {len(cookies_dict)} cookies. Session saved to {self.cache_file}. "
+                f"aws-waf-token: {'PRESENT' if 'aws-waf-token' in cookies_dict else 'MISSING'} | "
+                f"anti-csrftoken-a2z: {'PRESENT' if 'anti-csrftoken-a2z' in cookies_dict else 'MISSING'}"
             )
 
         except Exception as e:
@@ -276,7 +452,7 @@ class AmazonCookieHelper:
         cookies_dict.setdefault("i18n-prefs", "USD")
         cookies_dict.setdefault("lc-main", "en_US")
 
-        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ua = AMAZON_UA
         self._save_to_cache(
             {
                 "cookies": cookies_dict,
@@ -288,6 +464,81 @@ class AmazonCookieHelper:
             f"💾 Imported {len(cookies_dict)} cookies from {export_file} → {self.cache_file}"
         )
         return cookies_dict
+
+    def import_from_chrome(self) -> dict[str, str]:
+        """
+        Capture Amazon cookies from the user's real Chrome profile.
+        Launches a second Chrome instance on a private CDP port using the existing
+        profile directory so it inherits the logged-in session. Captures ALL cookies
+        (including session-only aws-waf-token) via CDP Network.getAllCookies.
+        """
+        chrome_bin = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        profile_dir = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+
+        # Use AMAZON_UA — already resolved to the nearest curl_cffi target for
+        # the installed Chrome, so JA3 and UA stay aligned.
+        ua = AMAZON_UA
+
+        # Copy just the Cookies SQLite file into a temp profile so Chrome starts
+        # logged-in without conflicting with the user's running Chrome instance.
+        import shutil
+        import tempfile
+
+        src_cookies = os.path.join(profile_dir, "Default", "Cookies")
+        tmp_dir = tempfile.mkdtemp(prefix="chrome_cookie_capture_")
+        tmp_default = os.path.join(tmp_dir, "Default")
+        os.makedirs(tmp_default, exist_ok=True)
+        if os.path.exists(src_cookies):
+            shutil.copy2(src_cookies, os.path.join(tmp_default, "Cookies"))
+
+        co = ChromiumOptions()
+        co.set_browser_path(chrome_bin)
+        co.set_user_data_path(tmp_dir)
+        co.set_local_port(random.randint(10000, 60000))
+        co.set_argument("--no-sandbox")
+        co.set_argument("--disable-gpu")
+        co.set_argument("--disable-dev-shm-usage")
+        # No incognito — real cookies needed for WAF to recognise the session.
+
+        page = None
+        try:
+            page = ChromiumPage(co)
+            page.set.load_mode.eager()
+            logger.info(
+                "🌐 Navigating to Amazon with real session cookies to trigger WAF challenge..."
+            )
+            page.get("https://www.amazon.com/", timeout=30)
+            time.sleep(10)  # WAF JS challenge needs time to complete and set aws-waf-token
+
+            try:
+                cdp_result = page.run_cdp("Network.getAllCookies")
+                raw_cookies = cdp_result.get("cookies", [])
+            except Exception:
+                raw_cookies = page.cookies()
+
+            cookies_dict = {
+                c.get("name"): c.get("value")
+                for c in raw_cookies
+                if c.get("domain", "").endswith("amazon.com")
+            }
+
+            if "session-id" not in cookies_dict:
+                raise RuntimeError(
+                    "No Amazon session found — make sure you are logged in to amazon.com in Chrome."
+                )
+
+            cookies_dict.setdefault("i18n-prefs", "USD")
+            cookies_dict.setdefault("lc-main", "en_US")
+            self._save_to_cache({"cookies": cookies_dict, "user_agent": ua, "is_logged_in": True})
+            logger.info(f"💾 Captured {len(cookies_dict)} cookies → {self.cache_file}")
+            logger.info(
+                f"   aws-waf-token: {'PRESENT' if 'aws-waf-token' in cookies_dict else 'MISSING'}"
+            )
+            return cookies_dict
+        finally:
+            if page:
+                page.quit()
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def get_cookie_data(self, force_refresh: bool = False) -> dict:
         if not force_refresh:
