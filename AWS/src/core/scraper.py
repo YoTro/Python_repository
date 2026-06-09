@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -10,16 +11,9 @@ from curl_cffi import requests
 from curl_cffi.requests.errors import RequestsError
 
 from src.core.errors import ErrorCode, ScraperError
-from src.core.utils.cookie_helper import AmazonCookieHelper
+from src.core.utils.cookie_helper import AMAZON_UA, AmazonCookieHelper, _nearest_cffi_target
 
 logger = logging.getLogger(__name__)
-
-_USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-]
 
 
 class AmazonBaseScraper:
@@ -36,7 +30,7 @@ class AmazonBaseScraper:
             logger.warning("Failed to get cookie data.")
             return
 
-        ua = cookie_data.get("user_agent", _USER_AGENTS[0])
+        ua = cookie_data.get("user_agent", AMAZON_UA)
         cookies = cookie_data.get("cookies", {})
 
         self._headers = {
@@ -48,10 +42,14 @@ class AmazonBaseScraper:
             "Pragma": "no-cache",
             "Cache-Control": "no-cache",
         }
+        chrome_ver = re.search(r"Chrome/(\d+)", ua)
+        major = int(chrome_ver.group(1)) if chrome_ver else 146
+        impersonate = f"chrome{_nearest_cffi_target(major)}"
+
         self.session = requests.AsyncSession(
             headers=self._headers,
             cookies=cookies,
-            impersonate="chrome110",
+            impersonate=impersonate,
             proxies=self.proxies,
         )
 
@@ -60,8 +58,7 @@ class AmazonBaseScraper:
         return self._headers.copy()
 
     def _get_random_ua(self) -> str:
-        """Return a random User-Agent string."""
-        return random.choice(_USER_AGENTS)
+        return AMAZON_UA
 
     async def fetch(
         self,
@@ -110,6 +107,10 @@ class AmazonBaseScraper:
 
             except (RequestsError, ScraperError) as e:
                 logger.warning(f"Attempt {attempt + 1}/{max_retries} failed for {url}: {e}")
+                # 4xx errors are definitive — retrying won't change the outcome and
+                # burns WAF budget, potentially causing subsequent requests to be blocked.
+                if "403" in str(e) or "404" in str(e) or "401" in str(e):
+                    break
                 if attempt < max_retries - 1:
                     await asyncio.sleep(random.uniform(2, 5))
 

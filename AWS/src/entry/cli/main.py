@@ -58,6 +58,11 @@ def main():
         "--explore", type=str, help="Natural language query for the MCP Agent to explore"
     )
     group.add_argument("--list-workflows", action="store_true", help="List all available workflows")
+    group.add_argument(
+        "--refresh-cookies",
+        action="store_true",
+        help="Open a browser window to log in to Amazon and refresh config/cookies.json",
+    )
 
     parser.add_argument(
         "--params", type=str, help="JSON string of parameters for the workflow", default="{}"
@@ -73,6 +78,12 @@ def main():
         for wf in workflows:
             print(f" - {wf}")
         print()
+        return
+
+    if args.refresh_cookies:
+        from src.core.utils.cookie_helper import AmazonCookieHelper
+
+        AmazonCookieHelper().fetch_fresh_cookies(wait_for_manual=True)
         return
 
     import json
