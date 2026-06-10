@@ -12,7 +12,6 @@ Run with:
 from __future__ import annotations
 
 import html as html_module
-import json
 import logging
 import os
 import random
@@ -66,10 +65,14 @@ def _parse_reviews_from_html(html: str) -> list[dict]:
         re.DOTALL,
     )
     for block in blocks:
-        rating_m = re.search(r'i-star-(\d)', block)
-        title_m = re.search(r'data-hook="review-title"[^>]*>.*?<span[^>]*>([^<]+)', block, re.DOTALL)
+        rating_m = re.search(r"i-star-(\d)", block)
+        title_m = re.search(
+            r'data-hook="review-title"[^>]*>.*?<span[^>]*>([^<]+)', block, re.DOTALL
+        )
         author_m = re.search(r'class="a-profile-name"[^>]*>([^<]+)', block)
-        body_m = re.search(r'data-hook="review-body"[^>]*>.*?<span[^>]*>(.*?)</span>', block, re.DOTALL)
+        body_m = re.search(
+            r'data-hook="review-body"[^>]*>.*?<span[^>]*>(.*?)</span>', block, re.DOTALL
+        )
 
         rating = int(rating_m.group(1)) if rating_m else 0
         title = title_m.group(1).strip() if title_m else ""
@@ -152,7 +155,9 @@ def main():
 
         # Save these cookies + ua to cache for curl_cffi fallback
         _cookie_helper = AmazonCookieHelper(cache_file=COOKIE_CACHE)
-        _cookie_helper._save_to_cache({"cookies": cookies_after_login, "user_agent": ua, "is_logged_in": True})
+        _cookie_helper._save_to_cache(
+            {"cookies": cookies_after_login, "user_agent": ua, "is_logged_in": True}
+        )
         logger.info(f"Saved {len(cookies_after_login)} cookies to {COOKIE_CACHE}")
 
         # ── Stage 3: Navigate to product reviews page ────────────────────────
@@ -187,20 +192,21 @@ def main():
         # Inspect pagination bar
         pag_idx = debug_html.find("cm_cr-pagination_bar")
         if pag_idx >= 0:
-            logger.info(f"  Pagination bar HTML snippet:\n{debug_html[pag_idx:pag_idx+600]}")
+            logger.info(f"  Pagination bar HTML snippet:\n{debug_html[pag_idx : pag_idx + 600]}")
         else:
             logger.info("  cm_cr-pagination_bar NOT FOUND in rendered DOM")
 
         # Check for show-more-button
-        smb_idx = debug_html.find('show-more-button')
+        smb_idx = debug_html.find("show-more-button")
         if smb_idx >= 0:
-            logger.info(f"  show-more-button snippet:\n{debug_html[smb_idx-100:smb_idx+400]}")
+            logger.info(f"  show-more-button snippet:\n{debug_html[smb_idx - 100 : smb_idx + 400]}")
         else:
             logger.info("  show-more-button NOT in rendered DOM")
 
         # Check all a-tags with data-hook
         hooks = re.findall(r'data-hook="([^"]+)"', debug_html)
         from collections import Counter
+
         hook_counts = Counter(hooks)
         logger.info(f"  All data-hook values (top 20): {hook_counts.most_common(20)}")
 
@@ -228,7 +234,9 @@ def main():
             logger.info(f"  nextPageToken in HTML: {npt[:60] if npt else 'NOT FOUND'}")
 
             if not has_revs:
-                logger.warning(f"  No reviews found on page {page_num} — may be blocked or last page.")
+                logger.warning(
+                    f"  No reviews found on page {page_num} — may be blocked or last page."
+                )
                 if "validateCaptcha" in current_html or "captcha" in current_html.lower():
                     logger.warning("  CAPTCHA challenge detected!")
                 if is_home:
@@ -251,9 +259,9 @@ def main():
             # Click "Show 10 more reviews" button — AJAX appends reviews inline
             # Try multiple DrissionPage selector styles
             show_more = (
-                page.ele('@@data-hook=show-more-button', timeout=3)
+                page.ele("@@data-hook=show-more-button", timeout=3)
                 or page.ele('xpath://a[@data-hook="show-more-button"]', timeout=3)
-                or page.ele('.cm-cr-show-more', timeout=3)
+                or page.ele(".cm-cr-show-more", timeout=3)
             )
             if not show_more:
                 logger.info(f"  No 'Show 10 more' button on page {page_num} — reached last page.")
@@ -263,9 +271,9 @@ def main():
             time.sleep(random.uniform(3.5, 5.5))
 
         # ── Stage 5: Summary ─────────────────────────────────────────────────
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"TOTAL UNIQUE REVIEWS FETCHED: {len(all_reviews)}")
-        logger.info(f"{'='*60}")
+        logger.info(f"{'=' * 60}")
         for i, r in enumerate(all_reviews, 1):
             logger.info(f"[{i}] p{r['page']} {r['rating']}★ | {r['author']} | {r['title'][:55]}")
 
@@ -277,7 +285,9 @@ def main():
             logger.info(f"\naws-waf-token (full): {waf_token[:200]}")
 
         # Save final cookies (may include aws-waf-token acquired during review page visits)
-        _cookie_helper._save_to_cache({"cookies": final_cookies, "user_agent": ua, "is_logged_in": True})
+        _cookie_helper._save_to_cache(
+            {"cookies": final_cookies, "user_agent": ua, "is_logged_in": True}
+        )
         logger.info(f"Final cookies saved to {COOKIE_CACHE} ({len(final_cookies)} total)")
 
         input("\n>>> Browser stays open. Press Enter here to close it. <<<\n")
