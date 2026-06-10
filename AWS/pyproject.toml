@@ -9,7 +9,7 @@ description = "Amazon Web Scraper V2 – Hybrid Intelligence Agentic Platform"
 requires-python = ">=3.11"
 dependencies = [
     # Core scraping & parsing
-    "curl-cffi",
+    "curl-cffi>=0.15.1b1",
     "beautifulsoup4",
     "lxml",
     "DrissionPage",
