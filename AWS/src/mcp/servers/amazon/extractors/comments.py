@@ -7,11 +7,13 @@ import logging
 import random
 import re
 import time
+from urllib.parse import quote_plus
 
 from bs4 import BeautifulSoup
 
 from src.core.models.review import Review
 from src.core.scraper import AmazonBaseScraper
+from src.mcp.servers.amazon.cookie_pool import CookieBrowserPool, CookieSlot
 
 logger = logging.getLogger(__name__)
 
@@ -26,26 +28,66 @@ class CommentsExtractor(AmazonBaseScraper):
     Tier 2 — HTML GET  (slower; soft-blocked when ak_bmsc / bm_sv are absent)
     Tier 3 — Browser   (DrissionPage real Chrome; always works; browser stays open so
                          Akamai cookies are captured and reused by Tier 1/2 on later calls)
+
+    Multi-account concurrency
+    -------------------------
+    When ``CookieBrowserPool`` is initialised, each call to ``get_all_comments``
+    picks a slot via round-robin.  The slot provides an isolated curl_cffi session
+    (Tier 1/2) and a dedicated Chrome browser (Tier 3).  ``slot.browser_lock``
+    serialises Tier-3 use per slot so two concurrent requests never navigate the
+    same tab simultaneously.
+
+    Single-account / legacy mode
+    ----------------------------
+    When no pool is active, the extractor falls back to ``self.session`` (curl_cffi)
+    and the class-level ``_browser_page`` singleton — identical to the original
+    single-user behaviour.
     """
 
-    # Class-level browser singleton — shared across all instances so we only open
-    # Chrome once and keep it alive for cookie reuse across ASIN calls.
-    _browser_page: ChromiumPage | None = None  # type: ignore[name-defined]
+    # Legacy browser singleton — kept for direct injection in live tests:
+    #   CommentsExtractor._browser_page = bp
+    # When CookieBrowserPool is active this attribute is not used.
+    _browser_page = None  # type: ignore[assignment]
 
-    async def get_all_comments(self, asin: str, max_pages: int = 3) -> list[Review]:
+    async def get_all_comments(
+        self,
+        asin: str,
+        max_pages: int = 3,
+        *,
+        sort_by: str = "",
+        reviewer_type: str = "all_reviews",
+        filter_by_star: str = "",
+        format_type: str = "",
+        media_type: str = "",
+        filter_by_keyword: str = "",
+    ) -> list[Review]:
+        pool = CookieBrowserPool.get_instance()
+        slot: CookieSlot | None = pool.next_slot() if pool else None
+
         all_reviews: list[Review] = []
         next_page_token: str | None = None
         seen_review_ids: set[tuple[str, str]] = set()
         ajax_failed = False
         html_failed = False
+        _html_blocked = False  # True when HTML tier returned a definitive block (bot/login)
+        _success_recorded = False
         page = 1
+
+        _filter_kwargs = {
+            "sort_by": sort_by,
+            "reviewer_type": reviewer_type,
+            "filter_by_star": filter_by_star,
+            "format_type": format_type,
+            "media_type": media_type,
+            "filter_by_keyword": filter_by_keyword,
+        }
 
         while page <= max_pages:
             reviews: list[Review] | None = None
 
             if not ajax_failed:
                 reviews, next_page_token = await self._fetch_reviews_via_ajax(
-                    asin, page, next_page_token
+                    asin, page, next_page_token, slot=slot, **_filter_kwargs
                 )
                 if reviews is None:
                     logger.warning(f"AJAX failed on page {page}, falling back to HTML scraping...")
@@ -53,27 +95,49 @@ class CommentsExtractor(AmazonBaseScraper):
 
             if ajax_failed and not html_failed:
                 reviews, next_page_token = await self._fetch_reviews_via_html(
-                    asin, page, next_page_token
+                    asin, page, next_page_token, slot=slot, **_filter_kwargs
                 )
-                if reviews is None or (not reviews and page == 1):
+                if reviews is None:
+                    html_failed = True
+                    _html_blocked = True  # bot-detection or login wall — not "no reviews"
+                elif not reviews and page == 1:
                     html_failed = True
 
-            # Both curl_cffi tiers blocked — bootstrap via real Chrome, then resume curl_cffi
+            # Both curl_cffi tiers blocked — bootstrap via real Chrome, then resume curl_cffi.
             if html_failed and page == 1:
                 logger.warning("Both AJAX and HTML failed — bootstrapping via browser...")
-                browser_reviews, next_page_token = await self._fetch_reviews_via_browser(
-                    asin, max_pages
-                )
+
+                if slot is not None:
+                    # Acquire the slot's browser lock for the entire Tier-3 session so
+                    # a concurrent request on the same slot cannot navigate the tab.
+                    async with slot.browser_lock:
+                        browser_reviews, next_page_token = await self._fetch_reviews_via_browser(
+                            asin, max_pages, slot=slot, **_filter_kwargs
+                        )
+                else:
+                    browser_reviews, next_page_token = await self._fetch_reviews_via_browser(
+                        asin, max_pages, **_filter_kwargs
+                    )
+
                 for r in browser_reviews:
                     if (r.author, r.title) not in seen_review_ids:
                         seen_review_ids.add((r.author, r.title))
                         all_reviews.append(r)
 
+                if slot is not None:
+                    if not browser_reviews and _html_blocked:
+                        # All 3 tiers failed with a confirmed block signal — not just an
+                        # empty ASIN.  Trip the circuit so this slot is skipped until cooldown.
+                        slot.circuit.record_failure()
+                    elif browser_reviews and not _success_recorded:
+                        slot.circuit.record_success()
+                        _success_recorded = True
+
                 browser_pages_loaded = (len(browser_reviews) + 9) // 10
                 if not next_page_token or browser_pages_loaded >= max_pages:
                     return all_reviews
 
-                # Browser warmed up Akamai cookies — retry curl_cffi for remaining pages
+                # Browser warmed up Akamai cookies — retry curl_cffi for remaining pages.
                 ajax_failed = False
                 html_failed = False
                 page = browser_pages_loaded + 1
@@ -94,6 +158,10 @@ class CommentsExtractor(AmazonBaseScraper):
             seen_review_ids.update((r.author, r.title) for r in new_reviews)
             all_reviews.extend(new_reviews)
 
+            if slot is not None and not _success_recorded:
+                slot.circuit.record_success()
+                _success_recorded = True
+
             if not next_page_token and page < max_pages:
                 logger.info(f"No nextPageToken after page {page} — cannot paginate further.")
                 break
@@ -103,6 +171,18 @@ class CommentsExtractor(AmazonBaseScraper):
                 await asyncio.sleep(random.uniform(1.0, 2.5))
 
         return all_reviews
+
+    async def get_negative_reviews(self, asin: str, max_pages: int = 2) -> list[Review]:
+        """Fetch verified 1–3 star reviews using Amazon's critical filter directly."""
+        return await self.get_all_comments(
+            asin,
+            max_pages=max_pages,
+            sort_by="recent",
+            reviewer_type="avp_only_reviews",
+            filter_by_star="critical",
+            format_type="current_format",
+            media_type="all_contents",
+        )
 
     def _extract_next_page_token(self, soup: BeautifulSoup) -> str | None:
         """Extract nextPageToken from pagination section."""
@@ -148,67 +228,67 @@ class CommentsExtractor(AmazonBaseScraper):
 
         return None
 
-    async def _acquire_csrf_token(self, asin: str) -> tuple[str | None, str | None]:
+    async def _acquire_csrf_token(
+        self, asin: str, *, slot: CookieSlot | None = None
+    ) -> tuple[str | None, str | None]:
         """
-        Visit the product reviews page to let Amazon set the anti-csrftoken-a2z cookie via JS.
-        Since curl_cffi doesn't execute JS, we parse the token from the HTML meta/script tags instead.
-        Also extracts the initial nextPageToken for pagination.
-        The fetched HTML is cached in self._page1_html so the HTML fallback can reuse it
-        for page 1 without making a second identical request.
+        Visit the product reviews page to harvest anti-csrftoken-a2z.
+        The fetched page-1 HTML is cached on the slot (or self) so the HTML
+        fallback can reuse it without a second identical request.
         """
-        # Primary URL; falls back to the HTML-fallback URL if it returns nothing,
-        # which happens on some ASINs where the dp-sourced ref tag redirects to 404.
         reviews_url = (
             f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_dp_d_show_all_btm?ie=UTF8"
         )
-        html = await self.fetch(reviews_url)
+        _sess = slot.session if slot else None
+        html = await self.fetch(reviews_url, _session=_sess)
         if not html:
             reviews_url = (
                 f"https://www.amazon.com/product-reviews/{asin}"
                 f"?ie=UTF8&reviewerType=all_reviews&pageNumber=1"
             )
-            html = await self.fetch(reviews_url)
+            html = await self.fetch(reviews_url, _session=_sess)
         if not html:
             return None, None
-        self._page1_html: str | None = html  # reused by HTML fallback to skip a second fetch
 
-        # Debug: Save HTML to file to inspect manually if needed
-        # with open("debug_reviews.html", "w", encoding="utf-8") as f:
-        #     f.write(html)
+        # Cache page-1 HTML so _fetch_reviews_via_html can reuse it (unfiltered path only).
+        if slot is not None:
+            slot.page1_html = html
+        else:
+            self._page1_html: str | None = html
 
-        # Try to find the CSRF token embedded in the page HTML
         csrf_token = None
 
-        # Pattern 1: JSON-like config
         match = re.search(r'"csrfToken"\s*:\s*"([^"]+)"', html)
         if match:
             csrf_token = match.group(1)
-            # logger.info("Acquired CSRF token from 'csrfToken' JSON.")
 
-        # Pattern 2: anti-csrftoken-a2z — require ≥20 chars to avoid matching HTML attr fragments
         if not csrf_token:
             match = re.search(r'anti-csrftoken-a2z["\s:=]+([A-Za-z0-9%+/]{20,})', html)
             if match:
                 csrf_token = match.group(1)
 
-        # Pattern 3: Hidden input
         if not csrf_token:
             soup = BeautifulSoup(html, "html.parser")
             token_input = soup.find("input", {"name": "anti-csrftoken-a2z"})
             if token_input:
                 csrf_token = token_input.get("value")
-                # logger.info("Acquired CSRF token from hidden input.")
 
-        # If still missing, check session cookies
         if not csrf_token:
-            csrf_token = self.session.cookies.get("anti-csrftoken-a2z")
+            _cookies = slot.session.cookies if slot else self.session.cookies
+            csrf_token = _cookies.get("anti-csrftoken-a2z")
             if csrf_token:
                 logger.info("Acquired CSRF token from session cookies.")
 
-        # Fallback: login page always exposes the token in an <input> field
         if not csrf_token:
-            login_url = "https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2F%3Fref_%3Dnav_signin&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
-            login_html = await self.fetch(login_url)
+            login_url = (
+                "https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0"
+                "&openid.return_to=https%3A%2F%2Fwww.amazon.com%2F%3Fref_%3Dnav_signin"
+                "&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select"
+                "&openid.assoc_handle=usflex&openid.mode=checkid_setup"
+                "&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select"
+                "&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
+            )
+            login_html = await self.fetch(login_url, _session=_sess)
             if login_html:
                 login_soup = BeautifulSoup(login_html, "html.parser")
                 token_input = login_soup.find("input", {"name": "anti-csrftoken-a2z"})
@@ -230,17 +310,30 @@ class CommentsExtractor(AmazonBaseScraper):
         return csrf_token, next_token
 
     async def _fetch_reviews_via_ajax(
-        self, asin: str, page: int, next_page_token: str | None = None
+        self,
+        asin: str,
+        page: int,
+        next_page_token: str | None = None,
+        *,
+        slot: CookieSlot | None = None,
+        sort_by: str = "",
+        reviewer_type: str = "all_reviews",
+        filter_by_star: str = "",
+        format_type: str = "",
+        media_type: str = "",
+        filter_by_keyword: str = "",
     ) -> tuple[list[Review] | None, str | None]:
         """
         Attempt to fetch reviews using the undocumented AJAX endpoint.
         Returns (None, None) on failure to signal a fallback.
         """
         try:
-            # Try to get CSRF token from cookies first, then acquire from page
-            csrf_token = self.session.cookies.get("anti-csrftoken-a2z")
+            _sess = slot.session if slot else self.session
+            _hdrs = slot.headers if slot else self._headers
+
+            csrf_token = _sess.cookies.get("anti-csrftoken-a2z")
             if not csrf_token:
-                csrf_token, initial_token = await self._acquire_csrf_token(asin)
+                csrf_token, initial_token = await self._acquire_csrf_token(asin, slot=slot)
                 if not next_page_token:
                     next_page_token = initial_token
 
@@ -248,12 +341,29 @@ class CommentsExtractor(AmazonBaseScraper):
                 logger.warning("Missing 'anti-csrftoken-a2z'. AJAX call will likely fail.")
                 return None, None
 
-            reftag = f"cm_cr_getr_d_paging_btm_{page}"
+            _filtered = bool(
+                filter_by_star
+                or filter_by_keyword
+                or format_type
+                or media_type
+                or sort_by
+                or reviewer_type != "all_reviews"
+            )
+            reftag = "cm_cr_arp_d_viewopt_sr" if _filtered else f"cm_cr_getr_d_paging_btm_{page}"
             url = f"https://www.amazon.com/portal/customer-reviews/ajax/reviews/get/ref={reftag}"
 
-            # Referer mirrors what a real browser sends: the *previous* page URL.
-            # Page 1 uses the initial dp-sourced entry; page N uses pageNumber=N-1 with the prior token.
-            if page == 1:
+            if _filtered:
+                _ref_base = (
+                    f"https://www.amazon.com/product-reviews/{asin}/ref={reftag}"
+                    f"?_encoding=UTF8&ie=UTF8&reviewerType={reviewer_type}"
+                    f"&sortBy={sort_by}&filterByStar={filter_by_star}"
+                    f"&formatType={format_type}&mediaType={media_type}"
+                    f"&filterByKeyword={quote_plus(filter_by_keyword)}&pageNumber={max(1, page - 1)}"
+                )
+                referrer = _ref_base + (
+                    f"&nextPageToken={next_page_token}" if next_page_token else ""
+                )
+            elif page == 1:
                 referrer = f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_dp_d_show_all_btm?ie=UTF8"
                 if next_page_token:
                     referrer += f"&nextPageToken={next_page_token}"
@@ -268,9 +378,7 @@ class CommentsExtractor(AmazonBaseScraper):
 
             should_append = "true" if page > 1 else "false"
 
-            # Derive browser hints from the session User-Agent so they stay consistent
-            # with whatever cookies were captured (e.g. Chrome 124 cookies → Chrome 124 hints).
-            session_ua = self._headers.get("User-Agent", "")
+            session_ua = _hdrs.get("User-Agent", "")
             chrome_match = re.search(r"Chrome/((\d+)\.[\d.]+)", session_ua)
             chrome_major = chrome_match.group(2) if chrome_match else "124"
             chrome_full = chrome_match.group(1) if chrome_match else "124.0.0.0"
@@ -325,16 +433,19 @@ class CommentsExtractor(AmazonBaseScraper):
             # scope rotates: page1→reviewsAjax1, page2→reviewsAjax0, page3→reviewsAjax1, page4→reviewsAjax2
             scope = f"reviewsAjax{(page - 2) % 3}" if page > 1 else "reviewsAjax1"
 
-            # nextPageToken is inlined before shouldAppend to match browser request order.
             token_param = f"&nextPageToken={next_page_token}" if next_page_token else ""
             body = (
-                f"sortBy=&reviewerType=all_reviews&formatType=&mediaType=&filterByStar="
-                f"&filterByAge=&pageNumber={page}&filterByLanguage=&filterByKeyword="
+                f"sortBy={sort_by}&reviewerType={reviewer_type}"
+                f"&formatType={format_type}&mediaType={media_type}&filterByStar={filter_by_star}"
+                f"&filterByAge=&pageNumber={page}&filterByLanguage="
+                f"&filterByKeyword={quote_plus(filter_by_keyword)}"
                 f"{token_param}&shouldAppend={should_append}&deviceType=desktop&canShowIntHeader=true"
                 f"&reviewsShown=undefined&reftag={reftag}&pageSize=10&asin={asin}&scope={scope}"
             )
 
-            response_text = await self.fetch(url, method="POST", headers=headers, data=body)
+            response_text = await self.fetch(
+                url, method="POST", headers=headers, data=body, _session=_sess
+            )
             if not response_text:
                 return None, None
 
@@ -378,28 +489,54 @@ class CommentsExtractor(AmazonBaseScraper):
         return reviews, next_token
 
     async def _fetch_reviews_via_html(
-        self, asin: str, page: int, next_page_token: str | None = None
-    ) -> tuple[list[Review], str | None]:
-        """
-        Fallback method to scrape the full HTML review page.
-        """
+        self,
+        asin: str,
+        page: int,
+        next_page_token: str | None = None,
+        *,
+        slot: CookieSlot | None = None,
+        sort_by: str = "",
+        reviewer_type: str = "all_reviews",
+        filter_by_star: str = "",
+        format_type: str = "",
+        media_type: str = "",
+        filter_by_keyword: str = "",
+    ) -> tuple[list[Review] | None, str | None]:
+        """Fallback method to scrape the full HTML review page."""
         try:
-            # Page 1 was already fetched by _acquire_csrf_token — reuse it to avoid
-            # a back-to-back duplicate request that can trigger WAF rate limiting.
-            cached = getattr(self, "_page1_html", None)
-            if page == 1 and cached:
+            _filtered = bool(
+                filter_by_star
+                or filter_by_keyword
+                or format_type
+                or media_type
+                or sort_by
+                or reviewer_type != "all_reviews"
+            )
+
+            # Page 1 was already fetched by _acquire_csrf_token — reuse it only when no
+            # filters are active (the cached page is always unfiltered).
+            cached = slot.page1_html if slot else getattr(self, "_page1_html", None)
+            if page == 1 and cached and not _filtered:
                 html_content = cached
-                self._page1_html = None  # consume once
+                if slot:
+                    slot.page1_html = None
+                else:
+                    self._page1_html = None
             else:
-                url = f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_arp_d_viewopt_sr?ie=UTF8&reviewerType=all_reviews&pageNumber={page}"
+                url = (
+                    f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_arp_d_viewopt_sr"
+                    f"?ie=UTF8&reviewerType={reviewer_type}&sortBy={sort_by}"
+                    f"&filterByStar={filter_by_star}&formatType={format_type}"
+                    f"&mediaType={media_type}&filterByKeyword={quote_plus(filter_by_keyword)}"
+                    f"&pageNumber={page}"
+                )
                 if next_page_token:
                     url += f"&nextPageToken={next_page_token}"
-                html_content = await self.fetch(url)
+                _sess = slot.session if slot else None
+                html_content = await self.fetch(url, _session=_sess)
             if not html_content:
                 return [], None
 
-            # Detect bot-detection redirect: Amazon returns the homepage (HTTP 200)
-            # instead of a review page when the session is blocked or rate-limited.
             if 'data-hook="review"' not in html_content and (
                 "Spend less. Smile more." in html_content
                 or "<title>Amazon.com</title>" in html_content
@@ -408,14 +545,13 @@ class CommentsExtractor(AmazonBaseScraper):
                     f"Bot detection triggered for {asin} page {page} — "
                     "Amazon returned homepage instead of reviews."
                 )
-                return [], None
+                return None, None  # definitive block — circuit breaker signal
 
-            # Detect actual login wall (not just nav bar signin links)
             if 'name="password"' in html_content or 'id="ap_password"' in html_content:
                 logger.error(
                     f"LOGIN REQUIRED (HTML Fallback): Amazon is requesting login for {asin}."
                 )
-                return [], None
+                return None, None  # definitive block — circuit breaker signal
 
             soup = BeautifulSoup(html_content, "html.parser")
             reviews = self._parse_soup(soup, asin)
@@ -426,22 +562,28 @@ class CommentsExtractor(AmazonBaseScraper):
             return [], None
 
     async def _fetch_reviews_via_browser(
-        self, asin: str, max_pages: int = 3
+        self,
+        asin: str,
+        max_pages: int = 3,
+        *,
+        slot: CookieSlot | None = None,
+        sort_by: str = "",
+        reviewer_type: str = "all_reviews",
+        filter_by_star: str = "",
+        format_type: str = "",
+        media_type: str = "",
+        filter_by_keyword: str = "",
     ) -> tuple[list[Review], str | None]:
         """
         Tier 3 fallback: real Chrome (DrissionPage) + AJAX hand-off.
 
-        Per-page loop:
-          1. Capture live browser cookies → refresh curl_cffi session.
-          2. Try AJAX POST immediately with those fresh cookies.
-             If AJAX succeeds → use that data and keep trying AJAX for subsequent pages
-             (browser only needed for cookie bootstrapping, not for clicking).
-          3. If AJAX fails → enable DrissionPage network listener, click "Show 10 more",
-             intercept the browser's own AJAX request, log a side-by-side comparison of
-             headers so we can identify what curl_cffi is missing.
-          4. Parse accumulated DOM; advance to next page.
+        When a CookieSlot is provided the browser is managed by the slot
+        (``slot.get_or_init_browser()`` / ``slot.invalidate_browser()``).
+        The caller is responsible for holding ``slot.browser_lock`` before
+        invoking this method.
 
-        Browser stays open (class singleton) so the Akamai session is preserved.
+        When no slot is provided the legacy class-level ``_browser_page``
+        singleton is used (single-user / dev mode).
         """
         import os
         import random as _random
@@ -457,10 +599,14 @@ class CommentsExtractor(AmazonBaseScraper):
         # ── helpers ────────────────────────────────────────────────────────
 
         def _get_browser() -> ChromiumPage:
+            if slot is not None:
+                return slot.get_or_init_browser()
+
+            # Legacy path: class-level singleton
             bp = CommentsExtractor._browser_page
             if bp is not None:
                 try:
-                    bp.url
+                    _ = bp.url  # probe — raises if tab/process is dead
                     return bp
                 except Exception:
                     CommentsExtractor._browser_page = None
@@ -508,24 +654,28 @@ class CommentsExtractor(AmazonBaseScraper):
                 return {c.get("name"): c.get("value") for c in bp.cookies()}
 
         def _refresh_curl_session(fresh_cookies: dict[str, str]):
+            # Update the slot's session (or self.session in legacy mode)
+            target_session = slot.session if slot else self.session
             for name, value in fresh_cookies.items():
                 try:
-                    self.session.cookies.set(name, value)
+                    target_session.cookies.set(name, value)
                 except Exception:
                     pass
+            # Persist to the slot's own cookie file (or the shared file in legacy mode)
+            # so the next cold start benefits without contaminating other slots.
+            _cache_path = slot.cache_file if slot is not None else self.cookie_helper.cache_file
             try:
                 import json as _json
 
-                with open(self.cookie_helper.cache_file, encoding="utf-8") as f:
+                with open(_cache_path, encoding="utf-8") as f:
                     cache = _json.load(f)
                 cache.setdefault("cookies", {}).update(fresh_cookies)
-                with open(self.cookie_helper.cache_file, "w", encoding="utf-8") as f:
+                with open(_cache_path, "w", encoding="utf-8") as f:
                     _json.dump(cache, f, indent=4)
             except Exception:
                 pass
 
         def _log_ajax_comparison(packet: object, our_headers: dict, our_body: str, page_num: int):
-            """Log browser AJAX request vs our curl_cffi request side-by-side."""
             try:
                 br_headers = dict(getattr(getattr(packet, "request", None), "headers", {}) or {})
                 br_body = getattr(getattr(packet, "request", None), "body", "") or ""
@@ -550,7 +700,6 @@ class CommentsExtractor(AmazonBaseScraper):
                 if extra:
                     logger.info(f"[ajax-compare] Headers in curl_cffi but NOT in browser: {extra}")
 
-                # Cookie diff
                 br_cookie_str = br_headers.get("cookie", br_headers.get("Cookie", ""))
                 br_cookie_names = {
                     p.split("=")[0].strip() for p in br_cookie_str.split(";") if "=" in p
@@ -565,11 +714,9 @@ class CommentsExtractor(AmazonBaseScraper):
                         f"[ajax-compare] Cookies browser sent but curl_cffi DID NOT: {missing_cookies}"
                     )
 
-                # Body diff
                 if br_body != our_body:
                     logger.info(f"[ajax-compare] Browser body: {br_body[:300]}")
                     logger.info(f"[ajax-compare] curl_cffi body: {our_body[:300]}")
-
             except Exception as exc:
                 logger.warning(f"[ajax-compare] Could not parse packet: {exc}")
 
@@ -577,16 +724,18 @@ class CommentsExtractor(AmazonBaseScraper):
 
         try:
             bp = _get_browser()
+            _target_session = slot.session if slot else self.session
 
             reviews_url = (
                 f"https://www.amazon.com/product-reviews/{asin}"
-                f"/ref=cm_cr_arp_d_viewopt_sr?ie=UTF8&reviewerType=all_reviews&pageNumber=1"
+                f"/ref=cm_cr_arp_d_viewopt_sr?ie=UTF8&reviewerType={reviewer_type}"
+                f"&sortBy={sort_by}&filterByStar={filter_by_star}"
+                f"&formatType={format_type}&mediaType={media_type}"
+                f"&filterByKeyword={quote_plus(filter_by_keyword)}&pageNumber=1"
             )
             logger.info(f"[browser] Navigating to reviews page for ASIN {asin}...")
             bp.get(reviews_url, timeout=60)
 
-            # Poll until AWS WAF JS challenge completes and sets aws-waf-token
-            # (the challenge runs asynchronously after page load — 4 s is too short)
             waf_token_found = False
             for wait_i in range(25):
                 _time.sleep(1)
@@ -604,30 +753,23 @@ class CommentsExtractor(AmazonBaseScraper):
             next_page_token: str | None = None
 
             for page_num in range(1, max_pages + 1):
-                # ── 1. Capture cookies (including aws-waf-token) + CSRF token from DOM
                 fresh_cookies = _capture_cookies(bp)
                 _refresh_curl_session(fresh_cookies)
 
-                # anti-csrftoken-a2z is session-level — once captured (from network
-                # listener or DOM), reuse it across all pages via session cookies.
                 csrf_token: str | None = None
                 try:
-                    csrf_token = self.session.cookies.get("anti-csrftoken-a2z")
+                    csrf_token = _target_session.cookies.get("anti-csrftoken-a2z")
                 except Exception:
                     pass
                 if not csrf_token:
                     try:
                         csrf_token = bp.run_js(
-                            # 1. Hidden input field
                             "var i=document.querySelector('input[name=\"anti-csrftoken-a2z\"]');"
                             "if(i&&i.value)return i.value;"
-                            # 2. JSON csrfToken key in inline script
                             "var m=document.body.innerHTML.match(/[\"']csrfToken[\"']\\s*:\\s*[\"']([A-Za-z0-9%+/]{20,})[\"']/);"
                             "if(m)return m[1];"
-                            # 3. P.register("anti-csrftoken-a2z",{"token":"..."})
                             "var p=document.body.innerHTML.match(/anti-csrftoken-a2z[^{]*\\{[^}]*[\"']token[\"']\\s*:\\s*[\"']([A-Za-z0-9%+/]{20,})[\"']/);"
                             "if(p)return p[1];"
-                            # 4. Loose attribute or variable assignment
                             'var a=document.body.innerHTML.match(/anti-csrftoken-a2z["\\s:=,]+([A-Za-z0-9%+/]{20,})/);'
                             "if(a)return a[1];"
                             "return null;"
@@ -635,26 +777,26 @@ class CommentsExtractor(AmazonBaseScraper):
                     except Exception:
                         pass
                 if csrf_token:
-                    # Inject into session so _fetch_reviews_via_ajax picks it up
                     try:
-                        self.session.cookies.set("anti-csrftoken-a2z", csrf_token)
+                        _target_session.cookies.set("anti-csrftoken-a2z", csrf_token)
                     except Exception:
                         pass
 
-                decoded_html = html_module.unescape(bp.html)
+                raw_html = bp.html  # single DOM serialisation — reused for both regex and parser
+                decoded_html = html_module.unescape(raw_html)
                 npt_m = re.search(r'"nextPageToken"\s*:\s*"([^"]+)"', decoded_html)
                 next_page_token = npt_m.group(1) if npt_m else None
 
+                slot_label = f"slot={slot.slot_id}" if slot else "legacy"
                 logger.info(
-                    f"[browser] Page {page_num}: "
+                    f"[browser:{slot_label}] Page {page_num}: "
                     f"csrf={'PRESENT' if csrf_token else 'MISSING'} | "
                     f"nextToken={'PRESENT' if next_page_token else 'MISSING'} | "
                     f"ak_bmsc={'PRESENT' if 'ak_bmsc' in fresh_cookies else 'MISSING'} | "
                     f"cookies={len(fresh_cookies)}"
                 )
 
-                # ── 2. Parse current DOM (accumulates across pages) ────────
-                soup = BeautifulSoup(bp.html, "html.parser")
+                soup = BeautifulSoup(raw_html, "html.parser")
                 page_reviews = self._parse_soup(soup, asin)
                 for r in page_reviews:
                     if (r.author, r.title) not in seen_ids:
@@ -664,24 +806,33 @@ class CommentsExtractor(AmazonBaseScraper):
                 if page_num >= max_pages or not next_page_token:
                     break
 
-                # ── 3. Fire AJAX from inside the browser via run_js ───────
-                # curl_cffi AJAX fails because aws-waf-token is bound to Chrome 148's
-                # TLS fingerprint; curl_cffi's chrome136 JA3 causes WAF to reject it.
-                # Running the XHR from inside Chrome's JS engine uses the correct TLS
-                # stack and live cookies — no button click needed.
                 next_page_num = page_num + 1
                 if csrf_token and next_page_token:
-                    reftag = f"cm_cr_getr_d_paging_btm_{next_page_num}"
+                    _filtered = bool(
+                        filter_by_star
+                        or filter_by_keyword
+                        or format_type
+                        or media_type
+                        or sort_by
+                        or reviewer_type != "all_reviews"
+                    )
+                    reftag = (
+                        "cm_cr_arp_d_viewopt_sr"
+                        if _filtered
+                        else f"cm_cr_getr_d_paging_btm_{next_page_num}"
+                    )
                     scope = f"reviewsAjax{(next_page_num - 2) % 3}"
                     ajax_url = f"/portal/customer-reviews/ajax/reviews/get/ref={reftag}"
                     body_str = (
-                        f"sortBy=&reviewerType=all_reviews&formatType=&mediaType=&filterByStar="
-                        f"&filterByAge=&pageNumber={next_page_num}&filterByLanguage=&filterByKeyword="
+                        f"sortBy={sort_by}&reviewerType={reviewer_type}"
+                        f"&formatType={format_type}&mediaType={media_type}"
+                        f"&filterByStar={filter_by_star}"
+                        f"&filterByAge=&pageNumber={next_page_num}&filterByLanguage="
+                        f"&filterByKeyword={quote_plus(filter_by_keyword)}"
                         f"&nextPageToken={next_page_token}&shouldAppend=true"
                         f"&deviceType=desktop&canShowIntHeader=true&reviewsShown=undefined"
                         f"&reftag={reftag}&pageSize=10&asin={asin}&scope={scope}"
                     )
-                    # Escape for JS string literals
                     csrf_js = csrf_token.replace("'", "\\'")
                     body_js = body_str.replace("'", "\\'")
                     url_js = ajax_url.replace("'", "\\'")
@@ -689,7 +840,7 @@ class CommentsExtractor(AmazonBaseScraper):
                     try:
                         js_response = bp.run_js(
                             f"var xhr=new XMLHttpRequest();"
-                            f"xhr.open('POST','{url_js}',false);"  # false = synchronous
+                            f"xhr.open('POST','{url_js}',false);"
                             f"xhr.setRequestHeader('content-type','application/x-www-form-urlencoded;charset=UTF-8');"
                             f"xhr.setRequestHeader('anti-csrftoken-a2z','{csrf_js}');"
                             f"xhr.setRequestHeader('x-requested-with','XMLHttpRequest');"
@@ -715,7 +866,7 @@ class CommentsExtractor(AmazonBaseScraper):
                                             all_reviews.append(r)
                                     next_page_token = ajax_npt
                                     pages_loaded = next_page_num
-                                    continue  # try XHR for the next page too
+                                    continue
                             else:
                                 logger.warning(
                                     f"[browser] XHR returned status={status} — falling back to button click."
@@ -723,9 +874,6 @@ class CommentsExtractor(AmazonBaseScraper):
                     except Exception as xhr_exc:
                         logger.warning(f"[browser] run_js XHR failed: {xhr_exc}")
 
-                # ── 4. XHR not available — click "Show 10 more" and intercept ──
-                # First click also captures the live anti-csrftoken-a2z header via
-                # the network listener so we can use XHR for subsequent pages.
                 show_more = bp.ele("@@data-hook=show-more-button", timeout=5) or bp.ele(
                     'xpath://a[@data-hook="show-more-button"]', timeout=3
                 )
@@ -751,19 +899,21 @@ class CommentsExtractor(AmazonBaseScraper):
                                 f"{csrf_token[:20]}..."
                             )
                             try:
-                                self.session.cookies.set("anti-csrftoken-a2z", csrf_token)
+                                _target_session.cookies.set("anti-csrftoken-a2z", csrf_token)
                             except Exception:
                                 pass
-                            # Persist to disk so the next cold-start AJAX tier can reuse it
                             try:
                                 import json as _json2
 
-                                with open(self.cookie_helper.cache_file, encoding="utf-8") as f:
+                                _csrf_cache_path = (
+                                    slot.cache_file
+                                    if slot is not None
+                                    else self.cookie_helper.cache_file
+                                )
+                                with open(_csrf_cache_path, encoding="utf-8") as f:
                                     _cache = _json2.load(f)
                                 _cache.setdefault("cookies", {})["anti-csrftoken-a2z"] = csrf_token
-                                with open(
-                                    self.cookie_helper.cache_file, "w", encoding="utf-8"
-                                ) as f:
+                                with open(_csrf_cache_path, "w", encoding="utf-8") as f:
                                     _json2.dump(_cache, f, indent=4)
                             except Exception:
                                 pass
@@ -787,7 +937,10 @@ class CommentsExtractor(AmazonBaseScraper):
 
         except Exception as e:
             logger.error(f"[browser] Scraping failed: {e}")
-            CommentsExtractor._browser_page = None
+            if slot is not None:
+                slot.invalidate_browser()
+            else:
+                CommentsExtractor._browser_page = None
             return [], None
 
     def _parse_soup(self, soup: BeautifulSoup, asin: str) -> list[Review]:
@@ -804,9 +957,6 @@ class CommentsExtractor(AmazonBaseScraper):
                     ).group(1)
                 )
                 title_anchor = el.find("a", {"data-hook": "review-title"})
-                # The anchor contains an <i data-hook="review-star-rating"> child whose
-                # text ("5.0 out of 5 stars") would be prepended to the title by get_text().
-                # Decompose it so only the actual title <span> text is returned.
                 star_i = title_anchor.find("i", {"data-hook": "review-star-rating"})
                 if star_i:
                     star_i.decompose()

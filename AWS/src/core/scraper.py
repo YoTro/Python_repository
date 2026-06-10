@@ -68,12 +68,16 @@ class AmazonBaseScraper:
         data: Any = None,
         validator: Callable[[str], bool] | None = None,
         max_retries: int = 3,
+        *,
+        _session=None,
     ) -> str | None:
         """
         Async fetch with content validation and retries.
         Layer 3 rate limiting: acquires one token from the 'crawler' bucket before
         each request. All Amazon extractor subclasses inherit this automatically.
         :param validator: Optional function returning True if content is valid.
+        :param _session: Optional curl_cffi AsyncSession override (used by CookieBrowserPool
+                         to route each request through its slot's dedicated session).
         """
         from src.gateway.rate_limit import RateLimiter  # lazy import — avoids circular deps
 
@@ -81,16 +85,17 @@ class AmazonBaseScraper:
             logger.warning(f"[scraper] amazon_scraper token-bucket timeout, skipping: {url}")
             return None
 
-        if self.session is None:
+        session = _session or self.session
+        if session is None:
             logger.warning(f"[scraper] session not initialised, skipping fetch: {url}")
             return None
 
         for attempt in range(max_retries):
             try:
                 if method.upper() == "POST":
-                    response = await self.session.post(url, headers=headers, data=data, timeout=30)
+                    response = await session.post(url, headers=headers, data=data, timeout=30)
                 else:
-                    response = await self.session.get(url, headers=headers, timeout=30)
+                    response = await session.get(url, headers=headers, timeout=30)
 
                 response.raise_for_status()
                 response_text = response.text
