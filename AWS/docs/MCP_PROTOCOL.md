@@ -85,11 +85,83 @@ This script automatically detects your OS and injects the `aws-market-intelligen
 *   **`get_batch_past_month_sales`**: Fetches the "X bought in past month" badge for one or more ASINs via Amazon search (`/s/?k=ASIN1|ASIN2...`). Accepts `asins: array`. Returns `{ASIN: int|null}`. Batches up to 20 ASINs per request; hit rate ~98% on BSR products.
 *   **`get_review_count`**: Fetches `GlobalRatings` (all star ratings) and `WrittenReviews` (ratings with text) for a product, plus their `Ratio`. Natural ratio ≈ 0.10 (1:10); `Ratio > 0.50` is a strong fake-review signal. Uses the dedicated `/product-reviews/{asin}` page.
 *   **`get_keyword_rank`**: Scans multiple search pages to determine the exact organic ranking position of target ASINs for a given keyword.
-*   **`get_reviews`**: Fetches paginated customer reviews for a product using Amazon's internal AJAX endpoints for speed and stability.
+*   **`get_reviews`**: Fetches paginated customer reviews using a three-tier fallback: AJAX POST (fast internal endpoint) → HTML GET (page scraping) → Chromium browser (WAF-bypass). Each tier is selected automatically based on WAF state; the browser tier is only invoked when upper tiers are blocked. Supports `filter_by_star`, `reviewer_type`, `sort_by`, `format_type`, `media_type`, and `filter_by_keyword` parameters. See the Cookie Pool section below for concurrent multi-account architecture.
 *   **BSR Navigation**: `get_top_bsr_categories` and `get_bsr_subcategories` allow dynamic exploration of the Best Sellers Rank category tree.
 *   **Seller Intelligence**: `get_seller_product_count` and `get_seller_feedback` provide insights into a merchant's storefront size and recent performance.
 *   **`refresh_amazon_cookies`**: Launches a headless (or manual) browser to capture fresh `session-id` cookies to bypass CAPTCHAs and WAF restrictions for strictly protected endpoints.
 *   **`get_amazon_keyword_bid_recommendations`**: Fetches suggested bids and bidding ranges for Sponsored Products using the high-fidelity **v5.0 Theme-based API**. Requires a valid Advertising API Refresh Token and Profile ID. Supports various bidding strategies (`AUTO_FOR_SALES`, `LEGACY_FOR_SALES`) and optional advanced impact analysis.
+
+#### Multi-Account Cookie Pool (`CookieBrowserPool`)
+
+`src/mcp/servers/amazon/cookie_pool.py` implements the concurrency infrastructure that backs `get_reviews` (and all Tier-1/2/3 scraping) when multiple Amazon accounts are configured.
+
+**Architecture**
+
+Each *slot* encapsulates one Amazon identity:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `session` | `curl_cffi.AsyncSession` | Tier 1/2 HTTP requests — independent per slot, no locking needed |
+| `browser` | `ChromiumPage` | Tier 3 browser, lazily launched on first use |
+| `browser_lock` | `asyncio.Lock` | Serialises Tier-3 operations on the same slot (one browser call at a time) |
+| `cache_file` | `str` | Per-account cookie JSON path — isolated to prevent cross-slot contamination |
+| `circuit` | `SlotCircuit` | Circuit breaker tracking consecutive WAF failures |
+
+**Circuit Breaker (`SlotCircuit`)**
+
+Three-state machine:
+
+- **Closed** (healthy): failures below threshold; slot receives traffic normally
+- **Open** (tripped): `failures >= threshold` (default 3); slot skipped for `cooldown` seconds (default 300 s)
+- **Half-open** (cooldown elapsed): slot gets one trial request — success resets the counter, failure re-opens
+
+`next_slot()` performs round-robin across closed slots. If every circuit is open (all accounts throttled simultaneously), it returns the slot with the earliest `open_until` timestamp rather than blocking or raising.
+
+**Failure vs. Empty-ASIN Discrimination**
+
+`get_reviews` returns `(None, None)` on a definitive WAF block (bot detection or login wall) and `([], None)` for a genuinely empty ASIN. Only the `(None, None)` path increments the circuit failure counter, preventing healthy slots from being penalised for products that simply have no reviews.
+
+**Tab Recycling**
+
+After `_RECYCLE_AFTER = 200` Tier-3 invocations, `get_or_init_browser()` calls `_recycle_tab()`:
+
+1. Snapshot `stale_tabs = bp.get_tabs()`
+2. Open a fresh blank tab via `bp.new_tab()` (it becomes the active tab on the browser object)
+3. Close each stale tab
+
+The Chrome *process* (and its WAF session cookie store in `--user-data-dir`) is preserved; only the renderer context is destroyed, releasing accumulated V8 old-generation heap. Each browser is also launched with memory caps:
+
+```
+--js-flags=--max-old-space-size=256   # V8 old-gen heap cap per renderer (MB)
+--disk-cache-size=1                   # disable on-disk HTTP cache growth
+--media-cache-size=1
+--disable-application-cache
+```
+
+Each slot gets a deterministic CDP port (`19300 + slot_id`) and a unique `--user-data-dir` under `/tmp`, so slot cookie stores never bleed into each other.
+
+**Initialisation**
+
+```python
+# From persistent per-account cookie JSON files
+CookieBrowserPool.from_cookie_files([
+    "config/cookies_a.json",
+    "config/cookies_b.json",
+])
+
+# From AmazonCookieHelper instances (preserves per-account cache_file paths)
+CookieBrowserPool.from_cookie_helper(
+    AmazonCookieHelper("config/cookies_a.json"),
+    AmazonCookieHelper("config/cookies_b.json"),
+)
+
+# CommentsExtractor picks up the pool automatically via CookieBrowserPool.get_instance()
+# — no call-site changes are needed in callers.
+```
+
+When no pool is configured, `CommentsExtractor` falls back to the single-account `AmazonCookieHelper` session transparently.
+
+---
 
 ### Finance & Profitability (L2)
 

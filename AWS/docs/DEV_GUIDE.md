@@ -71,6 +71,7 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 1.  Place script in `src/mcp/servers/amazon/extractors/`.
 2.  Inherit from `AmazonBaseScraper` for built-in proxy and cookie support.
 3.  **High-Efficiency Alternative**: Use `ProfitabilitySearchExtractor` to fetch `price`, `weight`, `dimensions`, and `bsr_rank` in a single request, bypassing heavy HTML parsing.
+4.  **Multi-Account Pool Integration**: `AmazonBaseScraper.fetch()` accepts an optional `_session` keyword argument. When `CookieBrowserPool` is active, pass `slot.session` via `_session=slot.session` to route each request through a specific slot's `curl_cffi.AsyncSession` while still applying the shared rate limiter. Scrapers that do not pass `_session` continue to use the default single-account session.
 
 **B. Adding a New MCP Tool**
 1.  **Logic**: Implement an `async` handler in the relevant domain server.
