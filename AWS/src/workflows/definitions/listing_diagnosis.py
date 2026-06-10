@@ -222,35 +222,60 @@ async def _enrich_competitors(item: dict, ctx: WorkflowContext) -> dict:
     return {"competitor_data": enriched_competitors}
 
 
+def _slim_review(r) -> dict:
+    return {
+        "rating": r.rating,
+        "title": r.title or "",
+        "content": (r.content[:300] + "…") if len(r.content or "") > 300 else (r.content or ""),
+        "is_verified": r.is_verified,
+        "helpful_votes": r.helpful_votes or 0,
+    }
+
+
 async def _fetch_and_summarize_reviews(item: dict, ctx: WorkflowContext) -> dict:
-    """Fetch up to 3 pages of reviews and produce a ReviewSummary via the cloud provider."""
+    """Fetch reviews for summarization and negative reviews for the report in parallel."""
     asin = item.get("asin")
     if not asin:
-        return {"review_summary": None}
+        return {"review_summary": None, "low_star_reviews": []}
 
     provider = getattr(ctx.router, "cloud", None) if ctx.router else None
     if not provider:
         logger.warning("No cloud provider on ctx.router; skipping review summarization.")
-        return {"review_summary": None}
+        return {"review_summary": None, "low_star_reviews": []}
 
-    logger.info(f"Fetching reviews for {asin} (max 3 pages)...")
+    extractor = _comments_extractor()
+    logger.info(f"Fetching all reviews and negative reviews for {asin} in parallel...")
     try:
-        reviews = await _comments_extractor().get_all_comments(asin, max_pages=3)
+        reviews, neg_reviews = await asyncio.gather(
+            extractor.get_all_comments(asin, max_pages=3),
+            extractor.get_negative_reviews(asin, max_pages=2),
+            return_exceptions=True,
+        )
     except Exception as e:
         logger.warning(f"Review fetch failed for {asin}: {e}")
-        return {"review_summary": None}
+        return {"review_summary": None, "low_star_reviews": []}
+
+    if isinstance(reviews, Exception):
+        logger.warning(f"All-reviews fetch failed for {asin}: {reviews}")
+        reviews = []
+    if isinstance(neg_reviews, Exception):
+        logger.warning(f"Negative-reviews fetch failed for {asin}: {neg_reviews}")
+        neg_reviews = []
+
+    low_star_reviews = sorted(neg_reviews, key=lambda r: r.helpful_votes or 0, reverse=True)[:5]
+    low_star_reviews = [_slim_review(r) for r in low_star_reviews]
 
     if not reviews:
         logger.info(f"No reviews found for {asin}.")
-        return {"review_summary": None}
+        return {"review_summary": None, "low_star_reviews": low_star_reviews}
 
     logger.info(f"Summarizing {len(reviews)} reviews for {asin}...")
     try:
         summary = await ReviewSummarizer(provider=provider).summarize(reviews)
-        return {"review_summary": summary.model_dump()}
+        return {"review_summary": summary.model_dump(), "low_star_reviews": low_star_reviews}
     except Exception as e:
         logger.warning(f"Review summarization failed for {asin}: {e}")
-        return {"review_summary": None}
+        return {"review_summary": None, "low_star_reviews": low_star_reviews}
 
 
 # ---------------------------------------------------------------------------
@@ -1036,6 +1061,21 @@ def _render_markdown(report: dict) -> str:
     complaints_md = (
         "\n".join(f"- {c}" for c in ri.get("top_complaints", [])) or "_None identified._"
     )
+    low_star_reviews = ri.get("low_star_reviews") or []
+    if low_star_reviews:
+        low_star_md = "\n".join(
+            f"| {'⭐' * r['rating']} ({r['rating']}/5) "
+            f"| {'✓ Verified' if r['is_verified'] else 'Unverified'} "
+            f"| {r['helpful_votes']} helpful "
+            f"| **{r['title']}** — {r['content']} |"
+            for r in low_star_reviews
+        )
+        low_star_md = (
+            "| Rating | Status | Votes | Review |\n|--------|--------|-------|--------|\n"
+            + low_star_md
+        )
+    else:
+        low_star_md = "_No 1–3 star reviews found._"
 
     # Semantic detail tables (only rendered when LLM semantic step ran)
     def _sem_row(label: str, val) -> str:
@@ -1147,6 +1187,9 @@ in the competitive gap below — competitors are not LLM-scored._
 ### Top Complaints
 {complaints_md}
 
+#### Representative 1–3 Star Reviews
+{low_star_md}
+
 ---
 
 ## Semantic Quality Analysis
@@ -1252,6 +1295,7 @@ def _generate_report(items: list[dict], ctx: WorkflowContext) -> list[dict]:
                 "pros": rs.get("pros", []),
                 "top_complaints": rs.get("top_complaints", []),
                 "buyer_persona": rs.get("buyer_persona"),
+                "low_star_reviews": item.get("low_star_reviews", []),
             },
             "comparative_analysis": {
                 "competitors": [
@@ -1319,7 +1363,7 @@ def build_listing_diagnosis(config: dict) -> Workflow:
             EnrichStep(
                 name="fetch_and_summarize_reviews",
                 extractor_fn=_fetch_and_summarize_reviews,
-                fields=["review_summary"],
+                fields=["review_summary", "low_star_reviews"],
             ),
             EnrichStep(
                 name="enrich_competitor_reviews",
