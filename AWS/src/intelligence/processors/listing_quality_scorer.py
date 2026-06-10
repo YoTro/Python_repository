@@ -463,7 +463,7 @@ class ListingQualityScorer:
                     issues.append(f"Title missing {cat.upper()} keywords: {', '.join(missing)}")
             score -= min(kw_penalty, 30)
 
-        return {"score": max(0, score), "issues": issues, "metrics": metrics}
+        return {"score": min(100, max(0, score)), "issues": issues, "metrics": metrics}
 
     def _score_features(
         self,
@@ -746,7 +746,7 @@ class ListingQualityScorer:
                     "encourage buyers to share visual feedback via follow-up messaging."
                 )
 
-        return {"score": max(0, score), "issues": issues, "metrics": metrics}
+        return {"score": min(100, max(0, score)), "issues": issues, "metrics": metrics}
 
     def _score_aplus(self, product: Product) -> dict[str, Any]:
         score = 100
@@ -791,7 +791,7 @@ class ListingQualityScorer:
                 " — comparison modules are among the highest-converting A+ elements."
             )
 
-        return {"score": max(0, score), "issues": issues, "metrics": metrics}
+        return {"score": min(100, max(0, score)), "issues": issues, "metrics": metrics}
 
     @staticmethod
     def _build_token_freq_map(

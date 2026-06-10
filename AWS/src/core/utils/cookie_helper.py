@@ -280,6 +280,8 @@ class AmazonCookieHelper:
                     )
                 if _CHROME_TARGET_MISMATCH:
                     actual = _detect_chrome_major()
+                    if actual is None:
+                        actual = 146
                     target = _nearest_cffi_target(actual)
                     logger.warning(
                         f"⚠️  Chrome {actual} is installed but the nearest curl_cffi target "
