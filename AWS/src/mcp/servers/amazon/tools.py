@@ -219,6 +219,12 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         reviews = await extractor.get_all_comments(
             asin,
             max_pages=arguments.get("max_pages", 2),
+            sort_by=arguments.get("sort_by", ""),
+            reviewer_type=arguments.get("reviewer_type", "all_reviews"),
+            filter_by_star=arguments.get("filter_by_star", ""),
+            format_type=arguments.get("format_type", ""),
+            media_type=arguments.get("media_type", ""),
+            filter_by_keyword=arguments.get("filter_by_keyword", ""),
         )
         if reviews:
             data_cache.set("amazon", f"reviews:{asin}", reviews)
@@ -689,10 +695,12 @@ amazon_tools = [
     Tool(
         name="get_reviews",
         description=(
-            "Fetch customer reviews from the Amazon reviews page. "
+            "Fetch customer reviews from the Amazon reviews page with optional filters. "
             "Returns list of review objects, each with: asin, author, rating, title, "
-            "body (review text), date, verified_purchase, helpful_votes. "
-            "Reviews are cached under domain='amazon', key='reviews:{ASIN}' for 24h."
+            "content (review text), date, is_verified, helpful_votes. "
+            "Reviews are cached under domain='amazon', key='reviews:{ASIN}' for 24h. "
+            "Supports all 6 Amazon review filters: sort order, reviewer type, star rating, "
+            "variant format, media presence, and keyword search."
         ),
         inputSchema={
             "type": "object",
@@ -701,7 +709,52 @@ amazon_tools = [
                 "max_pages": {
                     "type": "integer",
                     "default": 2,
-                    "description": "Max review pages to fetch",
+                    "description": "Max review pages to fetch (10 reviews per page)",
+                },
+                "sort_by": {
+                    "type": "string",
+                    "enum": ["", "recent", "helpful"],
+                    "default": "",
+                    "description": "Sort order: '' = Amazon default, 'recent' = newest first, 'helpful' = most helpful first",
+                },
+                "reviewer_type": {
+                    "type": "string",
+                    "enum": ["all_reviews", "avp_only_reviews"],
+                    "default": "all_reviews",
+                    "description": "all_reviews = all buyers; avp_only_reviews = verified purchases only",
+                },
+                "filter_by_star": {
+                    "type": "string",
+                    "enum": [
+                        "",
+                        "all_stars",
+                        "critical",
+                        "positive",
+                        "one_star",
+                        "two_star",
+                        "three_star",
+                        "four_star",
+                        "five_star",
+                    ],
+                    "default": "",
+                    "description": "Star filter: 'critical' = 1–3 stars, 'positive' = 4–5 stars, or specific star level",
+                },
+                "format_type": {
+                    "type": "string",
+                    "enum": ["", "all_formats", "current_format"],
+                    "default": "",
+                    "description": "Variant filter: 'current_format' = reviews for this exact variant only",
+                },
+                "media_type": {
+                    "type": "string",
+                    "enum": ["", "all_contents", "media_reviews_only"],
+                    "default": "",
+                    "description": "Media filter: 'media_reviews_only' = reviews with photos or videos",
+                },
+                "filter_by_keyword": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Return only reviews whose text contains this keyword (Amazon server-side filter)",
                 },
             },
             "required": ["asin"],
@@ -1180,7 +1233,10 @@ _AMAZON_META = {
     "get_stock_estimate": ("DATA", "estimated remaining stock quantity"),
     "get_keyword_rank": ("DATA", "search position of ASINs for a keyword"),
     "search_return_asins": ("DATA", "ASINs from search results"),
-    "get_reviews": ("DATA", "customer reviews with text, rating, date"),
+    "get_reviews": (
+        "DATA",
+        "customer reviews with text, rating, date; supports sort, star, reviewer-type, variant, media, and keyword filters",
+    ),
     "analyze_reviews": (
         "COMPUTE",
         "structured review summary: pros/cons, sentiment, buyer persona, velocity, rating distribution, competitive barrier, manipulation risk score",
