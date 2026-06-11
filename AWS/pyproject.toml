@@ -33,6 +33,7 @@ dependencies = [
     "numpy",
     "pandas",
     "causalimpact",
+    "arviz<0.19",
     "boto3",
     "markdown",
     "netcdf4",

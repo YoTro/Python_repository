@@ -97,7 +97,7 @@ _SPEC_VALUE_RE = re.compile(
     re.IGNORECASE,
 )
 
-_TITLE_SPAMMY_CHARS: frozenset[str] = frozenset("!@$%*?#|^~")
+_TITLE_SPAMMY_CHARS: frozenset[str] = frozenset("!@$%*?#|¬^~")
 
 _FEATURE_INDICATORS: frozenset[str] = frozenset(
     {
@@ -353,22 +353,26 @@ class ListingQualityScorer:
         brand_words_lower = brand.lower().split() if brand else []
 
         # ── 1. Length ──────────────────────────────────────────────────────
-        # Sweet spot: 80-150 chars for keyword indexing.
-        # Amazon search truncates display past ~200 chars.
+        # Amazon policy: titles must not exceed 75 characters (all stores
+        # except SA, EG, TR, AE; applies to all non-media product types).
+        # Listings over 75 chars risk suppression or auto-truncation.
         if title_len < 40:
             score -= 25
             issues.append("Title critically short (< 40 chars).")
-        elif title_len < 80:
+        elif title_len < 60:
             score -= 10
-            issues.append("Title short (40-79 chars).")
-        elif title_len <= 150:
-            score += 5  # sweet spot
-        elif title_len <= 200:
-            score -= 5
-            issues.append("Title slightly long (151-200 chars).")
+            issues.append(
+                f"Title short ({title_len} chars); aim for 60-75 chars to maximise keyword coverage within policy."
+            )
+        elif title_len <= 75:
+            score += 5  # sweet spot — within Amazon's 75-char limit
         else:
-            score -= 15
-            issues.append("Title too long (> 200 chars); truncated in search results.")
+            score -= 20
+            issues.append(
+                f"Title too long ({title_len} chars) — Amazon policy limits titles to 75 characters."
+                " After July 27 2025, Amazon will overwrite non-compliant titles with its own"
+                " AI-generated recommendation; shorten the title now to retain control of your copy."
+            )
         metrics["title_length"] = title_len
 
         # ── 2. Four-Pillar Integrity ───────────────────────────────────────

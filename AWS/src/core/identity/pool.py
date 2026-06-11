@@ -50,11 +50,13 @@ import os
 import re
 import socket
 import sys
-import tempfile
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from curl_cffi import requests
+
+if TYPE_CHECKING:
+    from curl_cffi.requests.session import ProxySpec
 
 from src.core.identity.strategy import BaseIdentityStrategy
 from src.core.utils.cookie_helper import _nearest_cffi_target
@@ -438,8 +440,8 @@ def _build_slot(
     major = int(m.group(1)) if m else 146
     impersonate = f"chrome{_nearest_cffi_target(major)}"
 
-    proxies = {"https": proxy, "http": proxy} if proxy else None
-    session = requests.AsyncSession(
+    proxies: ProxySpec | None = {"https": proxy, "http": proxy} if proxy else None
+    session: requests.AsyncSession = requests.AsyncSession(
         headers=headers,
         cookies=cookies,
         impersonate=impersonate,
@@ -450,11 +452,15 @@ def _build_slot(
     # "browser_port" to avoid conflicts with other services on the host.
     preferred_port: int = int(entry.get("browser_port", base_port + slot_id))
 
-    # Create the Chrome profile dir once per slot at pool init time.
-    # mkdtemp produces a process-unique path, preventing cross-process profile
-    # collisions.  The directory is reused on browser restarts within this
-    # process so WAF session tokens survive Chrome crashes and tab recycles.
-    browser_data_dir = tempfile.mkdtemp(prefix=f"identity_slot_{slot_id}_")
+    # Use a stable home-dir path instead of /tmp:
+    #   - snap-confined Chromium (Ubuntu 22.04+) allows $HOME but AppArmor-blocks /tmp
+    #   - stable path means WAF session tokens survive Python process restarts
+    # Keyed by base_port + slot_id so two pool instances on the same host
+    # (different base_port) get different dirs, preventing Chrome profile lock conflicts.
+    _pool_dir = os.path.join(os.path.expanduser("~"), ".local", "share", "identity_pool")
+    os.makedirs(_pool_dir, exist_ok=True)
+    browser_data_dir = os.path.join(_pool_dir, f"slot_{slot_id}_p{base_port}")
+    os.makedirs(browser_data_dir, exist_ok=True)
 
     return IdentitySlot(
         slot_id=slot_id,
@@ -517,13 +523,19 @@ def _launch_browser(slot: IdentitySlot):
     # old-gen grows unboundedly over hundreds of navigations.  256 MB is
     # sufficient for most heavy React pages.
     co.set_argument("--js-flags=--max-old-space-size=256")
-    # Disable the HTTP disk cache so the --user-data-dir under /tmp does not
-    # accumulate large JS bundles over hours of operation.
+    # Disable the HTTP disk cache so the profile dir does not accumulate
+    # large JS bundles over hours of operation.
     co.set_argument("--disk-cache-size=1")
     co.set_argument("--media-cache-size=1")
     co.set_argument("--disable-application-cache")
 
-    co.headless(_resolve_headless())
+    # co.headless(True) in DrissionPage ≤ 4.1.x sets the deprecated --headless
+    # flag; Chrome 112+ requires --headless=new (headed-mode renderer pipeline
+    # with compositing). Using the deprecated flag causes Chrome to fail
+    # silently in headless environments, breaking the CDP connection.
+    if _resolve_headless():
+        co.set_argument("--headless=new")
+        co.set_argument("--disable-setuid-sandbox")
 
     if slot.proxy:
         co.set_proxy(slot.proxy)

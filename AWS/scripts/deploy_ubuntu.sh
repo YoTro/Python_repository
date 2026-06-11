@@ -42,10 +42,24 @@ if ! check_step "base_install"; then
     echo "📦 Updating system and installing base dependencies..."
     sudo apt update && sudo apt upgrade -y
     sudo apt install -y git redis-server software-properties-common curl build-essential \
-        zsh chromium-browser chromium-chromedriver xvfb qrencode
+        zsh xvfb qrencode
     sudo add-apt-repository ppa:deadsnakes/ppa -y
     sudo apt update
     sudo apt install -y python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev
+
+    # Chromium: Ubuntu 22.04+ ships it as a snap only (chromium-browser deb is a
+    # transitional stub that silently installs via snap).  On those releases the
+    # apt package may not exist at all, so we install via snap directly.
+    # On older Ubuntu (≤ 20.04) the deb package is still available.
+    UBUNTU_VER=$(lsb_release -rs 2>/dev/null || echo "0")
+    if dpkg --compare-versions "$UBUNTU_VER" ge "22.04" 2>/dev/null; then
+        echo "📦 Ubuntu $UBUNTU_VER: installing Chromium via snap..."
+        sudo snap install chromium
+    else
+        echo "📦 Ubuntu $UBUNTU_VER: installing Chromium via apt..."
+        sudo apt install -y chromium-browser chromium-chromedriver
+    fi
+
     mark_step "base_install"
 fi
 
@@ -64,6 +78,36 @@ fi
 grep -qxF 'export PATH=$PATH:/usr/lib/chromium-browser/' ~/.zshrc \
     || echo 'export PATH=$PATH:/usr/lib/chromium-browser/' >> ~/.zshrc
 export PATH=$PATH:/usr/lib/chromium-browser/
+
+# Chrome env for IdentityPool / CookieBrowserPool (src/core/identity/pool.py)
+# CHROME_EXECUTABLE: point DrissionPage at the system Chromium binary.
+# Resolution order: /snap/bin/chromium (Ubuntu 22.04+ snap install) →
+#   /usr/bin/chromium-browser (deb install) → chromium (any PATH entry).
+# _resolve_chrome_path() in pool.py already checks these candidates, but
+# setting the env var ensures DrissionPage skips its own (often wrong) detection.
+CHROMIUM_BIN=""
+for _candidate in /snap/bin/chromium /usr/bin/chromium-browser /usr/bin/chromium; do
+    if [ -x "$_candidate" ]; then
+        CHROMIUM_BIN="$_candidate"
+        break
+    fi
+done
+if [ -z "$CHROMIUM_BIN" ]; then
+    CHROMIUM_BIN=$(command -v chromium-browser || command -v chromium || echo "")
+fi
+if [ -n "$CHROMIUM_BIN" ]; then
+    export CHROME_EXECUTABLE="$CHROMIUM_BIN"
+    grep -qF "export CHROME_EXECUTABLE=" ~/.zshrc \
+        || echo "export CHROME_EXECUTABLE=$CHROMIUM_BIN" >> ~/.zshrc
+    echo "🌐 Chrome binary: $CHROMIUM_BIN"
+else
+    echo "⚠️  Chromium binary not found — Tier-3 browser scraping unavailable."
+fi
+# CHROME_HEADLESS: Ubuntu server — always headless=new (no display server).
+# Override with CHROME_HEADLESS=0 for manual-login / debug sessions via Xvfb.
+export CHROME_HEADLESS="${CHROME_HEADLESS:-1}"
+grep -qF "export CHROME_HEADLESS=" ~/.zshrc \
+    || echo "export CHROME_HEADLESS=1" >> ~/.zshrc
 
 # Server identity env vars (used by cookie_helper.py for SSH tunnel instructions)
 export SERVER_USER="${SERVER_USER:-$USER}"
@@ -209,9 +253,11 @@ if [ ! -f "$_model_path" ] || [ "$_model_size" -lt "$MODEL_MIN_BYTES" ]; then
 fi
 
 # 6. Virtual Environment (venv311)
+# Uses the Python venv API directly (upgrade_deps=True bumps pip+setuptools to
+# latest inside the new env, avoiding stale pip behaviour on older system Pythons).
 if [ ! -d "venv311" ]; then
     echo "🛠️ Creating venv311 (Python 3.11)..."
-    python${PYTHON_VERSION} -m venv venv311
+    python${PYTHON_VERSION} -c "import venv; venv.create('venv311', with_pip=True, upgrade_deps=True)"
 fi
 source venv311/bin/activate
 
@@ -313,7 +359,9 @@ echo "⚙️ Installing package dependencies..."
 pip freeze | grep -i "llama" > /tmp/llama_pin.txt
 pip install -e . -c /tmp/llama_pin.txt
 rm /tmp/llama_pin.txt
-pip install pycausalimpact redis
+# Downgrade arviz if needed — 0.19+ emits FutureWarning and INFO noise about
+# missing modular sub-packages (arviz-base/stats/plots) that causalimpact doesn't install.
+pip install "arviz<0.19"
 
 # 9. Redis Configuration + Service (background daemon)
 REDIS_CONF="/etc/redis/redis.conf"

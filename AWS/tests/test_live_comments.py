@@ -3,13 +3,16 @@ import logging
 import os
 import sys
 
-# 确保导入路径正确
+import pytest
+
 project_root = os.path.dirname(os.path.abspath(__name__))
 sys.path.insert(0, project_root)
 
 from src.mcp.servers.amazon.extractors.comments import CommentsExtractor
 
 
+@pytest.mark.live
+@pytest.mark.asyncio
 async def test_fetch():
     logging.basicConfig(level=logging.INFO)
     extractor = CommentsExtractor()
