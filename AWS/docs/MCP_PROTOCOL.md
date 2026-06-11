@@ -93,11 +93,11 @@ This script automatically detects your OS and injects the `aws-market-intelligen
 
 #### Multi-Account Cookie Pool (`CookieBrowserPool`)
 
-`src/mcp/servers/amazon/cookie_pool.py` implements the concurrency infrastructure that backs `get_reviews` (and all Tier-1/2/3 scraping) when multiple Amazon accounts are configured.
+`src/mcp/servers/amazon/cookie_pool.py` is a thin Amazon-specific shim over the generic `src/core/identity/IdentityPool`. It pre-wires `AmazonIdentityStrategy` (warmup URL, cookie domain, UA, WAF block detection) and exposes the original `CookieBrowserPool` API unchanged. All mechanism (Chrome launch, port probing, circuit breakers, round-robin routing) lives in `src/core/identity/pool.py`; domain policy lives in `src/mcp/servers/amazon/identity.py`.
 
 **Architecture**
 
-Each *slot* encapsulates one Amazon identity:
+Each *slot* (`IdentitySlot`, aliased as `CookieSlot` for backward compat) encapsulates one Amazon identity:
 
 | Field | Type | Purpose |
 |---|---|---|
@@ -139,6 +139,19 @@ The Chrome *process* (and its WAF session cookie store in `--user-data-dir`) is 
 ```
 
 Each slot gets a deterministic CDP port (`19300 + slot_id`) and a unique `--user-data-dir` under `/tmp`, so slot cookie stores never bleed into each other.
+
+**Domain Strategy (`AmazonIdentityStrategy`)**
+
+`src/mcp/servers/amazon/identity.py` implements `BaseIdentityStrategy` with Amazon-specific policy:
+
+| Method | Value |
+|---|---|
+| `warmup_url()` | `https://www.amazon.com/` — seeds CloudFront WAF cookies on browser init |
+| `cookie_domain()` | `.amazon.com` — applies injected cookies to all Amazon sub-domains |
+| `user_agent()` | Chrome 130 UA matching the curl_cffi impersonation profile |
+| `is_hard_block(html)` | `True` when `validateCaptcha` or `auth-page-heading` appears |
+
+To add a second domain (e.g. Walmart), create `src/mcp/servers/walmart/identity.py` with a `WalmartIdentityStrategy` subclass and pass it to `IdentityPool.init(entries, WalmartIdentityStrategy())`. See `docs/DEV_GUIDE.md` §9 for the full extension guide.
 
 **Initialisation**
 

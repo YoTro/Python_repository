@@ -387,6 +387,10 @@ if is_retryable(code):
 ## 7. Directory Mapping (Summary)
 
 *   `src/core/`: Kernel, Models, Telemetry, and shared Utils (Proxy, Cookies, Context).
+    *   `src/core/identity/`: **Generic multi-account identity pool** (Strategy Pattern). Manages N (session, browser) slots with circuit breakers, round-robin routing, and WAF warmup.
+        *   `strategy.py` — `BaseIdentityStrategy` ABC: `warmup_url()`, `cookie_domain()`, `user_agent()`, `is_hard_block(html)`. No browser or HTTP-client types — domain policy only.
+        *   `pool.py` — `IdentityPool`, `IdentitySlot`, `SlotCircuit`, Chrome helpers (`_find_free_port`, `_resolve_chrome_path`, `_resolve_headless`). Inject a strategy at `IdentityPool.init(entries, strategy)`.
+        *   Domain implementations live in `src/mcp/servers/<domain>/identity.py` (e.g. `AmazonIdentityStrategy`). The `CookieBrowserPool` shim in `src/mcp/servers/amazon/cookie_pool.py` pre-wires Amazon's strategy and preserves the existing public API.
     *   `src/core/storage/`: **Storage abstraction layer** (Strategy Pattern). Swap backends via `STORAGE_BACKEND` env var — no code changes.
         *   `S3CompatibleBackend` — Cloudflare R2 / AWS S3 / MinIO (same boto3 client, different endpoint)
         *   `LocalHTTPBackend` — VPS local directory served by nginx/caddy
@@ -412,6 +416,25 @@ if is_retryable(code):
 2. Add a branch in `src/core/storage/__init__.py` `get_storage_backend()`.
 3. Set `STORAGE_BACKEND=your_backend` in `.env`.
 4. No changes to `export_html`, `export_csv`, or any caller.
+
+---
+
+## 9. Adding a New Identity Domain (e.g. Walmart, Shopify)
+
+`src/core/identity/IdentityPool` is domain-agnostic. To add a second scraping domain:
+
+1. Create `src/mcp/servers/<domain>/identity.py` and subclass `BaseIdentityStrategy`:
+   ```python
+   from src.core.identity.strategy import BaseIdentityStrategy
+
+   class WalmartIdentityStrategy(BaseIdentityStrategy):
+       def warmup_url(self) -> str: return "https://www.walmart.com/"
+       def cookie_domain(self) -> str: return ".walmart.com"
+       def user_agent(self) -> str: return "Mozilla/5.0 ..."
+       def is_hard_block(self, html: str) -> bool: return "captcha" in html
+   ```
+2. Create a pool shim (e.g. `src/mcp/servers/walmart/cookie_pool.py`) that subclasses `IdentityPool` and pre-wires the strategy — mirror `src/mcp/servers/amazon/cookie_pool.py`.
+3. No changes to `src/core/identity/` are needed.
 
 ---
 
