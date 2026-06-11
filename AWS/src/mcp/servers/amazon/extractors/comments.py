@@ -13,7 +13,11 @@ from bs4 import BeautifulSoup
 
 from src.core.models.review import Review
 from src.core.scraper import AmazonBaseScraper
-from src.mcp.servers.amazon.cookie_pool import CookieBrowserPool, CookieSlot
+from src.mcp.servers.amazon.cookie_pool import (
+    CookieBrowserPool,
+    CookieSlot,
+    _resolve_chrome_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +75,7 @@ class CommentsExtractor(AmazonBaseScraper):
         html_failed = False
         _html_blocked = False  # True when HTML tier returned a definitive block (bot/login)
         _success_recorded = False
+        page1_html: str | None = None  # page-1 HTML from AJAX tier, forwarded to HTML fallback
         page = 1
 
         _filter_kwargs = {
@@ -86,16 +91,18 @@ class CommentsExtractor(AmazonBaseScraper):
             reviews: list[Review] | None = None
 
             if not ajax_failed:
-                reviews, next_page_token = await self._fetch_reviews_via_ajax(
+                reviews, next_page_token, _p1html = await self._fetch_reviews_via_ajax(
                     asin, page, next_page_token, slot=slot, **_filter_kwargs
                 )
+                if page == 1:
+                    page1_html = _p1html
                 if reviews is None:
                     logger.warning(f"AJAX failed on page {page}, falling back to HTML scraping...")
                     ajax_failed = True
 
             if ajax_failed and not html_failed:
                 reviews, next_page_token = await self._fetch_reviews_via_html(
-                    asin, page, next_page_token, slot=slot, **_filter_kwargs
+                    asin, page, next_page_token, slot=slot, page1_html=page1_html, **_filter_kwargs
                 )
                 if reviews is None:
                     html_failed = True
@@ -230,11 +237,12 @@ class CommentsExtractor(AmazonBaseScraper):
 
     async def _acquire_csrf_token(
         self, asin: str, *, slot: CookieSlot | None = None
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | None, str | None]:
         """
         Visit the product reviews page to harvest anti-csrftoken-a2z.
-        The fetched page-1 HTML is cached on the slot (or self) so the HTML
-        fallback can reuse it without a second identical request.
+        Returns (csrf_token, next_page_token, page1_html) so callers can
+        thread the HTML as a local variable into the HTML fallback tier
+        without touching any shared slot state.
         """
         reviews_url = (
             f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_dp_d_show_all_btm?ie=UTF8"
@@ -248,13 +256,7 @@ class CommentsExtractor(AmazonBaseScraper):
             )
             html = await self.fetch(reviews_url, _session=_sess)
         if not html:
-            return None, None
-
-        # Cache page-1 HTML so _fetch_reviews_via_html can reuse it (unfiltered path only).
-        if slot is not None:
-            slot.page1_html = html
-        else:
-            self._page1_html: str | None = html
+            return None, None, None
 
         csrf_token = None
 
@@ -307,7 +309,7 @@ class CommentsExtractor(AmazonBaseScraper):
         soup = BeautifulSoup(html, "html.parser")
         next_token = self._extract_next_page_token(soup)
 
-        return csrf_token, next_token
+        return csrf_token, next_token, html
 
     async def _fetch_reviews_via_ajax(
         self,
@@ -322,24 +324,30 @@ class CommentsExtractor(AmazonBaseScraper):
         format_type: str = "",
         media_type: str = "",
         filter_by_keyword: str = "",
-    ) -> tuple[list[Review] | None, str | None]:
+    ) -> tuple[list[Review] | None, str | None, str | None]:
         """
         Attempt to fetch reviews using the undocumented AJAX endpoint.
-        Returns (None, None) on failure to signal a fallback.
+        Returns (reviews, next_page_token, page1_html) where page1_html is the
+        HTML fetched by _acquire_csrf_token (non-None only on page 1 when the
+        CSRF token was not already in the session).  Returns (None, None, None)
+        on failure to signal a fallback.
         """
         try:
             _sess = slot.session if slot else self.session
             _hdrs = slot.headers if slot else self._headers
 
+            _page1_html: str | None = None
             csrf_token = _sess.cookies.get("anti-csrftoken-a2z")
             if not csrf_token:
-                csrf_token, initial_token = await self._acquire_csrf_token(asin, slot=slot)
+                csrf_token, initial_token, _page1_html = await self._acquire_csrf_token(
+                    asin, slot=slot
+                )
                 if not next_page_token:
                     next_page_token = initial_token
 
             if not csrf_token:
                 logger.warning("Missing 'anti-csrftoken-a2z'. AJAX call will likely fail.")
-                return None, None
+                return None, None, None
 
             _filtered = bool(
                 filter_by_star
@@ -447,15 +455,15 @@ class CommentsExtractor(AmazonBaseScraper):
                 url, method="POST", headers=headers, data=body, _session=_sess
             )
             if not response_text:
-                return None, None
+                return None, None, None
 
             reviews, next_token = self._parse_ajax_response(response_text, asin)
             if not reviews and next_token is None:
                 logger.warning("AJAX responded but returned no review content.")
-            return reviews if reviews else [], next_token
+            return reviews if reviews else [], next_token, _page1_html
         except Exception as e:
             logger.error(f"Error in AJAX review fetch: {e}")
-            return None, None
+            return None, None, None
 
     def _parse_ajax_response(
         self, response_text: str, asin: str
@@ -495,6 +503,7 @@ class CommentsExtractor(AmazonBaseScraper):
         next_page_token: str | None = None,
         *,
         slot: CookieSlot | None = None,
+        page1_html: str | None = None,
         sort_by: str = "",
         reviewer_type: str = "all_reviews",
         filter_by_star: str = "",
@@ -515,13 +524,9 @@ class CommentsExtractor(AmazonBaseScraper):
 
             # Page 1 was already fetched by _acquire_csrf_token — reuse it only when no
             # filters are active (the cached page is always unfiltered).
-            cached = slot.page1_html if slot else getattr(self, "_page1_html", None)
-            if page == 1 and cached and not _filtered:
-                html_content = cached
-                if slot:
-                    slot.page1_html = None
-                else:
-                    self._page1_html = None
+            # page1_html is a local passed by the caller; no shared slot state is touched.
+            if page == 1 and page1_html and not _filtered:
+                html_content = page1_html
             else:
                 url = (
                     f"https://www.amazon.com/product-reviews/{asin}/ref=cm_cr_arp_d_viewopt_sr"
@@ -585,9 +590,7 @@ class CommentsExtractor(AmazonBaseScraper):
         When no slot is provided the legacy class-level ``_browser_page``
         singleton is used (single-user / dev mode).
         """
-        import os
         import random as _random
-        import sys
         import time as _time
 
         try:
@@ -598,53 +601,58 @@ class CommentsExtractor(AmazonBaseScraper):
 
         # ── helpers ────────────────────────────────────────────────────────
 
-        def _get_browser() -> ChromiumPage:
-            if slot is not None:
-                return slot.get_or_init_browser()
+        async def _get_browser() -> ChromiumPage:
+            # Chrome launch + initial navigation block for up to ~20 s (subprocess
+            # spawn, CDP handshake, page load, cookie injection).  Run entirely in
+            # a thread-pool worker so the event loop stays live for all other
+            # concurrent requests during the wait.
+            loop = asyncio.get_running_loop()
 
-            # Legacy path: class-level singleton
-            bp = CommentsExtractor._browser_page
-            if bp is not None:
-                try:
-                    _ = bp.url  # probe — raises if tab/process is dead
-                    return bp
-                except Exception:
-                    CommentsExtractor._browser_page = None
+            def _blocking() -> ChromiumPage:
+                if slot is not None:
+                    return slot.get_or_init_browser()
 
-            co = ChromiumOptions()
-            co.set_local_port(_random.randint(10000, 60000))
-            for candidate in (
-                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-                "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            ):
-                if sys.platform == "darwin" and os.path.isfile(candidate):
-                    co.set_browser_path(candidate)
-                    break
-            co.incognito()
-            co.set_argument("--disable-gpu")
-            co.set_argument("--no-sandbox")
-            co.set_argument("--disable-dev-shm-usage")
-            co.headless(False)
+                # Legacy path: class-level singleton (single-user / dev mode)
+                bp = CommentsExtractor._browser_page
+                if bp is not None:
+                    try:
+                        _ = bp.url  # probe — raises if tab/process is dead
+                        return bp
+                    except Exception:
+                        CommentsExtractor._browser_page = None
 
-            session_ua = self._headers.get("User-Agent", "")
-            if session_ua:
-                co.set_user_agent(session_ua)
+                co = ChromiumOptions()
+                co.set_local_port(_random.randint(10000, 60000))
+                chrome_path = _resolve_chrome_path()
+                if chrome_path:
+                    co.set_browser_path(chrome_path)
+                co.incognito()
+                co.set_argument("--disable-gpu")
+                co.set_argument("--no-sandbox")
+                co.set_argument("--disable-dev-shm-usage")
+                co.headless(False)
 
-            new_bp = ChromiumPage(co)
-            new_bp.set.load_mode.normal()
+                session_ua = self._headers.get("User-Agent", "")
+                if session_ua:
+                    co.set_user_agent(session_ua)
 
-            cookie_data = self.cookie_helper.get_cookie_data()
-            saved_cookies = cookie_data.get("cookies", {})
-            new_bp.get("https://www.amazon.com/", timeout=30)
-            _time.sleep(3)
-            for name, value in saved_cookies.items():
-                try:
-                    new_bp.set.cookies({"name": name, "value": value, "domain": ".amazon.com"})
-                except Exception:
-                    pass
+                new_bp = ChromiumPage(co)
+                new_bp.set.load_mode.normal()
 
-            CommentsExtractor._browser_page = new_bp
-            return new_bp
+                cookie_data = self.cookie_helper.get_cookie_data()
+                saved_cookies = cookie_data.get("cookies", {})
+                new_bp.get("https://www.amazon.com/", timeout=30)
+                _time.sleep(3)
+                for name, value in saved_cookies.items():
+                    try:
+                        new_bp.set.cookies({"name": name, "value": value, "domain": ".amazon.com"})
+                    except Exception:
+                        pass
+
+                CommentsExtractor._browser_page = new_bp
+                return new_bp
+
+            return await loop.run_in_executor(None, _blocking)
 
         def _capture_cookies(bp: ChromiumPage) -> dict[str, str]:
             try:
@@ -723,7 +731,7 @@ class CommentsExtractor(AmazonBaseScraper):
         # ── main scrape loop ───────────────────────────────────────────────
 
         try:
-            bp = _get_browser()
+            bp = await _get_browser()
             _target_session = slot.session if slot else self.session
 
             reviews_url = (

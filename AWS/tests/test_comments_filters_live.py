@@ -31,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger("filter_live_test")
 
 # ── Test config ────────────────────────────────────────────────────────────────
-TEST_ASIN = "B0FXFGMD7Z"   # ASIN from the curl sample; has reviews across all star levels
+TEST_ASIN = "B0FXFGMD7Z"  # ASIN from the curl sample; has reviews across all star levels
 
 PASS = "✅ PASS"
 FAIL = "❌ FAIL"
@@ -39,6 +39,7 @@ WARN = "⚠️  WARN"
 
 
 # ── Assertion helpers ──────────────────────────────────────────────────────────
+
 
 def check(label: str, condition: bool, detail: str = "") -> bool:
     status = PASS if condition else FAIL
@@ -48,6 +49,7 @@ def check(label: str, condition: bool, detail: str = "") -> bool:
 
 
 # ── Browser bootstrap ──────────────────────────────────────────────────────────
+
 
 def _bootstrap_browser(asin: str) -> None:
     """
@@ -83,7 +85,9 @@ def _bootstrap_browser(asin: str) -> None:
         time.sleep(1)
         cookies = {c["name"]: c["value"] for c in bp.cookies()}
         if "aws-waf-token" in cookies:
-            print(f"[browser] aws-waf-token ready after {i + 1}s. Injecting cookies into extractor.")
+            print(
+                f"[browser] aws-waf-token ready after {i + 1}s. Injecting cookies into extractor."
+            )
             break
     else:
         print("[browser] aws-waf-token not seen after 30s — proceeding anyway.")
@@ -92,6 +96,7 @@ def _bootstrap_browser(asin: str) -> None:
 
 
 # ── Individual filter tests ────────────────────────────────────────────────────
+
 
 async def test_get_negative_reviews(extractor: CommentsExtractor) -> bool:
     print("── get_negative_reviews (filter_by_star=critical, avp_only_reviews, sort_by=recent) ──")
@@ -109,8 +114,10 @@ async def test_get_negative_reviews(extractor: CommentsExtractor) -> bool:
         # avp_only_reviews should yield verified-only; warn rather than fail in case
         # Amazon's badge HTML is missing for edge-case reviews.
         if unverified:
-            print(f"  {WARN}  {len(unverified)}/{len(reviews)} reviews lack avp-badge "
-                  "(avp_only_reviews requested — may be badge-parse issue)")
+            print(
+                f"  {WARN}  {len(unverified)}/{len(reviews)} reviews lack avp-badge "
+                "(avp_only_reviews requested — may be badge-parse issue)"
+            )
         else:
             print(f"  {PASS}  all {len(reviews)} reviews carry verified-purchase badge")
         print(f"         sample: [{reviews[0].rating}★] {reviews[0].title!r}")
@@ -119,9 +126,7 @@ async def test_get_negative_reviews(extractor: CommentsExtractor) -> bool:
 
 async def test_filter_by_star_positive(extractor: CommentsExtractor) -> bool:
     print("── filter_by_star=positive ──")
-    reviews = await extractor.get_all_comments(
-        TEST_ASIN, max_pages=1, filter_by_star="positive"
-    )
+    reviews = await extractor.get_all_comments(TEST_ASIN, max_pages=1, filter_by_star="positive")
     ok = True
     ok &= check("returned at least 1 review", len(reviews) > 0, f"got {len(reviews)}")
     if reviews:
@@ -144,8 +149,10 @@ async def test_reviewer_type_avp(extractor: CommentsExtractor) -> bool:
     if reviews:
         unverified = [r for r in reviews if not r.is_verified]
         if unverified:
-            print(f"  {WARN}  {len(unverified)}/{len(reviews)} missing badge "
-                  "(avp_only_reviews requested — badge-parse edge case)")
+            print(
+                f"  {WARN}  {len(unverified)}/{len(reviews)} missing badge "
+                "(avp_only_reviews requested — badge-parse edge case)"
+            )
         else:
             print(f"  {PASS}  all {len(reviews)} reviews verified-purchase")
     return ok
@@ -153,9 +160,7 @@ async def test_reviewer_type_avp(extractor: CommentsExtractor) -> bool:
 
 async def test_sort_by_recent(extractor: CommentsExtractor) -> bool:
     print("── sort_by=recent ──")
-    reviews = await extractor.get_all_comments(
-        TEST_ASIN, max_pages=1, sort_by="recent"
-    )
+    reviews = await extractor.get_all_comments(TEST_ASIN, max_pages=1, sort_by="recent")
     ok = check("returned at least 1 review", len(reviews) > 0, f"got {len(reviews)}")
     if reviews:
         print(f"         first review date: {reviews[0].date!r}")
@@ -164,9 +169,7 @@ async def test_sort_by_recent(extractor: CommentsExtractor) -> bool:
 
 async def test_sort_by_helpful(extractor: CommentsExtractor) -> bool:
     print("── sort_by=helpful ──")
-    reviews = await extractor.get_all_comments(
-        TEST_ASIN, max_pages=1, sort_by="helpful"
-    )
+    reviews = await extractor.get_all_comments(TEST_ASIN, max_pages=1, sort_by="helpful")
     ok = check("returned at least 1 review", len(reviews) > 0, f"got {len(reviews)}")
     if reviews and len(reviews) >= 2:
         # Top-helpful reviews typically have higher vote counts; just log
@@ -177,9 +180,7 @@ async def test_sort_by_helpful(extractor: CommentsExtractor) -> bool:
 
 async def test_format_type_current(extractor: CommentsExtractor) -> bool:
     print("── format_type=current_format (variant filter) ──")
-    reviews = await extractor.get_all_comments(
-        TEST_ASIN, max_pages=1, format_type="current_format"
-    )
+    reviews = await extractor.get_all_comments(TEST_ASIN, max_pages=1, format_type="current_format")
     # Only verifies the request doesn't error; count may be low for single-variant ASINs
     ok = check("request completed without exception", True, f"got {len(reviews)} reviews")
     return ok
@@ -200,19 +201,23 @@ async def test_media_type_media_only(extractor: CommentsExtractor) -> bool:
 async def test_filter_by_keyword(extractor: CommentsExtractor) -> bool:
     keyword = "quality"
     print(f"── filter_by_keyword={keyword!r} ──")
-    reviews = await extractor.get_all_comments(
-        TEST_ASIN, max_pages=1, filter_by_keyword=keyword
-    )
+    reviews = await extractor.get_all_comments(TEST_ASIN, max_pages=1, filter_by_keyword=keyword)
     ok = check("request completed without exception", True, f"got {len(reviews)} reviews")
     if reviews:
-        hits = sum(1 for r in reviews if keyword.lower() in (r.content or "").lower()
-                   or keyword.lower() in (r.title or "").lower())
+        hits = sum(
+            1
+            for r in reviews
+            if keyword.lower() in (r.content or "").lower()
+            or keyword.lower() in (r.title or "").lower()
+        )
         print(f"         {hits}/{len(reviews)} reviews mention '{keyword}' in title/content")
     return ok
 
 
 async def test_combined_filters(extractor: CommentsExtractor) -> bool:
-    print("── combined: filter_by_star=critical + reviewer_type=avp_only_reviews + sort_by=recent ──")
+    print(
+        "── combined: filter_by_star=critical + reviewer_type=avp_only_reviews + sort_by=recent ──"
+    )
     reviews = await extractor.get_all_comments(
         TEST_ASIN,
         max_pages=1,
@@ -224,13 +229,19 @@ async def test_combined_filters(extractor: CommentsExtractor) -> bool:
     ok &= check("returned at least 1 review", len(reviews) > 0, f"got {len(reviews)}")
     if reviews:
         bad_stars = [r for r in reviews if r.rating and r.rating > 3]
-        ok &= check("all ratings ≤ 3", len(bad_stars) == 0,
-                    f"{len(bad_stars)} > 3-star" if bad_stars else "")
-        print(f"         sample: [{reviews[0].rating}★|verified={reviews[0].is_verified}] {reviews[0].title!r}")
+        ok &= check(
+            "all ratings ≤ 3",
+            len(bad_stars) == 0,
+            f"{len(bad_stars)} > 3-star" if bad_stars else "",
+        )
+        print(
+            f"         sample: [{reviews[0].rating}★|verified={reviews[0].is_verified}] {reviews[0].title!r}"
+        )
     return ok
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
+
 
 async def run_all() -> None:
     _bootstrap_browser(TEST_ASIN)
