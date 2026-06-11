@@ -438,11 +438,11 @@ if is_retryable(code):
 
 ---
 
-## 9. DataCache Standards
+## 10. DataCache Standards
 
 `DataCache` (`src/core/data_cache.py`) is the shared persistence contract between L1 scrapers and L2 calculators. This section defines the key schema, TTL policy, and ownership rules every contributor must follow.
 
-### 9.1 API
+### 10.1 API
 
 ```python
 data_cache.set(domain, key, value)                           # write
@@ -453,7 +453,7 @@ data_cache.exists(domain, key)                               # boolean check
 
 TTL is enforced **at read time** by comparing the stored `updated_at` timestamp to `datetime.utcnow()`. There is no background eviction — stale entries remain until overwritten.
 
-### 9.2 Redis Key Format
+### 10.2 Redis Key Format
 
 The Redis backend constructs every key as:
 
@@ -475,7 +475,7 @@ The `{key}` portion for L2 workflows follows:
 | L2 (workflow result) | `aws:cache:product_screening:default:US:profitability:B01XXXXX` |
 | L2 (ad report) | `aws:cache:ad_diag:tenant123:JP:perf_report:{hash}` |
 
-### 9.3 L1 vs L2 Domain Ownership
+### 10.3 L1 vs L2 Domain Ownership
 
 | Layer | Who writes | Domain name | Key shape |
 |-------|-----------|-------------|-----------|
@@ -508,7 +508,7 @@ def _l2_set(ctx, value, *parts) -> None:
     _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value)
 ```
 
-### 9.4 TTL Reference
+### 10.4 TTL Reference
 
 Define TTL constants at module level with a comment. Never pass a magic integer to `get()`.
 
@@ -522,7 +522,7 @@ Define TTL constants at module level with a comment. Never pass a magic integer 
 | | `86_400` | 24 h | Product metadata, past-month sales, SellerSprite snapshots, historical timeseries, YoY/ERP data |
 | | `604_800` | 7 d | Compliance/regulatory rules (essentially static) |
 
-### 9.5 Adding a New Cached Data Type
+### 10.5 Adding a New Cached Data Type
 
 1. Decide the layer: **L1** if raw scraped data; **L2** if computed/derived.
 2. Use an existing domain if the source matches; create a new one only for a genuinely new workflow or data source.

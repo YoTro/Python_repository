@@ -689,13 +689,13 @@ class CommentsExtractor(AmazonBaseScraper):
                 br_body = getattr(getattr(packet, "request", None), "body", "") or ""
                 br_status = getattr(getattr(packet, "response", None), "status", "?")
 
-                logger.info(f"[ajax-compare] page={page_num} browser_status={br_status}")
-                logger.info("[ajax-compare] --- BROWSER request headers ---")
+                logger.debug(f"[ajax-compare] page={page_num} browser_status={br_status}")
+                logger.debug("[ajax-compare] --- BROWSER request headers ---")
                 for k, v in sorted(br_headers.items()):
-                    logger.info(f"[ajax-compare]   {k}: {v}")
-                logger.info("[ajax-compare] --- curl_cffi request headers ---")
+                    logger.debug(f"[ajax-compare]   {k}: {v}")
+                logger.debug("[ajax-compare] --- curl_cffi request headers ---")
                 for k, v in sorted(our_headers.items()):
-                    logger.info(f"[ajax-compare]   {k}: {v}")
+                    logger.debug(f"[ajax-compare]   {k}: {v}")
 
                 br_keys = {k.lower() for k in br_headers}
                 our_keys = {k.lower() for k in our_headers}
@@ -706,7 +706,7 @@ class CommentsExtractor(AmazonBaseScraper):
                         f"[ajax-compare] Headers in browser but NOT in curl_cffi: {missing}"
                     )
                 if extra:
-                    logger.info(f"[ajax-compare] Headers in curl_cffi but NOT in browser: {extra}")
+                    logger.debug(f"[ajax-compare] Headers in curl_cffi but NOT in browser: {extra}")
 
                 br_cookie_str = br_headers.get("cookie", br_headers.get("Cookie", ""))
                 br_cookie_names = {
@@ -723,8 +723,8 @@ class CommentsExtractor(AmazonBaseScraper):
                     )
 
                 if br_body != our_body:
-                    logger.info(f"[ajax-compare] Browser body: {br_body[:300]}")
-                    logger.info(f"[ajax-compare] curl_cffi body: {our_body[:300]}")
+                    logger.debug(f"[ajax-compare] Browser body: {br_body[:300]}")
+                    logger.debug(f"[ajax-compare] curl_cffi body: {our_body[:300]}")
             except Exception as exc:
                 logger.warning(f"[ajax-compare] Could not parse packet: {exc}")
 
