@@ -11,13 +11,10 @@ from urllib.parse import quote_plus
 
 from bs4 import BeautifulSoup
 
+from src.core.identity.pool import resolve_chrome_path
 from src.core.models.review import Review
 from src.core.scraper import AmazonBaseScraper
-from src.mcp.servers.amazon.cookie_pool import (
-    CookieBrowserPool,
-    CookieSlot,
-    _resolve_chrome_path,
-)
+from src.mcp.servers.amazon.cookie_pool import CookieBrowserPool, CookieSlot
 
 logger = logging.getLogger(__name__)
 
@@ -623,7 +620,7 @@ class CommentsExtractor(AmazonBaseScraper):
 
                 co = ChromiumOptions()
                 co.set_local_port(_random.randint(10000, 60000))
-                chrome_path = _resolve_chrome_path()
+                chrome_path = resolve_chrome_path()
                 if chrome_path:
                     co.set_browser_path(chrome_path)
                 co.incognito()

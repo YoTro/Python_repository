@@ -30,7 +30,7 @@ Chrome profile dirs.  Pass a distinct ``base_port`` to each process::
     IdentityPool.init(entries, strategy)                  # ports 19300…
     IdentityPool.init(entries, strategy, base_port=19400) # ports 19400…
 
-``--user-data-dir`` paths are created with ``tempfile.mkdtemp`` at pool init
+``--user-data-dir`` paths are created with stable home dir at pool init
 time, so they are always unique across processes regardless of ``base_port``.
 
 Environment overrides
@@ -128,7 +128,7 @@ _CHROME_CANDIDATES: tuple[str, ...] = (
 )
 
 
-def _resolve_chrome_path() -> str | None:
+def resolve_chrome_path() -> str | None:
     """Return the Chrome binary path to pass to DrissionPage, or None to auto-detect."""
     env = os.environ.get("CHROME_EXECUTABLE", "").strip()
     if env:
@@ -196,7 +196,7 @@ class IdentitySlot:
     proxy             : optional paired proxy URL; applied to both session and browser
     cache_file        : path to this slot's persistent cookie JSON
     browser_port      : CDP debug port assigned to this slot's Chrome process
-    browser_data_dir  : unique ``--user-data-dir`` path created by mkdtemp at pool init;
+    browser_data_dir  : unique ``--user-data-dir`` path created by stable home-dir path at pool init;
                         stable across browser restarts so WAF session tokens survive crashes
     browser           : ChromiumPage instance, None until first browser-tier use
     browser_lock      : asyncio.Lock — exactly one browser operation per slot at a time
@@ -304,7 +304,7 @@ class IdentitySlot:
 
 class IdentityPool:
     """
-    Singleton pool of N IdentitySlots.
+    Named registry of IdentityPool instances — one entry per logical domain or tenant.
 
     HTTP-tier callers use ``next_slot()`` (round-robin, never blocks).
     Browser-tier callers do::
@@ -312,9 +312,23 @@ class IdentityPool:
         async with slot.browser_lock:
             bp = slot.get_or_init_browser()
             ...
+
+    Multiple pools coexist via the ``name`` key::
+
+        IdentityPool.init(us_entries, strategy, name="amazon_us")
+        IdentityPool.init(jp_entries, strategy, name="amazon_jp", base_port=19400)
+
+        us_pool = IdentityPool.get_instance("amazon_us")
+        jp_pool = IdentityPool.get_instance("amazon_jp")
+
+    Replacing a named pool is safe for in-flight callers: they hold a reference
+    to an ``IdentitySlot`` from the old pool, which Python keeps alive until
+    their request completes.  Only new ``get_instance()`` calls receive the
+    replacement.
     """
 
-    _instance: IdentityPool | None = None
+    _DEFAULT_NAME: str = "__default__"
+    _registry: dict[str, IdentityPool] = {}
 
     def __init__(self, slots: list[IdentitySlot]) -> None:
         if not slots:
@@ -323,7 +337,7 @@ class IdentityPool:
         self._rr_idx = 0
 
     # ------------------------------------------------------------------
-    # Factory / singleton
+    # Factory / registry
     # ------------------------------------------------------------------
 
     @classmethod
@@ -332,10 +346,11 @@ class IdentityPool:
         cookie_entries: list[dict],
         strategy: BaseIdentityStrategy,
         *,
+        name: str = "",
         base_port: int = _BASE_BROWSER_PORT,
     ) -> IdentityPool:
         """
-        Initialise (or replace) the singleton from a list of entry dicts::
+        Create (or replace) a named pool from a list of entry dicts::
 
             {
                 "cookies":    {"session-id": "...", ...},   # required
@@ -343,32 +358,41 @@ class IdentityPool:
                 "proxy":      "http://user:pass@host:port",  # optional
             }
 
-        ``strategy`` supplies all domain-specific policy (warmup URL, cookie
-        domain, default UA, hard-block detection).
-
-        ``base_port`` sets the first CDP debug port; slot N uses
-        ``base_port + N``.  Pass a different value for each pool process on
-        the same host to avoid port collisions.
+        ``name`` identifies the pool within this process.  Omit to use the
+        class default (``_DEFAULT_NAME``).  Use distinct names for separate
+        domains or tenants; use distinct ``base_port`` values for each pool
+        on the same host to avoid CDP port collisions.
         """
+        key = name or cls._DEFAULT_NAME
         slots = [
             _build_slot(i, e, strategy, base_port=base_port) for i, e in enumerate(cookie_entries)
         ]
-        cls._instance = cls(slots)
+        instance = cls(slots)
+        cls._registry[key] = instance
         logger.info(
-            "[IdentityPool] Initialised with %d slot(s), base_port=%d.",
+            "[IdentityPool] Registered pool %r with %d slot(s), base_port=%d.",
+            key,
             len(slots),
             base_port,
         )
-        return cls._instance
+        return instance
 
     @classmethod
-    def get_instance(cls) -> IdentityPool | None:
-        return cls._instance
+    def get_instance(cls, name: str = "") -> IdentityPool | None:
+        return cls._registry.get(name or cls._DEFAULT_NAME)
 
     @classmethod
-    def clear(cls) -> None:
-        """Tear down the singleton — primarily for tests."""
-        cls._instance = None
+    def all_instances(cls) -> dict[str, IdentityPool]:
+        """Return a snapshot of all registered pools for this class."""
+        return dict(cls._registry)
+
+    @classmethod
+    def clear(cls, name: str = "") -> None:
+        """Remove a named pool (or all pools when name is omitted) — primarily for tests."""
+        if name:
+            cls._registry.pop(name, None)
+        else:
+            cls._registry.clear()
 
     # ------------------------------------------------------------------
     # Slot selection
@@ -484,7 +508,7 @@ def _launch_browser(slot: IdentitySlot):
     - ``slot.browser_port`` (base_port + slot_id) is deterministic within a pool.
       Pass a distinct ``base_port`` to each pool process on the same host to
       avoid cross-process port conflicts.
-    - ``slot.browser_data_dir`` is created once by ``_build_slot`` via mkdtemp,
+    - ``slot.browser_data_dir`` is created once by ``_build_slot`` via stable home-dir path,
       so it is unique across processes.  Reusing the same dir on re-launch
       preserves WAF session tokens stored in the Chrome profile across crashes.
     - Warmup URL and cookie domain come from ``slot.strategy`` so this function
@@ -511,7 +535,7 @@ def _launch_browser(slot: IdentitySlot):
     co.set_local_port(actual_port)
     co.set_argument(f"--user-data-dir={slot.browser_data_dir}")
 
-    chrome_path = _resolve_chrome_path()
+    chrome_path = resolve_chrome_path()
     if chrome_path:
         co.set_browser_path(chrome_path)
 
