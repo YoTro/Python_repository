@@ -37,7 +37,6 @@ from src.core.identity.pool import (
     IdentityPool,
     IdentitySlot,
     SlotCircuit,
-    _resolve_chrome_path,
 )
 from src.core.utils.cookie_helper import AmazonCookieHelper
 from src.mcp.servers.amazon.identity import AmazonIdentityStrategy
@@ -51,13 +50,12 @@ __all__ = [
     "CookieBrowserPool",
     "CookieSlot",
     "SlotCircuit",
-    "_resolve_chrome_path",
 ]
 
 
 class CookieBrowserPool(IdentityPool):
     """
-    Singleton pool of N Amazon identity slots.
+    Named registry of Amazon identity pools.
 
     Tier 1/2 callers use ``next_slot()`` (round-robin, never blocks).
     Tier 3 callers do::
@@ -65,12 +63,16 @@ class CookieBrowserPool(IdentityPool):
         async with slot.browser_lock:
             bp = slot.get_or_init_browser()
             ...
+
+    Multiple pools can coexist by name (e.g. ``"amazon_us"``, ``"amazon_jp"``).
+    The default name is ``"amazon"`` so existing no-arg callers are unaffected.
     """
 
-    _instance: CookieBrowserPool | None = None  # type: ignore[assignment]
+    _DEFAULT_NAME: str = "amazon"
+    _registry: dict[str, CookieBrowserPool] = {}  # type: ignore[assignment]
 
     # ------------------------------------------------------------------
-    # Factory / singleton
+    # Factory / registry
     # ------------------------------------------------------------------
 
     @classmethod
@@ -78,10 +80,11 @@ class CookieBrowserPool(IdentityPool):
         cls,
         cookie_entries: list[dict],
         *,
+        name: str = "",
         base_port: int = _BASE_BROWSER_PORT,
     ) -> CookieBrowserPool:
         """
-        Initialise (or replace) the singleton from a list of cookie-entry dicts::
+        Create (or replace) a named pool from a list of cookie-entry dicts::
 
             {
                 "cookies":    {"session-id": "...", ...},   # required
@@ -89,24 +92,21 @@ class CookieBrowserPool(IdentityPool):
                 "proxy":      "http://user:pass@host:port",  # optional
             }
 
-        ``base_port`` sets the first CDP debug port; slot N uses ``base_port + N``.
-        Pass a different value for each pool process on the same host to avoid
-        port collisions (default 19300; second process → 19400, etc.).
+        ``name`` identifies the pool (default ``"amazon"``).  Use distinct
+        names for separate marketplaces or tenants; use distinct ``base_port``
+        values for each pool on the same host to avoid CDP port collisions.
         """
         strategy = AmazonIdentityStrategy()
-        pool = super().init(cookie_entries, strategy, base_port=base_port)
-        logger.info(
-            "[CookieBrowserPool] Initialised with %d Amazon slot(s), base_port=%d.",
-            len(pool),
-            base_port,
-        )
-        return pool  # type: ignore[return-value]
+        return super().init(
+            cookie_entries, strategy, name=name or cls._DEFAULT_NAME, base_port=base_port
+        )  # type: ignore[return-value]
 
     @classmethod
     def from_cookie_files(
         cls,
         paths: list[str],
         *,
+        name: str = "",
         base_port: int = _BASE_BROWSER_PORT,
     ) -> CookieBrowserPool:
         """
@@ -120,12 +120,13 @@ class CookieBrowserPool(IdentityPool):
                 data = json.load(f)
             data["_cache_file"] = p
             entries.append(data)
-        return cls.init(entries, base_port=base_port)
+        return cls.init(entries, name=name, base_port=base_port)
 
     @classmethod
     def from_cookie_helper(
         cls,
         *helpers: AmazonCookieHelper,
+        name: str = "",
         base_port: int = _BASE_BROWSER_PORT,
     ) -> CookieBrowserPool:
         """
@@ -152,8 +153,8 @@ class CookieBrowserPool(IdentityPool):
             data = helper.get_cookie_data()
             data["_cache_file"] = helper.cache_file
             entries.append(data)
-        return cls.init(entries, base_port=base_port)
+        return cls.init(entries, name=name, base_port=base_port)
 
     @classmethod
-    def get_instance(cls) -> CookieBrowserPool | None:
-        return cls._instance  # type: ignore[return-value]
+    def get_instance(cls, name: str = "") -> CookieBrowserPool | None:
+        return cls._registry.get(name or cls._DEFAULT_NAME)  # type: ignore[return-value]
