@@ -175,6 +175,61 @@ LLM / cost work:      LLM_GUIDELINES → MCP_PROTOCOL
    | `STORAGE_ENDPOINT_URL` | For MinIO/Backblaze | Explicit S3-compatible endpoint override |
    | `STORAGE_LOCAL_DIR` | For `local_http` | Local directory to write files |
 
+4. **Amazon Ads API Setup** (skip if not using `ad_diagnosis`):
+
+   The `AMAZON_ADS_REFRESH_TOKEN_*` and `AMAZON_ADS_PROFILE_ID_*` values cannot be obtained manually — use the helper script after filling in `AMAZON_ADS_CLIENT_ID` and `AMAZON_ADS_CLIENT_SECRET` in `.env`:
+
+   ```bash
+   # Run from the project root with venv active
+   PYTHONPATH=. python scripts/setup_amazon_ads.py
+   ```
+
+   The script walks through three steps automatically:
+
+   | Step | What happens |
+   |---|---|
+   | **1. Authorization URL** | Prints an OAuth2 URL — open it in your **isolated Ziniu browser** (not your local browser) to avoid account linkage |
+   | **2. Extract code** | After approving, copy the `code=` value from the redirect URL's address bar and paste it when prompted |
+   | **3. Fetch profiles** | Exchanges the code for a refresh token, then lists all advertising profiles on the account |
+
+   Copy the two printed values into `.env`:
+   ```dotenv
+   AMAZON_ADS_REFRESH_TOKEN_US=<printed value>
+   AMAZON_ADS_PROFILE_ID_US=<printed value>
+   ```
+
+   To set up additional stores (UK, DE, JP), set `AMAZON_ADS_DEFAULT_STORE=UK` in `.env` and re-run the script.
+
+5. **Local LLM Setup** (optional — skip if running cloud-only):
+
+   The local model handles cheap, low-latency tasks routed by the Intelligence Router (data cleaning, field extraction, short classification). Cloud LLMs (Gemini/Claude) handle everything else. Setting `LOCAL_MODEL_PATH` is optional — if unset, all tasks fall through to the cloud provider.
+
+   **Ubuntu**: the deploy script automatically downloads `qwen2.5-3b-instruct-q4_k_m.gguf` into `models/llm/` and sets `LOCAL_MODEL_PATH`. No manual action required.
+
+   **macOS / Windows**: download a GGUF model manually and place it anywhere accessible. Recommended models from the same Qwen 2.5 Instruct family, chosen by available RAM:
+
+   | Available RAM | Recommended model | Download size | Notes |
+   |---|---|---|---|
+   | 4 GB | `qwen2.5-3b-instruct-q4_k_m.gguf` | ~2.0 GB | Same as Ubuntu default; fits any machine |
+   | 8 GB | `qwen2.5-7b-instruct-q4_k_m.gguf` | ~4.4 GB | Better quality; good for M1/M2 Mac or mid-range GPU |
+   | 16 GB+ | `qwen2.5-14b-instruct-q4_k_m.gguf` | ~8.6 GB | High quality; M2 Pro/Max, M3, or 16 GB VRAM GPU |
+
+   Download from Hugging Face (replace `<model-filename>` and `<MODEL-SIZE>` as appropriate):
+   ```bash
+   mkdir -p models/llm
+   # Example: 3B model
+   wget -c -O models/llm/qwen2.5-3b-instruct-q4_k_m.gguf \
+     "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
+   ```
+   For the 7B or 14B variants, replace `3B` with `7B` or `14B` in both the repo path and filename.
+
+   Then set the path in `.env` (use an absolute path to avoid working-directory issues):
+   ```dotenv
+   LOCAL_MODEL_PATH=/absolute/path/to/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf
+   ```
+
+   > **macOS note**: `llama-cpp-python` uses Metal (GPU) acceleration automatically on Apple Silicon — no extra flags needed. On Windows with an NVIDIA GPU, reinstall with CUDA support: `CMAKE_ARGS="-DGGML_CUDA=ON" pip install llama-cpp-python --no-binary llama-cpp-python`
+
 ---
 
 ## ⚡ Quick Start
@@ -202,13 +257,8 @@ Then in your Feishu group chat, send:
 - `更新亚马逊 Cookies` (Triggers manual auth refresh)
 - `这个类目好做吗？` (Triggers Agent Track Fallback)
 
-### 3. Deployment to Claude Desktop
-```bash
-# One-click deployment of all L1/L2 tools to Claude Desktop
-./scripts/deploy_claude_desktop.sh
-```
 
-### 4. Deployment to Ubuntu Server (Vultr / any VPS)
+### 3. Deployment to Ubuntu Server (Vultr / any VPS)
 ```bash
 # Full server setup: system packages, Python 3.11, venv, CUDA detection,
 # Redis (configured + running), model download, and environment variables.

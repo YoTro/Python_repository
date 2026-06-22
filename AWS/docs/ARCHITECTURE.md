@@ -100,14 +100,16 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                              |             |                                  |
 |  WorkflowRegistry:           |             |  Constraint Boundaries:          |
 |    "product_screening"       |             |  +---------------------------+     |
-|    "competitor_monitor"      |             |  | allowed_tools[ ]          |     |
-|    "review_analysis"         |             |  | max_steps: N (display)    |     |
-|    "category_monopoly"       |             |  | token_budget: N (cloud)   |     |
+|    "ad_diagnosis"            |             |  | allowed_tools[ ]          |     |
+|    "category_monopoly_       |             |  | max_steps: N (display)    |     |
+|     analysis"                |             |  | token_budget: N (cloud)   |     |
 |    "listing_diagnosis"       |             |  | cumulative_cost: $ (cloud)|     |
-|    ...register(name, fn)     |             |  | cumulative_cost: $ (cloud)|     |
-|                              |             |  | dynamic_step_extension    |     |
-|  Execution Engine:           |             |  | convergence_hints: true   |     |
-|  activity_runner =           |             |  +---------------------------+     |
+|    "amazon_bsr"              |             |  | dynamic_step_extension    |     |
+|    "lp_validation"           |             |  | convergence_hints: true   |     |
+|    ...register(name, fn)     |             |  +---------------------------+     |
+|                              |             |                                  |
+|  Execution Engine:           |             |                                  |
+|  activity_runner =           |             |                                  |
 |    ActivityRunner(ckpt, id)  |             |                                  |
 |  for step in active_steps:   |             |  Step Logic:                     |
 |    checkpoint.save()  ───────┼─ Resume ───┼── session.save() (inc. cost)     |
@@ -164,10 +166,10 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   xiyou_analysis  DATA       market-server     local xlsx file path          |
 |   calc_profit     COMPUTE    finance-server    profit margin as decimal      |
 |   check_epa       FILTER     compliance-server EPA requirement status        |
-|   populate_bitable OUTPUT    output-server     created record ID (robust)    |
-|   send_local_file  OUTPUT    output-server     Feishu attachment confirmation|
+|   populate_feishu_bitable_records OUTPUT output-server  created record IDs   |
+|   send_feishu_local_file OUTPUT output-server    Feishu attachment confirmation|
 |   erp_inventory   DATA       erp-server        real-time inventory for SKU   |
-|   ...  (57 tools total across 8 domain servers)                              |
+|   ...  (91 tools total across 7 domain servers)                              |
 |                                                                              |
 |   [Single-User] Memory dict, no filtering                                    |
 |   [Ext Point #4] Per-tenant tool visibility control                          |
@@ -462,7 +464,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
                                |
                                v
 +==============================================================================+
-|                      CALLBACK  (inside job_manager/)                         |
+|                      CALLBACK  (inside src/jobs/callbacks/)                  |
 |                                                                              |
 |   Unified Interface:                                                         |
 |     on_progress(step, total, msg)        ── Real-time progress notifications |
@@ -583,7 +585,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 
 
 ================================================================================
-                    EXTENSION RULES  (6-Dimensional Orthogonal)
+                    EXTENSION RULES  (7-Dimensional Orthogonal)
 ================================================================================
 
   New Entry Point    EntryPoint adapter  +  Gateway register     Zero change elsewhere
@@ -652,7 +654,10 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
   14    FilterStep    compliance_filter    Filter   -->  Low-risk ASINs remain
   15    EnrichStep    xiyou_traffic (MCP)  MARKET   -->  Actual Ad Dependency %
   16    FilterStep    ad_dependency        Filter   -->  Natural-traffic winners
-  17    ProcessStep   final_synthesis      CLOUD_LLM --> Selection Report
+  17    EnrichStep    enrich_social_data   SOCIAL   -->  TikTok/Meta trend signals
+  18    ProcessStep   social_virality_     CLOUD_LLM --> Virality risk score
+                      analysis
+  19    ProcessStep   final_synthesis      CLOUD_LLM --> Selection Report
   ────  ────────────  ───────────────────  ────────────────────────────────────
   Key: Step 0 seeds ASIN list from keyword; engine seeds items=[{keyword}] when
        no asin/initial_items param is present. Finance MCP unifies profit calc.
