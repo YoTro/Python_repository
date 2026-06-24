@@ -100,14 +100,15 @@ class TikTokClient:
             "webcast_language": "en",
         }
 
-    # clientABVersions signals legitimate browser AB-test state to TikTok's WAF.
+    # Fallback clientABVersions — used when the hydration JSON doesn't contain
+    # abTestVersion.versionName.  Extracted from a real browser session; prefer
+    # the live value from the page whenever possible.
     _CLIENT_AB_VERSIONS = (
-        "70508271,73720540,75638231,75694227,75843653,76034399,76055830,76065196,"
-        "76088343,76143647,76146172,76146380,76184862,76191889,76198652,76212861,"
-        "76248964,76251329,76252683,76276621,76299613,76308136,76314877,76365576,"
-        "76378430,76383375,76389840,76403730,70405643,71057832,71200802,72361743,"
-        "73171280,73208420,74276218,74413136,74844724,75330961,73675307,76214371,"
-        "76262263"
+        "70508271,73720540,75638230,75694226,75843653,76034400,76055828,76065197,"
+        "76088343,76143645,76146170,76146379,76184862,76191886,76212861,76248967,"
+        "76251328,76252684,76276622,76299613,76308135,76314877,76360146,76365577,"
+        "76378433,76383374,76403729,70405643,71057832,71200802,72361743,73171280,"
+        "73208420,74276218,74413136,74844724,75330961"
     )
 
     def _seed_ms_token(self, video_referer: str = "https://www.tiktok.com/@tiktok") -> str:
@@ -149,6 +150,8 @@ class TikTokClient:
             odin_id = "7654397973388346399"
             device_id = "7654397980141078047"
             item_id = ""
+            ab_versions = self._CLIENT_AB_VERSIONS
+            category_type = "113"
 
             render_data_text = re.compile(
                 r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">(.*?)</script>'
@@ -162,6 +165,11 @@ class TikTokClient:
                     app_ctx = scope.get("webapp.app-context", {})
                     odin_id = app_ctx.get("odinId", odin_id)
                     device_id = app_ctx.get("wid", device_id)
+                    category_type = str(app_ctx.get("categoryType", category_type))
+                    ab_versions = (
+                        scope.get("abTestVersion", {}).get("versionName", "")
+                        or self._CLIENT_AB_VERSIONS
+                    )
                     video_detail = scope.get("webapp.video-detail", {})
                     item_id = (
                         video_detail.get("itemInfo", {})
@@ -170,14 +178,15 @@ class TikTokClient:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to parse hydration data: {e}")
+                    ab_versions = self._CLIENT_AB_VERSIONS
 
             # Step 2: call /api/related/item_list/ to obtain a Level 1 msToken
             params = {
                 **self.base_params,
-                "CategoryType": "113",
+                "CategoryType": category_type,
                 "WebIdLastTime": str(int(time.time())),
                 "browser_version": self.user_agent.replace("Mozilla/", ""),
-                "clientABVersions": self._CLIENT_AB_VERSIONS,
+                "clientABVersions": ab_versions,
                 "count": "16",
                 "coverFormat": "2",
                 "cursor": "0",
@@ -830,10 +839,11 @@ class TikTokClient:
             "upgrade-insecure-requests": "1",
             "user-agent": self.user_agent,
         }
-        ttwid    = ""
-        odin_id  = "7620022218310960159"
+        ttwid     = ""
+        odin_id   = "7620022218310960159"
         device_id = "7620022218281616927"
-        sec_uid  = ""
+        sec_uid   = ""
+        ab_versions = self._CLIENT_AB_VERSIONS
         try:
             resp = self.session.get(profile_url, headers=page_headers, timeout=10)
             cookies = self.session.cookies.get_dict()
@@ -845,8 +855,12 @@ class TikTokClient:
                 hydration = json.loads(urllib.parse.unquote(m.group(1)), strict=False)
                 scope = hydration.get("__DEFAULT_SCOPE__", {})
                 app_ctx = scope.get("webapp.app-context", {})
-                odin_id  = app_ctx.get("odinId", odin_id)
+                odin_id   = app_ctx.get("odinId", odin_id)
                 device_id = app_ctx.get("wid", device_id)
+                ab_versions = (
+                    scope.get("abTestVersion", {}).get("versionName", "")
+                    or self._CLIENT_AB_VERSIONS
+                )
                 user_info = (
                     scope.get("webapp.user-detail", {})
                     .get("userInfo", {})
@@ -881,7 +895,7 @@ class TikTokClient:
                 **self.base_params,
                 "WebIdLastTime": str(int(time.time())),
                 "browser_version": self.user_agent.replace("Mozilla/", ""),
-                "clientABVersions": self._CLIENT_AB_VERSIONS,
+                "clientABVersions": ab_versions,
                 "count": "16",
                 "coverFormat": "2",
                 "cursor": cursor,
