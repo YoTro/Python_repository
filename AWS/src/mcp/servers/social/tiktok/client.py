@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -42,8 +43,15 @@ class TikTokClient:
     and automatic session initialization (ttwid/webid extraction).
     """
 
+    @staticmethod
+    def _build_sec_ch_ua(user_agent: str) -> str:
+        """Derive sec-ch-ua from the Chrome major version in the UA string."""
+        m = re.search(r"Chrome/(\d+)", user_agent)
+        v = m.group(1) if m else "120"
+        return f'"Google Chrome";v="{v}", "Chromium";v="{v}", "Not)A;Brand";v="24"'
+
     def __init__(self):
-        self.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+        self.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
         self.session = requests.Session(impersonate="chrome")
 
         # Default msToken that bypassed WAF for unauthenticated requests
@@ -51,9 +59,9 @@ class TikTokClient:
 
         self.base_headers = {
             "accept": "*/*",
-            "accept-language": "en-US,en;q=0.9",
+            "accept-language": "en",
             "priority": "u=1, i",
-            "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+            "sec-ch-ua": self._build_sec_ch_ua(self.user_agent),
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"macOS"',
             "sec-fetch-dest": "empty",
@@ -62,28 +70,175 @@ class TikTokClient:
             "user-agent": self.user_agent,
         }
 
-    def _seed_ms_token(self) -> str:
+    # clientABVersions signals legitimate browser AB-test state to TikTok's WAF.
+    _CLIENT_AB_VERSIONS = (
+        "70508271,73720540,75638231,75694227,75843653,76034399,76055830,76065196,"
+        "76088343,76143647,76146172,76146380,76184862,76191889,76198652,76212861,"
+        "76248964,76251329,76252683,76276621,76299613,76308136,76314877,76365576,"
+        "76378430,76383375,76389840,76403730,70405643,71057832,71200802,72361743,"
+        "73171280,73208420,74276218,74413136,74844724,75330961,73675307,76214371,"
+        "76262263"
+    )
+
+    def _seed_ms_token(self, video_referer: str = "https://www.tiktok.com/@tiktok") -> str:
         """
-        Retrieves a fresh, high-privilege msToken via a minimal request to the recommend API.
-        This Token is necessary for accessing 'interaction' data like comments.
+        Retrieves a Level 1 msToken by:
+        1. Fetching the video/profile page to collect ttwid + extract odinId, device_id, itemID.
+        2. Calling /api/related/item_list/ with signed params — reads the Level 1 token from
+           the x-ms-token response header (also present in Set-Cookie as msToken).
+
+        Key fixes vs prior version:
+        - Adds clientABVersions (required by WAF to return data).
+        - browser_language="en" (not "en-US") — matches what browser sends.
+        - Signs the seed request with X-Gnarly + X-Bogus.
+        - Builds URL manually so '/' in X-Gnarly is never encoded as '%2F'.
+        - Reads token from x-ms-token response header, not just Set-Cookie.
         """
         try:
-            # Minimal naked request proven to issue a Level 1 Token
-            url = "https://www.tiktok.com/api/recommend/item_list/?aid=1988"
-            headers = {"User-Agent": self.user_agent}
-            self.session.get(url, headers=headers, timeout=10)
-            token = self.session.cookies.get_dict().get("msToken", "")
+            # Step 1: fetch the page to collect session cookies and extract IDs from hydration JSON
+            page_headers = {
+                "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                "accept-language": "en",
+                "cache-control": "no-cache",
+                "pragma": "no-cache",
+                "priority": "u=0, i",
+                "sec-ch-ua": self.base_headers["sec-ch-ua"],
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"macOS"',
+                "sec-fetch-dest": "document",
+                "sec-fetch-mode": "navigate",
+                "sec-fetch-site": "none",
+                "sec-fetch-user": "?1",
+                "upgrade-insecure-requests": "1",
+                "user-agent": self.user_agent,
+            }
+            response = self.session.get(video_referer, headers=page_headers, timeout=10)
+            cookies_dict = self.session.cookies.get_dict()
+            ttwid = cookies_dict.get("ttwid", "")
+
+            odin_id = "7654397973388346399"
+            device_id = "7654397980141078047"
+            item_id = ""
+
+            render_data_text = re.compile(
+                r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">(.*?)</script>'
+            ).findall(response.text)
+            if render_data_text:
+                try:
+                    render_data = json.loads(
+                        urllib.parse.unquote(render_data_text[0]), strict=False
+                    )
+                    scope = render_data.get("__DEFAULT_SCOPE__", {})
+                    app_ctx = scope.get("webapp.app-context", {})
+                    odin_id = app_ctx.get("odinId", odin_id)
+                    device_id = app_ctx.get("wid", device_id)
+                    video_detail = scope.get("webapp.video-detail", {})
+                    item_id = (
+                        video_detail.get("itemInfo", {})
+                        .get("itemStruct", {})
+                        .get("id", "")
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to parse hydration data: {e}")
+
+            # Step 2: call /api/related/item_list/ to obtain a Level 1 msToken
+            params = {
+                "CategoryType": "113",
+                "WebIdLastTime": str(int(time.time())),
+                "aid": "1988",
+                "app_language": "en",
+                "app_name": "tiktok_web",
+                "browser_language": "en",
+                "browser_name": "Mozilla",
+                "browser_online": "true",
+                "browser_platform": "MacIntel",
+                "browser_version": self.user_agent.replace("Mozilla/", ""),
+                "channel": "tiktok_web",
+                "clientABVersions": self._CLIENT_AB_VERSIONS,
+                "cookie_enabled": "true",
+                "count": "16",
+                "coverFormat": "2",
+                "cursor": "0",
+                "data_collection_enabled": "false",
+                "device_id": str(device_id),
+                "device_platform": "web_pc",
+                "focus_state": "true",
+                "from_page": "video",
+                "history_len": "2",
+                "isNonPersonalized": "false",
+                "is_fullscreen": "false",
+                "is_page_visible": "true",
+                "itemID": item_id,
+                "language": "en",
+                "launch_mode": "direct",
+                "odinId": str(odin_id),
+                "os": "mac",
+                "priority_region": "",
+                "referer": "",
+                "region": "US",
+                "screen_height": "900",
+                "screen_width": "1440",
+                "tz_name": "America/New_York",
+                "user_is_login": "false",
+                "video_encoding": "dash",
+                "webcast_language": "en",
+                "msToken": "",
+            }
+            if ttwid:
+                self.session.cookies.set("ttwid", ttwid, domain=".tiktok.com")
+
+            # Sign the seed request
+            qs = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+            x_gnarly = TikTokSigner.generate_x_gnarly(qs, self.user_agent)
+            params["X-Gnarly"] = x_gnarly
+            qs2 = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+            x_bogus = TikTokSigner.generate_x_bogus(qs2, self.user_agent, int(time.time()))
+            params["X-Bogus"] = x_bogus
+            final = {k: v for k, v in params.items() if k not in ("X-Bogus", "X-Gnarly")}
+            final["X-Bogus"]  = x_bogus
+            final["X-Gnarly"] = x_gnarly
+
+            api_headers = {
+                "accept": "*/*",
+                "accept-language": "en-US,en;q=0.9",
+                "priority": "u=1, i",
+                "sec-ch-ua": self.base_headers["sec-ch-ua"],
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"macOS"',
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-origin",
+                "referer": video_referer,
+                "user-agent": self.user_agent,
+            }
+            # Build URL manually — prevents curl_cffi from re-encoding '/' in X-Gnarly as '%2F'
+            full_url = (
+                "https://www.tiktok.com/api/related/item_list/?"
+                + urllib.parse.urlencode(final, quote_via=urllib.parse.quote)
+            )
+            seed_resp = self.session.get(full_url, headers=api_headers, timeout=10)
+            # Read token from x-ms-token header (canonical) or Set-Cookie fallback
+            token = seed_resp.headers.get("x-ms-token", "")
+            if not token:
+                sc = seed_resp.headers.get("set-cookie", "")
+                if "msToken=" in sc:
+                    token = sc.split("msToken=")[1].split(";")[0]
+            if not token:
+                token = self.session.cookies.get_dict().get("msToken", "")
             if token:
-                logger.debug(f"Dynamically seeded msToken: {token[:20]}...")
+                logger.debug(f"Server-seeded msToken: {token[:20]}...")
             return token
         except Exception as e:
-            logger.warning(f"Failed to dynamically seed msToken: {e}")
+            logger.warning(f"Failed to seed msToken from server: {e}")
             return ""
 
     def _generate_ms_token(self, randomlength: int = 107) -> str:
         """
-        Generate a random string for msToken using valid characters.
+        Returns a server-issued msToken. Falls back to a random string if the server is unreachable.
         """
+        token = self._seed_ms_token()
+        if token:
+            return token
         random_str = ""
         base_str = "ABCDEFGHIGKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_="
         length = len(base_str) - 1
@@ -98,12 +253,23 @@ class TikTokClient:
         for _ in range(3):
             try:
                 headers = {
-                    "User-Agent": self.user_agent,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
+                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "accept-language": "en",
+                    "cache-control": "no-cache",
+                    "pragma": "no-cache",
+                    "priority": "u=0, i",
+                    "sec-ch-ua": self.base_headers["sec-ch-ua"],
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"macOS"',
+                    "sec-fetch-dest": "document",
+                    "sec-fetch-mode": "navigate",
+                    "sec-fetch-site": "none",
+                    "sec-fetch-user": "?1",
+                    "upgrade-insecure-requests": "1",
+                    "user-agent": self.user_agent,
                 }
 
-                response = self.session.request("GET", req_url, headers=headers, timeout=5)
+                response = self.session.request("GET", req_url, headers=headers, timeout=10)
 
                 # Fetch from session cookies (which accumulate) rather than just response cookies
                 cookies_dict = self.session.cookies.get_dict()
@@ -166,25 +332,33 @@ class TikTokClient:
         ms_token = self._generate_ms_token(107)
         params["msToken"] = ms_token
 
-        query_string = urllib.parse.urlencode(params)
+        qs = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+        x_gnarly = TikTokSigner.generate_x_gnarly(qs, self.user_agent)
+        params["X-Gnarly"] = x_gnarly
+        qs2 = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
         timestamp = int(time.time())
-        x_bogus = TikTokSigner.generate_x_bogus(query_string, self.user_agent, timestamp)
+        x_bogus = TikTokSigner.generate_x_bogus(qs2, self.user_agent, timestamp)
         params["X-Bogus"] = x_bogus
+        final_params = {k: v for k, v in params.items() if k not in ("X-Bogus", "X-Gnarly")}
+        final_params["X-Bogus"]  = x_bogus
+        final_params["X-Gnarly"] = x_gnarly
 
         headers = self.base_headers.copy()
         headers["referer"] = referer
 
-        # Use session cookies and manually inject our dynamic msToken
         self.session.cookies.set("msToken", ms_token, domain=".tiktok.com")
         if ttwid:
             self.session.cookies.set("ttwid", ttwid, domain=".tiktok.com")
+
+        # Build URL manually — prevents curl_cffi from re-encoding '/' in X-Gnarly as '%2F'
+        full_url = url + "?" + urllib.parse.urlencode(final_params, quote_via=urllib.parse.quote)
 
         limiter = RateLimiter()
         for attempt in range(3):
             if not limiter.acquire_source("tiktok"):
                 raise RetryableError("tiktok source rate limit timeout", retry_after_seconds=60)
             try:
-                response = self.session.get(url, params=params, headers=headers)
+                response = self.session.get(full_url, headers=headers)
                 if response.status_code == 200:
                     try:
                         return response.json()
@@ -342,20 +516,303 @@ class TikTokClient:
 
         return self.get_hashtag_videos(challenge_id, tag_name, count)
 
+    # Dedicated debug port for DrissionPage so we never conflict with a user's
+    # Chrome on the default 9222.
+    _DRISSION_PORT = 9223
+    # Persistent profile for DrissionPage — cookies accumulate here across runs.
+    _DRISSION_PROFILE = os.path.expanduser("~/.cache/drission_tiktok")
+
+    @classmethod
+    def _drission_page_with_cookies(cls) -> "ChromiumPage | None":  # type: ignore[name-defined]
+        """
+        Return a ChromiumPage that is guaranteed to have a TikTok session.
+
+        Priority order:
+        1. Existing Chrome on port 9222 (user started Chrome with --remote-debugging-port=9222).
+        2. Re-use our own DrissionPage Chrome on port 9223 (already running from a prior call).
+        3. Launch a fresh Chrome on port 9223 using the real Chrome profile directory
+           (safe only when no Chrome is running — profile is unlocked).
+        4. Launch a fresh Chrome on port 9223 with a dedicated profile
+           (~/.cache/drission_tiktok/) seeded by copying the real Chrome cookie DB.
+           macOS Chrome stores the encryption key in the Keychain by binary, so any
+           Chrome process on the same machine can decrypt those cookies.
+        5. Return None — caller should fall back to the signed-API path.
+        """
+        import os
+        import shutil
+        import socket
+        import subprocess
+        import sys
+
+        try:
+            from DrissionPage import ChromiumOptions, ChromiumPage
+        except ImportError:
+            return None
+
+        port = cls._DRISSION_PORT
+
+        def _port_open(p: int) -> bool:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                return s.connect_ex(("127.0.0.1", p)) == 0
+
+        def _chrome_running() -> bool:
+            try:
+                name = "Google Chrome" if sys.platform == "darwin" else "chrome"
+                return (
+                    subprocess.run(
+                        ["pgrep", "-x", name], capture_output=True, timeout=3
+                    ).returncode
+                    == 0
+                )
+            except Exception:
+                return False
+
+        # 1. User-managed Chrome with debug port
+        if _port_open(9222):
+            return ChromiumPage()
+
+        # 2. Our own DrissionPage Chrome already running on dedicated port
+        if _port_open(port):
+            opts = ChromiumOptions().set_local_port(port)
+            return ChromiumPage(addr_or_opts=opts)
+
+        # Locate real Chrome binary and profile
+        if sys.platform == "darwin":
+            real_profile = os.path.expanduser(
+                "~/Library/Application Support/Google/Chrome"
+            )
+            chrome_bin = (
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            )
+        else:
+            real_profile = os.path.expanduser("~/.config/google-chrome")
+            chrome_bin = "/usr/bin/google-chrome"
+
+        opts = ChromiumOptions()
+        opts.set_local_port(port)
+        if os.path.exists(chrome_bin):
+            opts.set_paths(browser_path=chrome_bin)
+
+        # 3. Real profile (only safe when Chrome is not already running)
+        if os.path.exists(real_profile) and not _chrome_running():
+            opts.set_paths(user_data_path=real_profile)
+            try:
+                return ChromiumPage(addr_or_opts=opts)
+            except Exception as e:
+                logger.warning(f"[browser] Real-profile launch failed: {e}")
+
+        # 4. Dedicated profile seeded with real Chrome cookies
+        drission_default = os.path.join(cls._DRISSION_PROFILE, "Default")
+        os.makedirs(drission_default, exist_ok=True)
+
+        # Seed cookies from the real Chrome Default profile (best-effort copy).
+        # Chrome's macOS cookie encryption key lives in the Keychain under the
+        # Chrome binary name, not the profile — so any Chrome on this machine
+        # can decrypt cookies regardless of which profile dir they came from.
+        real_default = os.path.join(real_profile, "Default")
+        for fname in ("Cookies", "Web Data", "Preferences"):
+            src = os.path.join(real_default, fname)
+            dst = os.path.join(drission_default, fname)
+            if os.path.exists(src) and not os.path.exists(dst):
+                try:
+                    shutil.copy2(src, dst)
+                    logger.info(f"[browser] Seeded {fname} from real Chrome profile")
+                except Exception as e:
+                    logger.debug(f"[browser] Could not copy {fname}: {e}")
+
+        opts.set_paths(user_data_path=cls._DRISSION_PROFILE)
+        try:
+            return ChromiumPage(addr_or_opts=opts)
+        except Exception as e:
+            logger.warning(f"[browser] Dedicated-profile launch failed: {e}")
+            return None
+
+    @staticmethod
+    def _page_fetch(page: "ChromiumPage", url: str) -> dict | None:  # type: ignore[name-defined]
+        """
+        Execute a fetch() inside the browser page and return the parsed JSON.
+
+        TikTok's SDK patches window.fetch to add X-Bogus + X-Gnarly automatically,
+        so any URL fetched this way is properly signed without us doing any signing.
+        The browser also sends all session cookies (credentials: 'include').
+        """
+        page.run_js(
+            f"""
+            window.__tt_fetch_done = false;
+            window.__tt_fetch_data = null;
+            (async () => {{
+                try {{
+                    const r = await window.fetch(
+                        {json.dumps(url)},
+                        {{credentials: 'include'}}
+                    );
+                    window.__tt_fetch_data = await r.json();
+                }} catch(e) {{
+                    window.__tt_fetch_data = {{error: e.message}};
+                }}
+                window.__tt_fetch_done = true;
+            }})();
+            """
+        )
+        for _ in range(12):
+            time.sleep(1)
+            if page.run_js("return !!window.__tt_fetch_done"):
+                break
+        return page.run_js("return window.__tt_fetch_data")
+
+    def _get_comments_via_browser(
+        self, video_id: str, author_id: str | None, count: int
+    ) -> list[dict[str, Any]] | None:
+        """
+        Primary comment path: navigate to the video page in the user's existing
+        Chrome session (has real TikTok cookies) and capture /api/comment/list/
+        without any manual signing.  Returns None on failure so the caller can
+        fall back to the signed-API path.
+
+        Strategy A — XHR intercept: call window.fetch() from inside the page.
+          TikTok's SDK has already patched window.fetch to inject X-Bogus +
+          X-Gnarly, so the request is auto-signed and carries real session cookies.
+
+        Strategy B — click + listen (fallback): click the comment button and
+          capture the API packet via CDP network interception.
+        """
+        if author_id:
+            author_id = author_id if author_id.startswith("@") else f"@{author_id}"
+            video_url = f"https://www.tiktok.com/{author_id}/video/{video_id}"
+        else:
+            video_url = f"https://www.tiktok.com/video/{video_id}"
+
+        logger.info(f"[browser] Fetching comments via DrissionPage: {video_url}")
+        page = self._drission_page_with_cookies()
+        if page is None:
+            return None
+
+        try:
+            page.get(video_url)
+            time.sleep(5)  # let TikTok SDK initialize and patch window.fetch
+
+            all_comments: list[dict] = []
+
+            # ── Strategy A: XHR intercept ────────────────────────────────────
+            base_api = (
+                f"/api/comment/list/?aweme_id={video_id}"
+                "&count=20&cursor=0&aid=1988&app_name=tiktok_web"
+            )
+            first_data = self._page_fetch(page, base_api)
+
+            if first_data and first_data.get("status_code") == 0:
+                logger.info("[browser] XHR intercept succeeded")
+                all_comments.extend(first_data.get("comments") or [])
+                cursor = first_data.get("cursor", len(all_comments))
+                has_more = bool(first_data.get("has_more"))
+
+                while has_more and (count == 0 or len(all_comments) < count):
+                    next_url = (
+                        f"/api/comment/list/?aweme_id={video_id}"
+                        f"&count=20&cursor={cursor}&aid=1988&app_name=tiktok_web"
+                    )
+                    page_data = self._page_fetch(page, next_url)
+                    if not page_data or page_data.get("status_code", -1) != 0:
+                        break
+                    all_comments.extend(page_data.get("comments") or [])
+                    cursor = page_data.get("cursor", len(all_comments))
+                    has_more = bool(page_data.get("has_more"))
+                    time.sleep(random.uniform(0.8, 1.5))
+
+            else:
+                # ── Strategy B: click comment button + CDP packet capture ────
+                logger.info(
+                    f"[browser] XHR intercept gave status_code="
+                    f"{first_data.get('status_code') if first_data else 'None'}, "
+                    "falling back to click+listen"
+                )
+                page.listen.start("/api/comment/list/")
+                for sel in [
+                    'xpath://div[@data-e2e="comment-icon"]//button[@data-testid="tux-web-icon-button"]',
+                    'xpath://div[@role="button"][contains(@aria-label,"comment")]',
+                    '[data-e2e="comment-icon"]',
+                ]:
+                    try:
+                        el = page.ele(sel, timeout=5)
+                        if el:
+                            el.click()
+                            break
+                    except Exception:
+                        pass
+
+                time.sleep(2)
+                packet = page.listen.wait(timeout=15)
+                if not packet:
+                    page.quit()
+                    return None
+
+                body = packet.response.body
+                data = json.loads(body) if isinstance(body, str) else body
+                all_comments.extend(data.get("comments") or [])
+                cursor = str(data.get("cursor", len(all_comments)))
+                has_more = bool(data.get("has_more"))
+                base_url = packet.response.url
+
+                while has_more and (count == 0 or len(all_comments) < count):
+                    next_url = re.sub(r"cursor=([^&]+)", f"cursor={cursor}", base_url)
+                    next_url = re.sub(r"count=\d+", "count=20", next_url)
+                    page_data = self._page_fetch(page, next_url)
+                    if not page_data or page_data.get("status_code", -1) != 0:
+                        break
+                    all_comments.extend(page_data.get("comments") or [])
+                    cursor = str(page_data.get("cursor", len(all_comments)))
+                    has_more = bool(page_data.get("has_more"))
+                    time.sleep(random.uniform(0.8, 1.5))
+
+            page.quit()
+            result = all_comments[:count] if count > 0 else all_comments
+            logger.info(f"[browser] Got {len(result)} comments for video {video_id}")
+            return result
+
+        except Exception as e:
+            logger.warning(f"[browser] DrissionPage comment fetch failed: {e}")
+            try:
+                page.quit()
+            except Exception:
+                pass
+            return None
+
     def get_video_comments(
         self, video_id: str, count: int = 20, author_id: str = None
     ) -> list[dict[str, Any]]:
         """
-        Fetch comments for a specific video using dynamic X-Bogus and X-Gnarly generation.
-        Uses a specific set of parameters and headers proven to bypass unauthenticated anti-bot checks.
+        Fetch comments for a specific video.
+
+        Primary path: signed API (_get_video_comments_signed) — fast, headless,
+        no browser required.  Falls back to DrissionPage if the signed path
+        returns nothing (e.g. video requires a logged-in session).
+        """
+        result = self._get_video_comments_signed(video_id, count, author_id)
+        if result:
+            return result
+
+        logger.info(f"[comments] Signed-API returned empty, falling back to DrissionPage for {video_id}")
+        browser_result = self._get_comments_via_browser(video_id, author_id, count)
+        return browser_result if browser_result is not None else []
+
+    def _get_video_comments_signed(
+        self, video_id: str, count: int = 20, author_id: str = None
+    ) -> list[dict[str, Any]]:
+        """
+        Fallback: fetch comments via manually signed /api/comment/list/ requests.
+        Uses X-Bogus + X-Gnarly signatures (xgnarly.mjs algorithm).
         """
         if author_id:
             author_id = author_id if author_id.startswith("@") else f"@{author_id}"
             referer = f"https://www.tiktok.com/{author_id}/video/{video_id}"
+            profile_url = f"https://www.tiktok.com/{author_id}"
         else:
             referer = f"https://www.tiktok.com/video/{video_id}"
+            profile_url = "https://www.tiktok.com/@tiktok"
 
-        ttwid, odin_id, device_id = self._get_ttwid_webid(referer)
+        # Use profile URL (not video URL) — profile pages are lighter and don't time out
+        ttwid, odin_id, device_id = self._get_ttwid_webid(profile_url)
 
         # Ensure we have valid IDs, fallback to high-trust ones if extraction returned generic defaults
         if str(odin_id) == "7619886743638033430":
@@ -363,8 +820,8 @@ class TikTokClient:
         if str(device_id) == "7619886743638033430":
             device_id = "7620022218281616927"
 
-        # Dynamically seed a high-privilege msToken for this session
-        ms_token = self._seed_ms_token()
+        # Dynamically seed a Level 1 msToken via /api/related/item_list/
+        ms_token = self._seed_ms_token(referer)
         if not ms_token:
             # High-trust msToken associated with the fallback IDs above
             ms_token = "_2Rt-OjroXlfNDODlRjBG9mvNjg5SDGmuvV_gGdZ_z_3zWaeMspWSbyUm5Rx3x5NTJESK6MAaB1AmI-MGGnrKcYScouq9OCw9cI7OffmJdp88qR7EXxrvZir6FODu-KIV1bYoA3QwzibI3bmCKltMFc="
@@ -374,19 +831,17 @@ class TikTokClient:
 
         url = "https://www.tiktok.com/api/comment/list/"
         headers = {
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "accept-language": "en",
-            "priority": "u=0, i",
-            "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+            "accept": "*/*",
+            "accept-language": "en-US,en;q=0.9",
+            "priority": "u=1, i",
+            "referer": referer,
+            "sec-ch-ua": self.base_headers["sec-ch-ua"],
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"macOS"',
-            "sec-fetch-dest": "document",
-            "sec-fetch-mode": "navigate",
-            "sec-fetch-site": "none",
-            "sec-fetch-user": "?1",
-            "upgrade-insecure-requests": "1",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
             "user-agent": self.user_agent,
-            "referer": referer,
         }
 
         logger.info(
@@ -401,34 +856,30 @@ class TikTokClient:
                 "app_language": "en",
                 "app_name": "tiktok_web",
                 "aweme_id": video_id,
-                "browser_language": "en",
+                "browser_language": "en-US",
                 "browser_name": "Mozilla",
                 "browser_online": "true",
                 "browser_platform": "MacIntel",
-                "browser_version": "5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+                "browser_version": self.user_agent.replace("Mozilla/", ""),
                 "channel": "tiktok_web",
                 "cookie_enabled": "true",
                 "count": str(request_count),
-                "current_region": "US",
                 "cursor": cursor,
                 "data_collection_enabled": "false",
                 "device_id": str(device_id),
                 "device_platform": "web_pc",
-                "enter_from": "tiktok_web",
-                "focus_state": "false",
-                "fromWeb": "1",
+                "focus_state": "true",
                 "from_page": "video",
-                "history_len": "3",
+                "history_len": "2",
                 "is_fullscreen": "false",
-                "is_non_personalized": "false",
                 "is_page_visible": "true",
                 "odinId": str(odin_id),
                 "os": "mac",
                 "priority_region": "",
                 "referer": "",
                 "region": "US",
-                "screen_height": "1440",
-                "screen_width": "2560",
+                "screen_height": "900",
+                "screen_width": "1440",
                 "tz_name": "America/New_York",
                 "user_is_login": "false",
                 "webcast_language": "en",
@@ -436,32 +887,31 @@ class TikTokClient:
             }
 
             # 1. Generate X-Gnarly from the current query string
-            query_string = urllib.parse.urlencode(params)
+            # Use quote (not default quote_plus) so spaces encode as %20, matching the browser
+            query_string = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
             x_gnarly = TikTokSigner.generate_x_gnarly(query_string, self.user_agent)
             params["X-Gnarly"] = x_gnarly
 
             # 2. Generate X-Bogus from the query string that now includes X-Gnarly
-            query_string_with_gnarly = urllib.parse.urlencode(params)
+            query_string_with_gnarly = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
             timestamp = int(time.time())
             x_bogus = TikTokSigner.generate_x_bogus(
                 query_string_with_gnarly, self.user_agent, timestamp
             )
             params["X-Bogus"] = x_bogus
 
-            # Final URL construction with signatures at the end
-            final_params = params.copy()
-            xb = final_params.pop("X-Bogus")
-            xg = final_params.pop("X-Gnarly")
-            final_params["X-Bogus"] = xb
-            final_params["X-Gnarly"] = xg
+            # Reorder: signatures at end, then build URL manually to preserve
+            # '/' in X-Gnarly (curl_cffi params= would encode it as '%2F').
+            final_params = {k: v for k, v in params.items() if k not in ("X-Bogus", "X-Gnarly")}
+            final_params["X-Bogus"]  = x_bogus
+            final_params["X-Gnarly"] = x_gnarly
+            full_url = url + "?" + urllib.parse.urlencode(final_params, quote_via=urllib.parse.quote)
 
             if not RateLimiter().acquire_source("tiktok"):
                 raise RetryableError("tiktok source rate limit timeout", retry_after_seconds=60)
 
             try:
-                response = requests.get(
-                    url, params=final_params, headers=headers, timeout=15, impersonate="chrome"
-                )
+                response = self.session.get(full_url, headers=headers, timeout=15)
 
                 if response.status_code == 429:
                     wait = int(response.headers.get("Retry-After", 4)) + random.uniform(0, 1)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import math
+import os
 from time import time
 
 logger = logging.getLogger(__name__)
@@ -113,146 +113,133 @@ class TikTokSigner:
     def generate_x_gnarly(
         cls, query_string: str, user_agent: str, body: str = "", timestamp: int = None
     ) -> str:
-        obj = {
-            1: 1,
-            2: 0,
-            3: hashlib.md5(query_string.encode("utf-8")).hexdigest(),
-            4: hashlib.md5(body.encode("utf-8")).hexdigest(),
-            5: hashlib.md5(user_agent.encode("utf-8")).hexdigest(),
+        # Direct port of xgnarly.mjs from tiktok-signature v4.3.6
+        SIGMA = [1196819126, 600974999, 3863347763, 1451689750]
+        ALPHABET = "u09tbS3UvgDEe6r-ZVMXzLpsAohTn7mdINQlW412GqBjfYiyk8JORCF5/xKHwacP="
+        MAGIC_BYTE = 75
+        FIELD_ORDER = [1, 8, 12, 11, 6, 9, 4, 7, 0, 14, 15, 2, 3, 10, 5, 13]
+        INT_WIDTHS = {0: 4, 1: 2, 2: 2, 6: 4, 7: 4, 8: 4, 11: 2, 12: 2, 13: 2, 14: 4, 15: 4}
+
+        ts_ms = int(time() * 1000) if timestamp is None else int(timestamp) * 1000
+        ts_sec = ts_ms // 1000
+
+        r14 = os.urandom(2)
+        r15 = os.urandom(4)
+        field14 = (65 << 16) | (r14[0] << 8) | r14[1]
+        field15 = ((r15[0] << 24) | (r15[1] << 16) | (r15[2] << 8) | r15[3]) & 0xFFFFFFFF
+
+        fields: dict = {
+            1: 65,
+            2: 4,
+            3: hashlib.md5(query_string.encode()).hexdigest(),
+            4: hashlib.md5(body.encode()).hexdigest(),
+            5: hashlib.md5(user_agent.encode()).hexdigest(),
+            6: ts_sec,
+            7: 3181061566,
+            8: ts_ms % 0x80000000,
+            9: "5.1.3-ZTCA",
+            10: "1.0.0.368",
+            11: 1,
+            12: 0,
+            13: 0,
+            14: field14,
+            15: field15,
         }
-        t_ms = int(time() * 1000) if timestamp is None else timestamp * 1000
-        obj[6], obj[7], obj[8], obj[9] = t_ms // 1000, 1245783967, t_ms % 2147483648, "5.1.0"
-        obj[0] = obj[6] ^ obj[7] ^ obj[8] ^ obj[1] ^ obj[2]
-        arr = [len(obj)]
 
-        def n2u(v):
-            return list(v.to_bytes(2, "big")) if v < 65025 else list(v.to_bytes(4, "big"))
+        xor_header = 0
+        for v in fields.values():
+            if isinstance(v, int):
+                xor_header = (xor_header ^ v) & 0xFFFFFFFF
+        fields[0] = xor_header
 
-        for k in sorted(obj.keys()):
-            v = obj[k]
-            arr.append(int(k))
-            va = n2u(v) if isinstance(v, int) else list(v.encode("utf-8"))
-            arr.extend(n2u(len(va)))
-            arr.extend(va)
-        s_arr = "".join(chr(c) for c in arr)
-        someRandomChar = chr(((1 << 6) ^ (1 << 3) ^ 3) & 255)
-        key, keyStringArr, rounds, l_St, l_kt = (
-            [],
-            [],
-            0,
-            0,
-            [
-                44,
-                28,
-                3212677781,
-                1,
-                217618912,
-                2931180889,
-                1498001188,
-                2157053261,
-                211147047,
-                185100057,
-                2903579748,
-                3732962506,
-                4294967295 & (t_ms // 1000),
-                int(4294967296 * 0.5),
-                int(4294967296 * 0.5),
-                int(4294967296 * 0.5),
-            ],
-        )
+        def _int_to_be(n: int, width: int) -> list:
+            return [(n >> (8 * (width - 1 - i))) & 0xFF for i in range(width)]
 
-        def Ab33(e, t):
-            r = list(e)
+        present = [k for k in FIELD_ORDER if k in fields]
+        payload: list = [len(present)]
+        for k in present:
+            v = fields[k]
+            vbytes = _int_to_be(v, INT_WIDTHS[k]) if isinstance(v, int) else list(v.encode())
+            vlen = len(vbytes)
+            payload.append(k & 0xFF)
+            payload.extend([(vlen >> 8) & 0xFF, vlen & 0xFF])
+            payload.extend(vbytes)
+        plaintext = bytearray(payload)
 
-            def Ab41(e, t):
-                return ((e << t) & 0xFFFFFFFF) | (e >> (32 - t))
+        key_bytes = os.urandom(48)
+        key_words = [
+            (key_bytes[i * 4] | (key_bytes[i * 4 + 1] << 8) | (key_bytes[i * 4 + 2] << 16) | (key_bytes[i * 4 + 3] << 24)) & 0xFFFFFFFF
+            for i in range(12)
+        ]
+        rounds = (sum(w & 15 for w in key_words) & 15) + 5
 
-            def Ab18(e, t, r, n, o):
-                e[t] = (e[t] + e[r]) & 0xFFFFFFFF
-                e[o], e[n] = Ab41(e[o] ^ e[t], 16), (e[n] + e[o]) & 0xFFFFFFFF
-                e[r], e[t] = Ab41(e[r] ^ e[n], 12), (e[t] + e[r]) & 0xFFFFFFFF
-                e[o], e[n] = Ab41(e[o] ^ e[t], 8), (e[n] + e[o]) & 0xFFFFFFFF
-                e[r] = Ab41(e[r] ^ e[n], 7)
+        def _u32(x: int) -> int:
+            return x & 0xFFFFFFFF
 
-            for _ in range(t):
-                Ab18(r, 0, 4, 8, 12)
-                Ab18(r, 1, 5, 9, 13)
-                Ab18(r, 2, 6, 10, 14)
-                Ab18(r, 3, 7, 11, 15)
-                Ab18(r, 0, 5, 10, 15)
-                Ab18(r, 1, 6, 11, 12)
-                Ab18(r, 2, 7, 12, 13)
-                Ab18(r, 3, 4, 13, 14)
+        def _rotl(v: int, c: int) -> int:
+            return _u32((v << c) | (v >> (32 - c)))
+
+        def _quarter(s: list, a: int, b: int, c: int, d: int) -> None:
+            s[a] = _u32(s[a] + s[b]); s[d] = _rotl(s[d] ^ s[a], 16)
+            s[c] = _u32(s[c] + s[d]); s[b] = _rotl(s[b] ^ s[c], 12)
+            s[a] = _u32(s[a] + s[b]); s[d] = _rotl(s[d] ^ s[a], 8)
+            s[c] = _u32(s[c] + s[d]); s[b] = _rotl(s[b] ^ s[c], 7)
+
+        def _chacha_block(initial: list, rds: int) -> list:
+            s = list(initial)
+            r = 0
+            while r < rds:
+                _quarter(s, 0, 4, 8, 12); _quarter(s, 1, 5, 9, 13)
+                _quarter(s, 2, 6, 10, 14); _quarter(s, 3, 7, 11, 15)
+                r += 1
+                if r >= rds:
+                    break
+                _quarter(s, 0, 5, 10, 15); _quarter(s, 1, 6, 11, 12)
+                _quarter(s, 2, 7, 12, 13); _quarter(s, 3, 4, 13, 14)
+                r += 1
             for i in range(16):
-                r[i] = (r[i] + e[i]) & 0xFFFFFFFF
-            return r
+                s[i] = _u32(s[i] + initial[i])
+            return s
 
-        def rand_v():
-            nonlocal l_St
-            rb = [4294967296, 4294965248, 53, 0, 2, 11, 8, 7]
-            e = Ab33(l_kt, rb[6])
-            t = e[l_St]
-            r = (rb[1] & e[l_St + rb[6]]) >> rb[5]
-            if rb[7] == l_St:
-                l_kt[12] = (l_kt[12] + 1) & 0xFFFFFFFF
-                l_St = rb[3]
-            else:
-                l_St += 1
-            return (t + rb[0] * r) / math.pow(rb[4], rb[2])
+        state = list(SIGMA) + key_words
+        cipher = bytearray(plaintext)
+        for off in range(0, len(cipher), 64):
+            stream = _chacha_block(state, rounds)
+            state[12] = _u32(state[12] + 1)
+            lim = min(64, len(cipher) - off)
+            for i in range(lim):
+                cipher[off + i] ^= (stream[i >> 2] >> (8 * (i & 3))) & 0xFF
 
-        for _ in range(12):
-            num = int((2**32) * rand_v()) & 0xFFFFFFFF
-            key.append(num)
-            rounds = ((num & 15) + rounds) & 15
-            keyStringArr.extend([(num >> (8 * j)) & 255 for j in range(4)])
-        rounds += 5
-        r_list = [ord(c) for c in s_arr]
-        e_con = [1196819126, 185100057, 3863347763, 3732962506] + key
-        n, o, i, u = (
-            len(r_list) // 4,
-            len(r_list) % 4,
-            (len(r_list) + 3) // 4,
-            [0] * ((len(r_list) + 3) // 4),
-        )
-        for a in range(n):
-            u[a] = (
-                r_list[4 * a]
-                | (r_list[4 * a + 1] << 8)
-                | (r_list[4 * a + 2] << 16)
-                | (r_list[4 * a + 3] << 24)
-            )
-        if o > 0:
-            u[n] = 0
-            for c in range(o):
-                u[n] |= r_list[4 * n + c] << (8 * c)
-        state, o_idx = list(e_con), 0
-        while o_idx + 16 <= len(u):
-            i_arr = Ab33(state, rounds)
-            state[12] = (state[12] + 1) & 0xFFFFFFFF
-            for a_idx in range(16):
-                u[o_idx + a_idx] ^= i_arr[a_idx]
-            o_idx += 16
-        if len(u) - o_idx > 0:
-            s_arr_res = Ab33(state, rounds)
-            for c in range(len(u) - o_idx):
-                u[o_idx + c] ^= s_arr_res[c]
-        for a in range(n):
-            for j in range(4):
-                r_list[4 * a + j] = (u[a] >> (8 * j)) & 255
-        if o > 0:
-            for d in range(o):
-                r_list[4 * n + d] = (u[n] >> (8 * d)) & 255
-        x = "".join(chr(c) for c in r_list)
-        someVal = (sum(keyStringArr) + sum(ord(c) for c in x)) % (len(x) + 1)
-        f_str = someRandomChar + x[:someVal] + "".join(chr(c) for c in keyStringArr) + x[someVal:]
-        charSet = "u09tbS3UvgDEe6r-ZVMXzLpsAohTn7mdINQlW412GqBjfYiyk8JORCF5/xKHwacP="
-        res = ""
-        for i in range(3, len(f_str) + 1, 3):
-            v = (ord(f_str[i - 3]) << 16) | (ord(f_str[i - 2]) << 8) | ord(f_str[i - 1])
-            res += (
-                charSet[(v & 16515072) >> 18]
-                + charSet[(v & 258048) >> 12]
-                + charSet[(v & 4032) >> 6]
-                + charSet[v & 63]
-            )
-        return res
+        mod = len(cipher) + 1
+        s = 0
+        for b in key_bytes:
+            s = (s + b) % mod
+        for b in cipher:
+            s = (s + b) % mod
+        insert_pos = s
+
+        raw = bytes([MAGIC_BYTE]) + bytes(cipher[:insert_pos]) + key_bytes + bytes(cipher[insert_pos:])
+
+        out = []
+        i = 0
+        while i + 3 <= len(raw):
+            n = (raw[i] << 16) | (raw[i + 1] << 8) | raw[i + 2]
+            out.append(ALPHABET[(n >> 18) & 63])
+            out.append(ALPHABET[(n >> 12) & 63])
+            out.append(ALPHABET[(n >> 6) & 63])
+            out.append(ALPHABET[n & 63])
+            i += 3
+        rem = len(raw) - i
+        if rem == 1:
+            n = raw[i] << 16
+            out.append(ALPHABET[(n >> 18) & 63])
+            out.append(ALPHABET[(n >> 12) & 63])
+            out.append("=")
+            out.append("=")
+        elif rem == 2:
+            n = (raw[i] << 16) | (raw[i + 1] << 8)
+            out.append(ALPHABET[(n >> 18) & 63])
+            out.append(ALPHABET[(n >> 12) & 63])
+            out.append(ALPHABET[(n >> 6) & 63])
+            out.append("=")
+        return "".join(out)
