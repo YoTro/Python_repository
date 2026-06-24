@@ -158,7 +158,12 @@ async def handle_social_tool(name: str, arguments: dict) -> list[TextContent]:
             TextContent(
                 type="text",
                 text=json.dumps(
-                    {"author_id": author_id, "days": days, "video_count": len(stats), "videos": stats},
+                    {
+                        "author_id": author_id,
+                        "days": days,
+                        "video_count": len(stats),
+                        "videos": stats,
+                    },
                     ensure_ascii=False,
                 ),
             )

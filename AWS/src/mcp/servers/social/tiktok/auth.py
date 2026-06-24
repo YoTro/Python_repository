@@ -168,7 +168,13 @@ class TikTokSigner:
 
         key_bytes = os.urandom(48)
         key_words = [
-            (key_bytes[i * 4] | (key_bytes[i * 4 + 1] << 8) | (key_bytes[i * 4 + 2] << 16) | (key_bytes[i * 4 + 3] << 24)) & 0xFFFFFFFF
+            (
+                key_bytes[i * 4]
+                | (key_bytes[i * 4 + 1] << 8)
+                | (key_bytes[i * 4 + 2] << 16)
+                | (key_bytes[i * 4 + 3] << 24)
+            )
+            & 0xFFFFFFFF
             for i in range(12)
         ]
         rounds = (sum(w & 15 for w in key_words) & 15) + 5
@@ -180,22 +186,30 @@ class TikTokSigner:
             return _u32((v << c) | (v >> (32 - c)))
 
         def _quarter(s: list, a: int, b: int, c: int, d: int) -> None:
-            s[a] = _u32(s[a] + s[b]); s[d] = _rotl(s[d] ^ s[a], 16)
-            s[c] = _u32(s[c] + s[d]); s[b] = _rotl(s[b] ^ s[c], 12)
-            s[a] = _u32(s[a] + s[b]); s[d] = _rotl(s[d] ^ s[a], 8)
-            s[c] = _u32(s[c] + s[d]); s[b] = _rotl(s[b] ^ s[c], 7)
+            s[a] = _u32(s[a] + s[b])
+            s[d] = _rotl(s[d] ^ s[a], 16)
+            s[c] = _u32(s[c] + s[d])
+            s[b] = _rotl(s[b] ^ s[c], 12)
+            s[a] = _u32(s[a] + s[b])
+            s[d] = _rotl(s[d] ^ s[a], 8)
+            s[c] = _u32(s[c] + s[d])
+            s[b] = _rotl(s[b] ^ s[c], 7)
 
         def _chacha_block(initial: list, rds: int) -> list:
             s = list(initial)
             r = 0
             while r < rds:
-                _quarter(s, 0, 4, 8, 12); _quarter(s, 1, 5, 9, 13)
-                _quarter(s, 2, 6, 10, 14); _quarter(s, 3, 7, 11, 15)
+                _quarter(s, 0, 4, 8, 12)
+                _quarter(s, 1, 5, 9, 13)
+                _quarter(s, 2, 6, 10, 14)
+                _quarter(s, 3, 7, 11, 15)
                 r += 1
                 if r >= rds:
                     break
-                _quarter(s, 0, 5, 10, 15); _quarter(s, 1, 6, 11, 12)
-                _quarter(s, 2, 7, 12, 13); _quarter(s, 3, 4, 13, 14)
+                _quarter(s, 0, 5, 10, 15)
+                _quarter(s, 1, 6, 11, 12)
+                _quarter(s, 2, 7, 12, 13)
+                _quarter(s, 3, 4, 13, 14)
                 r += 1
             for i in range(16):
                 s[i] = _u32(s[i] + initial[i])
@@ -218,7 +232,12 @@ class TikTokSigner:
             s = (s + b) % mod
         insert_pos = s
 
-        raw = bytes([MAGIC_BYTE]) + bytes(cipher[:insert_pos]) + key_bytes + bytes(cipher[insert_pos:])
+        raw = (
+            bytes([MAGIC_BYTE])
+            + bytes(cipher[:insert_pos])
+            + key_bytes
+            + bytes(cipher[insert_pos:])
+        )
 
         out = []
         i = 0

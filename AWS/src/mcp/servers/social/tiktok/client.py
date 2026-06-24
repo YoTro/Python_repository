@@ -7,7 +7,10 @@ import random
 import re
 import time
 import urllib.parse
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from DrissionPage import ChromiumPage
 
 from curl_cffi import requests
 
@@ -171,11 +174,7 @@ class TikTokClient:
                         or self._CLIENT_AB_VERSIONS
                     )
                     video_detail = scope.get("webapp.video-detail", {})
-                    item_id = (
-                        video_detail.get("itemInfo", {})
-                        .get("itemStruct", {})
-                        .get("id", "")
-                    )
+                    item_id = video_detail.get("itemInfo", {}).get("itemStruct", {}).get("id", "")
                 except Exception as e:
                     logger.warning(f"Failed to parse hydration data: {e}")
                     ab_versions = self._CLIENT_AB_VERSIONS
@@ -214,7 +213,7 @@ class TikTokClient:
             params["X-Bogus"] = x_bogus
             # Move signatures to the end — TikTok's WAF expects them there
             final = {k: v for k, v in params.items() if k not in ("X-Bogus", "X-Gnarly")}
-            final["X-Bogus"]  = x_bogus
+            final["X-Bogus"] = x_bogus
             final["X-Gnarly"] = x_gnarly
 
             api_headers = {
@@ -231,9 +230,8 @@ class TikTokClient:
                 "user-agent": self.user_agent,
             }
             # Build URL manually — prevents curl_cffi from re-encoding '/' in X-Gnarly as '%2F'
-            full_url = (
-                "https://www.tiktok.com/api/related/item_list/?"
-                + urllib.parse.urlencode(final, quote_via=urllib.parse.quote)
+            full_url = "https://www.tiktok.com/api/related/item_list/?" + urllib.parse.urlencode(
+                final, quote_via=urllib.parse.quote
             )
             seed_resp = self.session.get(full_url, headers=api_headers, timeout=10)
             # Read token from x-ms-token header (canonical) or Set-Cookie fallback
@@ -366,7 +364,7 @@ class TikTokClient:
         params["X-Bogus"] = x_bogus
         # Signatures must appear at the end of the query string
         final_params = {k: v for k, v in params.items() if k not in ("X-Bogus", "X-Gnarly")}
-        final_params["X-Bogus"]  = x_bogus
+        final_params["X-Bogus"] = x_bogus
         final_params["X-Gnarly"] = x_gnarly
 
         headers = self.base_headers.copy()
@@ -527,7 +525,7 @@ class TikTokClient:
     _DRISSION_PROFILE = os.path.expanduser("~/.cache/drission_tiktok")
 
     @classmethod
-    def _drission_page_with_cookies(cls) -> "ChromiumPage | None":  # type: ignore[name-defined]
+    def _drission_page_with_cookies(cls) -> ChromiumPage | None:
         """
         Return a ChromiumPage that is guaranteed to have a TikTok session.
 
@@ -564,9 +562,7 @@ class TikTokClient:
             try:
                 name = "Google Chrome" if sys.platform == "darwin" else "chrome"
                 return (
-                    subprocess.run(
-                        ["pgrep", "-x", name], capture_output=True, timeout=3
-                    ).returncode
+                    subprocess.run(["pgrep", "-x", name], capture_output=True, timeout=3).returncode
                     == 0
                 )
             except Exception:
@@ -583,12 +579,8 @@ class TikTokClient:
 
         # Locate real Chrome binary and profile
         if sys.platform == "darwin":
-            real_profile = os.path.expanduser(
-                "~/Library/Application Support/Google/Chrome"
-            )
-            chrome_bin = (
-                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-            )
+            real_profile = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+            chrome_bin = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         else:
             real_profile = os.path.expanduser("~/.config/google-chrome")
             chrome_bin = "/usr/bin/google-chrome"
@@ -633,7 +625,7 @@ class TikTokClient:
             return None
 
     @staticmethod
-    def _page_fetch(page: "ChromiumPage", url: str) -> dict | None:  # type: ignore[name-defined]
+    def _page_fetch(page: ChromiumPage, url: str) -> dict | None:
         """
         Execute a fetch() inside the browser page and return the parsed JSON.
 
@@ -796,7 +788,9 @@ class TikTokClient:
         if result:
             return result
 
-        logger.info(f"[comments] Signed-API returned empty, falling back to DrissionPage for {video_id}")
+        logger.info(
+            f"[comments] Signed-API returned empty, falling back to DrissionPage for {video_id}"
+        )
         browser_result = self._get_comments_via_browser(video_id, author_id, count)
         return browser_result if browser_result is not None else []
 
@@ -839,10 +833,10 @@ class TikTokClient:
             "upgrade-insecure-requests": "1",
             "user-agent": self.user_agent,
         }
-        ttwid     = ""
-        odin_id   = "7620022218310960159"
+        ttwid = ""
+        odin_id = "7620022218310960159"
         device_id = "7620022218281616927"
-        sec_uid   = ""
+        sec_uid = ""
         ab_versions = self._CLIENT_AB_VERSIONS
         try:
             resp = self.session.get(profile_url, headers=page_headers, timeout=10)
@@ -855,17 +849,13 @@ class TikTokClient:
                 hydration = json.loads(urllib.parse.unquote(m.group(1)), strict=False)
                 scope = hydration.get("__DEFAULT_SCOPE__", {})
                 app_ctx = scope.get("webapp.app-context", {})
-                odin_id   = app_ctx.get("odinId", odin_id)
+                odin_id = app_ctx.get("odinId", odin_id)
                 device_id = app_ctx.get("wid", device_id)
                 ab_versions = (
                     scope.get("abTestVersion", {}).get("versionName", "")
                     or self._CLIENT_AB_VERSIONS
                 )
-                user_info = (
-                    scope.get("webapp.user-detail", {})
-                    .get("userInfo", {})
-                    .get("user", {})
-                )
+                user_info = scope.get("webapp.user-detail", {}).get("userInfo", {}).get("user", {})
                 sec_uid = user_info.get("secUid", "")
         except Exception as e:
             logger.warning(f"[post_list] Failed to extract secUid for {author_id}: {e}")
@@ -913,25 +903,26 @@ class TikTokClient:
             if ttwid:
                 self.session.cookies.set("ttwid", ttwid, domain=".tiktok.com")
 
-            qs  = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
-            xg  = TikTokSigner.generate_x_gnarly(qs, self.user_agent)
+            qs = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+            xg = TikTokSigner.generate_x_gnarly(qs, self.user_agent)
             params["X-Gnarly"] = xg
             qs2 = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
-            xb  = TikTokSigner.generate_x_bogus(qs2, self.user_agent, int(time.time()))
+            xb = TikTokSigner.generate_x_bogus(qs2, self.user_agent, int(time.time()))
             params["X-Bogus"] = xb
             final = {k: v for k, v in params.items() if k not in ("X-Bogus", "X-Gnarly")}
-            final["X-Bogus"]  = xb
+            final["X-Bogus"] = xb
             final["X-Gnarly"] = xg
 
-            headers = {**self.base_headers,
-                       "referer": referer,
-                       "sec-fetch-dest": "empty",
-                       "sec-fetch-mode": "cors",
-                       "sec-fetch-site": "same-origin"}
+            headers = {
+                **self.base_headers,
+                "referer": referer,
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-origin",
+            }
 
-            full_url = (
-                "https://www.tiktok.com/api/post/item_list/?"
-                + urllib.parse.urlencode(final, quote_via=urllib.parse.quote)
+            full_url = "https://www.tiktok.com/api/post/item_list/?" + urllib.parse.urlencode(
+                final, quote_via=urllib.parse.quote
             )
 
             try:
@@ -963,16 +954,18 @@ class TikTokClient:
                     page_done = True
                     break
                 stats_raw = item.get("statsV2") or item.get("stats", {})
-                all_stats.append({
-                    "id":           item.get("id"),
-                    "createTime":   create_time,
-                    "desc":         item.get("desc", ""),
-                    "playCount":    int(stats_raw.get("playCount", 0)),
-                    "likeCount":    int(stats_raw.get("diggCount", 0)),
-                    "commentCount": int(stats_raw.get("commentCount", 0)),
-                    "shareCount":   int(stats_raw.get("shareCount", 0)),
-                    "collectCount": int(stats_raw.get("collectCount", 0)),
-                })
+                all_stats.append(
+                    {
+                        "id": item.get("id"),
+                        "createTime": create_time,
+                        "desc": item.get("desc", ""),
+                        "playCount": int(stats_raw.get("playCount", 0)),
+                        "likeCount": int(stats_raw.get("diggCount", 0)),
+                        "commentCount": int(stats_raw.get("commentCount", 0)),
+                        "shareCount": int(stats_raw.get("shareCount", 0)),
+                        "collectCount": int(stats_raw.get("collectCount", 0)),
+                    }
+                )
 
             if page_done or not data.get("hasMore"):
                 break
@@ -982,9 +975,7 @@ class TikTokClient:
                 break
             time.sleep(random.uniform(0.8, 1.5))
 
-        logger.info(
-            f"[post_list] {author_id}: {len(all_stats)} videos in last {days} days"
-        )
+        logger.info(f"[post_list] {author_id}: {len(all_stats)} videos in last {days} days")
         return all_stats
 
     def _get_video_comments_signed(
@@ -1059,9 +1050,11 @@ class TikTokClient:
             # Reorder: signatures at end, then build URL manually to preserve
             # '/' in X-Gnarly (curl_cffi params= would encode it as '%2F').
             final_params = {k: v for k, v in params.items() if k not in ("X-Bogus", "X-Gnarly")}
-            final_params["X-Bogus"]  = x_bogus
+            final_params["X-Bogus"] = x_bogus
             final_params["X-Gnarly"] = x_gnarly
-            full_url = url + "?" + urllib.parse.urlencode(final_params, quote_via=urllib.parse.quote)
+            full_url = (
+                url + "?" + urllib.parse.urlencode(final_params, quote_via=urllib.parse.quote)
+            )
 
             if not RateLimiter().acquire_source("tiktok"):
                 raise RetryableError("tiktok source rate limit timeout", retry_after_seconds=60)
