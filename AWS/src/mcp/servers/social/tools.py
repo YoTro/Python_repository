@@ -117,6 +117,53 @@ async def handle_social_tool(name: str, arguments: dict) -> list[TextContent]:
 
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
+    elif name == "tiktok_get_video_comments":
+        video_id = arguments.get("video_id", "")
+        author_id = arguments.get("author_id")
+        count = int(arguments.get("count", 20))
+
+        if not video_id:
+            raise ValueError("video_id is required.")
+
+        extractor = TikTokClient()
+        logger.info(f"[L1] Fetching {count} comments for video {video_id}")
+        comments = await asyncio.to_thread(
+            extractor.get_video_comments,
+            video_id=video_id,
+            count=count,
+            author_id=author_id,
+        )
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"video_id": video_id, "count": len(comments), "comments": comments},
+                    ensure_ascii=False,
+                ),
+            )
+        ]
+
+    elif name == "tiktok_get_user_recent_stats":
+        author_id = arguments.get("author_id", "")
+        days = int(arguments.get("days", 30))
+
+        extractor = TikTokClient()
+        logger.info(f"[L1] Fetching last {days}-day video stats for {author_id or '@tiktok'}")
+        stats = await asyncio.to_thread(
+            extractor.get_user_recent_video_stats,
+            author_id=author_id,
+            days=days,
+        )
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"author_id": author_id, "days": days, "video_count": len(stats), "videos": stats},
+                    ensure_ascii=False,
+                ),
+            )
+        ]
+
     elif name == "meta_ad_search":
         return [TextContent(type="text", text=json.dumps({"active_ads": 15}))]
 
@@ -180,6 +227,57 @@ social_tools = [
         },
     ),
     Tool(
+        name="tiktok_get_video_comments",
+        description=(
+            "L1: Fetch comments for a specific TikTok video. "
+            "Uses the signed API first (headless); falls back to a real Chrome session via DrissionPage "
+            "if the video requires login. "
+            "Returns: {video_id, count, comments[]} where each comment contains text, author nickname, "
+            "digg_count, reply_comment_count, create_time."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "video_id": {"type": "string", "description": "TikTok video ID (numeric string)"},
+                "author_id": {
+                    "type": "string",
+                    "description": "Creator handle (e.g. 'ccuj00' or '@ccuj00'). Optional but improves accuracy.",
+                },
+                "count": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Number of comments to fetch (1–200).",
+                },
+            },
+            "required": ["video_id"],
+        },
+    ),
+    Tool(
+        name="tiktok_get_user_recent_stats",
+        description=(
+            "L1: Fetch stats for all videos a TikTok creator posted within the last N days. "
+            "Paginates /api/post/item_list/ and stops once videos older than the cutoff are seen. "
+            "Falls back to @tiktok if the creator handle cannot be resolved. "
+            "Returns: {author_id, days, video_count, videos[]} where each video contains "
+            "id, createTime, desc, playCount, likeCount, commentCount, shareCount, collectCount."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "author_id": {
+                    "type": "string",
+                    "description": "Creator handle (e.g. 'ccuj00' or '@ccuj00').",
+                },
+                "days": {
+                    "type": "integer",
+                    "default": 30,
+                    "description": "Look-back window in days (e.g. 30, 60, 90).",
+                },
+            },
+            "required": ["author_id"],
+        },
+    ),
+    Tool(
         name="meta_ad_search",
         description=(
             "Check Meta Ad Library for active advertising campaigns for a keyword. "
@@ -201,6 +299,14 @@ _SOCIAL_META = {
     "tiktok_calculate_virality": (
         "COMPUTE",
         "JSON containing 'strength_score' (0-100), 'organic_multiplier', 'recent_videos_ratio', and 'comment_intent_analysis'.",
+    ),
+    "tiktok_get_video_comments": (
+        "DATA",
+        "JSON with video_id, count, and comments list (text, author, digg_count, reply_comment_count, create_time).",
+    ),
+    "tiktok_get_user_recent_stats": (
+        "DATA",
+        "JSON with author_id, days, video_count, and videos list (id, createTime, desc, playCount, likeCount, commentCount, shareCount, collectCount).",
     ),
     "meta_ad_search": ("DATA", "count of active advertisements found on Meta platforms"),
 }

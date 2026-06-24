@@ -70,6 +70,36 @@ class TikTokClient:
             "user-agent": self.user_agent,
         }
 
+        # Params common to every TikTok API call.
+        # browser_version is excluded — it derives from self.user_agent which may
+        # be patched after __init__, so callers inject it fresh per request.
+        self.base_params: dict[str, str] = {
+            "aid": "1988",
+            "app_language": "en",
+            "app_name": "tiktok_web",
+            "browser_language": "en",
+            "browser_name": "Mozilla",
+            "browser_online": "true",
+            "browser_platform": "MacIntel",
+            "channel": "tiktok_web",
+            "cookie_enabled": "true",
+            "data_collection_enabled": "false",
+            "device_platform": "web_pc",
+            "focus_state": "true",
+            "history_len": "2",
+            "is_fullscreen": "false",
+            "is_page_visible": "true",
+            "os": "mac",
+            "priority_region": "",
+            "referer": "",
+            "region": "US",
+            "screen_height": "900",
+            "screen_width": "1440",
+            "tz_name": "America/New_York",
+            "user_is_login": "false",
+            "webcast_language": "en",
+        }
+
     # clientABVersions signals legitimate browser AB-test state to TikTok's WAF.
     _CLIENT_AB_VERSIONS = (
         "70508271,73720540,75638231,75694227,75843653,76034399,76055830,76065196,"
@@ -143,57 +173,37 @@ class TikTokClient:
 
             # Step 2: call /api/related/item_list/ to obtain a Level 1 msToken
             params = {
+                **self.base_params,
                 "CategoryType": "113",
                 "WebIdLastTime": str(int(time.time())),
-                "aid": "1988",
-                "app_language": "en",
-                "app_name": "tiktok_web",
-                "browser_language": "en",
-                "browser_name": "Mozilla",
-                "browser_online": "true",
-                "browser_platform": "MacIntel",
                 "browser_version": self.user_agent.replace("Mozilla/", ""),
-                "channel": "tiktok_web",
                 "clientABVersions": self._CLIENT_AB_VERSIONS,
-                "cookie_enabled": "true",
                 "count": "16",
                 "coverFormat": "2",
                 "cursor": "0",
-                "data_collection_enabled": "false",
                 "device_id": str(device_id),
-                "device_platform": "web_pc",
-                "focus_state": "true",
                 "from_page": "video",
-                "history_len": "2",
                 "isNonPersonalized": "false",
-                "is_fullscreen": "false",
-                "is_page_visible": "true",
                 "itemID": item_id,
                 "language": "en",
                 "launch_mode": "direct",
                 "odinId": str(odin_id),
-                "os": "mac",
-                "priority_region": "",
-                "referer": "",
-                "region": "US",
-                "screen_height": "900",
-                "screen_width": "1440",
-                "tz_name": "America/New_York",
-                "user_is_login": "false",
                 "video_encoding": "dash",
-                "webcast_language": "en",
                 "msToken": "",
             }
             if ttwid:
                 self.session.cookies.set("ttwid", ttwid, domain=".tiktok.com")
 
-            # Sign the seed request
+            # Signing order matters: X-Gnarly is computed first (over params without
+            # any signature), then X-Bogus is computed over the query string that
+            # already contains X-Gnarly.  Reversing the order invalidates both.
             qs = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
             x_gnarly = TikTokSigner.generate_x_gnarly(qs, self.user_agent)
             params["X-Gnarly"] = x_gnarly
             qs2 = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
             x_bogus = TikTokSigner.generate_x_bogus(qs2, self.user_agent, int(time.time()))
             params["X-Bogus"] = x_bogus
+            # Move signatures to the end — TikTok's WAF expects them there
             final = {k: v for k, v in params.items() if k not in ("X-Bogus", "X-Gnarly")}
             final["X-Bogus"]  = x_bogus
             final["X-Gnarly"] = x_gnarly
@@ -319,19 +329,25 @@ class TikTokClient:
         return "", "7619886743638033430", "7619886743638033430"
 
     def _request(self, endpoint: str, params: dict, referer: str, ttwid: str) -> dict[str, Any]:
-        """Signs the request with X-Bogus and executes it."""
+        """Signs the request with X-Bogus + X-Gnarly and executes it."""
         url = f"https://www.tiktok.com{endpoint}"
 
-        params["WebIdLastTime"] = str(int(time.time()))
-        params["app_language"] = "en"
-        params["current_region"] = "US"
-        params["enter_from"] = "tiktok_web"
-        params["fromWeb"] = "1"
-        params["is_non_personalized"] = "false"
+        params = {
+            **self.base_params,
+            "WebIdLastTime": str(int(time.time())),
+            "browser_version": self.user_agent.replace("Mozilla/", ""),
+            "current_region": "US",
+            "enter_from": "tiktok_web",
+            "fromWeb": "1",
+            "is_non_personalized": "false",
+            **params,
+        }
 
         ms_token = self._generate_ms_token(107)
         params["msToken"] = ms_token
 
+        # X-Gnarly first (no signatures in params yet), then X-Bogus over the
+        # string that already contains X-Gnarly — order is non-negotiable.
         qs = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
         x_gnarly = TikTokSigner.generate_x_gnarly(qs, self.user_agent)
         params["X-Gnarly"] = x_gnarly
@@ -339,6 +355,7 @@ class TikTokClient:
         timestamp = int(time.time())
         x_bogus = TikTokSigner.generate_x_bogus(qs2, self.user_agent, timestamp)
         params["X-Bogus"] = x_bogus
+        # Signatures must appear at the end of the query string
         final_params = {k: v for k, v in params.items() if k not in ("X-Bogus", "X-Gnarly")}
         final_params["X-Bogus"]  = x_bogus
         final_params["X-Gnarly"] = x_gnarly
@@ -396,9 +413,6 @@ class TikTokClient:
 
         params = {
             "challengeName": tag_name,
-            "aid": "1988",
-            "app_name": "tiktok_web",
-            "device_platform": "web_pc",
             "device_id": device_id,
             "odinId": odin_id,
         }
@@ -439,37 +453,18 @@ class TikTokClient:
             request_count = 30 if count == 0 else min(count - len(all_videos), 30)
 
             params = {
-                "aid": "1988",
-                "app_language": "en",
-                "app_name": "tiktok_web",
-                "browser_language": "en-US",
-                "browser_name": "Mozilla",
-                "browser_online": "true",
-                "browser_platform": "MacIntel",
+                **self.base_params,
                 "browser_version": self.user_agent.replace("Mozilla/", ""),
                 "challengeID": challenge_id,
-                "channel": "tiktok_web",
-                "cookie_enabled": "true",
                 "count": str(request_count),
                 "cursor": cursor,
                 "device_id": device_id,
-                "device_platform": "web_pc",
-                "focus_state": "true",
                 "from_page": "hashtag",
-                "history_len": "2",
-                "is_fullscreen": "false",
-                "is_page_visible": "true",
                 "language": "en",
                 "odinId": odin_id,
-                "os": "mac",
-                "priority_region": "",
-                "referer": "",
-                "region": "US",
+                # hashtag feed uses larger viewport than default
                 "screen_height": "1440",
                 "screen_width": "2560",
-                "tz_name": "America/New_York",
-                "user_is_login": "false",
-                "webcast_language": "en",
             }
 
             logger.info(
@@ -796,6 +791,188 @@ class TikTokClient:
         browser_result = self._get_comments_via_browser(video_id, author_id, count)
         return browser_result if browser_result is not None else []
 
+    def get_user_recent_video_stats(
+        self, author_id: str = "", days: int = 30
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch stats for a user's videos posted within the last N days.
+
+        Calls /api/post/item_list/ with pagination and stops as soon as a video
+        older than the cutoff is encountered (feed is newest-first).
+
+        Returns a list of dicts, one per qualifying video:
+            id, createTime, desc, playCount, likeCount, commentCount, shareCount, collectCount
+
+        Falls back to @tiktok if author_id is empty or secUid cannot be resolved.
+        """
+        FALLBACK = "@tiktok"
+        if not author_id:
+            author_id = FALLBACK
+
+        author_id = author_id if author_id.startswith("@") else f"@{author_id}"
+        profile_url = f"https://www.tiktok.com/{author_id}"
+        cutoff = int(time.time()) - days * 86400
+
+        # ── Step 1: single page visit → cookies + ttwid + odinId + secUid ────
+        page_headers = {
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "accept-language": "en",
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
+            "priority": "u=0, i",
+            "sec-ch-ua": self.base_headers["sec-ch-ua"],
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "none",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+            "user-agent": self.user_agent,
+        }
+        ttwid    = ""
+        odin_id  = "7620022218310960159"
+        device_id = "7620022218281616927"
+        sec_uid  = ""
+        try:
+            resp = self.session.get(profile_url, headers=page_headers, timeout=10)
+            cookies = self.session.cookies.get_dict()
+            ttwid = cookies.get("ttwid", "")
+            m = re.compile(
+                r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">(.*?)</script>'
+            ).search(resp.text)
+            if m:
+                hydration = json.loads(urllib.parse.unquote(m.group(1)), strict=False)
+                scope = hydration.get("__DEFAULT_SCOPE__", {})
+                app_ctx = scope.get("webapp.app-context", {})
+                odin_id  = app_ctx.get("odinId", odin_id)
+                device_id = app_ctx.get("wid", device_id)
+                user_info = (
+                    scope.get("webapp.user-detail", {})
+                    .get("userInfo", {})
+                    .get("user", {})
+                )
+                sec_uid = user_info.get("secUid", "")
+        except Exception as e:
+            logger.warning(f"[post_list] Failed to extract secUid for {author_id}: {e}")
+
+        if not sec_uid:
+            if author_id == FALLBACK:
+                logger.error("[post_list] Could not resolve secUid even for @tiktok fallback")
+                return []
+            # secUid is required by the API and cannot be guessed from the handle.
+            # Re-running with @tiktok at least exercises the pagination code path
+            # rather than erroring out silently.
+            logger.warning(f"[post_list] secUid not found for {author_id}, retrying with @tiktok")
+            return self.get_user_recent_video_stats("", days)
+
+        # ── Step 2: seed msToken ────────────────────────────────────────────
+        ms_token = self._seed_ms_token(profile_url)
+        if ms_token:
+            self.session.cookies.set("msToken", ms_token, domain=".tiktok.com")
+
+        # ── Step 3: paginate /api/post/item_list/ ───────────────────────────
+        referer = profile_url
+        all_stats: list[dict] = []
+        cursor = "0"
+
+        while True:
+            params = {
+                **self.base_params,
+                "WebIdLastTime": str(int(time.time())),
+                "browser_version": self.user_agent.replace("Mozilla/", ""),
+                "clientABVersions": self._CLIENT_AB_VERSIONS,
+                "count": "16",
+                "coverFormat": "2",
+                "cursor": cursor,
+                "device_id": str(device_id),
+                "enable_cache": "false",
+                "from_page": "user",
+                "language": "en",
+                "needPinnedItemIds": "true",
+                "odinId": str(odin_id),
+                "post_item_list_request_type": "0",
+                "secUid": sec_uid,
+                "video_encoding": "dash",
+                "msToken": ms_token,
+            }
+            if ttwid:
+                self.session.cookies.set("ttwid", ttwid, domain=".tiktok.com")
+
+            qs  = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+            xg  = TikTokSigner.generate_x_gnarly(qs, self.user_agent)
+            params["X-Gnarly"] = xg
+            qs2 = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+            xb  = TikTokSigner.generate_x_bogus(qs2, self.user_agent, int(time.time()))
+            params["X-Bogus"] = xb
+            final = {k: v for k, v in params.items() if k not in ("X-Bogus", "X-Gnarly")}
+            final["X-Bogus"]  = xb
+            final["X-Gnarly"] = xg
+
+            headers = {**self.base_headers,
+                       "referer": referer,
+                       "sec-fetch-dest": "empty",
+                       "sec-fetch-mode": "cors",
+                       "sec-fetch-site": "same-origin"}
+
+            full_url = (
+                "https://www.tiktok.com/api/post/item_list/?"
+                + urllib.parse.urlencode(final, quote_via=urllib.parse.quote)
+            )
+
+            try:
+                resp = self.session.get(full_url, headers=headers, timeout=15)
+            except Exception as e:
+                logger.warning(f"[post_list] Request error: {e}")
+                break
+
+            if not resp.text.strip():
+                logger.warning("[post_list] Empty response body")
+                break
+
+            try:
+                data = resp.json()
+            except Exception as e:
+                logger.warning(f"[post_list] JSON parse error: {e}")
+                break
+
+            items = data.get("itemList", [])
+            if not items:
+                break
+
+            page_done = False
+            for item in items:
+                create_time = item.get("createTime", 0)
+                # Feed is sorted newest-first, so the first item older than cutoff
+                # means all remaining items are also out of range — stop paginating.
+                if int(create_time) < cutoff:
+                    page_done = True
+                    break
+                stats_raw = item.get("statsV2") or item.get("stats", {})
+                all_stats.append({
+                    "id":           item.get("id"),
+                    "createTime":   create_time,
+                    "desc":         item.get("desc", ""),
+                    "playCount":    int(stats_raw.get("playCount", 0)),
+                    "likeCount":    int(stats_raw.get("diggCount", 0)),
+                    "commentCount": int(stats_raw.get("commentCount", 0)),
+                    "shareCount":   int(stats_raw.get("shareCount", 0)),
+                    "collectCount": int(stats_raw.get("collectCount", 0)),
+                })
+
+            if page_done or not data.get("hasMore"):
+                break
+
+            cursor = str(data.get("cursor", ""))
+            if not cursor:
+                break
+            time.sleep(random.uniform(0.8, 1.5))
+
+        logger.info(
+            f"[post_list] {author_id}: {len(all_stats)} videos in last {days} days"
+        )
+        return all_stats
+
     def _get_video_comments_signed(
         self, video_id: str, count: int = 20, author_id: str = None
     ) -> list[dict[str, Any]]:
@@ -830,19 +1007,7 @@ class TikTokClient:
         cursor = "0"
 
         url = "https://www.tiktok.com/api/comment/list/"
-        headers = {
-            "accept": "*/*",
-            "accept-language": "en-US,en;q=0.9",
-            "priority": "u=1, i",
-            "referer": referer,
-            "sec-ch-ua": self.base_headers["sec-ch-ua"],
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"macOS"',
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
-            "user-agent": self.user_agent,
-        }
+        headers = {**self.base_headers, "referer": referer}
 
         logger.info(
             f"Fetching comments for video: {author_id}/{video_id} (Unauthenticated Bypass Mode)"
@@ -851,38 +1016,15 @@ class TikTokClient:
         while count == 0 or len(all_comments) < count:
             request_count = 20 if count == 0 else min(count - len(all_comments), 20)
             params = {
+                **self.base_params,
                 "WebIdLastTime": str(int(time.time())),
-                "aid": "1988",
-                "app_language": "en",
-                "app_name": "tiktok_web",
                 "aweme_id": video_id,
-                "browser_language": "en-US",
-                "browser_name": "Mozilla",
-                "browser_online": "true",
-                "browser_platform": "MacIntel",
                 "browser_version": self.user_agent.replace("Mozilla/", ""),
-                "channel": "tiktok_web",
-                "cookie_enabled": "true",
                 "count": str(request_count),
                 "cursor": cursor,
-                "data_collection_enabled": "false",
                 "device_id": str(device_id),
-                "device_platform": "web_pc",
-                "focus_state": "true",
                 "from_page": "video",
-                "history_len": "2",
-                "is_fullscreen": "false",
-                "is_page_visible": "true",
                 "odinId": str(odin_id),
-                "os": "mac",
-                "priority_region": "",
-                "referer": "",
-                "region": "US",
-                "screen_height": "900",
-                "screen_width": "1440",
-                "tz_name": "America/New_York",
-                "user_is_login": "false",
-                "webcast_language": "en",
                 "msToken": ms_token,
             }
 
