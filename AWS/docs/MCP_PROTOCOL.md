@@ -37,17 +37,82 @@ To add a new capability that an LLM or Workflow can use:
         *   `returns`: Short description of what the tool returns (shown to LLM for planning).
 4.  **Register the Domain**: Ensure your `tools.py` is imported in **`src/registry/tools.py`** to trigger the registration during startup.
 
+## 3.5 What Belongs in `tools.py` — Boundary Rules
+
+`tools.py` is the **orchestration layer**: it wires L1/L2 calls together, manages `DataCache`, and returns `TextContent`. It is not the place for business logic, prompt engineering, or LLM inference.
+
+### Belongs in `tools.py`
+
+| What | Why |
+|---|---|
+| `async` handler dispatching on `name` | Core MCP protocol requirement |
+| `data_cache.get` / `data_cache.set` | L1→L2 handoff contract |
+| `mcp.types.Tool` definition + `tool_registry.register_tool()` | Discovery and registration |
+| Private helper functions tightly coupled to a single tool's domain data | See exception rule below |
+
+### Does NOT belong in `tools.py`
+
+| What | Where instead |
+|---|---|
+| Reusable LLM analysis (sentiment, summarization, classification) | `src/intelligence/processors/` as an AI-backed processor |
+| Business scoring logic | Domain-specific calculator class or pure-algorithm processor |
+| Prompt construction for non-trivial analysis | Processor class or `intelligence/prompts/` template |
+
+### LLM calls in `tools.py` — the exception rule
+
+Avoid inline LLM calls in `tools.py`. The one acceptable exception is a **thin, private helper** that meets all three conditions:
+
+1. Called by exactly one MCP tool (not shared across tools or domains)
+2. Tightly coupled to domain data defined in the same file (e.g., a category taxonomy dict)
+3. Not useful to workflows — a workflow would never call it directly
+
+When these conditions are met, a module-level `async def _my_helper(...)` function is acceptable. When any condition is broken, extract to `intelligence/processors/`.
+
+**Correct — delegating to a processor:**
+```python
+from src.intelligence.processors.comment_analyzer import CommentAnalyzer
+from src.intelligence.providers.factory import ProviderFactory
+
+result = await CommentAnalyzer(provider=ProviderFactory.get_provider()).analyze(
+    comments, brand, product_name
+)
+```
+
+**Incorrect — inline LLM logic in handler:**
+```python
+router = IntelligenceRouter()
+response = await router.route_and_execute(long_prompt_with_schema...)
+# parsing, fallback logic, schema constants all inline in the handler
+```
+
+`IntelligenceRouter` is for task routing in the agent track. In `tools.py`, use `ProviderFactory.get_provider()` to obtain the default cloud provider.
+
 ## 4. Using Tools Internally
 
-Do not import Scrapers or Logic directly between domains. Always use the MCP Client or `DataCache`:
+Do not import scrapers, logic, or handler functions directly between domains or from `tools.py` into workflows. Always use the MCP Client or `DataCache`:
 
 **In a Workflow Step (`EnrichStep` / `ProcessStep`):**
 ```python
-async def _my_step(items: list, ctx: WorkflowContext):
-    # Call tool securely via the unified client
+async def _my_step(item: dict, ctx: WorkflowContext):
+    # Correct — call through the unified MCP client
     results = await ctx.mcp.call_tool_json("calc_profit", {"asin": "B001", "estimated_cost": 10})
     return results
 ```
+
+**Why not import from `tools.py` directly?**
+
+Handler functions in `tools.py` have an internal interface (raw `dict` arguments, `DataCache` side effects, `TextContent` return type) that is not designed for direct callers. Importing them into a workflow creates tight coupling to implementation details that should be opaque — if the handler signature or cache key changes, the workflow silently breaks. The MCP Tool JSON schema is the stable public contract; `ctx.mcp.call_tool_json()` is the only legitimate caller.
+
+```python
+# Incorrect — never do this in a workflow
+from src.mcp.servers.social.tools import _handle_tiktok_calculate_virality
+result = await _handle_tiktok_calculate_virality({"keyword": kw}, data_cache)
+
+# Correct — call through ctx.mcp
+result = await ctx.mcp.call_tool_json("tiktok_calculate_virality", {"keyword": kw})
+```
+
+The one exception is **`intelligence/processors/`** — processor classes (`CommentAnalyzer`, `ReviewSummarizer`, etc.) are designed for direct import by both workflows and tools. They are not MCP handlers; they are reusable Python objects with stable interfaces.
 
 **In an Agent:**
 The `MCPAgent` uses `PromptBuilder` to assemble a categorized system prompt from `ToolRegistry` metadata. Tools are grouped by category (DATA → COMPUTE → FILTER → OUTPUT) with parameter schemas and return descriptions, enabling the LLM to plan multi-phase execution autonomously.
@@ -284,8 +349,27 @@ asin = arguments.get("asin") or ContextPropagator.get("asin")
 This allows the Agent to simply say "calculate profit" without re-stating the ASIN every time.
 
 ### Social Media Intelligence (L1/L2 Decoupled)
-*   **`tiktok_fetch_data` (L1)**: Scrapes raw TikTok data (tag metadata, trending videos, and comments) for a product. Data is stored in the internal `DataCache`.
-*   **`tiktok_calculate_virality` (L2)**: Processes cached TikTok data to compute the Promotional Strength Index (PSI), organic leverage, and purchase intent analysis.
+
+Four tools form a pipeline. Call them in order; each caches its output for the next.
+
+| Tool | Layer | Purpose |
+|---|---|---|
+| `tiktok_fetch_data` | L1 | Scrape tag metadata + trending videos. Adaptive sample: `max(50, video_count // 10, 300)`. Cache key: `tiktok:{keyword}` |
+| `tiktok_fetch_reference_data` | L1 | Fetch competitor/category hashtag videos for peer benchmarks. Uses LLM to generate competitor hashtags + hardcoded category seeds. Cache key: `tiktok:__ref__{keyword}` |
+| `tiktok_fetch_comments` | L1 | Fetch comments for the target tag's top videos using **tier-stratified sampling**: comment budget allocated proportionally to KOL/KOC tier share (nano/micro/mid/macro/mega), highest-view videos first within each tier. Applies same `window_days` filter as `tiktok_calculate_virality` for temporal consistency. Cache key: `tiktok:__comments__{keyword}__w{window_days}` |
+| `tiktok_calculate_virality` | L2 | Compute PSI (0–100). If `__comments__` cache exists, delegates to `CommentAnalyzer` (an `intelligence/processors/` AI-backed processor) for LLM deep analysis: sentiment, purchase signals, competitor mentions, language distribution. Falls back to keyword-based analysis if comments not fetched. |
+
+**Recommended call sequence:**
+```
+tiktok_fetch_data(keyword, window_days=30)
+tiktok_fetch_reference_data(brand, product_name, keyword)   # optional — improves benchmarks
+tiktok_fetch_comments(keyword, window_days=30)              # optional — enables LLM comment analysis
+tiktok_calculate_virality(keyword, window_days=30)
+```
+
+`window_days` must be consistent across all four calls. The cache key for comments encodes `window_days` to prevent cross-window data pollution.
+
+**PSI output fields:** `strength_score` (0–100), `kol_koc_matrix`, `hhi_concentration`, `promo_tag_ratio`, `benchmarks` (peer_median or default), `comment_analysis` (LLM schema or keyword fallback), `penalties`, `metrics` (per-component contributions), `verdict`.
 
 ### ERP Integration (L1.5 — Strategy Pattern)
 

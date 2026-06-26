@@ -58,7 +58,7 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
 1.  **Define**: Create `src/workflows/definitions/my_flow.py`.
 2.  **Register**: Use `@WorkflowRegistry.register("name")` and ensure it's imported in `definitions/__init__.py`.
 3.  **Steps**: Compose using `EnrichStep` (fetching), `FilterStep` (logic), or `ProcessStep` (AI reasoning).
-4.  **Context Access**: The `EnrichStep` passes `ctx: WorkflowContext` to your `extractor_fn`, enabling it to call other MCP tools (e.g., `calc_profit`) securely.
+4.  **Context Access**: The `EnrichStep` passes `ctx: WorkflowContext` to your `extractor_fn`, enabling it to call MCP tools (e.g., `calc_profit`) via `ctx.mcp.call_tool_json()`. Never import handler functions from `tools.py` directly — `ctx.mcp.call_tool_json()` is the only legitimate call path. See `docs/MCP_PROTOCOL.md` §4 for the full rationale and examples.
 
 **Track B: Exploratory Agents**
 1.  **System Prompt**: Edit the human-readable Markdown template in `src/agents/prompts/mcp_agent_system.md`.
@@ -126,6 +126,76 @@ Config keys for the Lingxing provider:
     *   `CategoryMonopolyAnalyzer.analyze()` accepts an optional `historical_data: Dict[str, List[Dict]]` (ASIN → daily records from `XiyouZhaociAPI.get_asin_daily_trends()`). When supplied it enables two additional dimensions:
         *   `market_churn` — detects predatory competition, lemon-market, and rating-attack patterns from BSR/rating time series.
         *   `seasonality` — detrended, log-BSR seasonality score with circular peak-month detection and platform-event (Prime Day / Black Friday) dampening.
+
+### Adding a New Intelligence Processor
+
+Processors live in `src/intelligence/processors/`. There are two distinct kinds — choose based on whether the processor calls an LLM.
+
+#### Pure-Algorithm Processors (no I/O)
+
+Fully deterministic Python computation. No base class, no provider injection.
+
+```python
+class MyScorer:
+    SOME_THRESHOLD = 0.5   # constants at class level
+
+    def calculate(self, data: list[dict]) -> dict:
+        ...
+```
+
+Examples: `SocialViralityProcessor`, `SalesEstimator`, `ProductSimilarityProcessor`.
+
+#### AI-Backed Processors (call LLM)
+
+Inject `BaseLLMProvider` via `__init__` — explicit dependency injection, directly mockable in tests.
+
+```python
+from src.intelligence.providers.base import BaseLLMProvider
+
+EMPTY_RESULT: dict = { ... }   # module-level fallback — always define one
+
+class MyAnalyzer:
+    def __init__(self, provider: BaseLLMProvider) -> None:
+        self.provider = provider
+
+    async def analyze(self, data: list[str], ...) -> dict:
+        if not data:
+            return EMPTY_RESULT.copy()
+        try:
+            response = await self.provider.generate_text(prompt)   # unstructured → parse JSON
+            # OR: await self.provider.generate_structured(prompt, schema=MyModel)  # Pydantic output
+            ...
+        except Exception as e:
+            logger.warning(f"Analysis failed: {e}")
+        return EMPTY_RESULT.copy()
+```
+
+**`generate_text` vs `generate_structured`:**
+
+| Method | Use when | Returns |
+|---|---|---|
+| `generate_text(prompt)` | Output is a free-form dict — parse JSON manually | `LLMResponse` → `.text` |
+| `generate_structured(prompt, schema=MyModel)` | Output is a fixed Pydantic schema | `LLMResponse` → coerce to model |
+
+Always wrap the LLM call in `try/except` and return `EMPTY_RESULT.copy()` on any error. Never let a provider failure propagate to the caller.
+
+Examples: `CommentAnalyzer`, `ReviewSummarizer`.
+
+#### Registration (required for all processors)
+
+1. Add import to `src/intelligence/processors/__init__.py`
+2. Add name to `__all__`
+
+#### Call-site patterns
+
+| Caller | Pattern |
+|---|---|
+| MCP tool (`tools.py`) | `MyAnalyzer(provider=ProviderFactory.get_provider()).analyze(...)` |
+| Workflow step | `MyAnalyzer(provider=provider).analyze(...)` where `provider` is from workflow context |
+
+Import: `from src.intelligence.providers.factory import ProviderFactory`
+
+Never instantiate `IntelligenceRouter` inside a processor or as a substitute for `ProviderFactory` in a tool. `IntelligenceRouter` is for task routing in the agent track; processors receive an already-resolved provider.
 
 ### Layer 6: Output & Callbacks (`src/jobs/callbacks/`)
 *Delivery of the final value.*

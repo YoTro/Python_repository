@@ -48,6 +48,9 @@ Config keys (with defaults):
   enable_lingxing         bool  auto     fetch shipment lead-time from Lingxing ERP; defaults to True
                                          when LINGXING_ACCOUNT env var is set, False otherwise
   keyword_max_results     int   10000    max configured keywords to fetch per ASIN campaign set
+  enable_tiktok           bool  False    fetch TikTok social virality (requires tiktok_keyword)
+  tiktok_keyword          str   ""       TikTok search keyword shared by all ASINs in this run
+  tiktok_window_days      int   30       lookback window for TikTok videos and comments
 """
 
 import asyncio
@@ -778,6 +781,74 @@ async def _enrich_order_metrics(item: dict, ctx: WorkflowContext) -> dict:
     except Exception as e:
         logger.warning(f"Order metrics fetch failed for {asin}: {e}")
         return {}
+
+
+async def _enrich_tiktok_virality(item: dict, ctx: WorkflowContext) -> dict:
+    """Fetch TikTok social virality for the shared campaign keyword.
+
+    Calls the four MCP tools in dependency order:
+      1. tiktok_fetch_videos + tiktok_fetch_reference_data  (concurrent, keyword-scoped)
+      2. tiktok_fetch_comments                               (reads videos from DataCache)
+      3. tiktok_calculate_virality                           (reads all three + runs CommentAnalyzer)
+
+    All four tools write/read DataCache by keyword, so only the first ASIN incurs
+    real network cost; subsequent ASINs sharing the same keyword hit the cache.
+    """
+    if not ctx.mcp:
+        return {}
+    keyword = ctx.config.get("tiktok_keyword")
+    if not keyword:
+        return {}
+
+    window_days = int(ctx.config.get("tiktok_window_days", 30))
+    brand = item.get("brand", "")
+    product_name = item.get("title", "")
+
+    try:
+        await asyncio.gather(
+            ctx.mcp.call_tool_json(
+                "tiktok_fetch_videos",
+                {
+                    "keyword": keyword,
+                    "window_days": window_days,
+                },
+            ),
+            ctx.mcp.call_tool_json(
+                "tiktok_fetch_reference_data",
+                {
+                    "keyword": keyword,
+                },
+            ),
+        )
+        await ctx.mcp.call_tool_json(
+            "tiktok_fetch_comments",
+            {
+                "keyword": keyword,
+                "window_days": window_days,
+            },
+        )
+        resp = await ctx.mcp.call_tool_json(
+            "tiktok_calculate_virality",
+            {
+                "keyword": keyword,
+                "brand": brand,
+                "product_name": product_name,
+                "window_days": window_days,
+            },
+        )
+        if isinstance(resp, list) and resp:
+            import json as _json
+
+            data = _json.loads(resp[0].get("text", "{}"))
+            return {
+                "tiktok_psi": data.get("strength_score"),
+                "tiktok_verdict": data.get("verdict"),
+                "tiktok_is_trending": data.get("is_trending", False),
+                "tiktok_analysis": data,
+            }
+    except Exception as e:
+        logger.error(f"TikTok virality fetch failed for keyword '{keyword}': {e}")
+    return {}
 
 
 async def _enrich_campaigns(item: dict, ctx: WorkflowContext) -> dict:
@@ -7394,6 +7465,16 @@ def build_ad_diagnosis(config: dict) -> Workflow:
             parallel=True,
             concurrency=1,
             enabled=config.get("enable_lingxing", bool(os.getenv("LINGXING_ACCOUNT"))),
+        ),
+        # ── Stage 1b: TikTok social virality (keyword-scoped; depends on fetch_catalog) ──
+        # keyword comes from ctx.config["tiktok_keyword"]; disabled by default.
+        # First ASIN fetches from TikTok; subsequent ASINs sharing the keyword hit DataCache.
+        EnrichStep(
+            name="fetch_tiktok_virality",
+            extractor_fn=_enrich_tiktok_virality,
+            parallel=True,
+            concurrency=2,
+            enabled=config.get("enable_tiktok", False),
         ),
         # ── Stage 2: campaign structure (fetch account-level once, filter per ASIN) ──
         EnrichStep(

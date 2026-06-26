@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .comment_analyzer import CommentAnalyzer
+from .hashtag_generator import HashtagGenerator
 from .listing_quality_scorer import ListingQualityScorer
 from .monopoly_analyzer import CategoryMonopolyAnalyzer
 from .product_similarity import ProductSimilarityProcessor
@@ -9,6 +11,8 @@ from .sales_estimator import SalesEstimator
 from .social_virality import SocialViralityProcessor
 
 __all__ = [
+    "CommentAnalyzer",
+    "HashtagGenerator",
     "ReviewSummarizer",
     "SalesEstimator",
     "ProductSimilarityProcessor",

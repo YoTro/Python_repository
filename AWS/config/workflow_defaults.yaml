@@ -79,6 +79,11 @@ ad_diagnosis:
   enable_xiyou: true            # fetch keyword rank and market trend data
   rank_lookback_months: 6       # months of rank history to fetch (max 24)
 
+  # ── TikTok social virality ────────────────────────────────────────────────
+  enable_tiktok: false          # opt-in; requires tiktok_keyword to be set
+  tiktok_keyword: ""            # shared search keyword for all ASINs in the run
+  tiktok_window_days: 30        # lookback window for videos and comments
+
 category_monopoly_analysis:
   # Weights for the 9 dimensions (sum should be 1.0)
   weights:
