@@ -350,12 +350,16 @@ This allows the Agent to simply say "calculate profit" without re-stating the AS
 
 ### Social Media Intelligence (L1/L2 Decoupled)
 
+The social server (`src/mcp/servers/social/`) covers TikTok and YouTube. All tools are stateless L1 scrapers except `tiktok_calculate_virality` (L2).
+
+#### TikTok — PSI Pipeline
+
 Four tools form a pipeline. Call them in order; each caches its output for the next.
 
 | Tool | Layer | Purpose |
 |---|---|---|
 | `tiktok_fetch_data` | L1 | Scrape tag metadata + trending videos. Adaptive sample: `max(50, video_count // 10, 300)`. Cache key: `tiktok:{keyword}` |
-| `tiktok_fetch_reference_data` | L1 | Fetch competitor/category hashtag videos for peer benchmarks. Uses LLM to generate competitor hashtags + hardcoded category seeds. Cache key: `tiktok:__ref__{keyword}` |
+| `tiktok_fetch_reference_data` | L1 | Fetch competitor/category hashtag videos for peer benchmarks. Uses `HashtagGenerator` (an `intelligence/processors/` AI-backed processor) to generate competitor hashtags + hardcoded category seeds. Cache key: `tiktok:__ref__{keyword}` |
 | `tiktok_fetch_comments` | L1 | Fetch comments for the target tag's top videos using **tier-stratified sampling**: comment budget allocated proportionally to KOL/KOC tier share (nano/micro/mid/macro/mega), highest-view videos first within each tier. Applies same `window_days` filter as `tiktok_calculate_virality` for temporal consistency. Cache key: `tiktok:__comments__{keyword}__w{window_days}` |
 | `tiktok_calculate_virality` | L2 | Compute PSI (0–100). If `__comments__` cache exists, delegates to `CommentAnalyzer` (an `intelligence/processors/` AI-backed processor) for LLM deep analysis: sentiment, purchase signals, competitor mentions, language distribution. Falls back to keyword-based analysis if comments not fetched. |
 
@@ -370,6 +374,31 @@ tiktok_calculate_virality(keyword, window_days=30)
 `window_days` must be consistent across all four calls. The cache key for comments encodes `window_days` to prevent cross-window data pollution.
 
 **PSI output fields:** `strength_score` (0–100), `kol_koc_matrix`, `hhi_concentration`, `promo_tag_ratio`, `benchmarks` (peer_median or default), `comment_analysis` (LLM schema or keyword fallback), `penalties`, `metrics` (per-component contributions), `verdict`.
+
+**Standalone TikTok tools:**
+
+| Tool | Layer | Purpose |
+|---|---|---|
+| `tiktok_get_video_comments` | L1 | Fetch comments for a single TikTok video by ID. Falls back from signed API to DrissionPage Chrome session. Returns `text, author, digg_count, reply_comment_count, create_time`. |
+| `tiktok_get_user_recent_stats` | L1 | Paginate a creator's recent videos (last N days). Returns per-video `playCount, likeCount, commentCount, shareCount, collectCount`. |
+
+#### YouTube — L1 Data Tools
+
+Four stateless L1 scrapers. No caching pipeline — each tool returns data directly.
+
+| Tool | Layer | Purpose |
+|---|---|---|
+| `youtube_get_hashtag_info` | L1 | Parse hashtag page header. Returns `{hashtag, video_count, channel_count}`. |
+| `youtube_get_hashtag_videos` | L1 | Fetch raw `videoRenderer` dicts from the server-rendered hashtag page (~20–30 per load). Pass results through `SocialViralityProcessor.normalize_video(v, "youtube_hashtag")` before computing PSI. |
+| `youtube_get_channel_info` | L1 | Two-request fetch: browse API for title/handle/subscriber/video counts, then `/about` HTML for country, join date, and lifetime views. Returns all nine fields. |
+| `youtube_get_video_comments` | L1 | Fetch comments via `youtubei/v1/next`. Reads comment text/author/likes from `frameworkUpdates.entityBatchUpdate.mutations` (YouTube's 2024+ ViewModel format). Paginates until `count` reached. Returns `text, author, likes, reply_count, published_time`. |
+
+**YouTube implementation notes:**
+- `get_hashtag_videos` fetches `ytInitialData` from the HTML page (same extraction as hashtag pages) — not the browse API.
+- `get_channel_info` fetches the `/about` page as HTML because YouTube's browse API no longer returns about-tab data (country, join date, total views) via params.
+- `get_video_comments` extracts the initial continuation token from `twoColumnWatchNextResults` (not `engagementPanels`) — the engagement-panel token returns stub-only `commentViewModel` responses without text.
+
+**Multi-platform PSI:** `SocialViralityProcessor.calculate_promotion_strength` accepts a `platform` parameter (`"tiktok"`, `"youtube_shorts"`, `"instagram"`). Use `normalize_video(raw, platform)` to map raw API dicts to the canonical flat schema `{views, likes, comments, shares, followers, uid, desc, createTime}` before passing videos to the processor.
 
 ### ERP Integration (L1.5 — Strategy Pattern)
 

@@ -1,12 +1,44 @@
 from __future__ import annotations
 
 import logging
+import re
 import statistics
 import time
 from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_yt_view_count(text: str) -> int:
+    """Parse '16,865 views' or '1.2M views' → int."""
+    text = text.lower().replace(",", "").strip()
+    m = re.search(r"([\d.]+)\s*([kmb]?)\s*view", text)
+    if not m:
+        m = re.search(r"([\d.]+)\s*([kmb]?)", text)
+    if not m:
+        return 0
+    n, suffix = float(m.group(1)), m.group(2)
+    return int(n * {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}.get(suffix, 1))
+
+
+def _parse_yt_relative_time(text: str) -> int:
+    """Convert '3 weeks ago' → approximate unix timestamp."""
+    now = int(time.time())
+    m = re.match(r"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago", text.lower().strip())
+    if not m:
+        return now
+    n, unit = int(m.group(1)), m.group(2)
+    offsets = {
+        "second": 1,
+        "minute": 60,
+        "hour": 3_600,
+        "day": 86_400,
+        "week": 7 * 86_400,
+        "month": 30 * 86_400,
+        "year": 365 * 86_400,
+    }
+    return now - n * offsets[unit]
 
 
 class SocialViralityProcessor:
@@ -162,6 +194,42 @@ class SocialViralityProcessor:
                 "desc": raw.get("caption", ""),
                 "createTime": create_time,
             }
+        if platform == "youtube_hashtag":
+            # Raw videoRenderer dict from ytInitialData (YouTube hashtag page).
+            # Likes, comments, shares, and subscriber counts are not exposed here.
+            title_runs = raw.get("title", {}).get("runs", [])
+            title = title_runs[0].get("text", "") if title_runs else ""
+
+            view_text = raw.get("viewCountText", {}).get("simpleText", "") or "".join(
+                r.get("text", "") for r in raw.get("viewCountText", {}).get("runs", [])
+            )
+
+            pub_text = raw.get("publishedTimeText", {}).get("simpleText", "")
+
+            byline_runs = raw.get("shortBylineText", {}).get("runs", [])
+            channel_id = ""
+            channel_name = ""
+            if byline_runs:
+                channel_name = byline_runs[0].get("text", "")
+                nav = byline_runs[0].get("navigationEndpoint", {})
+                channel_id = nav.get("browseEndpoint", {}).get("browseId", "")
+
+            desc_runs = raw.get("descriptionSnippet", {}).get("runs", [])
+            desc = " ".join(r.get("text", "") for r in desc_runs) if desc_runs else title
+
+            return {
+                "views": _parse_yt_view_count(view_text),
+                "likes": 0,
+                "comments": 0,
+                "shares": 0,
+                "followers": 0,
+                "uid": channel_id or channel_name,
+                "desc": desc,
+                "createTime": _parse_yt_relative_time(pub_text) if pub_text else 0,
+                "videoId": raw.get("videoId", ""),
+                "channelName": channel_name,
+            }
+
         # Unknown platform — assume already normalized
         return raw
 

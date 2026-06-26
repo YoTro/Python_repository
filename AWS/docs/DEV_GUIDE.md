@@ -541,7 +541,8 @@ The `{key}` portion for L2 workflows follows:
 |-------|------------------------|
 | L1 (raw product) | `aws:cache:amazon:B01XXXXX` |
 | L1 (reviews) | `aws:cache:amazon:reviews:B01XXXXX` |
-| L1 (social) | `aws:cache:tiktok:yoga mat` |
+| L1 (social/TikTok) | `aws:cache:tiktok:yoga mat` |
+| L1 (social/TikTok ref) | `aws:cache:tiktok:__ref__yoga mat` |
 | L2 (workflow result) | `aws:cache:product_screening:default:US:profitability:B01XXXXX` |
 | L2 (ad report) | `aws:cache:ad_diag:tenant123:JP:perf_report:{hash}` |
 
@@ -549,7 +550,7 @@ The `{key}` portion for L2 workflows follows:
 
 | Layer | Who writes | Domain name | Key shape |
 |-------|-----------|-------------|-----------|
-| **L1** | MCP servers only | Named by data source (`amazon`, `tiktok`) | `ASIN` \| `{type}:{ASIN}` \| keyword |
+| **L1** | MCP servers only | Named by data source (`amazon`, `tiktok`, etc.) | `ASIN` \| `{type}:{ASIN}` \| keyword |
 | **L2** | Workflow steps only | Named by workflow (`product_screening`, `ad_diag`, `cat_monopoly`) | `{tenant_id}:{store_id}:{data_type}:{entity_id}` |
 
 **Isolation rules:**
@@ -588,7 +589,7 @@ Define TTL constants at module level with a comment. Never pass a magic integer 
 | | `7_200` | 2 h | Ad traffic ratios, ad account config (campaigns/keywords) |
 | | `14_400` | 4 h | Product reviews |
 | | `21_600` | 6 h | Seller/fulfillment info, ad perf reports, change history, LLM keyword extraction, Xiyouzhaoci traffic |
-| | `43_200` | 12 h | Fulfillment type, TikTok PSI + external social signals |
+| | `43_200` | 12 h | Fulfillment type, TikTok PSI + YouTube/social signals |
 | | `86_400` | 24 h | Product metadata, past-month sales, SellerSprite snapshots, historical timeseries, YoY/ERP data |
 | | `604_800` | 7 d | Compliance/regulatory rules (essentially static) |
 

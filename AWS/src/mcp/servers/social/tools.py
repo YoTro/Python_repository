@@ -11,6 +11,7 @@ from src.intelligence.processors.hashtag_generator import HashtagGenerator
 from src.intelligence.processors.social_virality import SocialViralityProcessor
 from src.intelligence.providers.factory import ProviderFactory
 from src.mcp.servers.social.tiktok.client import TikTokClient
+from src.mcp.servers.social.youtube.client import YouTubeClient
 from src.registry.tools import tool_registry
 
 logger = logging.getLogger("mcp-social")
@@ -401,6 +402,60 @@ async def handle_social_tool(name: str, arguments: dict) -> list[TextContent]:
             )
         ]
 
+    elif name == "youtube_get_hashtag_info":
+        hashtag = arguments.get("hashtag", "")
+        if not hashtag:
+            raise ValueError("hashtag is required.")
+        client = YouTubeClient()
+        logger.info(f"[L1] Fetching YouTube hashtag info for #{hashtag}")
+        info = await asyncio.to_thread(client.get_hashtag_info, hashtag)
+        return [TextContent(type="text", text=json.dumps(info, ensure_ascii=False))]
+
+    elif name == "youtube_get_hashtag_videos":
+        hashtag = arguments.get("hashtag", "")
+        count = int(arguments.get("count", 20))
+        if not hashtag:
+            raise ValueError("hashtag is required.")
+        client = YouTubeClient()
+        logger.info(f"[L1] Fetching YouTube hashtag videos for #{hashtag}")
+        videos = await asyncio.to_thread(client.get_hashtag_videos, hashtag, count)
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"hashtag": hashtag.lstrip("#"), "count": len(videos), "videos": videos},
+                    ensure_ascii=False,
+                ),
+            )
+        ]
+
+    elif name == "youtube_get_channel_info":
+        channel_id = arguments.get("channel_id", "")
+        if not channel_id:
+            raise ValueError("channel_id is required.")
+        client = YouTubeClient()
+        logger.info(f"[L1] Fetching YouTube channel info for {channel_id}")
+        info = await asyncio.to_thread(client.get_channel_info, channel_id)
+        return [TextContent(type="text", text=json.dumps(info, ensure_ascii=False))]
+
+    elif name == "youtube_get_video_comments":
+        video_id = arguments.get("video_id", "")
+        count = int(arguments.get("count", 20))
+        if not video_id:
+            raise ValueError("video_id is required.")
+        client = YouTubeClient()
+        logger.info(f"[L1] Fetching {count} YouTube comments for video {video_id}")
+        comments = await asyncio.to_thread(client.get_video_comments, video_id, count)
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"video_id": video_id, "count": len(comments), "comments": comments},
+                    ensure_ascii=False,
+                ),
+            )
+        ]
+
     elif name == "meta_ad_search":
         return [TextContent(type="text", text=json.dumps({"active_ads": 15}))]
 
@@ -593,6 +648,96 @@ social_tools = [
         },
     ),
     Tool(
+        name="youtube_get_hashtag_info",
+        description=(
+            "L1: Fetch YouTube hashtag metadata. "
+            "Parses the hashtag page header to extract video_count and channel_count. "
+            "Use to gauge the scale of a hashtag's presence before fetching videos. "
+            "Returns: {hashtag, video_count, channel_count}."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "hashtag": {
+                    "type": "string",
+                    "description": "Hashtag name without # (e.g. 'bugspray')",
+                },
+            },
+            "required": ["hashtag"],
+        },
+    ),
+    Tool(
+        name="youtube_get_hashtag_videos",
+        description=(
+            "L1: Fetch raw videoRenderer dicts from a YouTube hashtag page. "
+            "Returns the first ~20–30 videos from the server-rendered hashtag page (not paginated). "
+            "Pass each video through SocialViralityProcessor.normalize_video(v, 'youtube_hashtag') "
+            "to convert to the canonical flat schema before computing PSI. "
+            "Returns: {hashtag, count, videos[]}."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "hashtag": {
+                    "type": "string",
+                    "description": "Hashtag name without # (e.g. 'bugspray')",
+                },
+                "count": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Max videos to return (capped by page load, typically ~30).",
+                },
+            },
+            "required": ["hashtag"],
+        },
+    ),
+    Tool(
+        name="youtube_get_channel_info",
+        description=(
+            "L1: Fetch YouTube channel metadata. "
+            "Makes two requests: browse API for title/handle/subscriber/video counts, "
+            "then /about HTML page for country, join date, and lifetime views. "
+            "Returns: {channel_id, title, handle, description, subscriber_count (int), "
+            "video_count (int), total_views (int), joined_date (str), country (str)}."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "channel_id": {
+                    "type": "string",
+                    "description": "YouTube channel ID (e.g. 'UCLMxTjTDircrYzWO0Dsq0YQ') or handle (@name).",
+                },
+            },
+            "required": ["channel_id"],
+        },
+    ),
+    Tool(
+        name="youtube_get_video_comments",
+        description=(
+            "L1: Fetch top comments for a YouTube video via the internal youtubei/v1/next API. "
+            "Fetches the video page to extract the initial continuation token, then POSTs to "
+            "youtubei/v1/next and reads comment data from frameworkUpdates.entityBatchUpdate.mutations. "
+            "Paginates automatically until count is reached or no more pages exist. "
+            "Returns: {video_id, count, comments[]} where each comment contains "
+            "text, author, likes (int), reply_count (int), published_time (str e.g. '2 years ago')."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "video_id": {
+                    "type": "string",
+                    "description": "YouTube video ID (11-character string, e.g. '1EGZvk5L5ds')",
+                },
+                "count": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Number of comments to fetch (1–100).",
+                },
+            },
+            "required": ["video_id"],
+        },
+    ),
+    Tool(
         name="meta_ad_search",
         description=(
             "Check Meta Ad Library for active advertising campaigns for a keyword. "
@@ -630,6 +775,22 @@ _SOCIAL_META = {
     "tiktok_get_user_recent_stats": (
         "DATA",
         "JSON with author_id, days, video_count, and videos list (id, createTime, desc, playCount, likeCount, commentCount, shareCount, collectCount).",
+    ),
+    "youtube_get_hashtag_info": (
+        "DATA",
+        "JSON with hashtag, video_count, and channel_count.",
+    ),
+    "youtube_get_hashtag_videos": (
+        "DATA",
+        "JSON with hashtag, count, and raw videoRenderer dicts (normalize with SocialViralityProcessor.normalize_video before PSI).",
+    ),
+    "youtube_get_channel_info": (
+        "DATA",
+        "JSON with channel_id, title, handle, description, subscriber_count, video_count, total_views, joined_date, country.",
+    ),
+    "youtube_get_video_comments": (
+        "DATA",
+        "JSON with video_id, count, and comments list (text, author, likes, reply_count, published_time).",
     ),
     "meta_ad_search": ("DATA", "count of active advertisements found on Meta platforms"),
 }

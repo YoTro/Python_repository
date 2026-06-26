@@ -185,11 +185,14 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |                                                                              |
 |   +--------------------+  +--------------------+  +--------------------+    |
 |   |   amazon-server    |  |   market-server    |  |   social-server    |    |
-|   |                    |  | (Sellersprite +    |  |                    |    |
-|   | search_products    |  |  Xiyouzhaoci)      |  | tiktok_trend       |    |
-|   | get_details        |  | competing_lookup   |  | meta_ad_density    |    |
-|   | get_bsr            |  | market_research    |  | pinterest_interest |    |
-|   | get_past_sales     |  | keyword_analysis   |  |                    |    |
+|   |                    |  | (Sellersprite +    |  | (TikTok + YouTube) |    |
+|   | search_products    |  |  Xiyouzhaoci)      |  | tiktok_fetch_data  |    |
+|   | get_details        |  | competing_lookup   |  | tiktok_calculate_  |    |
+|   | get_bsr            |  | market_research    |  |   virality (PSI)   |    |
+|   | get_past_sales     |  | keyword_analysis   |  | youtube_get_       |    |
+|   |                    |  |                    |  |   hashtag_videos   |    |
+|   |                    |  |                    |  | youtube_get_       |    |
+|   |                    |  |                    |  |   channel_info     |    |
 |   +--------------------+  +--------------------+  +--------------------+    |
 |           |                        |                        |                |
 |           +------------------------+------------------------+                |
@@ -654,9 +657,10 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
   14    FilterStep    compliance_filter    Filter   -->  Low-risk ASINs remain
   15    EnrichStep    xiyou_traffic (MCP)  MARKET   -->  Actual Ad Dependency %
   16    FilterStep    ad_dependency        Filter   -->  Natural-traffic winners
-  17    EnrichStep    enrich_social_data   SOCIAL   -->  TikTok/Meta trend signals
-  18    ProcessStep   social_virality_     CLOUD_LLM --> Virality risk score
-                      analysis
+  17    EnrichStep    enrich_social_data   SOCIAL   -->  TikTok/YouTube/Meta trend signals
+  18    ProcessStep   social_virality_     CLOUD_LLM --> PSI score (platform-agnostic;
+                      analysis                          normalize_video maps TikTok /
+                                                        YouTube / Instagram raw data)
   19    ProcessStep   final_synthesis      CLOUD_LLM --> Selection Report
   ────  ────────────  ───────────────────  ────────────────────────────────────
   Key: Step 0 seeds ASIN list from keyword; engine seeds items=[{keyword}] when
