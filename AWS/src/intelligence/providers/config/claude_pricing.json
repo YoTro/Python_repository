@@ -1,7 +1,7 @@
 {
   "metadata": {
     "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-    "last_verified": "2026-03-17",
+    "last_verified": "2026-06-27",
     "schema_version": "4",
     "conventions": {
       "price_entry_shape": {
@@ -17,11 +17,32 @@
       "multipliers": "In 'modifiers' block only. Price entries contain absolute values.",
       "token_counts": "In 'tool_overhead' block only. See _pricing_formula.",
       "combinability_rule": "NOT_AVAILABLE_WITH > STACKS_WITH",
-      "opus_sonnet_4_6_flat": "Opus 4.6 and Sonnet 4.6: flat 1M context, no long-context surcharge. Source: platform.claude.com/docs/en/about-claude/pricing — 'A 900k-token request is billed at the same per-token rate as a 9k-token request.'",
-      "schema_integrity": "All lookup keys are canonical_ids. Verified at build time."
+      "opus_sonnet_4_6_flat": "Fable 5, Mythos 5, Opus 4.8, Opus 4.7, Opus 4.6 and Sonnet 4.6: flat 1M context, no long-context surcharge. Source: platform.claude.com/docs/en/about-claude/pricing — 'A 900k-token request is billed at the same per-token rate as a 9k-token request.'",
+      "schema_integrity": "All lookup keys are canonical_ids. Verified at build time.",
+      "tokenizer_note": "Opus 4.7 and later use a new tokenizer that may consume up to 35% more tokens for the same text than earlier models."
     }
   },
   "model_string_index": {
+    "claude-fable-5": {
+      "canonical_id": "claude-fable-5",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-mythos-5": {
+      "canonical_id": "claude-mythos-5",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-opus-4-8": {
+      "canonical_id": "claude-opus-4-8",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-opus-4-7": {
+      "canonical_id": "claude-opus-4-7",
+      "is_alias": false,
+      "is_deprecated": false
+    },
     "claude-opus-4-6": {
       "canonical_id": "claude-opus-4-6",
       "is_alias": false,
@@ -40,12 +61,12 @@
     "claude-opus-4-1": {
       "canonical_id": "claude-opus-4-1",
       "is_alias": false,
-      "is_deprecated": false
+      "is_deprecated": true
     },
     "claude-opus-4-0": {
       "canonical_id": "claude-opus-4-0",
       "is_alias": false,
-      "is_deprecated": false
+      "is_deprecated": true
     },
     "claude-sonnet-4-5": {
       "canonical_id": "claude-sonnet-4-5",
@@ -55,7 +76,7 @@
     "claude-sonnet-4-0": {
       "canonical_id": "claude-sonnet-4-0",
       "is_alias": false,
-      "is_deprecated": false
+      "is_deprecated": true
     },
     "claude-sonnet-3-7": {
       "canonical_id": "claude-sonnet-3-7",
@@ -70,7 +91,7 @@
     "claude-haiku-3-5": {
       "canonical_id": "claude-haiku-3-5",
       "is_alias": false,
-      "is_deprecated": false
+      "is_deprecated": true
     },
     "claude-opus-3": {
       "canonical_id": "claude-opus-3",
@@ -95,12 +116,12 @@
     "claude-opus-4-1-20250219": {
       "canonical_id": "claude-opus-4-1",
       "is_alias": true,
-      "is_deprecated": false
+      "is_deprecated": true
     },
     "claude-opus-4-0-20250514": {
       "canonical_id": "claude-opus-4-0",
       "is_alias": true,
-      "is_deprecated": false
+      "is_deprecated": true
     },
     "claude-sonnet-4-6-20250514": {
       "canonical_id": "claude-sonnet-4-6",
@@ -115,7 +136,7 @@
     "claude-sonnet-4-0-20250514": {
       "canonical_id": "claude-sonnet-4-0",
       "is_alias": true,
-      "is_deprecated": false
+      "is_deprecated": true
     },
     "claude-sonnet-3-7-20250219": {
       "canonical_id": "claude-sonnet-3-7",
@@ -130,7 +151,7 @@
     "claude-haiku-3-5-20241022": {
       "canonical_id": "claude-haiku-3-5",
       "is_alias": true,
-      "is_deprecated": false
+      "is_deprecated": true
     },
     "claude-3-opus-20240229": {
       "canonical_id": "claude-opus-3",
@@ -144,6 +165,242 @@
     }
   },
   "lookup": {
+    "claude-fable-5#standard#input": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-fable-5#standard#output": {
+      "price": 50.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-fable-5#standard#cache_write_5m": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-fable-5#standard#cache_write_1h": {
+      "price": 20.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-fable-5#standard#cache_read": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-fable-5#batch#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-fable-5#batch#output": {
+      "price": 25.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-mythos-5#standard#input": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-mythos-5#standard#output": {
+      "price": 50.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-mythos-5#standard#cache_write_5m": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-mythos-5#standard#cache_write_1h": {
+      "price": 20.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-mythos-5#standard#cache_read": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-mythos-5#batch#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-mythos-5#batch#output": {
+      "price": 25.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-8#standard#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-opus-4-8#standard#output": {
+      "price": 25.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-opus-4-8#standard#cache_write_5m": {
+      "price": 6.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-opus-4-8#standard#cache_write_1h": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-opus-4-8#standard#cache_read": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-opus-4-8#batch#input": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-8#batch#output": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-8#fast_mode#input": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "multiplier_vs_standard": 2
+    },
+    "claude-opus-4-8#fast_mode#output": {
+      "price": 50.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "multiplier_vs_standard": 2
+    },
+    "claude-opus-4-7#standard#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-opus-4-7#standard#output": {
+      "price": 25.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-opus-4-7#standard#cache_write_5m": {
+      "price": 6.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-opus-4-7#standard#cache_write_1h": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-opus-4-7#standard#cache_read": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-opus-4-7#batch#input": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-7#batch#output": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-4-7#fast_mode#input": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "multiplier_vs_standard": 6
+    },
+    "claude-opus-4-7#fast_mode#output": {
+      "price": 150.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "multiplier_vs_standard": 6
+    },
     "claude-opus-4-6#standard#input": {
       "price": 5.0,
       "unit": "USD",
@@ -815,6 +1072,105 @@
   },
   "models": [
     {
+      "id": "claude-opus-4-8",
+      "display_name": "Claude Opus 4.8",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 1000000,
+        "long_context_behavior": "flat_1M_no_surcharge",
+        "note": "900k-token request billed at same rate as 9k-token request"
+      },
+      "tiers_available": [
+        "standard",
+        "batch",
+        "fast_mode"
+      ],
+      "_lookup_key_prefix": "claude-opus-4-8"
+    },
+    {
+      "id": "claude-opus-4-7",
+      "display_name": "Claude Opus 4.7",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 1000000,
+        "long_context_behavior": "flat_1M_no_surcharge",
+        "note": "900k-token request billed at same rate as 9k-token request"
+      },
+      "tiers_available": [
+        "standard",
+        "batch",
+        "fast_mode"
+      ],
+      "_lookup_key_prefix": "claude-opus-4-7"
+    },
+    {
+      "id": "claude-fable-5",
+      "display_name": "Claude Fable 5",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 1000000,
+        "long_context_behavior": "flat_1M_no_surcharge",
+        "note": "900k-token request billed at same rate as 9k-token request"
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-fable-5"
+    },
+    {
+      "id": "claude-mythos-5",
+      "display_name": "Claude Mythos 5",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 1000000,
+        "long_context_behavior": "flat_1M_no_surcharge",
+        "note": "900k-token request billed at same rate as 9k-token request"
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-mythos-5",
+      "availability": "limited_availability"
+    },
+    {
       "id": "claude-opus-4-6",
       "display_name": "Claude Opus 4.6",
       "status": "stable",
@@ -889,8 +1245,8 @@
     {
       "id": "claude-opus-4-1",
       "display_name": "Claude Opus 4.1",
-      "status": "stable",
-      "deprecated": false,
+      "status": "deprecated",
+      "deprecated": true,
       "input_modalities": [
         "text",
         "image"
@@ -912,8 +1268,8 @@
     {
       "id": "claude-opus-4-0",
       "display_name": "Claude Opus 4",
-      "status": "stable",
-      "deprecated": false,
+      "status": "retired_except_google_cloud",
+      "deprecated": true,
       "input_modalities": [
         "text",
         "image"
@@ -963,8 +1319,8 @@
     {
       "id": "claude-sonnet-4-0",
       "display_name": "Claude Sonnet 4",
-      "status": "stable",
-      "deprecated": false,
+      "status": "retired_except_bedrock_google_cloud",
+      "deprecated": true,
       "input_modalities": [
         "text",
         "image"
@@ -1037,8 +1393,8 @@
     {
       "id": "claude-haiku-3-5",
       "display_name": "Claude Haiku 3.5",
-      "status": "stable",
-      "deprecated": false,
+      "status": "retired_except_bedrock_google_cloud",
+      "deprecated": true,
       "input_modalities": [
         "text",
         "image"
@@ -1169,6 +1525,10 @@
         "cache_read"
       ],
       "applies_to_model_ids": [
+        "claude-mythos-5",
+        "claude-fable-5",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
         "claude-opus-4-6",
         "claude-sonnet-4-6",
         "claude-opus-4-5",
@@ -1193,9 +1553,15 @@
       "type": "multiplier_on_standard",
       "factor": 6.0,
       "applies_to_model_ids": [
+        "claude-opus-4-8",
+        "claude-opus-4-7",
         "claude-opus-4-6"
       ],
       "lookup_keys": [
+        "claude-opus-4-8#fast_mode#input",
+        "claude-opus-4-8#fast_mode#output",
+        "claude-opus-4-7#fast_mode#input",
+        "claude-opus-4-7#fast_mode#output",
         "claude-opus-4-6#fast_mode#input",
         "claude-opus-4-6#fast_mode#output"
       ],
@@ -1207,7 +1573,12 @@
         "batch"
       ],
       "precedence_note": "NOT_AVAILABLE_WITH > STACKS_WITH",
-      "availability": "research_preview"
+      "availability": "research_preview",
+      "factor_by_model": {
+        "claude-opus-4-8": 2.0,
+        "claude-opus-4-7": 6.0,
+        "claude-opus-4-6": 6.0
+      }
     },
     "long_context_gt200k": {
       "type": "tier_switch",
@@ -1237,45 +1608,53 @@
       "applies_when": "at_least_1_tool_provided",
       "zero_when": "tool_choice=none AND tools=[]",
       "by_model_id": {
+        "claude-opus-4-8": {
+          "auto_or_none": 290,
+          "any_or_tool": 410
+        },
+        "claude-opus-4-7": {
+          "auto_or_none": 675,
+          "any_or_tool": 804
+        },
         "claude-opus-4-6": {
-          "auto_or_none": 346,
-          "any_or_tool": 313
+          "auto_or_none": 497,
+          "any_or_tool": 589
         },
         "claude-opus-4-5": {
-          "auto_or_none": 346,
-          "any_or_tool": 313
+          "auto_or_none": 496,
+          "any_or_tool": 588
         },
         "claude-opus-4-1": {
-          "auto_or_none": 346,
-          "any_or_tool": 313
+          "auto_or_none": 313,
+          "any_or_tool": 315
         },
         "claude-opus-4-0": {
-          "auto_or_none": 346,
-          "any_or_tool": 313
+          "auto_or_none": 313,
+          "any_or_tool": 315
         },
         "claude-sonnet-4-6": {
-          "auto_or_none": 346,
-          "any_or_tool": 313
+          "auto_or_none": 497,
+          "any_or_tool": 589
         },
         "claude-sonnet-4-5": {
-          "auto_or_none": 346,
-          "any_or_tool": 313
+          "auto_or_none": 496,
+          "any_or_tool": 588
         },
         "claude-sonnet-4-0": {
-          "auto_or_none": 346,
-          "any_or_tool": 313
+          "auto_or_none": 313,
+          "any_or_tool": 315
         },
         "claude-sonnet-3-7": {
           "auto_or_none": 346,
           "any_or_tool": 313
         },
         "claude-haiku-4-5": {
-          "auto_or_none": 346,
-          "any_or_tool": 313
+          "auto_or_none": 496,
+          "any_or_tool": 588
         },
         "claude-haiku-3-5": {
           "auto_or_none": 264,
-          "any_or_tool": 340
+          "any_or_tool": 355
         },
         "claude-opus-3": {
           "auto_or_none": 530,

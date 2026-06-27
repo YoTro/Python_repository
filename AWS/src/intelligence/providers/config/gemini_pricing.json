@@ -1,9 +1,9 @@
 {
   "metadata": {
     "source": "https://ai.google.dev/gemini-api/docs/pricing",
-    "last_verified": "2026-03-17",
+    "last_verified": "2026-06-27",
     "currency": "USD",
-    "schema_version": "4",
+    "schema_version": "5",
     "conventions": {
       "null": "feature not available for this tier / model combination",
       "0": "available at no charge (free tier active)",
@@ -30,13 +30,14 @@
       "caching_read_ratio": "cache read price = input price × ratio (documented per model for verification)"
     },
     "model_string_normalization": "Strip leading 'models/' prefix, then lowercase. GeminiProvider: s.removeprefix('models/').strip().lower()",
-    "lookup_key_pattern": "{model_string}#{tier}#{direction}#{modality}[#{context_tier|resolution|variant}]  |  tier = standard_free | standard_paid | batch_free | batch_paid  |  direction = input | output | cache_read | cache_storage | grounding_search | grounding_maps | image_gen"
+    "lookup_key_pattern": "{model_string}#{tier}#{direction}#{modality}[#{context_tier|resolution|variant}]  |  tier = standard_free | standard_paid | batch_free | batch_paid  |  direction = input | output | cache_read | cache_storage | grounding_search | grounding_maps | image_gen",
+    "update_note": "Updated from official Google AI Gemini API pricing page. Runtime PriceManager currently consumes lookup text token prices; multimodal/tool prices are retained for reference and future billing support."
   },
   "model_string_index": {
     "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
     "gemini-3.1-pro-preview-customtools": "gemini-3.1-pro-preview",
-    "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite-preview",
-    "gemini-3.1-flash-image-preview": "gemini-3.1-flash-image-preview",
+    "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite",
+    "gemini-3.1-flash-image-preview": "gemini-3.1-flash-image",
     "gemini-3-flash-preview": "gemini-3-flash-preview",
     "gemini-3-pro-image-preview": "gemini-3-pro-image-preview",
     "gemini-2.5-pro": "gemini-2.5-pro",
@@ -62,7 +63,20 @@
     "veo-3.0-generate-001": "veo-3",
     "veo-3.0-fast-generate-001": "veo-3",
     "veo-2.0-generate-001": "veo-2",
-    "gemma-3": "gemma-3"
+    "gemma-3": "gemma-3",
+    "gemini-3.5-flash": "gemini-3.5-flash",
+    "gemini-3.5-live-translate-preview": "gemini-3.5-live-translate-preview",
+    "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
+    "gemini-3.1-flash-live-preview": "gemini-3.1-flash-live-preview",
+    "gemini-3.1-flash-image": "gemini-3.1-flash-image",
+    "gemini-3.1-flash-preview-tts": "gemini-3.1-flash-tts",
+    "gemini-3.1-flash-tts-preview": "gemini-3.1-flash-tts",
+    "gemini-2.5-flash-lite-preview": "gemini-2.5-flash-lite-preview",
+    "gemini-2.5-flash-image-preview": "gemini-2.5-flash-image",
+    "gemini-robotics-er-1.6-preview": "gemini-robotics-er-1.6",
+    "gemini-embedding-2": "gemini-embedding-2",
+    "gemma-4": "gemma-4",
+    "veo-3.1-lite-generate-preview": "veo-3.1"
   },
   "lookup": {
     "gemini-3.1-pro-preview#standard_paid#input#image#lte_200k": {
@@ -2474,6 +2488,1157 @@
       "price": 0,
       "billing_unit": "USD_per_1M_tokens_per_hour",
       "is_free": true
+    },
+    "gemini-3.5-flash#standard_paid#input#text": {
+      "price": 1.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#standard_paid#cache_read#text": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#standard_paid#output#text": {
+      "price": 9.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#standard_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.5-flash#batch_paid#input#text": {
+      "price": 0.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#batch_paid#cache_read#text": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#batch_paid#output#text": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#batch_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.5-flash#flex_paid#input#text": {
+      "price": 0.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#flex_paid#cache_read#text": {
+      "price": 0.08,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#flex_paid#output#text": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#flex_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.5-flash#priority_paid#input#text": {
+      "price": 2.7,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#priority_paid#cache_read#text": {
+      "price": 0.27,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#priority_paid#output#text": {
+      "price": 16.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-flash#priority_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#standard_paid#input#text": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#standard_paid#cache_read#text": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#standard_paid#input#image": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#standard_paid#cache_read#image": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#standard_paid#input#video": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#standard_paid#cache_read#video": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#standard_paid#input#audio": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#standard_paid#cache_read#audio": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#standard_paid#output#text": {
+      "price": 1.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#standard_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#batch_paid#input#text": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#batch_paid#cache_read#text": {
+      "price": 0.0125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#batch_paid#input#image": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#batch_paid#cache_read#image": {
+      "price": 0.0125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#batch_paid#input#video": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#batch_paid#cache_read#video": {
+      "price": 0.0125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#batch_paid#input#audio": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#batch_paid#cache_read#audio": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#batch_paid#output#text": {
+      "price": 0.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#batch_paid#cache_storage": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#flex_paid#input#text": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#flex_paid#cache_read#text": {
+      "price": 0.0125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#flex_paid#input#image": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#flex_paid#cache_read#image": {
+      "price": 0.0125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#flex_paid#input#video": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#flex_paid#cache_read#video": {
+      "price": 0.0125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#flex_paid#input#audio": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#flex_paid#cache_read#audio": {
+      "price": 0.025,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#flex_paid#output#text": {
+      "price": 0.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#flex_paid#cache_storage": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#priority_paid#input#text": {
+      "price": 0.45,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#priority_paid#cache_read#text": {
+      "price": 0.045,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#priority_paid#input#image": {
+      "price": 0.45,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#priority_paid#cache_read#image": {
+      "price": 0.045,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#priority_paid#input#video": {
+      "price": 0.45,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#priority_paid#cache_read#video": {
+      "price": 0.045,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#priority_paid#input#audio": {
+      "price": 0.9,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#priority_paid#cache_read#audio": {
+      "price": 0.09,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#priority_paid#output#text": {
+      "price": 2.7,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-lite#priority_paid#cache_storage": {
+      "price": 1.8,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-pro-preview#flex_paid#input#text#lte_200k": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#cache_read#text#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#input#image#lte_200k": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#cache_read#image#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#input#video#lte_200k": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#cache_read#video#lte_200k": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#output#text#lte_200k": {
+      "price": 6.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#input#text#gt_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#cache_read#text#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#input#image#gt_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#cache_read#image#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#input#video#gt_200k": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#cache_read#video#gt_200k": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#output#text#gt_200k": {
+      "price": 9.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#flex_paid#cache_storage": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.1-pro-preview#priority_paid#input#text#lte_200k": {
+      "price": 3.6,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#cache_read#text#lte_200k": {
+      "price": 0.36,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#input#image#lte_200k": {
+      "price": 3.6,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#cache_read#image#lte_200k": {
+      "price": 0.36,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#input#video#lte_200k": {
+      "price": 3.6,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#cache_read#video#lte_200k": {
+      "price": 0.36,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#output#text#lte_200k": {
+      "price": 21.6,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#input#text#gt_200k": {
+      "price": 7.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#cache_read#text#gt_200k": {
+      "price": 0.72,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#input#image#gt_200k": {
+      "price": 7.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#cache_read#image#gt_200k": {
+      "price": 0.72,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#input#video#gt_200k": {
+      "price": 7.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#cache_read#video#gt_200k": {
+      "price": 0.72,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#output#text#gt_200k": {
+      "price": 32.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-3.1-pro-preview#priority_paid#cache_storage": {
+      "price": 8.1,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#flex_paid#input#text": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#flex_paid#cache_read#text": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#flex_paid#input#image": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#flex_paid#cache_read#image": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#flex_paid#input#video": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#flex_paid#cache_read#video": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#flex_paid#input#audio": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#flex_paid#cache_read#audio": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#flex_paid#output#text": {
+      "price": 1.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#flex_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#priority_paid#input#text": {
+      "price": 0.9,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#priority_paid#cache_read#text": {
+      "price": 0.09,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#priority_paid#input#image": {
+      "price": 0.9,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#priority_paid#cache_read#image": {
+      "price": 0.09,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#priority_paid#input#video": {
+      "price": 0.9,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#priority_paid#cache_read#video": {
+      "price": 0.09,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#priority_paid#input#audio": {
+      "price": 1.8,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#priority_paid#cache_read#audio": {
+      "price": 0.18,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#priority_paid#output#text": {
+      "price": 5.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3-flash-preview#priority_paid#cache_storage": {
+      "price": 1.8,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-pro#flex_paid#input#text#lte_200k": {
+      "price": 0.625,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#flex_paid#cache_read#text#lte_200k": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#flex_paid#input#image#lte_200k": {
+      "price": 0.625,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#flex_paid#cache_read#image#lte_200k": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#flex_paid#input#video#lte_200k": {
+      "price": 0.625,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#flex_paid#cache_read#video#lte_200k": {
+      "price": 0.125,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#flex_paid#output#text#lte_200k": {
+      "price": 5.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#flex_paid#input#text#gt_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#flex_paid#cache_read#text#gt_200k": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#flex_paid#input#image#gt_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#flex_paid#cache_read#image#gt_200k": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#flex_paid#input#video#gt_200k": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#flex_paid#cache_read#video#gt_200k": {
+      "price": 0.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#flex_paid#output#text#gt_200k": {
+      "price": 7.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#flex_paid#cache_storage": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-pro#priority_paid#input#text#lte_200k": {
+      "price": 2.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#priority_paid#cache_read#text#lte_200k": {
+      "price": 0.225,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#priority_paid#input#image#lte_200k": {
+      "price": 2.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#priority_paid#cache_read#image#lte_200k": {
+      "price": 0.225,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#priority_paid#input#video#lte_200k": {
+      "price": 2.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#priority_paid#cache_read#video#lte_200k": {
+      "price": 0.225,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#priority_paid#output#text#lte_200k": {
+      "price": 18.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "lte_200k"
+    },
+    "gemini-2.5-pro#priority_paid#input#text#gt_200k": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#priority_paid#cache_read#text#gt_200k": {
+      "price": 0.45,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#priority_paid#input#image#gt_200k": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#priority_paid#cache_read#image#gt_200k": {
+      "price": 0.45,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#priority_paid#input#video#gt_200k": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#priority_paid#cache_read#video#gt_200k": {
+      "price": 0.45,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#priority_paid#output#text#gt_200k": {
+      "price": 27.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "context_tier": "gt_200k"
+    },
+    "gemini-2.5-pro#priority_paid#cache_storage": {
+      "price": 8.1,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-flash#flex_paid#input#text": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#flex_paid#cache_read#text": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#flex_paid#input#image": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#flex_paid#cache_read#image": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#flex_paid#input#video": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#flex_paid#cache_read#video": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#flex_paid#input#audio": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#flex_paid#cache_read#audio": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#flex_paid#output#text": {
+      "price": 1.25,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#flex_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-flash#priority_paid#input#text": {
+      "price": 0.54,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#priority_paid#cache_read#text": {
+      "price": 0.054,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#priority_paid#input#image": {
+      "price": 0.54,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#priority_paid#cache_read#image": {
+      "price": 0.054,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#priority_paid#input#video": {
+      "price": 0.54,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#priority_paid#cache_read#video": {
+      "price": 0.054,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#priority_paid#input#audio": {
+      "price": 1.8,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#priority_paid#cache_read#audio": {
+      "price": 0.18,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#priority_paid#output#text": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash#priority_paid#cache_storage": {
+      "price": 1.8,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#flex_paid#input#text": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#flex_paid#cache_read#text": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#flex_paid#input#image": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#flex_paid#cache_read#image": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#flex_paid#input#video": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#flex_paid#cache_read#video": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#flex_paid#input#audio": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#flex_paid#cache_read#audio": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#flex_paid#output#text": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#flex_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#priority_paid#input#text": {
+      "price": 0.18,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#priority_paid#cache_read#text": {
+      "price": 0.018,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#priority_paid#input#image": {
+      "price": 0.18,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#priority_paid#cache_read#image": {
+      "price": 0.018,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#priority_paid#input#video": {
+      "price": 0.18,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#priority_paid#cache_read#video": {
+      "price": 0.018,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#priority_paid#input#audio": {
+      "price": 0.54,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#priority_paid#cache_read#audio": {
+      "price": 0.054,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#priority_paid#output#text": {
+      "price": 0.72,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite#priority_paid#cache_storage": {
+      "price": 1.8,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#standard_paid#input#text": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#standard_paid#cache_read#text": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#standard_paid#input#image": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#standard_paid#cache_read#image": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#standard_paid#input#video": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#standard_paid#cache_read#video": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#standard_paid#input#audio": {
+      "price": 0.3,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#standard_paid#cache_read#audio": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#standard_paid#output#text": {
+      "price": 0.4,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#standard_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#batch_paid#input#text": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#batch_paid#cache_read#text": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#batch_paid#input#image": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#batch_paid#cache_read#image": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#batch_paid#input#video": {
+      "price": 0.05,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#batch_paid#cache_read#video": {
+      "price": 0.01,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#batch_paid#input#audio": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#batch_paid#cache_read#audio": {
+      "price": 0.03,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#batch_paid#output#text": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-2.5-flash-lite-preview#batch_paid#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false
+    },
+    "gemini-3.5-live-translate-preview#standard_paid#input#audio": {
+      "price": 3.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-live-translate-preview#standard_paid#output#text": {
+      "price": 21.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.5-live-translate-preview#standard_paid#output#audio": {
+      "price": 21.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-live-preview#standard_paid#input#text": {
+      "price": 0.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-live-preview#standard_paid#input#audio": {
+      "price": 3.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-live-preview#standard_paid#output#text": {
+      "price": 4.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-3.1-flash-live-preview#standard_paid#output#audio": {
+      "price": 12.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.6#standard_paid#input#text": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.6#standard_paid#input#image": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.6#standard_paid#input#video": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.6#standard_paid#input#audio": {
+      "price": 2.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.6#standard_paid#output#text": {
+      "price": 5.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.6#batch_paid#input#text": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.6#batch_paid#input#image": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.6#batch_paid#input#video": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.6#batch_paid#input#audio": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-robotics-er-1.6#batch_paid#output#text": {
+      "price": 2.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-embedding-2#standard_paid#input#text": {
+      "price": 0.2,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemini-embedding-2#batch_paid#input#text": {
+      "price": 0.1,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false
+    },
+    "gemma-4#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemma-4#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemma-4#standard_free#cache_read#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemma-4#standard_free#cache_storage": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": true
     }
   },
   "models": [
@@ -4475,23 +5640,23 @@
   ],
   "tools_pricing": {
     "google_search": {
-      "billing_unit": "USD_per_1000_prompts",
+      "billing_unit": "USD_per_1000_prompts_or_queries",
       "free_tier": {
-        "flash_and_flash_lite_shared_rpd": 500,
-        "pro_models_rpd": null
+        "gemini_2_flash_and_flash_lite_shared_rpd": 500,
+        "gemini_3_free_allowance": "not_available_for_pro; see paid tier allowances"
       },
       "paid_tier": {
-        "flash_and_flash_lite_free_rpd": 1500,
-        "pro_models_free_rpd": 1500,
-        "gemini_3x_paid_price": 14.0,
-        "gemini_2x_paid_price": 35.0
+        "gemini_2x_free_rpd": 1500,
+        "gemini_2x_price_per_1000_grounded_prompts": 35.0,
+        "gemini_3x_free_monthly_prompts": 5000,
+        "gemini_3x_price_per_1000_search_queries": 14.0
       }
     },
     "google_maps": {
       "billing_unit": "USD_per_1000_prompts",
       "free_tier": {
-        "flash_and_flash_lite_shared_rpd": 500,
-        "pro_models_rpd": null
+        "gemini_2_flash_and_flash_lite_rpd": 500,
+        "pro_models": "not_available"
       },
       "paid_tier": {
         "flash_and_flash_lite_free_rpd": 1500,
@@ -4515,7 +5680,7 @@
   },
   "model_limits": {
     "_source": "https://ai.google.dev/gemini-api/docs/models",
-    "_last_verified": "2026-04-28",
+    "_last_verified": "2026-06-27",
     "_default": {
       "max_output_tokens": 8192
     },
@@ -4532,6 +5697,9 @@
       "max_output_tokens": 65536
     },
     "models/gemini-3": {
+      "max_output_tokens": 65536
+    },
+    "models/gemini-3.5": {
       "max_output_tokens": 65536
     }
   }
