@@ -139,6 +139,52 @@ This script automatically detects your OS and injects the `aws-market-intelligen
 }
 ```
 
+## 6. Client / Server Protocol Boundary
+
+Two transports sit in front of **one** registry. Understanding which one you're on determines the return type you get and how failures reach you.
+
+### 6.1 Two transports, one registry
+
+| Component | File | Transport | Used by |
+|---|---|---|---|
+| `MCPClient` (ABC) | `src/mcp/client/base.py` | — | the interface workflows/agents code against (`list_tools`, `call_tool`, `list_resources`, `read_resource`) |
+| `LocalMCPClient` | `src/mcp/client/local.py` | **in-process** direct dispatch (no serialization) | Workflow + Agent tracks; the default returned by `get_mcp_client()` |
+| `AWSHelperServer` | `src/mcp/server.py` | **stdio JSON-RPC** | external clients (Claude Desktop — §5) |
+
+Both read the same `tool_registry` / `resource_registry` / `prompt_registry` singletons — the **registry is the single source of truth**; client and server are just two transports onto it. Code *inside* the MCP layer (e.g. `server.py`) may talk to the registry directly; everything *outside* (workflows, agents) goes through an `MCPClient`, never the registry, so the transport stays swappable (local ↔ remote).
+
+### 6.2 Tool-call return format
+
+- `call_tool(name, args) -> list[TextContent]` — the raw MCP wire type. Each `TextContent` has `.type="text"` and `.text`; handlers serialize their result (typically JSON) into `.text`. Handlers **must** return `list[TextContent]`, not a bare dict — the envelope is the contract on both transports.
+- `call_tool_json(name, args) -> Any` — convenience defined on the `MCPClient` ABC (built on the abstract `call_tool`, so **every** client — local or future remote — inherits it): takes the first content, `json.loads(.text)` (falls back to the raw string on `JSONDecodeError`), returns `None` when empty. **In-process callers should use `call_tool_json`**; `call_tool` is the protocol-level primitive.
+
+### 6.3 Exception translation — asymmetric by transport
+
+This is the crux of the boundary: the two transports surface failures differently.
+
+| Failure | In-process (`LocalMCPClient`) | External (`AWSHelperServer`) |
+|---|---|---|
+| Tool not registered | `ToolNotFoundError` **propagates** to the caller | caught → `❌ Error: {message}` TextContent |
+| Controlled handler failure | exception **propagates raw** to the caller | `ToolExecutionError` *or* any framework `AWSBaseError` → `⚠️ Execution failed: {message}` |
+| Unexpected handler failure | exception **propagates raw** to the caller | any other `Exception` → `🆘 Critical error: {e}` (+ `logger.exception`) |
+
+Rationale: JSON-RPC cannot throw a Python exception across the wire, so the **server converts exceptions into error `TextContent`**; the **local client does not translate** — in-process callers receive real exceptions and handle them as Python (e.g. the `try/except` around `provider.generate_vision_structured` in `listing_diagnosis.py`). Do **not** expect a local `call_tool` to hand back an "error string"; expect it to raise.
+
+The server distinguishes **controlled** failures (`⚠️`) from **unexpected** ones (`🆘`) by exception type: framework errors (`AWSBaseError` and its subclasses — `ScraperError`, `RetryableError`, `FatalError`, …) and explicit `ToolExecutionError` are known/handled conditions; everything else is treated as a bug and logged with a full traceback.
+
+Exception hierarchy (`src/mcp/exceptions.py`): `MCPError(message, hint)` → `ToolNotFoundError`, `ToolExecutionError`, `ValidationError`, `ResourceNotFoundError`. Current wiring:
+- `ToolNotFoundError` — **live**; raised by `ToolRegistry.call_tool` for an unregistered name.
+- `ToolExecutionError` — raise it inside a handler to force the `⚠️ Execution failed` rendering for a controlled failure. (Framework `AWSBaseError`s already land in the same branch, so most handlers need not raise it explicitly.)
+- `ValidationError`, `ResourceNotFoundError` — defined, not yet used (the registry currently *strips* unknown args rather than raising — see §3.5 / DEV_GUIDE §12.1).
+
+### 6.4 Who may bypass MCP and call handlers directly
+
+The MCP Tool JSON schema is the stable public contract; an `MCPClient` is the only legitimate call path (§4). Exactly one exception:
+
+- **Allowed:** `intelligence/processors/` classes (`CommentAnalyzer`, `ReviewSummarizer`, …) — reusable Python objects with stable interfaces, designed for direct import by both workflows and tools. They are **not** MCP handlers.
+- **Forbidden:** importing any `tools.py` handler, scraper, or cross-domain internal into a workflow/agent — use `ctx.mcp.call_tool_json()`.
+- **Registry vs client:** only code already inside `src/mcp/` (server, client) touches a registry singleton directly; all outside callers use an `MCPClient`.
+
 ## 7. Featured Tool Capabilities
 
 ### Amazon Data Extraction (L1)

@@ -553,10 +553,10 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 +────────────────────────────────────+  +──────────────────────────────────────+
 |  STATE STORE                       |  |  OBSERVABILITY                       |
 |                                    |  |                                      |
-|  [Single-User]                     |  |  Tracing:                            |
-|    Local files: checkpoint/history |  |    trace_id full link                |
-|    SQLite:      Config / Usage logs|  |    Gateway -> Step -> Model          |
-|                                    |  |    Duration / cost per step per job  |
+|  [Single-User]                     |  |  Step telemetry:                     |
+|    Local files: checkpoint/history |  |    Duration/step (step_history)      |
+|    SQLite:      Config / Usage logs|  |    Cost/step (PriceManager)          |
+|                                    |  |                                      |
 |  CheckpointData schema:            |  |                                      |
 |    job_id, step_index, step_name   |  |                                      |
 |    items          pipeline payload |  |                                      |
