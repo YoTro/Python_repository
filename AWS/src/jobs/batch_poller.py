@@ -218,6 +218,21 @@ class BatchPoller:
                 f"expected={expected} got={len(results)}. Proceeding with partial results."
             )
 
+        # ── Cancel-aware guard ───────────────────────────────────────────────
+        # If the job was *explicitly* cancelled while the batch was running, the
+        # user no longer wants the result — discard it. But if there is no
+        # in-memory record (process restarted), still write BATCH_COMPLETED so the
+        # result stays recoverable via JobManager.resume_from_checkpoint().
+        from src.jobs.manager import JobStatus
+
+        record = self.job_manager.get_status(job_id)
+        if record is not None and record.status == JobStatus.CANCELLED:
+            logger.warning(
+                f"[BatchPoller] job={job_id} step={step_name} already CANCELLED — "
+                f"discarding batch result (batch_id={handle.job_id})."
+            )
+            return
+
         # Reconstruct final items from stored snapshot + LLM results
         final_items = self._reconstruct(payload, results)
 

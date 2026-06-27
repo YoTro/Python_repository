@@ -25,6 +25,11 @@ from src.core.models.request import UnifiedRequest
 
 logger = logging.getLogger(__name__)
 
+# Reaper backstop for batch waits. BatchPoller's 24 h provider TTL (BATCH_FAILED)
+# is the primary bound; this only fires if BatchPoller itself stops running.
+# Set just beyond the provider TTL so it is a safety net, never a premature killer.
+_BATCH_SUSPEND_BACKSTOP_SEC = 86400 + 3600  # 25 h
+
 
 class JobStatus(Enum):
     PENDING = "pending"
@@ -47,6 +52,7 @@ class JobRecord:
     completed_at: str | None = None
     suspended_at: float | None = None  # Timestamp for timeout tracking
     suspend_timeout_sec: int = 300  # Dynamic timeout per job
+    suspend_reason: str | None = None  # "batch" | "interaction" — drives reaper policy
     error: str | None = None
     result: Any = None
 
@@ -97,39 +103,60 @@ class JobManager:
         while True:
             try:
                 await asyncio.sleep(60)  # Check every 60 seconds
-                now = datetime.utcnow().timestamp()
-
-                expired_jobs = []
-                # Use list() to take a snapshot of items to avoid RuntimeError
-                # if another coroutine adds a job during iteration.
-                for _job_id, record in list(self._jobs.items()):
-                    if record.status == JobStatus.SUSPENDED and record.suspended_at:
-                        # Use the job's specific timeout setting
-                        if now - record.suspended_at > record.suspend_timeout_sec:
-                            expired_jobs.append(record)
-
-                for record in expired_jobs:
-                    logger.warning(
-                        f"Job {record.job_id} suspended for {record.suspend_timeout_sec}s. Auto-cancelling."
-                    )
-                    record.status = JobStatus.CANCELLED
-                    record.error = "Job timed out waiting for user interaction."
-                    record.completed_at = datetime.utcnow().isoformat()
-
-                    # Notify the user if possible
-                    if record.callback:
-                        try:
-                            error_msg = Exception(
-                                f"任务由于长时间未响应 (超过 {record.suspend_timeout_sec} 秒)，已自动取消。"
-                            )
-                            await record.callback.on_error(error_msg)
-                        except Exception as e:
-                            logger.debug(f"Failed to notify user of job cancellation: {e}")
-
+                await self._cancel_expired_suspended()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Reaper task encountered an error: {e}")
+
+    async def _cancel_expired_suspended(self) -> list[JobRecord]:
+        """
+        Cancel SUSPENDED jobs that have outlived their per-job timeout.
+
+        The cancellation reason differs by wait type: an *interaction* wait is the
+        user's responsibility (short timeout), whereas a *batch* wait is the system's
+        and is governed primarily by BatchPoller's provider TTL — the reaper only acts
+        as a far backstop in case BatchPoller has stopped running. Returns the records
+        it cancelled (for testing/observability).
+        """
+        now = datetime.utcnow().timestamp()
+
+        expired_jobs = []
+        # Use list() to take a snapshot of items to avoid RuntimeError
+        # if another coroutine adds a job during iteration.
+        for _job_id, record in list(self._jobs.items()):
+            if record.status == JobStatus.SUSPENDED and record.suspended_at:
+                # Use the job's specific timeout setting
+                if now - record.suspended_at > record.suspend_timeout_sec:
+                    expired_jobs.append(record)
+
+        for record in expired_jobs:
+            logger.warning(
+                f"Job {record.job_id} (reason={record.suspend_reason}) suspended for "
+                f"{record.suspend_timeout_sec}s. Auto-cancelling."
+            )
+            if record.suspend_reason == "batch":
+                record.error = "Batch job did not complete within the maximum wait window."
+                user_msg = (
+                    "批量分析任务超过最长等待时间仍未完成，已自动取消。"
+                    "如供应商稍后返回结果，可发送：恢复任务 " + record.job_id
+                )
+            else:
+                record.error = "Job timed out waiting for user interaction."
+                user_msg = (
+                    f"任务由于长时间未响应 (超过 {record.suspend_timeout_sec} 秒)，已自动取消。"
+                )
+            record.status = JobStatus.CANCELLED
+            record.completed_at = datetime.utcnow().isoformat()
+
+            # Notify the user if possible
+            if record.callback:
+                try:
+                    await record.callback.on_error(Exception(user_msg))
+                except Exception as e:
+                    logger.debug(f"Failed to notify user of job cancellation: {e}")
+
+        return expired_jobs
 
     async def _worker_loop(self, name: str):
         """Background loop to process jobs from the queue."""
@@ -280,8 +307,12 @@ class JobManager:
                 f"(timeout={record.suspend_timeout_sec}s)"
             )
             record.status = JobStatus.SUSPENDED
+            record.suspend_reason = "batch"
             record.suspended_at = datetime.utcnow().timestamp()
-            record.suspend_timeout_sec = 7200  # 2 h — batch jobs can be slow
+            # Backstop only — BatchPoller owns batch lifecycle and cancels on the
+            # provider's 24 h TTL (BATCH_FAILED). The reaper must not pre-empt a
+            # batch that the provider would still complete.
+            record.suspend_timeout_sec = _BATCH_SUSPEND_BACKSTOP_SEC
             if record.callback:
                 try:
                     provider_name = getattr(e.handle, "provider", "LLM").upper()
@@ -443,6 +474,7 @@ class JobManager:
         except JobSuspendedError as e:
             logger.info(f"Job {record.job_id} suspended for interaction: {e}")
             record.status = JobStatus.SUSPENDED
+            record.suspend_reason = "interaction"
             record.suspended_at = datetime.utcnow().timestamp()
             record.suspend_timeout_sec = e.timeout_sec
             record.error = str(e)

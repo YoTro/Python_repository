@@ -8,66 +8,69 @@ from src.jobs.manager import JobManager, JobRecord, JobStatus
 
 
 class TestJobManagerReaper(unittest.IsolatedAsyncioTestCase):
-    async def test_reaper_cancels_expired_suspended_job(self):
-        """Test that the reaper loop cancels jobs that have exceeded their suspend_timeout_sec."""
-        # 1. Setup JobManager with a short reaper interval for testing
+    def _make_manager(self):
+        """Build a JobManager and cancel its background tasks so tests don't hang."""
         manager = JobManager(max_workers=1)
-
-        # 2. Create a mock request and job
-        request = UnifiedRequest(workflow_name="test_workflow")
-        job_id = "test_job_1"
-
-        # We manually create and insert a JobRecord to simulate it being suspended
-        # We set suspended_at to the past, so it's already expired based on suspend_timeout_sec
-        past_time = datetime.utcnow() - timedelta(seconds=15)
-
-        record = JobRecord(
-            job_id=job_id,
-            request=request,
-            status=JobStatus.SUSPENDED,
-            suspended_at=past_time.timestamp(),
-            suspend_timeout_sec=10,  # Very short timeout
-        )
-
-        from unittest.mock import AsyncMock
-
-        # Add a mock callback to verify on_error is called
-        mock_callback = MagicMock()
-        mock_callback.on_error = AsyncMock()
-        record.callback = mock_callback
-
-        manager._jobs[job_id] = record
-
-        # 3. We don't want to run the full infinite reaper loop in the test.
-        # Instead, we extract the core logic of the reaper loop and run it once.
-        now = datetime.utcnow().timestamp()
-        expired_jobs = []
-        for _j_id, rec in list(manager._jobs.items()):
-            if rec.status == JobStatus.SUSPENDED and rec.suspended_at:
-                if now - rec.suspended_at > rec.suspend_timeout_sec:
-                    expired_jobs.append(rec)
-
-        for rec in expired_jobs:
-            rec.status = JobStatus.CANCELLED
-            rec.error = "Job timed out waiting for user interaction."
-            if rec.callback:
-                await rec.callback.on_error(Exception("Timeout"))
-
-        # 4. Assertions
-        # Verify the job status changed to CANCELLED
-        self.assertEqual(manager._jobs[job_id].status, JobStatus.CANCELLED)
-
-        # Verify the error message was set
-        self.assertEqual(manager._jobs[job_id].error, "Job timed out waiting for user interaction.")
-
-        # Verify the callback was notified
-        mock_callback.on_error.assert_called_once()
-
-        # Clean up the real background tasks to prevent test hanging
         if manager._reaper_task:
             manager._reaper_task.cancel()
         for worker in manager._workers:
             worker.cancel()
+        return manager
+
+    @staticmethod
+    def _suspended_record(job_id, *, reason, timeout=10):
+        from unittest.mock import AsyncMock
+
+        record = JobRecord(
+            job_id=job_id,
+            request=UnifiedRequest(workflow_name="test_workflow"),
+            status=JobStatus.SUSPENDED,
+            suspended_at=(datetime.utcnow() - timedelta(seconds=timeout + 5)).timestamp(),
+            suspend_timeout_sec=timeout,
+            suspend_reason=reason,
+        )
+        record.callback = MagicMock()
+        record.callback.on_error = AsyncMock()
+        return record
+
+    async def test_reaper_cancels_expired_interaction_job(self):
+        """An expired interaction wait is cancelled with the user-responsibility message."""
+        manager = self._make_manager()
+        record = self._suspended_record("interaction_job", reason="interaction")
+        manager._jobs[record.job_id] = record
+
+        cancelled = await manager._cancel_expired_suspended()
+
+        self.assertIn(record, cancelled)
+        self.assertEqual(record.status, JobStatus.CANCELLED)
+        self.assertEqual(record.error, "Job timed out waiting for user interaction.")
+        record.callback.on_error.assert_called_once()
+
+    async def test_reaper_uses_batch_backstop_message(self):
+        """An expired batch wait is cancelled with the system-responsibility message."""
+        manager = self._make_manager()
+        record = self._suspended_record("batch_job", reason="batch")
+        manager._jobs[record.job_id] = record
+
+        cancelled = await manager._cancel_expired_suspended()
+
+        self.assertIn(record, cancelled)
+        self.assertEqual(record.status, JobStatus.CANCELLED)
+        self.assertEqual(record.error, "Batch job did not complete within the maximum wait window.")
+        record.callback.on_error.assert_called_once()
+
+    async def test_reaper_ignores_unexpired_batch_job(self):
+        """A batch wait within its backstop window is left running for BatchPoller."""
+        manager = self._make_manager()
+        record = self._suspended_record("fresh_batch", reason="batch", timeout=10)
+        record.suspended_at = datetime.utcnow().timestamp()  # just suspended
+        manager._jobs[record.job_id] = record
+
+        cancelled = await manager._cancel_expired_suspended()
+
+        self.assertEqual(cancelled, [])
+        self.assertEqual(record.status, JobStatus.SUSPENDED)
+        record.callback.on_error.assert_not_called()
 
     def test_job_suspended_error_extracts_timeout(self):
         """Test that JobSuspendedError correctly extracts expires_in from the signal."""
