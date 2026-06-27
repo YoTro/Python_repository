@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -31,17 +30,4 @@ class LocalMCPClient(MCPClient):
     async def read_resource(self, uri: str) -> str:
         return resource_registry.read_resource(uri)
 
-    async def call_tool_json(self, name: str, arguments: dict[str, Any]) -> Any:
-        """Helper to call tool and parse JSON result if text."""
-        results = await self.call_tool(name, arguments)
-        if not results:
-            return None
-
-        # Assuming first content is the main result
-        content = results[0]
-        if hasattr(content, "text"):
-            try:
-                return json.loads(content.text)
-            except json.JSONDecodeError:
-                return content.text
-        return content
+    # call_tool_json is inherited from MCPClient (transport-agnostic, built on call_tool).
