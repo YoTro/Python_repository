@@ -95,4 +95,18 @@ class ToolRegistry:
 # Singleton instance
 tool_registry = ToolRegistry()
 
-# Absolute imports for sub-modules to trigger registration
+# ── Tool discovery ────────────────────────────────────────────────────────────
+# Importing each domain's tools module executes its module-level
+# `tool_registry.register_tool(...)` calls as an import side effect.  These imports
+# MUST stay at the bottom of this file, *after* `tool_registry` is defined: each
+# domain module does `from src.registry.tools import tool_registry` at import time,
+# so the singleton has to exist before they are imported (otherwise a partial-module
+# circular import).  Add a new domain server here to make its tools discoverable to
+# both the Agent track (LocalMCPClient.list_tools) and the MCP server.
+import src.mcp.servers.amazon.tools  # noqa: E402,F401
+import src.mcp.servers.compliance.tools  # noqa: E402,F401
+import src.mcp.servers.erp.tools  # noqa: E402,F401
+import src.mcp.servers.finance.tools  # noqa: E402,F401
+import src.mcp.servers.market.tools  # noqa: E402,F401
+import src.mcp.servers.output.tools  # noqa: E402,F401
+import src.mcp.servers.social.tools  # noqa: E402,F401
