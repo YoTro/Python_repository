@@ -26,8 +26,8 @@ async def run_workflow(workflow_name: str, params: dict):
         # Gateway handles UnifiedRequest normalization and execution tracking
         result = await APIGateway.dispatch_cli_workflow(workflow_name, params=params)
         logger.info(f"Workflow {workflow_name} completed successfully.")
-        if result and hasattr(result, "items"):
-            logger.info(f"Generated {len(result.items)} items.")
+        if result and hasattr(result, "final_items"):
+            logger.info(f"Generated {len(result.final_items)} items.")
         return result
     except Exception as e:
         logger.error(f"Workflow {workflow_name} failed: {e}")

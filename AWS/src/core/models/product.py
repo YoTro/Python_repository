@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional
 
 class Product(BaseModel):
@@ -7,6 +7,8 @@ class Product(BaseModel):
     Standard Amazon Product model for all internal analysis and LLM orchestration.
     Each field includes descriptions to guide LLMs during tool selection and reasoning.
     """
+    model_config = ConfigDict(from_attributes=True)
+
     asin: str = Field(..., description="Amazon Standard Identification Number (Unique ID)")
     title: Optional[str] = Field(None, description="The full product title")
     features: List[str] = Field(default_factory=list, description="A list of bullet points highlighting key features")
@@ -27,6 +29,3 @@ class Product(BaseModel):
     images_metadata: dict = Field(default_factory=dict, description="Map of image URL to {width, height} scraped from data-a-dynamic-image")
     videos: List[str] = Field(default_factory=list, description="List of video URLs")
     aplus_images: List[str] = Field(default_factory=list, description="A+ content image URLs extracted from the product page")
-
-    class Config:
-        from_attributes = True
