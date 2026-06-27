@@ -126,7 +126,7 @@ class ClaudeProvider(BaseLLMProvider):
             )
         except Exception as e:
             logger.error(f"Claude text generation failed: {e}")
-            raise
+            self._raise_mapped_error(e)
 
     async def generate_structured(
         self, prompt: str, schema: Any, system_message: str | None = None, **kwargs
@@ -166,6 +166,10 @@ class ClaudeProvider(BaseLLMProvider):
         text = "".join(block.text for block in response.content if block.type == "text")
 
         data = OutputParser.parse_dirty_json(text)
+        if not data:
+            raise ValueError(
+                f"Vision model returned unparsable JSON (len={len(text)}): {text[:200]!r}"
+            )
         return schema(**data)
 
     # ── Batch API ─────────────────────────────────────────────────────────────
@@ -211,7 +215,7 @@ class ClaudeProvider(BaseLLMProvider):
             )
         except Exception as e:
             logger.error(f"Claude batch submission failed: {e}")
-            raise
+            self._raise_mapped_error(e)
 
     async def poll_batch(self, handle: BatchJobHandle) -> dict[str, LLMResponse] | None:
         """Check batch status. Returns None while pending; dict on completion.
@@ -262,4 +266,4 @@ class ClaudeProvider(BaseLLMProvider):
             return results
         except Exception as e:
             logger.error(f"Claude batch poll failed: {e}")
-            raise
+            self._raise_mapped_error(e)

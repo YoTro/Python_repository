@@ -16,6 +16,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # Use absolute imports instead of relative to avoid 'no known parent package' errors
+from src.core.errors import AWSBaseError
 from src.mcp.exceptions import ToolExecutionError, ToolNotFoundError
 
 logging.basicConfig(level=logging.INFO)
@@ -43,9 +44,14 @@ class AWSHelperServer:
                 return await tool_registry.call_tool(name, arguments)
             except ToolNotFoundError as e:
                 return [TextContent(type="text", text=f"❌ Error: {e.message}")]
-            except ToolExecutionError as e:
-                return [TextContent(type="text", text=f"⚠️ Execution failed: {e.message}")]
+            except (ToolExecutionError, AWSBaseError) as e:
+                # Controlled failures: an explicit ToolExecutionError, or any framework
+                # domain error (ScraperError, RetryableError, FatalError, …). These are
+                # known/handled conditions, not bugs — render as "execution failed".
+                msg = getattr(e, "message", "") or str(e)
+                return [TextContent(type="text", text=f"⚠️ Execution failed: {msg}")]
             except Exception as e:
+                # Truly unexpected — log the full traceback and flag as critical.
                 logger.exception(f"Unhandled error in {name}")
                 return [TextContent(type="text", text=f"🆘 Critical error: {str(e)}")]
 

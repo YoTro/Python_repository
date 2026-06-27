@@ -102,7 +102,7 @@ class DeepSeekProvider(BaseLLMProvider):
             return self._parse_response(resp, is_batch=False)
         except Exception as e:
             logger.error(f"DeepSeek generate_text failed: {e}")
-            raise
+            self._raise_mapped_error(e)
 
     # ── Structured generation (JSON mode) ────────────────────────────────────
 
@@ -143,7 +143,7 @@ class DeepSeekProvider(BaseLLMProvider):
             return self._parse_response(resp, is_batch=False)
         except Exception as e:
             logger.error(f"DeepSeek generate_structured failed: {e}")
-            raise
+            self._raise_mapped_error(e)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

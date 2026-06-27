@@ -203,7 +203,7 @@ class GeminiProvider(BaseLLMProvider):
             )
         except Exception as e:
             logger.error(f"Gemini text generation failed: {e}")
-            raise
+            self._raise_mapped_error(e)
 
     @staticmethod
     def _clean_schema(schema: dict) -> dict:
@@ -270,7 +270,7 @@ class GeminiProvider(BaseLLMProvider):
             )
         except Exception as e:
             logger.error(f"Gemini batch submission failed: {e}")
-            raise
+            self._raise_mapped_error(e)
 
     async def poll_batch(self, handle: BatchJobHandle) -> dict[str, LLMResponse] | None:
         """Check batch status. Returns None while pending; dict on completion.
@@ -320,7 +320,7 @@ class GeminiProvider(BaseLLMProvider):
             return results
         except Exception as e:
             logger.error(f"Gemini batch poll failed: {e}")
-            raise
+            self._raise_mapped_error(e)
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -371,7 +371,7 @@ class GeminiProvider(BaseLLMProvider):
             )
         except Exception as e:
             logger.error(f"Structured generation failed on {self.model_name}: {e}")
-            raise
+            self._raise_mapped_error(e)
 
     async def generate_vision_structured(
         self,

@@ -7,7 +7,7 @@ Features:
   - Sequential step execution with progress callbacks
   - Checkpoint after each step for resume-on-failure
   - Funnel early termination (stop when no items remain)
-  - RetryableError → re-queue, FatalError → abort
+  - RetryableError → propagate to JobManager after domain retries are exhausted; FatalError → abort
 """
 
 import logging
@@ -184,7 +184,7 @@ class Workflow:
                 logger.warning(
                     f"RetryableError at step '{step.name}', checkpoint saved at step {i}"
                 )
-                raise  # Let JobManager handle retry/requeue
+                raise  # Let JobManager mark the job failed with a resumable checkpoint
 
             except FatalError as e:
                 logger.error(f"FatalError at step '{step.name}': {e}")

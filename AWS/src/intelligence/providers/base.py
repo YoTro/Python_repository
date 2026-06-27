@@ -36,6 +36,62 @@ class BaseLLMProvider(ABC):
         """Filters out internal tracking metadata from API parameters."""
         return {k: v for k, v in kwargs.items() if k not in self.INTERNAL_METADATA_KEYS}
 
+    def _raise_mapped_error(self, exc: Exception):
+        """
+        Map an SDK exception onto the framework error hierarchy and raise it.
+
+        Transient failures (429 / 5xx / timeout) become ``RetryableError`` with the
+        HTTP status attached so the canonical ``ErrorCode`` is auto-derived
+        (see DEV_GUIDE §5); permanent failures become ``FatalError``. The status is
+        read from the SDK exception's common attributes; when none is present we fall
+        back to exception-type heuristics, and otherwise re-raise the original so
+        unexpected bugs are never masked. Framework errors pass through unchanged.
+
+        Always raises — never returns. Call from a provider's ``except`` block:
+            except Exception as e:
+                self._raise_mapped_error(e)
+        """
+        from src.core.errors import (
+            AWSBaseError,
+            ErrorCode,
+            FatalError,
+            RetryableError,
+            classify_http,
+            classify_response_message,
+            is_retryable,
+        )
+
+        # Already classified (e.g. FatalError from the context-limit guard) — pass through.
+        if isinstance(exc, AWSBaseError):
+            raise exc
+
+        # SDKs expose the HTTP status differently: anthropic/openai use .status_code,
+        # google-genai uses .code, some wrap it on .response.
+        status = (
+            getattr(exc, "status_code", None)
+            or getattr(exc, "code", None)
+            or getattr(getattr(exc, "response", None), "status_code", None)
+        )
+
+        msg = f"{self.provider_name} API call failed: {exc}"
+
+        if isinstance(status, int):
+            code = classify_http(status, self.provider_name)
+            refined = classify_response_message(str(exc), self.provider_name)
+            if refined != ErrorCode.UNKNOWN:
+                code = refined
+            if is_retryable(code):
+                raise RetryableError(msg, http_status=status, provider=self.provider_name) from exc
+            raise FatalError(msg, code=code) from exc
+
+        # No HTTP status — classify by exception type (timeouts/connection drops retry).
+        name = type(exc).__name__.lower()
+        if any(k in name for k in ("timeout", "connection", "unavailable")):
+            raise RetryableError(msg, provider=self.provider_name, code=ErrorCode.TIMEOUT) from exc
+
+        # Unknown failure — re-raise the original to avoid masking real bugs.
+        raise exc
+
     @abstractmethod
     async def generate_text(
         self, prompt: str, system_message: str | None = None, **kwargs
