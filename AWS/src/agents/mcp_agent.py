@@ -8,8 +8,7 @@ from src.agents.prompts.prompt_builder import PromptBuilder
 from src.agents.session import AgentSession, AgentSessionManager
 from src.core.errors.exceptions import JobSuspendedError
 from src.core.utils.context import ContextPropagator
-from src.intelligence.providers.base import BaseLLMProvider
-from src.intelligence.router import TaskCategory
+from src.intelligence.router import IntelligenceRouter, TaskCategory
 from src.mcp.client import get_mcp_client
 from src.registry.tools import tool_registry
 
@@ -34,11 +33,11 @@ class MCPAgent(BaseAgent):
 
     def __init__(
         self,
-        provider: BaseLLMProvider,
+        router: IntelligenceRouter,
         session_mgr: AgentSessionManager | None = None,
         token_budget: int = _DEFAULT_TOKEN_BUDGET,
     ):
-        super().__init__(provider)
+        super().__init__(router)
         self.mcp = get_mcp_client()
         self.session_mgr = session_mgr or AgentSessionManager()
         self._prompt_builder = PromptBuilder()
