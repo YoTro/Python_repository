@@ -9,6 +9,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
+from src.core.utils.decorators import exponential_backoff
 from src.intelligence.dto import BatchJobHandle, BatchRequest, LLMResponse
 
 from .base import BaseLLMProvider
@@ -16,6 +17,41 @@ from .base import BaseLLMProvider
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
+# Gemini request-time processing classes (service tiers). One synchronous request
+# is dispatched against exactly one tier:
+#   flex     – 50% cheaper than standard, best-effort / sheddable, minutes-scale latency
+#   priority – premium (75–100% over standard), low-latency, non-sheddable
+#   standard – full price, the API default
+# (Batch is a separate asynchronous path handled by generate_batch / poll_batch.)
+SERVICE_TIERS = frozenset({"flex", "priority", "standard"})
+DEFAULT_SERVICE_TIER = "standard"
+
+# Bare model ids that support the premium tiers (flex and priority share the same
+# support list). Matched as a substring against the fully-qualified model_name
+# (e.g. "models/gemini-2.5-flash"), so dated/preview suffixes are tolerated.
+# Requesting flex/priority on any other model silently downgrades to standard
+# rather than erroring.
+PREMIUM_TIER_MODELS = frozenset(
+    {
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",  # also covers gemini-2.5-flash-lite
+    }
+)
+
+
+def _normalize_service_tier(value: str | None) -> str | None:
+    """Validate and lower-case a service tier; return None for None (no override)."""
+    if value is None:
+        return None
+    tier = str(value).strip().lower()
+    if tier not in SERVICE_TIERS:
+        raise ValueError(f"Invalid service_tier {value!r}; expected one of {sorted(SERVICE_TIERS)}")
+    return tier
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -35,7 +71,16 @@ class GeminiProvider(BaseLLMProvider):
         "models/gemini-1.0-pro": 32_760,
     }
 
-    def __init__(self, api_key: str | None = None, model_name: str | None = None):
+    # Whether the installed SDK exposes service_tier as a native config field.
+    # Older SDKs (<= 1.67) do not, so the tier is carried via http_options.extra_body.
+    _CONFIG_HAS_SERVICE_TIER = "service_tier" in types.GenerateContentConfig.model_fields
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model_name: str | None = None,
+        service_tier: str | None = None,
+    ):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY missing.")
@@ -45,6 +90,12 @@ class GeminiProvider(BaseLLMProvider):
         discovered_model = self._discover_best_model(model_name)
         super().__init__("gemini", discovered_model)
 
+        # Default tier for every request; overridable per call via a service_tier kwarg.
+        self.service_tier = (
+            _normalize_service_tier(service_tier or os.getenv("GEMINI_SERVICE_TIER"))
+            or DEFAULT_SERVICE_TIER
+        )
+
         from .config.limits import get_max_output_tokens
 
         _ceiling = get_max_output_tokens("gemini", self.model_name)
@@ -52,8 +103,96 @@ class GeminiProvider(BaseLLMProvider):
         self._DEFAULT_MAX_TOKENS = min(int(_env) if _env else _ceiling, _ceiling)
 
         logger.info(
-            f"GeminiProvider initialized with model: {self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}"
+            f"GeminiProvider initialized with model: {self.model_name}, "
+            f"max_output_tokens: {self._DEFAULT_MAX_TOKENS}, service_tier: {self.service_tier}"
         )
+
+    def _supports_premium_tier(self) -> bool:
+        """Whether the current model supports the flex/priority tiers."""
+        return any(m in self.model_name for m in PREMIUM_TIER_MODELS)
+
+    def _resolve_service_tier(self, kwargs: dict[str, Any]) -> str:
+        """Pop a per-call ``service_tier`` override (if any) and fall back to the
+        provider default. Mutates ``kwargs`` so the key is never forwarded to the SDK."""
+        override = _normalize_service_tier(kwargs.pop("service_tier", None))
+        return override or self.service_tier
+
+    def _effective_service_tier(self, tier: str | None) -> str:
+        """Resolve a tier to the one actually sent to the API.
+
+        ``flex``/``priority`` on a model that does not support them downgrades to
+        standard with a warning. Idempotent, so it is safe to call more than once.
+        """
+        tier = _normalize_service_tier(tier) or self.service_tier
+        if tier in ("flex", "priority") and not self._supports_premium_tier():
+            logger.warning(
+                f"Model {self.model_name} does not support {tier} inference; "
+                "falling back to standard tier."
+            )
+            return DEFAULT_SERVICE_TIER
+        return tier
+
+    def _service_tier_config(self, tier: str | None) -> dict[str, Any]:
+        """Return GenerateContentConfig fields that carry the service tier to the API.
+
+        The default ``standard`` tier is the API default, so nothing is emitted for it.
+        The native config field is used when the SDK supports it; otherwise the tier is
+        passed through the request body via ``http_options.extra_body``.
+        """
+        tier = self._effective_service_tier(tier)
+        if tier == DEFAULT_SERVICE_TIER:
+            return {}
+        if self._CONFIG_HAS_SERVICE_TIER:
+            return {"service_tier": tier}
+        return {"http_options": types.HttpOptions(extra_body={"service_tier": tier})}
+
+    @staticmethod
+    def _served_service_tier(response: Any) -> str | None:
+        """Read the ``x-gemini-service-tier`` response header, if present.
+
+        The API echoes the tier it actually served the request under; comparing it
+        to the requested tier reveals capacity-driven downgrades.
+        """
+        http = getattr(response, "sdk_http_response", None)
+        headers = getattr(http, "headers", None) or {}
+        try:
+            items = headers.items()
+        except AttributeError:
+            return None
+        for key, value in items:
+            if str(key).lower() == "x-gemini-service-tier":
+                return str(value).strip().lower()
+        return None
+
+    def _check_tier_downgrade(self, requested_tier: str, response: Any) -> None:
+        """Warn when a flex/priority request was served as a lower tier.
+
+        Client responsibility: monitor downgrade frequency — sustained downgrades
+        mean the premium tier is shedding load and capacity should be reconsidered.
+        """
+        if requested_tier == DEFAULT_SERVICE_TIER:
+            return
+        served = self._served_service_tier(response)
+        if served and served != requested_tier:
+            logger.warning(
+                f"Gemini service tier downgraded: requested={requested_tier}, "
+                f"served={served} (model={self.model_name}). Frequent downgrades "
+                "indicate the premium tier is shedding load."
+            )
+
+    # Flex is best-effort/sheddable, so DEADLINE_EXCEEDED / UNAVAILABLE / 5xx are
+    # expected occasionally. The shared exponential_backoff decorator retries on
+    # RetryableError; _raise_mapped_error converts transient SDK errors into one
+    # (and permanent ones into FatalError, which propagates without retrying).
+    @exponential_backoff(max_retries=3, base_delay=2.0, retry_on_exceptions=())
+    async def _generate_content_with_retry(self, **call_kwargs: Any) -> Any:
+        """Call ``models.generate_content``, mapping SDK errors so transient ones
+        (DEADLINE_EXCEEDED, UNAVAILABLE, 429, …) are retried with backoff and
+        permanent ones fail fast."""
+        try:
+            return await asyncio.to_thread(self.client.models.generate_content, **call_kwargs)
+        except Exception as exc:
+            self._raise_mapped_error(exc)
 
     def _discover_best_model(self, preferred: str | None) -> str:
         """Query the API to find the highest-tier available model."""
@@ -108,17 +247,23 @@ class GeminiProvider(BaseLLMProvider):
             finish_reason and str(finish_reason) in ("FinishReason.MAX_TOKENS", "MAX_TOKENS", "2")
         )
 
-    def _make_config(self, system_message, temp):
+    def _make_config(
+        self,
+        system_message,
+        temp,
+        service_tier: str | None = None,
+        cached_content: str | None = None,
+    ):
+        fields: dict[str, Any] = {
+            "temperature": temp,
+            "max_output_tokens": self._DEFAULT_MAX_TOKENS,
+            **self._service_tier_config(service_tier),
+        }
         if system_message:
-            return types.GenerateContentConfig(
-                system_instruction=system_message,
-                temperature=temp,
-                max_output_tokens=self._DEFAULT_MAX_TOKENS,
-            )
-        return types.GenerateContentConfig(
-            temperature=temp,
-            max_output_tokens=self._DEFAULT_MAX_TOKENS,
-        )
+            fields["system_instruction"] = system_message
+        if cached_content:
+            fields["cached_content"] = cached_content
+        return types.GenerateContentConfig(**fields)
 
     async def generate_text(
         self, prompt: str, system_message: str | None = None, **kwargs
@@ -127,15 +272,17 @@ class GeminiProvider(BaseLLMProvider):
         try:
             filtered_kwargs = self._filter_kwargs(kwargs)
             temp = filtered_kwargs.pop("temperature", 0.2)
-            config = self._make_config(system_message, temp)
+            cached_content = filtered_kwargs.pop("cached_content", None)
+            tier = self._effective_service_tier(self._resolve_service_tier(filtered_kwargs))
+            config = self._make_config(system_message, temp, tier, cached_content=cached_content)
 
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
+            response = await self._generate_content_with_retry(
                 model=self.model_name,
                 contents=prompt,
                 config=config,
                 **filtered_kwargs,
             )
+            self._check_tier_downgrade(tier, response)
 
             usage = getattr(response, "usage_metadata", None)
             input_tokens = (
@@ -173,8 +320,7 @@ class GeminiProvider(BaseLLMProvider):
                         ],
                     ),
                 ]
-                response = await asyncio.to_thread(
-                    self.client.models.generate_content,
+                response = await self._generate_content_with_retry(
                     model=self.model_name,
                     contents=continuation_contents,
                     config=config,
@@ -337,19 +483,26 @@ class GeminiProvider(BaseLLMProvider):
             # the config object, not as a top-level generate_content() kwarg.
             filtered_kwargs = self._filter_kwargs(kwargs)
             temp = filtered_kwargs.pop("temperature", 0.2)
+            cached_content = filtered_kwargs.pop("cached_content", None)
+            tier = self._effective_service_tier(self._resolve_service_tier(filtered_kwargs))
 
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
+            config_fields = {
+                "system_instruction": system_message,
+                "response_mime_type": "application/json",
+                "response_schema": clean,
+                "temperature": temp,
+                **self._service_tier_config(tier),
+            }
+            if cached_content:
+                config_fields["cached_content"] = cached_content
+
+            response = await self._generate_content_with_retry(
                 model=self.model_name,
                 contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_message,
-                    response_mime_type="application/json",
-                    response_schema=clean,
-                    temperature=temp,
-                ),
+                config=types.GenerateContentConfig(**config_fields),
                 **filtered_kwargs,
             )
+            self._check_tier_downgrade(tier, response)
 
             # Since we're asking for a schema, the text should be valid JSON
             text_response = response.text
@@ -380,6 +533,7 @@ class GeminiProvider(BaseLLMProvider):
         schema: Any,
         system_message: str | None = None,
         max_tokens: int = 1024,
+        service_tier: str | None = None,
     ) -> Any:
         """
         Download image bytes in parallel, pass them as inline Blob parts alongside
@@ -411,8 +565,8 @@ class GeminiProvider(BaseLLMProvider):
         raw_schema = schema.model_json_schema()
         clean = self._clean_schema(raw_schema)
 
-        response = await asyncio.to_thread(
-            self.client.models.generate_content,
+        tier = self._effective_service_tier(service_tier)
+        response = await self._generate_content_with_retry(
             model=self.model_name,
             contents=types.Content(role="user", parts=parts),
             config=types.GenerateContentConfig(
@@ -420,8 +574,10 @@ class GeminiProvider(BaseLLMProvider):
                 response_mime_type="application/json",
                 response_schema=clean,
                 max_output_tokens=max_tokens,
+                **self._service_tier_config(tier),
             ),
         )
+        self._check_tier_downgrade(tier, response)
 
         from src.intelligence.parsers.markdown_cleaner import OutputParser
 
@@ -432,3 +588,44 @@ class GeminiProvider(BaseLLMProvider):
                 f"{(response.text or '')[:200]!r}"
             )
         return schema(**data)
+
+    def create_context_cache(
+        self,
+        contents: list[Any],
+        system_instruction: str | None = None,
+        ttl: str = "3600s",
+        display_name: str | None = None,
+    ) -> Any:
+        """
+        Explicitly create a context cache using the google-genai SDK.
+        Useful for massive, reusable context like long scraped datasets or standard schemas.
+        """
+        try:
+            config = types.CreateCachedContentConfig(
+                contents=contents,
+                system_instruction=system_instruction,
+                ttl=ttl,
+                display_name=display_name,
+            )
+            cache = self.client.caches.create(
+                model=self.model_name,
+                config=config,
+            )
+            logger.info(
+                f"Created Gemini context cache: {cache.name} (display_name: {display_name})"
+            )
+            return cache
+        except Exception as e:
+            logger.error(f"Failed to create Gemini context cache: {e}")
+            raise
+
+    def delete_context_cache(self, cache_name: str) -> None:
+        """
+        Explicitly delete a context cache.
+        """
+        try:
+            self.client.caches.delete(name=cache_name)
+            logger.info(f"Deleted Gemini context cache: {cache_name}")
+        except Exception as e:
+            logger.error(f"Failed to delete Gemini context cache {cache_name}: {e}")
+            raise

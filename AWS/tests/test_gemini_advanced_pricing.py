@@ -96,6 +96,54 @@ class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(llm_res.token_usage, 1000 + 500 + 200)  # Total usage includes thoughts
             self.assertGreater(llm_res.cost, 0)
 
+    @patch("google.genai.Client")
+    async def test_gemini_context_cache_creation_and_usage(self, mock_client):
+        """
+        Verify that create_context_cache and using cached_content in generate_text works correctly.
+        """
+        mock_provider = GeminiProvider(api_key="fake_key", model_name="models/gemini-2.5-flash")
+        mock_provider.model_name = "models/gemini-2.5-flash"
+
+        # Mock cache creation response
+        mock_cache = MagicMock()
+        mock_cache.name = "projects/fake/locations/global/cachedContents/test_cache_id"
+        mock_provider.client.caches.create = MagicMock(return_value=mock_cache)
+        mock_provider.client.caches.delete = MagicMock()
+
+        # 1. Test create_context_cache
+        cache = mock_provider.create_context_cache(
+            contents=["Some massive competitor reviews dataset"],
+            system_instruction="Analyze this reviews dataset carefully.",
+            display_name="competitor_reviews_cache",
+        )
+        self.assertEqual(cache.name, "projects/fake/locations/global/cachedContents/test_cache_id")
+        mock_provider.client.caches.create.assert_called_once()
+
+        # 2. Test generate_text with cached_content
+        mock_response = MagicMock()
+        mock_response.text = "Analysis of cached reviews."
+        mock_response.total_tokens = 500
+        mock_response.usage_metadata = MagicMock(
+            prompt_token_count=1000,
+            candidates_token_count=500,
+            thought_token_count=0,
+            cached_content_token_count=800,
+        )
+
+        with patch("asyncio.to_thread", return_value=mock_response):
+            llm_res = await mock_provider.generate_text(
+                "Summarize key issues.",
+                system_message="Analyze this reviews dataset carefully.",
+                cached_content=cache.name,
+            )
+
+            self.assertEqual(llm_res.text, "Analysis of cached reviews.")
+            self.assertEqual(llm_res.metadata["cached_tokens"], 800)
+
+        # 3. Test delete_context_cache
+        mock_provider.delete_context_cache(cache.name)
+        mock_provider.client.caches.delete.assert_called_once_with(name=cache.name)
+
 
 if __name__ == "__main__":
     unittest.main()

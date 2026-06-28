@@ -170,5 +170,26 @@ class PriceManager:
             output_cost = output_tokens * out_price / 1_000_000.0
             return round(input_cost + output_cost, 10)
 
+        elif self.provider == "openai":
+            # OpenAI Pattern: {model}#{tier}#{dimension}, tier = standard | batch.
+            # Automatic prompt caching bills cached_tokens at input_cache_hit price;
+            # reasoning ('pro') models publish no cached rate, so cached tokens fall
+            # back to the full input price. Batch tier is a uniform 50% discount.
+            cached_tokens = kwargs.get("cached_tokens", 0) or 0
+            oa_tier = "batch" if is_batch else "standard"
+
+            in_key = f"{canonical_model}#{oa_tier}#input"
+            cache_hit_key = f"{canonical_model}#{oa_tier}#input_cache_hit"
+            out_key = f"{canonical_model}#{oa_tier}#output"
+
+            in_price = self.lookup.get(in_key, {}).get("price", 0.0)
+            cache_hit_price = self.lookup.get(cache_hit_key, {}).get("price", in_price)
+            out_price = self.lookup.get(out_key, {}).get("price", 0.0)
+
+            non_cached = max(0, input_tokens - cached_tokens)
+            input_cost = (non_cached * in_price + cached_tokens * cache_hit_price) / 1_000_000.0
+            output_cost = output_tokens * out_price / 1_000_000.0
+            return round(input_cost + output_cost, 10)
+
         else:
             return 0.0

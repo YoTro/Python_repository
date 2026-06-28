@@ -110,7 +110,10 @@ class MCPAgent(BaseAgent):
         )
         conversation = session.format_history_as_text()
         response_obj = await self.router.route_and_execute(
-            conversation, system_message=system_message, category=TaskCategory.DEEP_REASONING
+            conversation,
+            system_message=system_message,
+            category=TaskCategory.DEEP_REASONING,
+            cache_system_prompt=True,
         )
         response = response_obj.text if response_obj else ""
         self._accum_tokens(session, response_obj)
@@ -268,6 +271,7 @@ class MCPAgent(BaseAgent):
                     conversation,
                     system_message=system_message,
                     category=TaskCategory.DEEP_REASONING,
+                    cache_system_prompt=True,
                 )
                 response = response_obj.text if response_obj else ""
                 self._accum_tokens(session, response_obj)

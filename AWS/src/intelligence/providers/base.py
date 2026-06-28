@@ -17,8 +17,19 @@ class BaseLLMProvider(ABC):
     Uses the Template Method pattern to handle common pre/post-processing logic.
     """
 
-    # Internal metadata keys that should never be sent to LLM APIs
-    INTERNAL_METADATA_KEYS = {"session_id", "tenant_id", "user_id", "force_full_log", "metadata"}
+    # Internal metadata keys that should never be sent to LLM APIs.
+    # ``cache_system_prompt`` is a provider-agnostic hint (set by long-running
+    # callers like the MCP agent) that the system prompt is static and worth
+    # caching across turns. Providers that support explicit caching read it
+    # before filtering; the rest strip it here and rely on implicit caching.
+    INTERNAL_METADATA_KEYS = {
+        "session_id",
+        "tenant_id",
+        "user_id",
+        "force_full_log",
+        "metadata",
+        "cache_system_prompt",
+    }
 
     # Subclasses define per-model context windows: {model_name_prefix: token_limit}
     # Prefix matching is used so dated suffixes (e.g. "-20241022") are covered.

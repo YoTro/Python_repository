@@ -76,20 +76,48 @@ class ClaudeProvider(BaseLLMProvider):
             logger.warning(f"Claude token count failed, falling back to estimate: {e}")
             return len(prompt) // 4
 
+    @staticmethod
+    def _system_param(system_message: str | None, cache: bool) -> Any:
+        """Build the ``system`` request value, optionally with a cache breakpoint.
+
+        Anthropic prompt caching is a prefix match over ``tools → system → messages``,
+        so a single ``cache_control`` breakpoint on the system block caches the whole
+        static prefix. The MCP agent re-sends a large, frozen system prompt on every
+        ReAct turn, so caching it turns the per-turn input cost from full price into
+        ~0.1× cache reads (the first call pays a ~1.25× write). Prefixes below the
+        model's minimum (~4096 tokens on Opus, ~2048 on Sonnet 4.6) silently don't
+        cache — no error, no premium — so this is safe to request unconditionally.
+        """
+        if not system_message:
+            return None
+        if not cache:
+            return system_message
+        return [
+            {
+                "type": "text",
+                "text": system_message,
+                "cache_control": {"type": "ephemeral"},  # 5-minute TTL
+            }
+        ]
+
     async def generate_text(
         self, prompt: str, system_message: str | None = None, **kwargs
     ) -> LLMResponse:
         await self._check_context_limit(prompt, system_message)
         try:
+            # Read the cache hint before filtering strips it from kwargs.
+            cache_system = bool(kwargs.get("cache_system_prompt", False))
+
             api_kwargs = {
                 "model": self.model_name,
                 "max_tokens": self._DEFAULT_MAX_TOKENS,
                 "messages": [{"role": "user", "content": prompt}],
             }
-            if system_message:
-                api_kwargs["system"] = system_message
+            system_value = self._system_param(system_message, cache_system)
+            if system_value is not None:
+                api_kwargs["system"] = system_value
 
-            # Filter out internal metadata from kwargs
+            # Filter out internal metadata from kwargs (incl. cache_system_prompt)
             filtered_kwargs = self._filter_kwargs(kwargs)
 
             # Merge extra kwargs (allows per-call max_tokens override)

@@ -1147,7 +1147,9 @@ Every provider subclasses `BaseLLMProvider` and is constructed by `ProviderFacto
 
 Optional overrides (default to NotImplementedError / disabled): `generate_vision_structured(...)`, `supports_batch()`, `generate_batch(...)`, `poll_batch(...)`.
 
-Then register it: add a branch in `ProviderFactory.get_provider()` keyed on `DEFAULT_LLM_PROVIDER` (e.g. `claude` / `gemini` / `deepseek` / `local`), reading model/credentials from env.
+Then register it: add a branch in `ProviderFactory.get_provider()` keyed on `DEFAULT_LLM_PROVIDER` (e.g. `claude` / `gemini` / `openai` / `deepseek` / `local`), reading model/credentials from env. The OpenAI provider also answers to the `gpt` alias.
+
+> **Provider-specific request shaping.** The base contract is the same for everyone, but the SDK call inside `generate_text`/`generate_structured` is yours to adapt to the model family. The OpenAI provider is the live example: the GPT-5.x / reasoning models require `max_completion_tokens` (the legacy `max_tokens` is rejected) and accept only the default `temperature`, so it omits `temperature` unless the caller explicitly passes one. Build params per-family rather than copying another provider's call verbatim.
 
 ### 16.2 `LLMResponse` — the universal return type
 
@@ -1207,6 +1209,7 @@ A response cut off at the output-token limit must be **detected and surfaced**, 
 |---|---|
 | Claude | `response.stop_reason == "max_tokens"` |
 | DeepSeek | `choices[0].finish_reason == "length"` |
+| OpenAI | `choices[0].finish_reason == "length"` (warning references `max_completion_tokens`) |
 | Gemini | `finish_reason in (MAX_TOKENS, "2")` — **plus** auto-continuation up to `_MAX_CONTINUATIONS=4` rounds before warning |
 
 A new provider must, at minimum, detect its truncation signal and emit that WARNING (it feeds the TROUBLESHOOTING playbook). Continuation (Gemini-style) is optional but preferred for long structured outputs.

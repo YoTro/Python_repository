@@ -1,0 +1,343 @@
+{
+  "metadata": {
+    "source": "https://developers.openai.com/api/docs/pricing",
+    "last_verified": "2026-06-28",
+    "currency": "USD",
+    "schema_version": "1",
+    "conventions": {
+      "price_entry_shape": {
+        "price": "number (USD)",
+        "unit": "always 'USD'",
+        "billing_unit": "per_1M_tokens",
+        "dimension": "input | input_cache_hit | output"
+      },
+      "lookup_key_pattern": "{canonical_model_id}#{tier}#{dimension}",
+      "tier_values": "standard | batch",
+      "resolution_flow": "any_string -> model_string_index -> canonical_id -> lookup key",
+      "cache_note": "Cached input (automatic prompt caching) billed at input_cache_hit price; non-cached input at input price. Reasoning/'pro' models do not expose a cached-input rate — cached tokens fall back to the full input price in PriceManager.",
+      "batch_note": "Batch API (async) is a uniform 50% discount on input, cached input, and output. Batch entries are derived as standard x 0.5.",
+      "gpt_5_5_pro_batch_note": "Source page returned an anomalous batch rate for gpt-5.5-pro (higher than standard); corrected to the standard 50% discount, matching its sibling gpt-5.4-pro.",
+      "coverage_note": "Only the GPT-5.x generation (plus chatgpt-latest and gpt-5.3-codex) is listed on the developer pricing page. Earlier families (gpt-4.1, gpt-4o, o3, o4-mini) were not present and are intentionally omitted."
+    }
+  },
+  "model_string_index": {
+    "gpt-5.5": {
+      "canonical_id": "gpt-5.5",
+      "is_alias": false
+    },
+    "gpt-5.5-pro": {
+      "canonical_id": "gpt-5.5-pro",
+      "is_alias": false
+    },
+    "gpt-5.4": {
+      "canonical_id": "gpt-5.4",
+      "is_alias": false
+    },
+    "gpt-5.4-mini": {
+      "canonical_id": "gpt-5.4-mini",
+      "is_alias": false
+    },
+    "gpt-5.4-nano": {
+      "canonical_id": "gpt-5.4-nano",
+      "is_alias": false
+    },
+    "gpt-5.4-pro": {
+      "canonical_id": "gpt-5.4-pro",
+      "is_alias": false
+    },
+    "gpt-5.3-codex": {
+      "canonical_id": "gpt-5.3-codex",
+      "is_alias": false
+    },
+    "chatgpt-latest": {
+      "canonical_id": "chatgpt-latest",
+      "is_alias": false,
+      "note": "ChatGPT-served snapshot ('chat-latest'); shares gpt-5.5 standard rates"
+    },
+    "chat-latest": {
+      "canonical_id": "chatgpt-latest",
+      "is_alias": true
+    },
+    "gpt-5": {
+      "canonical_id": "gpt-5.5",
+      "is_alias": true,
+      "note": "Shorthand mapped to the current flagship gpt-5.5"
+    }
+  },
+  "lookup": {
+    "gpt-5.5#standard#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.5#standard#input_cache_hit": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.5#standard#output": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.5#batch#input": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.5#batch#input_cache_hit": {
+      "price": 0.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.5#batch#output": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.5-pro#standard#input": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.5-pro#standard#output": {
+      "price": 180.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.5-pro#batch#input": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "Derived; source page batch figure was anomalous (see metadata)"
+    },
+    "gpt-5.5-pro#batch#output": {
+      "price": 90.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "Derived; source page batch figure was anomalous (see metadata)"
+    },
+    "gpt-5.4#standard#input": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.4#standard#input_cache_hit": {
+      "price": 0.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.4#standard#output": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.4#batch#input": {
+      "price": 1.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.4#batch#input_cache_hit": {
+      "price": 0.125,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.4#batch#output": {
+      "price": 7.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.4-mini#standard#input": {
+      "price": 0.75,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.4-mini#standard#input_cache_hit": {
+      "price": 0.075,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.4-mini#standard#output": {
+      "price": 4.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.4-mini#batch#input": {
+      "price": 0.375,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.4-mini#batch#input_cache_hit": {
+      "price": 0.0375,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.4-mini#batch#output": {
+      "price": 2.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.4-nano#standard#input": {
+      "price": 0.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.4-nano#standard#input_cache_hit": {
+      "price": 0.02,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.4-nano#standard#output": {
+      "price": 1.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.4-nano#batch#input": {
+      "price": 0.1,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.4-nano#batch#input_cache_hit": {
+      "price": 0.01,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.4-nano#batch#output": {
+      "price": 0.625,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.4-pro#standard#input": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.4-pro#standard#output": {
+      "price": 180.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.4-pro#batch#input": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.4-pro#batch#output": {
+      "price": 90.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.3-codex#standard#input": {
+      "price": 1.75,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.3-codex#standard#input_cache_hit": {
+      "price": 0.175,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.3-codex#standard#output": {
+      "price": 14.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.3-codex#batch#input": {
+      "price": 0.875,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.3-codex#batch#input_cache_hit": {
+      "price": 0.0875,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.3-codex#batch#output": {
+      "price": 7.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "chatgpt-latest#standard#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "chatgpt-latest#standard#input_cache_hit": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "chatgpt-latest#standard#output": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    }
+  },
+  "model_limits": {
+    "_source": "https://developers.openai.com/api/docs/pricing",
+    "_last_verified": "2026-06-28",
+    "_default": {
+      "max_output_tokens": 16384
+    }
+  }
+}

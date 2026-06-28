@@ -8,6 +8,7 @@ from .claude import ClaudeProvider
 from .deepseek import DeepSeekProvider
 from .gemini import GeminiProvider
 from .llama_cpp import LlamaCppProvider
+from .openai import OpenAIProvider
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +16,8 @@ logger = logging.getLogger(__name__)
 class ProviderFactory:
     """
     Factory to create LLM providers based on environment configuration.
-    Supports Claude (Anthropic), Gemini (Google), DeepSeek, and Llama.cpp (Local).
-    Set DEFAULT_LLM_PROVIDER in .env to: claude | gemini | deepseek | local
+    Supports Claude (Anthropic), Gemini (Google), OpenAI (GPT), DeepSeek, and Llama.cpp (Local).
+    Set DEFAULT_LLM_PROVIDER in .env to: claude | gemini | openai | deepseek | local
     """
 
     @staticmethod
@@ -29,6 +30,10 @@ class ProviderFactory:
 
         elif ptype == "gemini":
             return GeminiProvider()
+
+        elif ptype == "openai" or ptype == "gpt":
+            model = os.getenv("OPENAI_MODEL")
+            return OpenAIProvider(model_name=model)
 
         elif ptype == "deepseek":
             model = os.getenv("DEEPSEEK_MODEL")
