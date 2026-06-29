@@ -131,6 +131,7 @@ class SocialViralityProcessor:
 
         Canonical fields guaranteed on output:
           views, likes, comments, shares, followers, uid, desc, createTime (unix int)
+          (+ is_promoted: TikTok-native paid/branded-content flag, tiktok only)
 
         Supported platforms: "tiktok", "youtube_shorts", "instagram".
         Unknown platform → passthrough (caller is responsible for pre-normalization).
@@ -148,6 +149,15 @@ class SocialViralityProcessor:
                 "uid": author.get("uniqueId", ""),
                 "desc": raw.get("desc", ""),
                 "createTime": raw.get("createTime", 0),
+                # TikTok's own paid/branded-content signals (from /api/challenge/item_list/).
+                # More reliable than scanning the caption for #ad-style hashtags, since
+                # branded content often carries the native "Paid partnership" label only.
+                #   - isAd:            genuine paid Ad placement
+                #   - adAuthorization: creator's Branded-Content / paid-partnership disclosure toggle
+                # NOTE: adLabelVersion is intentionally excluded — verified against live
+                # hashtag data it is a schema-version constant (value 2) present on most
+                # *organic* videos, not a promotion flag, so it over-counts massively.
+                "is_promoted": bool(raw.get("isAd") or raw.get("adAuthorization")),
             }
         if platform == "youtube_shorts":
             stats = raw.get("statistics", {})
@@ -336,7 +346,8 @@ class SocialViralityProcessor:
         total_organic_ratio = 0
         total_share_ratio = 0
         recent_video_count = 0
-        promo_tag_count = 0
+        promo_tag_count = 0  # videos flagged promotional: native ad flag OR promo hashtag
+        native_ad_count = 0  # subset flagged by TikTok's own ad fields
 
         # KOL/KOC tier counters
         tier_counts: dict[str, int] = {"nano": 0, "micro": 0, "mid": 0, "macro": 0, "mega": 0}
@@ -398,8 +409,13 @@ class SocialViralityProcessor:
             if any(kw in desc for kw in conversion_keywords if kw):
                 amazon_mentions += 1
 
-            # Promotional tag detection
-            if any(tag in desc for tag in self.PROMO_TAGS):
+            # Promotional detection: TikTok's native ad flags (authoritative) OR a
+            # promo hashtag in the caption. The native flag catches branded content
+            # that omits #ad-style tags; hashtags catch platforms without a native flag.
+            native_ad = v.get("is_promoted", False)
+            if native_ad:
+                native_ad_count += 1
+            if native_ad or any(tag in desc for tag in self.PROMO_TAGS):
                 promo_tag_count += 1
 
             valid_videos += 1
@@ -426,8 +442,11 @@ class SocialViralityProcessor:
             else 1.0
         )
 
-        # --- Promotional Tag Ratio ---
+        # --- Promotional Ratio ---
+        # promo_tag_ratio now reflects combined detection (native ad flag + hashtags);
+        # native_ad_ratio isolates the share caught by TikTok's own ad fields.
         promo_tag_ratio = promo_tag_count / valid_videos
+        native_ad_ratio = native_ad_count / valid_videos
 
         # --- Comment Analysis ---
         # Priority: LLM deep analysis (tiktok_fetch_comments) > keyword fallback > video desc signals
@@ -607,6 +626,7 @@ class SocialViralityProcessor:
             "kol_koc_matrix": kol_koc_matrix,
             "hhi_concentration": round(hhi, 4),
             "promo_tag_ratio": round(promo_tag_ratio, 2),
+            "native_ad_ratio": round(native_ad_ratio, 2),
             "verdict": verdict,
             "penalties": {
                 "kol_dominance": round(kol_penalty, 4),
