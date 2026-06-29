@@ -161,9 +161,11 @@ class TikTokClient:
             ).findall(response.text)
             if render_data_text:
                 try:
-                    render_data = json.loads(
-                        urllib.parse.unquote(render_data_text[0]), strict=False
-                    )
+                    # __UNIVERSAL_DATA_FOR_REHYDRATION__ is raw JSON, NOT percent-encoded.
+                    # Do not unquote it: %XX sequences inside string values (e.g. URLs /
+                    # descriptions containing %2C, %22, %3D) would be decoded into literal
+                    # delimiters and corrupt the JSON ("Expecting ',' delimiter").
+                    render_data = json.loads(render_data_text[0], strict=False)
                     scope = render_data.get("__DEFAULT_SCOPE__", {})
                     app_ctx = scope.get("webapp.app-context", {})
                     odin_id = app_ctx.get("odinId", odin_id)
@@ -292,7 +294,10 @@ class TikTokClient:
                 cookies_dict = self.session.cookies.get_dict()
                 ttwid_str = cookies_dict.get("ttwid", "")
 
-                # Extract JSON hydration data
+                # Extract JSON hydration data. __UNIVERSAL_DATA__ is raw JSON; the
+                # legacy RENDER_DATA block is percent-encoded — only the latter must
+                # be unquoted (unquoting __UNIVERSAL_DATA__ corrupts %XX inside strings).
+                is_legacy_render_data = False
                 render_data_text = re.compile(
                     r"\<script id=\"__UNIVERSAL_DATA_FOR_REHYDRATION__\" type\=\"application\/json\"\>(.*?)\<\/script\>"
                 ).findall(response.text)
@@ -300,12 +305,17 @@ class TikTokClient:
                     render_data_text = re.compile(
                         r"\<script id=\"RENDER_DATA\" type\=\"application\/json\"\>(.*?)\<\/script\>"
                     ).findall(response.text)
+                    is_legacy_render_data = bool(render_data_text)
 
                 odin_id = "7619886743638033430"  # Fallback
                 device_id = "7619886743638033430"
 
                 if render_data_text:
-                    render_data_text = urllib.parse.unquote(render_data_text[0])
+                    render_data_text = (
+                        urllib.parse.unquote(render_data_text[0])
+                        if is_legacy_render_data
+                        else render_data_text[0]
+                    )
                     try:
                         render_data_json = json.loads(render_data_text, strict=False)
 
@@ -848,7 +858,8 @@ class TikTokClient:
                 r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">(.*?)</script>'
             ).search(resp.text)
             if m:
-                hydration = json.loads(urllib.parse.unquote(m.group(1)), strict=False)
+                # Raw JSON — must not be unquoted (see Step 1 note above).
+                hydration = json.loads(m.group(1), strict=False)
                 scope = hydration.get("__DEFAULT_SCOPE__", {})
                 app_ctx = scope.get("webapp.app-context", {})
                 odin_id = app_ctx.get("odinId", odin_id)
