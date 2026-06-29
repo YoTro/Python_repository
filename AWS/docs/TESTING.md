@@ -24,6 +24,22 @@ All tests should be executed from the project root with the `PYTHONPATH` set to 
 
 ## 3. Test Categories & Execution
 
+**Qualifier rules and CI gate order:**
+
+| Cat | Name | Qualifier | Key constraint |
+|-----|------|-----------|----------------|
+| A | Core Unit | _(none)_ | All external I/O mocked |
+| B | Stateful Management | _(none)_ | Verify `cloud_token_usage` stays zero for local-model calls |
+| C | Data Orchestration | _(none)_ | `tmp_path`-backed `DataCache`; never real Redis |
+| D | LLM Providers | _(none)_ | Mock SDK call; verify `LLMResponse.cost` is populated |
+| E | Intelligence Routing | _(none)_ | Mock provider; verify heuristics fire before any LLM call |
+| F | Import Integrity | _(none)_ | **Run first** — a circular-import regression makes all downstream categories unreliable |
+| G | Rate Limiting | _(none)_ | Reset all `RateLimiter` singleton fields in `setUp` (see §4.5) |
+| H | Full-Flow Integration | `_integration` | Mock external HTTP and LLM; run the full internal Gateway → Job → MCP stack |
+| I | Ad Diagnosis Live | `_live` | Requires `REDIS_URL`; **never included in the default CI suite without an explicit opt-in flag** |
+
+No qualifier = pure unit test; **all external I/O must be mocked** — no network, no Redis, no disk side-effects outside `tmp_path`.
+
 ### A. Core Unit Tests
 Test the foundational building blocks and utilities.
 *   **Location**: `tests/test_core_models.py`, `tests/test_core_utils.py`, `tests/test_core_telemetry.py`
@@ -224,6 +240,45 @@ When adding new capabilities, follow these standards:
 3.  **Schema Validation**: When testing new MCP Tools, always validate the `arguments` against the tool's `inputSchema`.
 4.  **Gateway Dispatch**: When testing entry points, always use `APIGateway.dispatch_*` methods to ensure you are testing the full production path.
 
+### 4.5 Singleton & State Reset Standards
+
+Several platform components are module-level singletons whose state leaks between tests if not explicitly reset. Reset all relevant singletons in `setup_method` (or the controlling fixture) and add an inline comment naming which fields are cleared and why — future readers must be able to see the isolation contract at a glance.
+
+| Singleton | Fields to reset | Why |
+|---|---|---|
+| `RateLimiter` | `_concurrent`, `_tenant_counters`, `_chat_last`, per-source bucket `tokens` | All four rate-limit layers persist across calls; any surviving state makes tests order-dependent |
+| `JobManager` | `_jobs` dict, the async `_queue`, active worker tasks | Job-status records and queued items carry over into subsequent test cases |
+| `ToolRegistry` | Rarely needed — registry is read-only after startup; if a test registers a mock tool, unregister it by name in teardown | Re-registration overwrites silently; a leftover mock tool changes routing for later tests |
+| `DataCache` (in-memory) | Instantiate a fresh instance per test; never share across cases | Key collisions between tests produce false-positive passes |
+| `AgentSessionManager` | Pass a `tempfile.mkdtemp()` path as `session_dir`; delete the directory in teardown | Session JSON files persist on disk and bleed across runs |
+
+### 4.6 MCP Tool & Protocol Test Standards
+
+1. **Never import handlers directly.** Always call tools through `ToolRegistry.call_tool(name, args)` or `ctx.mcp.call_tool_json(name, args)` — the same path used in production. Direct imports bypass context propagation and argument validation, so tests that pass this way can still fail in production.
+2. **Validate `inputSchema` for every new tool.** Include at least one test case that constructs an `arguments` dict and validates it against the tool's `inputSchema` before exercising the handler logic.
+3. **Identity pool must be optional.** Every scraper test must pass with `CookieBrowserPool` not initialized (`pool is None`). The single-account fallback must work unmodified — the pool is opt-in, not a dependency.
+4. **Test the error → callback mapping.** When a tool raises a typed exception (`RetryableError`, `FatalError`), verify that `JobManager._run_job` maps it to `FAILED` status and that the callback receives `on_error`, not `on_complete`.
+
+### 4.7 Error Handling Test Standards
+
+1. **Assert the specific exception subclass.** Use `pytest.raises(RetryableError)` (or `FatalError`), never the base `AWSBaseError` — a broad catch hides regressions where the wrong subclass is raised.
+2. **Assert `code` as well as the exception type.** The `ErrorCode` on the exception is what drives retry, re-auth, and user-message logic; verify it matches the expected canonical value, not just the exception class.
+3. **Test provider-specific HTTP overrides.** `classify_http(status, provider=...)` can return a different `ErrorCode` for the same HTTP status depending on the provider. Cover at least one provider-specific override per new API client.
+4. **Control-flow signals are not errors.** `BatchPendingError` and `JobSuspendedError` drive the SUSPENDED state — they must never appear in `on_error`. When testing a step that suspends, assert `job.status == SUSPENDED` and that `callback.on_error` was **not** called.
+
+### 4.8 Checkpoint & Resume Test Standards
+
+The two resume paths are not interchangeable and must each be tested independently:
+
+| Path | How to trigger in tests | What to verify |
+|---|---|---|
+| `JobManager.resume(job_id)` | Submit a job, let it reach SUSPENDED, call `resume()` on the **same** manager instance | Status: SUSPENDED → PENDING → RUNNING → COMPLETED; in-memory `_jobs` record preserved throughout |
+| `JobManager.resume_from_checkpoint(job_id)` | Write a checkpoint file, create a **fresh** `JobManager`, call `resume_from_checkpoint` | Fresh manager loads `workflow_name` + `params` from disk; already-completed steps are not re-executed (idempotent replay) |
+
+**Idempotency assertion:** after resuming from a checkpoint, the mock handler for a completed step must have a call count of zero; the mock handler for the first non-completed step must have a call count of one.
+
+**Checkpoint isolation:** each test must use its own `tmp_path`-backed checkpoint directory. A shared directory causes a prior test's on-disk state to satisfy the expected outcome of a later test, producing false-positive passes.
+
 ## 5. Troubleshooting Tests
 
 *   **ModuleNotFoundError**: Ensure you are running with `PYTHONPATH=.`.
@@ -239,3 +294,6 @@ When adding new capabilities, follow these standards:
 *   **Feishu Output Formatting**: If messages fail to send or update (`invalid message content`, `NOT a card`):
     *   Confirm `IntelligenceRouter` correctly applies `OutputParser.clean_for_feishu` to LLM responses.
     *   Ensure `FeishuCallback` is using `send_card_message` and `update_card_message` for dynamic updates, as Feishu's `patch` API requires interactive card format.
+*   **`on_error` called unexpectedly on a batch step**: `BatchPendingError` and `JobSuspendedError` are control-flow signals — they must never reach `on_error`. If they do, the likely cause is that `JobManager._run_job` is catching them inside the general `except Exception` branch instead of the dedicated control-flow branches. Verify the exception-handling order in `_run_job`.
+*   **SUSPENDED job never resumes**: If a job stays SUSPENDED after `BatchPoller` should have fired, check (1) the checkpoint file exists and contains a `BATCH_SUBMITTED` event with no following `BATCH_COMPLETED`, (2) `BatchPoller` was started (it starts in `JobManager.__init__`), and (3) the provider's `poll_batch` mock returns `None` while pending and a result dict only when complete — returning `{}` (empty dict) is interpreted as "complete with no results," not "still pending."
+*   **Checkpoint file conflict between tests**: If a resume test passes in isolation but fails in a full suite run, a prior test has left a checkpoint file with the same `job_id` in a shared directory. Each test must use a `tmp_path`-backed checkpoint directory — never share across test cases (see §4.8).
