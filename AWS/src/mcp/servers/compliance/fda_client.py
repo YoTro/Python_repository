@@ -3,7 +3,9 @@ from typing import Any
 
 import requests
 
-logger = logging.getLogger("fda-client")
+from src.core.errors import ErrorCode, classify_http
+
+logger = logging.getLogger(__name__)
 
 
 class FDAClient:
@@ -37,9 +39,10 @@ class FDAClient:
     def _get(self, url: str) -> dict[str, Any]:
         try:
             response = requests.get(url, timeout=10)
-            if response.status_code == 200:
+            code = classify_http(response.status_code)
+            if response.ok:
                 return response.json()
-            elif response.status_code == 404:
+            elif code == ErrorCode.NOT_FOUND:
                 return {"results": [], "message": "No results found"}
             else:
                 logger.error(f"FDA API error {response.status_code}: {response.text}")

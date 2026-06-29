@@ -12,6 +12,8 @@ import requests
 
 from src.core.errors import (
     ErrorCode,
+    ExtractorError,
+    FatalError,
     RetryableError,
     classify_api_code,
     classify_http,
@@ -162,7 +164,10 @@ class AmazonAdsClient:
                     if fallback:
                         current_asins = [fallback]
                     else:
-                        raise ValueError("No owned ASIN available for recommendation context.")
+                        raise FatalError(
+                            "No owned ASIN available for bid recommendations.",
+                            code=ErrorCode.INVALID_PARAMS,
+                        )
 
                 payload = {
                     "recommendationType": "BIDS_FOR_NEW_AD_GROUP",
@@ -540,7 +545,7 @@ class AmazonAdsClient:
             return result
         report_id = result.json().get("reportId")
         if not report_id:
-            raise ValueError(f"No reportId in response: {result.text[:200]}")
+            raise ExtractorError(f"No reportId in response: {result.text[:200]}")
         logger.info(f"Created report {report_id} ({report_type} {start_date}→{end_date})")
         return report_id
 
@@ -605,16 +610,17 @@ class AmazonAdsClient:
             if status == "COMPLETED":
                 download_url = data.get("url")
                 if not download_url:
-                    raise ValueError("Report COMPLETED but no download URL returned.")
+                    raise ExtractorError("Report COMPLETED but no download URL in response")
                 return download_url
 
             if status == "FAILED":
-                raise RuntimeError(f"Report {report_id} failed: {data.get('statusDetails')}")
+                raise FatalError(f"Report {report_id} failed: {data.get('statusDetails')}")
 
             await asyncio.sleep(self._REPORT_POLL_INTERVAL)
 
-        raise TimeoutError(
-            f"Report {report_id} did not complete after {self._REPORT_POLL_MAX} polls."
+        raise RetryableError(
+            f"Report {report_id} did not complete after {self._REPORT_POLL_MAX} polls.",
+            code=ErrorCode.TIMEOUT,
         )
 
     async def _download_report(self, url: str) -> list[dict]:
@@ -779,7 +785,7 @@ class AmazonAdsClient:
         else:
             report_id = result.json().get("reportId")
             if not report_id:
-                raise ValueError(f"[{ad_type}] no reportId in response: {result.text[:200]}")
+                raise ExtractorError(f"[{ad_type}] no reportId in response: {result.text[:200]}")
         logger.info(f"[{ad_type}] created report {report_id} ({start_date}→{end_date})")
         download_url = await self._poll_report(report_id)
         return await self._download_report(download_url)
@@ -836,7 +842,10 @@ class AmazonAdsClient:
         types = [t.upper() for t in (ad_types or ["SP", "SB", "SD"])]
         unknown = [t for t in types if t not in self._AD_TYPE_CONFIG]
         if unknown:
-            raise ValueError(f"Unknown ad_types: {unknown}. Valid: {list(self._AD_TYPE_CONFIG)}")
+            raise FatalError(
+                f"Unknown ad_types: {unknown}. Valid: {list(self._AD_TYPE_CONFIG)}",
+                code=ErrorCode.INVALID_PARAMS,
+            )
 
         # Fetch all types in parallel; capture per-type errors so one failure
         # doesn't abort the whole call.
@@ -1031,9 +1040,10 @@ class AmazonAdsClient:
         """
         _90_days_ms = 90 * 24 * 3600 * 1000
         if int(to_date) - int(from_date) > _90_days_ms:
-            raise ValueError(
+            raise FatalError(
                 f"Change history window exceeds 90 days: "
-                f"span={(int(to_date) - int(from_date)) // (24 * 3600 * 1000)} days"
+                f"span={(int(to_date) - int(from_date)) // (24 * 3600 * 1000)} days",
+                code=ErrorCode.INVALID_PARAMS,
             )
 
         url = f"{self.base_url}/history"

@@ -52,7 +52,7 @@ class TestIdentityPropagation(unittest.IsolatedAsyncioTestCase):
         # 1. 准备 Mock 环境
         mock_router = MagicMock()
         session_mgr = AgentSessionManager()
-        agent = MCPAgent(provider=MagicMock())
+        agent = MCPAgent(router=MagicMock())
         agent.router = mock_router
         agent.mcp = MagicMock()
 

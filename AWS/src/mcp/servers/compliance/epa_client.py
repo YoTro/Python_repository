@@ -4,7 +4,9 @@ from typing import Any
 
 import requests
 
-logger = logging.getLogger("epa-client")
+from src.core.errors import ErrorCode, classify_http
+
+logger = logging.getLogger(__name__)
 
 
 class EPAClient:
@@ -42,9 +44,10 @@ class EPAClient:
         try:
             logger.info(f"EPA PPLS API Request: {url}")
             response = requests.get(url, timeout=15)
-            if response.status_code == 200:
+            code = classify_http(response.status_code)
+            if response.ok:
                 return response.json()
-            elif response.status_code == 404:
+            elif code == ErrorCode.NOT_FOUND:
                 return {"items": [], "message": "No results found"}
             else:
                 logger.error(f"EPA API error {response.status_code}: {response.text}")

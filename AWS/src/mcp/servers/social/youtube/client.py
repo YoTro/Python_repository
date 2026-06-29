@@ -34,6 +34,7 @@ _BROWSE_HEADERS = {
     "x-youtube-client-version": _CLIENT_VERSION,
 }
 
+
 def _parse_count(text: str) -> int:
     """Parse count from strings like '1.93K subscribers', '1,714,990 views', '817 videos'."""
     text = text.replace(",", "").strip()
@@ -70,16 +71,16 @@ def _parse_channel_main(data: dict[str, Any], result: dict[str, Any]) -> None:
     if c4:
         result["title"] = result["title"] or c4.get("title", "")
         handle_runs = c4.get("channelHandleText", {}).get("runs", [])
-        result["handle"] = result["handle"] or (handle_runs[0].get("text", "") if handle_runs else "")
+        result["handle"] = result["handle"] or (
+            handle_runs[0].get("text", "") if handle_runs else ""
+        )
         if not result["subscriber_count"]:
             result["subscriber_count"] = _parse_count(
                 c4.get("subscriberCountText", {}).get("simpleText", "")
             )
         if not result["video_count"]:
             vid_runs = c4.get("videosCountText", {}).get("runs", [])
-            result["video_count"] = _parse_count(
-                "".join(r.get("text", "") for r in vid_runs)
-            )
+            result["video_count"] = _parse_count("".join(r.get("text", "") for r in vid_runs))
 
     # channelMetadataRenderer: title + description
     meta = data.get("metadata", {}).get("channelMetadataRenderer", {})
@@ -96,11 +97,7 @@ def _parse_channel_about(data: dict[str, Any], result: dict[str, Any]) -> None:
     """
     # Format 1: classic channelAboutFullMetadataRenderer (pre-2024 about tab)
     try:
-        tabs = (
-            data.get("contents", {})
-            .get("twoColumnBrowseResultsRenderer", {})
-            .get("tabs", [])
-        )
+        tabs = data.get("contents", {}).get("twoColumnBrowseResultsRenderer", {}).get("tabs", [])
         for tab in tabs:
             contents = (
                 tab.get("tabRenderer", {})
@@ -149,8 +146,12 @@ def _parse_channel_about(data: dict[str, Any], result: dict[str, Any]) -> None:
                         continue
                     result["country"] = result["country"] or about_vm.get("country", "")
                     joined = about_vm.get("joinedDateText", {})
-                    joined_str = joined.get("content", "") if isinstance(joined, dict) else str(joined)
-                    result["joined_date"] = result["joined_date"] or joined_str.replace("Joined ", "").strip()
+                    joined_str = (
+                        joined.get("content", "") if isinstance(joined, dict) else str(joined)
+                    )
+                    result["joined_date"] = (
+                        result["joined_date"] or joined_str.replace("Joined ", "").strip()
+                    )
                     view_text = about_vm.get("viewCountText", "")
                     if view_text and not result["total_views"]:
                         result["total_views"] = _parse_count(str(view_text))
@@ -270,15 +271,13 @@ class YouTubeClient:
         m = re.search(r"var ytInitialData\s*=\s*", html)
         if m:
             try:
-                data, _ = json.JSONDecoder().raw_decode(html[m.end():])
+                data, _ = json.JSONDecoder().raw_decode(html[m.end() :])
                 return data
             except json.JSONDecodeError:
                 pass
 
         # Fallback: bounded regex (less reliable on very large pages)
-        m2 = re.search(
-            r"var ytInitialData\s*=\s*(\{.+?\});\s*(?:var |</script>)", html, re.DOTALL
-        )
+        m2 = re.search(r"var ytInitialData\s*=\s*(\{.+?\});\s*(?:var |</script>)", html, re.DOTALL)
         if m2:
             try:
                 return json.loads(m2.group(1))
@@ -289,9 +288,7 @@ class YouTubeClient:
 
     def _fetch_yt_initial_data(self, hashtag: str) -> dict[str, Any]:
         """Fetch the hashtag page and extract ytInitialData JSON."""
-        return self._fetch_page_data(
-            f"https://www.youtube.com/hashtag/{hashtag.lstrip('#')}"
-        )
+        return self._fetch_page_data(f"https://www.youtube.com/hashtag/{hashtag.lstrip('#')}")
 
     def _client_context(self) -> dict[str, Any]:
         return {
@@ -372,9 +369,7 @@ class YouTubeClient:
         if video_count == 0:
             raw_str = json.dumps(data)
             vm = re.search(r'"content"\s*:\s*"([\d,]+)\s+video', raw_str)
-            cm = re.search(
-                r'"content"\s*:\s*"[\d,]+\s+videos\s+\S+\s+([\d,]+)\s+channel', raw_str
-            )
+            cm = re.search(r'"content"\s*:\s*"[\d,]+\s+videos\s+\S+\s+([\d,]+)\s+channel', raw_str)
             if vm:
                 video_count = int(vm.group(1).replace(",", ""))
             if cm:
@@ -400,9 +395,7 @@ class YouTubeClient:
 
         try:
             tabs = (
-                data.get("contents", {})
-                .get("twoColumnBrowseResultsRenderer", {})
-                .get("tabs", [])
+                data.get("contents", {}).get("twoColumnBrowseResultsRenderer", {}).get("tabs", [])
             )
             for tab in tabs:
                 contents = (
@@ -413,9 +406,7 @@ class YouTubeClient:
                 )
                 for item in contents:
                     vr = (
-                        item.get("richItemRenderer", {})
-                        .get("content", {})
-                        .get("videoRenderer", {})
+                        item.get("richItemRenderer", {}).get("content", {}).get("videoRenderer", {})
                     )
                     if vr.get("videoId"):
                         videos.append(vr)
@@ -470,9 +461,7 @@ class YouTubeClient:
         }
 
         try:
-            main_data = self._browse_api(
-                channel_id, referer_path=f"channel/{channel_id}"
-            )
+            main_data = self._browse_api(channel_id, referer_path=f"channel/{channel_id}")
             _parse_channel_main(main_data, result)
         except Exception as e:
             logger.warning(f"[youtube] Channel main page failed for {channel_id}: {e}")
@@ -500,9 +489,7 @@ class YouTubeClient:
           text (str), author (str), likes (int), reply_count (int), published_time (str)
         """
         try:
-            video_data = self._fetch_page_data(
-                f"https://www.youtube.com/watch?v={video_id}"
-            )
+            video_data = self._fetch_page_data(f"https://www.youtube.com/watch?v={video_id}")
             token = _extract_comments_token(video_data)
         except Exception as e:
             logger.warning(f"[youtube] Failed to fetch video page for {video_id}: {e}")
@@ -526,9 +513,7 @@ class YouTubeClient:
             # commentThreadRenderer itself. Build a lookup keyed by commentEntityPayload.key.
             comment_payloads: dict[str, dict[str, Any]] = {}
             for mutation in (
-                resp.get("frameworkUpdates", {})
-                .get("entityBatchUpdate", {})
-                .get("mutations", [])
+                resp.get("frameworkUpdates", {}).get("entityBatchUpdate", {}).get("mutations", [])
             ):
                 cp = mutation.get("payload", {}).get("commentEntityPayload", {})
                 if cp and cp.get("key"):
@@ -537,11 +522,9 @@ class YouTubeClient:
             token = ""
             for endpoint in resp.get("onResponseReceivedEndpoints", []):
                 # First page: reloadContinuationItemsCommand; subsequent: appendContinuationItemsAction
-                items = endpoint.get(
-                    "reloadContinuationItemsCommand", {}
-                ).get("continuationItems", []) or endpoint.get(
-                    "appendContinuationItemsAction", {}
-                ).get("continuationItems", [])
+                items = endpoint.get("reloadContinuationItemsCommand", {}).get(
+                    "continuationItems", []
+                ) or endpoint.get("appendContinuationItemsAction", {}).get("continuationItems", [])
 
                 for item in items:
                     ctr = item.get("commentThreadRenderer", {})
@@ -557,13 +540,15 @@ class YouTubeClient:
                             toolbar = cp.get("toolbar", {})
                             like_a11y = toolbar.get("likeCountA11y", "") or ""
                             reply_str = (toolbar.get("replyCount", "") or "").strip()
-                            comments.append({
-                                "text": props.get("content", {}).get("content", ""),
-                                "author": cp.get("author", {}).get("displayName", ""),
-                                "likes": _parse_count(like_a11y.split()[0]) if like_a11y else 0,
-                                "reply_count": _parse_count(reply_str) if reply_str else 0,
-                                "published_time": props.get("publishedTime", ""),
-                            })
+                            comments.append(
+                                {
+                                    "text": props.get("content", {}).get("content", ""),
+                                    "author": cp.get("author", {}).get("displayName", ""),
+                                    "likes": _parse_count(like_a11y.split()[0]) if like_a11y else 0,
+                                    "reply_count": _parse_count(reply_str) if reply_str else 0,
+                                    "published_time": props.get("publishedTime", ""),
+                                }
+                            )
 
                     next_token = (
                         item.get("continuationItemRenderer", {})

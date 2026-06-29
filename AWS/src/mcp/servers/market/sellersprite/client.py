@@ -9,7 +9,7 @@ import time
 import requests
 from bs4 import BeautifulSoup
 
-from src.core.errors.exceptions import RetryableError
+from src.core.errors import RetryableError, classify_http, is_auth_error, is_retryable
 from src.gateway.rate_limit import RateLimiter
 
 from .auth import SellerspriteAuth
@@ -111,19 +111,23 @@ class SellerspriteAPI:
                 )
 
             response = self.session.request(method, url, **kwargs)
+            code = classify_http(response.status_code, "sellersprite")
 
-            if response.status_code == 429:
+            if is_retryable(code) and response.status_code != 401:
                 wait = int(
                     response.headers.get("Retry-After", 2 ** (attempt + 1))
                 ) + random.uniform(0, 1)
                 logger.warning(
-                    f"[sellersprite] 429 rate limited — waiting {wait:.1f}s (attempt {attempt + 1}/3)"
+                    f"[sellersprite] {response.status_code} rate limited — "
+                    f"waiting {wait:.1f}s (attempt {attempt + 1}/3)"
                 )
                 time.sleep(wait)
                 continue
 
-            if response.status_code == 401:
-                logger.warning("[sellersprite] 401 Unauthorized — re-logging in and retrying")
+            if is_auth_error(code):
+                logger.warning(
+                    f"[sellersprite] {response.status_code} Unauthorized — re-logging in and retrying"
+                )
                 self._safe_relogin()
                 response = self.session.request(method, url, **kwargs)
 
@@ -154,7 +158,7 @@ class SellerspriteAPI:
         res = self._request("GET", url, headers=headers)
         response_data = {"times": [], "bsr": [], "subRanks": []}
 
-        if res.status_code == 200:
+        if res.ok:
             data = res.json()
             if "data" in data and "keepa" in data["data"]:
                 keepa = data["data"]["keepa"]
@@ -164,7 +168,7 @@ class SellerspriteAPI:
                 if sub_ranks:
                     response_data["subRanks"] = list(sub_ranks.values())[0]
         else:
-            logger.error(f"Failed to fetch Keepa data: {res.text}")
+            logger.error(f"Failed to fetch Keepa data: HTTP {res.status_code}")
 
         return response_data
 
@@ -237,7 +241,7 @@ class SellerspriteAPI:
         for attempt in range(2):
             res = self._request("POST", url, json=payload, headers=headers)
 
-            if res.status_code != 200:
+            if not res.ok:
                 logger.error(
                     f"[sellersprite] competing-lookup failed {res.status_code}: {res.text}"
                 )
@@ -322,7 +326,7 @@ class SellerspriteAPI:
         for attempt in range(2):
             res = self._request("GET", url, params=params, headers=headers)
 
-            if res.status_code != 200:
+            if not res.ok:
                 logger.error(f"[sellersprite] resolve-node failed {res.status_code}: {res.text}")
                 return []
 
@@ -398,7 +402,7 @@ class SellerspriteAPI:
         for attempt in range(2):
             res = self._request("GET", url, params=params, headers=headers)
 
-            if res.status_code != 200:
+            if not res.ok:
                 logger.error(f"[sellersprite] category-nodes failed {res.status_code}: {res.text}")
                 return []
 
@@ -592,7 +596,7 @@ class SellerspriteAPI:
             }
             res = self._request("GET", url, params=params, headers=get_headers)
 
-        if res.status_code != 200:
+        if not res.ok:
             logger.error(f"[sellersprite] market-research failed with status {res.status_code}")
             return {}
 

@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 from curl_cffi import requests
 
-from src.core.errors.exceptions import RetryableError
+from src.core.errors import RetryableError, classify_http, is_retryable
 from src.gateway.rate_limit import RateLimiter
 
 from .auth import TikTokSigner
@@ -383,7 +383,8 @@ class TikTokClient:
                 raise RetryableError("tiktok source rate limit timeout", retry_after_seconds=60)
             try:
                 response = self.session.get(full_url, headers=headers)
-                if response.status_code == 200:
+                code = classify_http(response.status_code, "tiktok")
+                if response.ok:
                     try:
                         return response.json()
                     except Exception as e:
@@ -391,12 +392,13 @@ class TikTokClient:
                             f"Failed to parse TikTok JSON response: {e}. Snippet: {response.text[:100]}"
                         )
                         return {}
-                elif response.status_code == 429:
+                elif is_retryable(code):
                     wait = int(
                         response.headers.get("Retry-After", 2 ** (attempt + 1))
                     ) + random.uniform(0, 1)
                     logger.warning(
-                        f"TikTok 429 rate limited, waiting {wait:.1f}s (attempt {attempt + 1}/3)"
+                        f"TikTok {response.status_code} rate limited, waiting {wait:.1f}s "
+                        f"(attempt {attempt + 1}/3)"
                     )
                     time.sleep(wait)
                     continue
@@ -1062,13 +1064,16 @@ class TikTokClient:
             try:
                 response = self.session.get(full_url, headers=headers, timeout=15)
 
-                if response.status_code == 429:
+                _code = classify_http(response.status_code, "tiktok")
+                if is_retryable(_code):
                     wait = int(response.headers.get("Retry-After", 4)) + random.uniform(0, 1)
-                    logger.warning(f"TikTok comments 429 rate limited, waiting {wait:.1f}s")
+                    logger.warning(
+                        f"TikTok comments {response.status_code} rate limited, waiting {wait:.1f}s"
+                    )
                     time.sleep(wait)
                     continue
 
-                if response.status_code == 200:
+                if response.ok:
                     if not response.text.strip():
                         logger.warning(
                             f"TikTok returned an empty response for comments (Video: {video_id}). Check signatures or msToken."

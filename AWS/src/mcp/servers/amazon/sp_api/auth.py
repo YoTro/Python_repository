@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 
 import requests
 
+from src.core.errors import ConfigError, ErrorCode, ScraperError
+
 logger = logging.getLogger(__name__)
 
 MARKETPLACE_IDS: dict[str, str] = {
@@ -62,7 +64,7 @@ class SPAPIAuth:
         self.refresh_token = os.getenv(refresh_env) or os.getenv("AMAZON_SP_API_REFRESH_TOKEN")
 
         if not self.client_id or not self.refresh_token:
-            raise ValueError(
+            raise ConfigError(
                 f"Missing SP-API credentials for store '{self.store_id}'. "
                 f"Set AMAZON_LWA_CLIENT_ID and {refresh_env} (or AMAZON_SP_API_REFRESH_TOKEN)."
             )
@@ -73,7 +75,7 @@ class SPAPIAuth:
         marketplace_env = f"AMAZON_SP_MARKETPLACE_ID_{self.store_id}"
         self.marketplace_id = os.getenv(marketplace_env) or MARKETPLACE_IDS.get(self.store_id)
         if not self.marketplace_id:
-            raise ValueError(
+            raise ConfigError(
                 f"Unknown marketplace for store '{self.store_id}'. Set {marketplace_env}."
             )
 
@@ -106,4 +108,7 @@ class SPAPIAuth:
             return token
         except Exception as e:
             logger.error(f"SP-API token refresh failed: {e}")
-            raise
+            raise ScraperError(
+                f"SP-API token refresh failed for store '{self.store_id}': {e}",
+                code=ErrorCode.AUTH_TOKEN_EXPIRED,
+            ) from e

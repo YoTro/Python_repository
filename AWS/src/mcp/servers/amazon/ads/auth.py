@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 
 import requests
 
+from src.core.errors import ConfigError, ErrorCode, ScraperError
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,7 +33,7 @@ class AmazonAdsAuth:
         self.refresh_token = os.getenv(refresh_token_env)
 
         if not all([self.client_id, self.client_secret, self.refresh_token]):
-            raise ValueError(
+            raise ConfigError(
                 f"Missing Amazon Ads credentials for store '{self.store_id}'. "
                 f"Check your .env file for CLIENT_ID, CLIENT_SECRET and {refresh_token_env}"
             )
@@ -81,7 +83,10 @@ class AmazonAdsAuth:
             logger.error(f"Failed to refresh Amazon Ads token: {e}")
             if hasattr(e, "response") and e.response is not None:
                 logger.error(f"Response: {e.response.text}")
-            raise
+            raise ScraperError(
+                f"Amazon Ads token refresh failed for store '{self.store_id}': {e}",
+                code=ErrorCode.AUTH_TOKEN_EXPIRED,
+            ) from e
 
     def get_profile_id(self) -> str:
         """
@@ -90,7 +95,7 @@ class AmazonAdsAuth:
         profile_env = f"AMAZON_ADS_PROFILE_ID_{self.store_id}"
         profile_id = os.getenv(profile_env)
         if not profile_id:
-            raise ValueError(
+            raise ConfigError(
                 f"Missing Profile ID for store '{self.store_id}'. Check {profile_env} in .env"
             )
         return profile_id

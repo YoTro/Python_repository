@@ -7,20 +7,27 @@ from typing import Any
 
 from curl_cffi import requests
 
+from src.core.errors import (
+    ErrorCode,
+    ScraperError,
+    classify_api_code,
+    classify_response_message,
+    is_auth_error,
+)
+
 from ..base import ERPClient
 from .auth import LingxingAuth
 
 logger = logging.getLogger(__name__)
 
-_TOKEN_EXPIRED_CODES = {401, "401", -1, -999}
-_TOKEN_EXPIRED_MSGS = ("token", "未登录", "登录已过期")
-
 
 def _is_token_expired(data: dict) -> bool:
-    if data.get("code") in _TOKEN_EXPIRED_CODES:
+    """True when the Lingxing response body signals an expired/missing token."""
+    api_code = classify_api_code(data.get("code", ""), "lingxing")
+    if is_auth_error(api_code):
         return True
-    msg = str(data.get("msg", "")).lower()
-    return any(kw in msg for kw in _TOKEN_EXPIRED_MSGS)
+    msg_code = classify_response_message(str(data.get("msg", "")), "lingxing")
+    return is_auth_error(msg_code)
 
 
 class LingxingClient(ERPClient):
@@ -77,7 +84,10 @@ class LingxingClient(ERPClient):
             return data
         except Exception as e:
             logger.error(f"Lingxing API request failed [{method} {path}]: {e}")
-            return {}
+            raise ScraperError(
+                f"Lingxing API request failed [{method} {path}]: {e}",
+                code=ErrorCode.SERVER_ERROR,
+            ) from e
 
     # ── ERP direct request helper (erp.lingxing.com web-app endpoints) ─────────
 
@@ -117,7 +127,10 @@ class LingxingClient(ERPClient):
             return data
         except Exception as e:
             logger.error(f"Lingxing ERP direct request failed [POST {path}]: {e}")
-            return {}
+            raise ScraperError(
+                f"Lingxing ERP direct request failed [POST {path}]: {e}",
+                code=ErrorCode.SERVER_ERROR,
+            ) from e
 
     # ── Ad API request helper (ads.lingxing.com origin) ──────────────────────
 

@@ -45,9 +45,10 @@ class TestSPAPIAuth(unittest.TestCase):
 
     def test_missing_credentials_raises(self):
         with patch.dict(os.environ, {}, clear=True):
+            from src.core.errors.exceptions import ConfigError
             from src.mcp.servers.amazon.sp_api.auth import SPAPIAuth
 
-            with self.assertRaises(ValueError):
+            with self.assertRaises(ConfigError):
                 SPAPIAuth(store_id="US")
 
     def test_token_refresh_and_cache(self):
@@ -206,14 +207,14 @@ class TestGetOrderMetrics(unittest.IsolatedAsyncioTestCase):
     async def test_http_error_propagates(self):
         import requests as _req
 
+        from src.core.errors.exceptions import ScraperError
+
         mock_resp = MagicMock()
         mock_resp.raise_for_status.side_effect = _req.HTTPError("403 Forbidden")
 
-        import requests as _req_mod
-
         with self._mock_auth(), patch("requests.get", return_value=mock_resp):
             client = self._make_client()
-            with self.assertRaises(_req_mod.HTTPError):
+            with self.assertRaises(ScraperError):
                 await client.get_order_metrics(
                     asin="B0BAD",
                     start_date="2026-03-30",

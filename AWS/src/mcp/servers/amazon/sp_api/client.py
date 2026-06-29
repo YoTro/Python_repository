@@ -9,7 +9,15 @@ from typing import Any
 
 import requests
 
-from src.core.errors import RetryableError, classify_http, is_retryable
+from src.core.errors import (
+    ErrorCode,
+    ExtractorError,
+    FatalError,
+    RetryableError,
+    ScraperError,
+    classify_http,
+    is_retryable,
+)
 from src.core.utils.decorators import exponential_backoff
 
 from .auth import SPAPIAuth
@@ -46,16 +54,18 @@ class SPAPIClient:
             resp.raise_for_status()
             return resp.json()
         except requests.HTTPError as e:
-            if e.response is not None:
-                logger.error(
-                    f"SP-API POST {path} → HTTP {e.response.status_code}: {e.response.text[:400]}"
-                )
-            else:
-                logger.error(f"SP-API POST {path} → {e}")
-            raise
+            status = e.response.status_code if e.response is not None else None
+            logger.error(
+                f"SP-API POST {path} → HTTP {status}: "
+                f"{e.response.text[:400] if e.response is not None else e}"
+            )
+            raise ScraperError(
+                f"SP-API POST {path} failed: HTTP {status}",
+                code=classify_http(status or 0, "sp_api"),
+            ) from e
         except Exception as e:
             logger.error(f"SP-API POST {path} failed: {e}")
-            raise
+            raise ScraperError(f"SP-API POST {path} failed: {e}") from e
 
     def _get(self, path: str, params: dict | None = None) -> dict[str, Any]:
         url = f"{self.auth.endpoint}{path}"
@@ -64,16 +74,18 @@ class SPAPIClient:
             resp.raise_for_status()
             return resp.json()
         except requests.HTTPError as e:
-            if e.response is not None:
-                logger.error(
-                    f"SP-API GET {path} → HTTP {e.response.status_code}: {e.response.text[:400]}"
-                )
-            else:
-                logger.error(f"SP-API GET {path} → {e}")
-            raise
+            status = e.response.status_code if e.response is not None else None
+            logger.error(
+                f"SP-API GET {path} → HTTP {status}: "
+                f"{e.response.text[:400] if e.response is not None else e}"
+            )
+            raise ScraperError(
+                f"SP-API GET {path} failed: HTTP {status}",
+                code=classify_http(status or 0, "sp_api"),
+            ) from e
         except Exception as e:
             logger.error(f"SP-API GET {path} failed: {e}")
-            raise
+            raise ScraperError(f"SP-API GET {path} failed: {e}") from e
 
     # ── Inventory ──────────────────────────────────────────────────────────
 
@@ -195,7 +207,7 @@ class SPAPIClient:
         data = await asyncio.to_thread(self._post, "/reports/2021-06-30/reports", body)
         report_id = data.get("reportId")
         if not report_id:
-            raise ValueError(f"No reportId in createReport response: {data}")
+            raise ExtractorError(f"No reportId in createReport response: {data}")
         logger.info(
             f"Created SP-API report {report_id} (GET_SALES_AND_TRAFFIC_REPORT {start_dt}→{end_dt})"
         )
@@ -215,13 +227,14 @@ class SPAPIClient:
             if status == "DONE":
                 doc_id = data.get("reportDocumentId")
                 if not doc_id:
-                    raise ValueError(f"Report DONE but no reportDocumentId: {data}")
+                    raise ExtractorError(f"SP report DONE but no reportDocumentId: {data}")
                 return doc_id
             if status in ("CANCELLED", "FATAL"):
-                raise RuntimeError(f"SP report {report_id} ended with status {status}")
+                raise FatalError(f"SP report {report_id} ended with status {status}")
             await asyncio.sleep(self._REPORT_POLL_INTERVAL)
-        raise TimeoutError(
-            f"SP report {report_id} did not complete after {self._REPORT_POLL_MAX} polls."
+        raise RetryableError(
+            f"SP report {report_id} did not complete after {self._REPORT_POLL_MAX} polls.",
+            code=ErrorCode.TIMEOUT,
         )
 
     async def _download_sp_report(self, document_id: str) -> list[dict]:
@@ -230,7 +243,7 @@ class SPAPIClient:
         url = meta.get("url")
         compression = meta.get("compressionAlgorithm", "")
         if not url:
-            raise ValueError(f"No URL in report document metadata: {meta}")
+            raise ExtractorError(f"No URL in SP report document metadata: {meta}")
 
         resp = await asyncio.to_thread(requests.get, url, timeout=120)
         resp.raise_for_status()

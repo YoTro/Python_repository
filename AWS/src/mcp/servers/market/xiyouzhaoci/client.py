@@ -10,7 +10,14 @@ from urllib.parse import quote
 
 from curl_cffi import requests
 
-from src.core.errors.exceptions import RetryableError
+from src.core.errors import (
+    ErrorCode,
+    FatalError,
+    RetryableError,
+    classify_http,
+    is_auth_error,
+    is_retryable,
+)
 from src.gateway.rate_limit import RateLimiter
 
 from .auth import XiyouZhaociAuth
@@ -18,12 +25,11 @@ from .auth import XiyouZhaociAuth
 logger = logging.getLogger(__name__)
 
 
-class XiyouAuthRequiredError(Exception):
-    """Exception raised when Xiyouzhaoci token is missing or expired, and SMS auth is needed."""
+class XiyouAuthRequiredError(FatalError):
+    """Raised when Xiyouzhaoci token is missing or expired and interactive re-auth is needed."""
 
     def __init__(self, message="Xiyouzhaoci token expired or invalid. Re-authentication required."):
-        self.message = message
-        super().__init__(self.message)
+        super().__init__(message, code=ErrorCode.AUTH_REQUIRED)
 
 
 class XiyouZhaociAPI:
@@ -103,20 +109,23 @@ class XiyouZhaociAPI:
                 )
 
             response = self.session.request(method, url, **kwargs)
+            code = classify_http(response.status_code, "xiyouzhaoci")
 
-            if response.status_code == 429:
+            if is_retryable(code) and not is_auth_error(code):
                 wait = int(response.headers.get("Retry-After", 2 ** (attempt + 1)))
                 jitter = random.uniform(0, 1)
                 total_wait = wait + jitter
                 logger.warning(
-                    f"[xiyouzhaoci] 429 rate limited — waiting {total_wait:.1f}s "
+                    f"[xiyouzhaoci] {response.status_code} rate limited — waiting {total_wait:.1f}s "
                     f"(attempt {attempt + 1}/3)"
                 )
                 time.sleep(total_wait)
                 continue
 
-            if response.status_code == 401:
-                logger.warning("Received 401 Unauthorized. Attempting to reload token...")
+            if is_auth_error(code):
+                logger.warning(
+                    f"[xiyouzhaoci] {response.status_code} Unauthorized. Attempting to reload token..."
+                )
                 new_token = self._load_token()
                 if new_token and new_token != self.auth_token:
                     self.auth_token = new_token
@@ -128,7 +137,7 @@ class XiyouZhaociAPI:
                     response = self.session.request(method, url, **kwargs)
                 else:
                     logger.error(
-                        "401 Unauthorized: Token is missing or invalid. Please re-authenticate."
+                        "Unauthorized: Token is missing or invalid. Please re-authenticate."
                     )
                     raise XiyouAuthRequiredError(
                         "Xiyouzhaoci token expired or invalid. Re-authentication required."
