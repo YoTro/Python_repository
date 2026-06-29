@@ -370,7 +370,7 @@ class ListingQualityScorer:
             score -= 20
             issues.append(
                 f"Title too long ({title_len} chars) — Amazon policy limits titles to 75 characters."
-                " After July 27 2025, Amazon will overwrite non-compliant titles with its own"
+                " After July 27 2026, Amazon will overwrite non-compliant titles with its own"
                 " AI-generated recommendation; shorten the title now to retain control of your copy."
             )
         metrics["title_length"] = title_len

@@ -48,7 +48,7 @@ review_analysis:
 listing_quality_sop:
   title: "Listing Quality SOP Framework"
   content: |
-    - **Title Optimization**: Optimal length (80-120 chars), 4 pillars (Brand, Type, Features, Specs), no spammy symbols.
+    - **Title Optimization**: Stay within Amazon's 75-character limit; aim for 60-75 chars to maximise keyword coverage (never below 40). Cover the 4 pillars (Brand, Type, Features, Specs), no spammy symbols. Titles over 75 chars risk suppression/truncation, and since July 27 2026 Amazon overwrites non-compliant titles with its own AI-generated copy — stay under the limit to keep control.
     - **Five Bullet Points**: 5 bullets, first 3 focusing on pain points/benefits, last 2 on materials/guarantee. 3-6x keyword density.
     - **Visual Hierarchy**: 7+ images, 1000px+ resolution, main image on pure white.
     - **Social Proof**: 4.3+ rating, <15% 1-2 star reviews, high VP ratio, media in reviews.
