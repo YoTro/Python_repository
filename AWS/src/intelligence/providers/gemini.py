@@ -93,7 +93,6 @@ class GeminiProvider(BaseLLMProvider):
     _MODEL_CONTEXT_WINDOWS = {
         "models/gemini-2.5-pro": 1_048_576,
         "models/gemini-2.5-flash": 1_048_576,
-        "models/gemini-2.0-flash": 1_048_576,
         "models/gemini-2.0-pro": 1_048_576,
         "models/gemini-1.5-pro": 2_097_152,
         "models/gemini-1.5-flash": 1_048_576,

@@ -20,7 +20,7 @@ class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # We need a dummy config to test PriceManager reliably
         self.pm = PriceManager(provider="gemini")
-        self.test_model = "models/gemini-2.0-flash"
+        self.test_model = "models/gemini-2.5-flash"
 
     def test_thoughts_token_calculation(self):
         """
@@ -70,9 +70,9 @@ class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
         Test that GeminiProvider correctly extracts thoughts from SDK response.
         """
         # 1. Setup Mock Provider
-        mock_provider = GeminiProvider(api_key="fake_key", model_name="models/gemini-2.0-flash")
+        mock_provider = GeminiProvider(api_key="fake_key", model_name="models/gemini-2.5-flash")
         # Manually force model_name because discovery might fail in mock environment
-        mock_provider.model_name = "models/gemini-2.0-flash"
+        mock_provider.model_name = "models/gemini-2.5-flash"
 
         # 2. Mock SDK Response Metadata
         mock_response = MagicMock()

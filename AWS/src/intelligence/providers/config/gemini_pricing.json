@@ -48,10 +48,6 @@
     "gemini-2.5-flash-preview-tts": "gemini-2.5-flash-tts",
     "gemini-2.5-pro-preview-tts": "gemini-2.5-pro-tts",
     "gemini-2.5-computer-use-preview-10-2025": "gemini-2.5-computer-use-preview",
-    "gemini-2.0-flash": "gemini-2.0-flash",
-    "gemini-2.0-flash-001": "gemini-2.0-flash",
-    "gemini-2.0-flash-lite": "gemini-2.0-flash-lite",
-    "gemini-2.0-flash-lite-001": "gemini-2.0-flash-lite",
     "gemini-robotics-er-1.5-preview": "gemini-robotics-er-1.5",
     "gemini-embedding-001": "gemini-embedding-001",
     "imagen-4.0-generate-001": "imagen-4",
@@ -60,9 +56,6 @@
     "imagen-3.0-generate-002": "imagen-3",
     "veo-3.1-generate-preview": "veo-3.1",
     "veo-3.1-fast-generate-preview": "veo-3.1",
-    "veo-3.0-generate-001": "veo-3",
-    "veo-3.0-fast-generate-001": "veo-3",
-    "veo-2.0-generate-001": "veo-2",
     "gemma-3": "gemma-3",
     "gemini-3.5-flash": "gemini-3.5-flash",
     "gemini-3.5-live-translate-preview": "gemini-3.5-live-translate-preview",
@@ -1697,187 +1690,6 @@
       "is_free": false,
       "context_tier": "gt_200k"
     },
-    "gemini-2.0-flash#standard_free#input#image": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash#standard_free#input#audio": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash#standard_free#input#text": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash#standard_free#input#video": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash#standard_free#output#text": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash#standard_free#cache_read#image": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash#standard_free#cache_read#audio": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash#standard_free#cache_read#text": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash#standard_free#cache_read#video": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash#standard_free#image_gen#up_to_1024x1024px": {
-      "price": 0.039,
-      "billing_unit": "USD_per_image",
-      "is_free": false,
-      "resolution": "up_to_1024x1024px"
-    },
-    "gemini-2.0-flash#standard_paid#input#image": {
-      "price": 0.1,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#standard_paid#input#audio": {
-      "price": 0.7,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#standard_paid#input#text": {
-      "price": 0.1,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#standard_paid#input#video": {
-      "price": 0.1,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#standard_paid#output#text": {
-      "price": 0.4,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#standard_paid#cache_read#image": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#standard_paid#cache_read#audio": {
-      "price": 0.175,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#standard_paid#cache_read#text": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#standard_paid#cache_read#video": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#standard_paid#cache_storage": {
-      "price": 1.0,
-      "billing_unit": "USD_per_1M_tokens_per_hour",
-      "is_free": false
-    },
-    "gemini-2.0-flash#standard_paid#grounding_search": {
-      "price": 35.0,
-      "billing_unit": "USD_per_1000_prompts",
-      "is_free": false,
-      "free_rpd": 1500
-    },
-    "gemini-2.0-flash#standard_paid#grounding_maps": {
-      "price": 25.0,
-      "billing_unit": "USD_per_1000_prompts",
-      "is_free": false,
-      "free_rpd": 1500
-    },
-    "gemini-2.0-flash#standard_paid#image_gen#up_to_1024x1024px": {
-      "price": 0.039,
-      "billing_unit": "USD_per_image",
-      "is_free": false,
-      "resolution": "up_to_1024x1024px"
-    },
-    "gemini-2.0-flash#batch_paid#input#image": {
-      "price": 0.05,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#batch_paid#input#audio": {
-      "price": 0.35,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#batch_paid#input#text": {
-      "price": 0.05,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#batch_paid#input#video": {
-      "price": 0.05,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#batch_paid#output#text": {
-      "price": 0.2,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#batch_paid#cache_read#image": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#batch_paid#cache_read#audio": {
-      "price": 0.175,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#batch_paid#cache_read#text": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#batch_paid#cache_read#video": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash#batch_paid#cache_storage": {
-      "price": 1.0,
-      "billing_unit": "USD_per_1M_tokens_per_hour",
-      "is_free": false
-    },
-    "gemini-2.0-flash#batch_paid#grounding_search": {
-      "price": 35.0,
-      "billing_unit": "USD_per_1000_prompts",
-      "is_free": false,
-      "free_rpd": 1500
-    },
-    "gemini-2.0-flash#batch_paid#image_gen#up_to_1024x1024px": {
-      "price": 0.0195,
-      "billing_unit": "USD_per_image",
-      "is_free": false,
-      "resolution": "up_to_1024x1024px"
-    },
     "gemini-2.0-flash-001#standard_free#input#image": {
       "price": 0,
       "billing_unit": "USD_per_1M_tokens",
@@ -2058,81 +1870,6 @@
       "billing_unit": "USD_per_image",
       "is_free": false,
       "resolution": "up_to_1024x1024px"
-    },
-    "gemini-2.0-flash-lite#standard_free#input#image": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-lite#standard_free#input#audio": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-lite#standard_free#input#text": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-lite#standard_free#input#video": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-lite#standard_free#output#text": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-lite#standard_paid#input#image": {
-      "price": 0.075,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite#standard_paid#input#audio": {
-      "price": 0.075,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite#standard_paid#input#text": {
-      "price": 0.075,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite#standard_paid#input#video": {
-      "price": 0.075,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite#standard_paid#output#text": {
-      "price": 0.3,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite#batch_paid#input#image": {
-      "price": 0.0375,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite#batch_paid#input#audio": {
-      "price": 0.0375,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite#batch_paid#input#text": {
-      "price": 0.0375,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite#batch_paid#input#video": {
-      "price": 0.0375,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite#batch_paid#output#text": {
-      "price": 0.15,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
     },
     "gemini-2.0-flash-lite-001#standard_free#input#image": {
       "price": 0,
@@ -2423,41 +2160,6 @@
       "is_free": false,
       "resolution": "4k",
       "variant": "veo-3.1-fast-generate-preview"
-    },
-    "veo-3.0-generate-001#standard_paid#output#video#veo-3.0-generate-001#all_resolutions": {
-      "price": 0.4,
-      "billing_unit": "USD_per_second",
-      "is_free": false,
-      "resolution": "all_resolutions",
-      "variant": "veo-3.0-generate-001"
-    },
-    "veo-3.0-generate-001#standard_paid#output#video#veo-3.0-fast-generate-001#all_resolutions": {
-      "price": 0.15,
-      "billing_unit": "USD_per_second",
-      "is_free": false,
-      "resolution": "all_resolutions",
-      "variant": "veo-3.0-fast-generate-001"
-    },
-    "veo-3.0-fast-generate-001#standard_paid#output#video#veo-3.0-generate-001#all_resolutions": {
-      "price": 0.4,
-      "billing_unit": "USD_per_second",
-      "is_free": false,
-      "resolution": "all_resolutions",
-      "variant": "veo-3.0-generate-001"
-    },
-    "veo-3.0-fast-generate-001#standard_paid#output#video#veo-3.0-fast-generate-001#all_resolutions": {
-      "price": 0.15,
-      "billing_unit": "USD_per_second",
-      "is_free": false,
-      "resolution": "all_resolutions",
-      "variant": "veo-3.0-fast-generate-001"
-    },
-    "veo-2.0-generate-001#standard_paid#output#video#veo-2.0-generate-001#all_resolutions": {
-      "price": 0.35,
-      "billing_unit": "USD_per_second",
-      "is_free": false,
-      "resolution": "all_resolutions",
-      "variant": "veo-2.0-generate-001"
     },
     "gemma-3#standard_free#input#image": {
       "price": 0,
@@ -5510,83 +5212,6 @@
                 "720p": 0.15,
                 "1080p": 0.15,
                 "4k": 0.35
-              }
-            }
-          }
-        },
-        "batch": null
-      }
-    },
-    {
-      "id": "veo-3",
-      "model_strings": [
-        "veo-3.0-generate-001",
-        "veo-3.0-fast-generate-001"
-      ],
-      "status": "stable",
-      "deprecated": false,
-      "input_modalities": [
-        "text",
-        "image"
-      ],
-      "output_modalities": [
-        "video",
-        "audio"
-      ],
-      "thinking": false,
-      "context_window_tokens": null,
-      "pricing": {
-        "standard": {
-          "free_tier": {
-            "output": {
-              "billing_unit": "USD_per_second",
-              "video": null
-            }
-          },
-          "paid_tier": {
-            "output": {
-              "billing_unit": "USD_per_second",
-              "veo-3.0-generate-001": {
-                "all_resolutions": 0.4
-              },
-              "veo-3.0-fast-generate-001": {
-                "all_resolutions": 0.15
-              }
-            }
-          }
-        },
-        "batch": null
-      }
-    },
-    {
-      "id": "veo-2",
-      "model_strings": [
-        "veo-2.0-generate-001"
-      ],
-      "status": "stable",
-      "deprecated": false,
-      "input_modalities": [
-        "text",
-        "image"
-      ],
-      "output_modalities": [
-        "video"
-      ],
-      "thinking": false,
-      "context_window_tokens": null,
-      "pricing": {
-        "standard": {
-          "free_tier": {
-            "output": {
-              "billing_unit": "USD_per_second",
-              "video": null
-            }
-          },
-          "paid_tier": {
-            "output": {
-              "billing_unit": "USD_per_second",
-              "veo-2.0-generate-001": {
-                "all_resolutions": 0.35
               }
             }
           }
