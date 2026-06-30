@@ -1253,7 +1253,7 @@ Then register it: add a branch in `ProviderFactory.get_provider()` keyed on `DEF
 
 Every method returns `LLMResponse` (`src/intelligence/dto.py`): `text`, `provider_name`, `model_name`, `token_usage`, `cost`, `currency`, `cache_cost_saved`, `metadata`. This is the contract the whole platform reads — the agent's cost tracker (§15.3) keys off `token_usage` + `provider_name` + `cache_cost_saved`, and processors read `.text` (§Layer 5). **Never hand-build an `LLMResponse`.**
 
-`cache_cost_saved` is the per-response cost avoided via a Gemini context cache hit: `(P_in − P_cr) × cached_tokens / 1,000,000`. It is `0.0` for all non-Gemini providers and for Gemini calls without a cache hit. The agent loop accumulates it into `AgentSession.cache_cost_saved` across the whole session (§16.9, §15.3).
+`cache_cost_saved` is the per-response cost avoided via a Gemini context cache hit: `(P_in − P_cr) × cached_tokens / 1,000,000`, where `P_in`/`P_cr` are priced at the call's **effective service tier** (§16.10). It is `0.0` for all non-Gemini providers and for Gemini calls without a cache hit. The agent loop accumulates it into `AgentSession.cache_cost_saved` across the whole session (§16.9, §15.3).
 
 ### 16.3 Token & cost population — `create_response`
 
@@ -1414,6 +1414,8 @@ initial_ttl = (expected_hits − 1) × renewal_ttl_breakeven
 
 This ensures the cache stays alive long enough for all `expected_hits` to occur while breaking even on storage. Minimum clamped to 60 s (Gemini API floor).
 
+For tiered-pricing models (those with `lte_200k` / `gt_200k` keys, e.g. `gemini-2.5-pro`), the prices feeding `renewal_ttl_breakeven` depend on whether the payload crosses the 200k-token boundary. The true count is only known *after* `caches.create` returns (`usage_metadata`), so `create_context_cache` estimates it beforehand with a `count_tokens` call over `contents` + `system_instruction` and feeds that into the TTL formula, selecting the correct context-pricing tier. On a `count_tokens` failure it falls back to `0` (conservatively `lte_200k`) and logs a WARNING — matching prior behavior.
+
 #### Adaptive renewal — closed-loop TTL
 
 After each generation call that produces `cached_tokens > 0`, `_maybe_renew_cache` is awaited synchronously. It uses `_adaptive_renewal_ttl` to decide both *whether* and *how long* to renew:
@@ -1475,6 +1477,29 @@ These domains are in-process by default (backed by `DataCache`). Set `REDIS_URL`
 - Cache TTLs are computed from live pricing data. If `P_storage` is zero (model not in pricing JSON), `_optimal_renewal_ttl` returns 300 s as a safe fallback.
 - `_maybe_renew_cache` is awaited **synchronously** inside `generate_text` / `generate_structured` before the response is returned. This adds one blocking API round-trip on renewal steps; the 50 %-remaining debounce ensures renewals are infrequent relative to the TTL window.
 - Only `GeminiProvider` populates `LLMResponse.cache_cost_saved`. Callers that inspect this field for non-Gemini providers will always see `0.0`.
+
+### 16.10 Gemini Service Tiers (`standard` / `flex` / `priority`)
+
+Gemini bills the same model differently per **service tier**. `standard` is the API default; `flex` (cheaper, best-effort/sheddable) and `priority` (premium) are available only on the models in `PREMIUM_TIER_MODELS` — requesting either on any other model silently **downgrades to `standard`** with a WARNING.
+
+**Resolution order (per call):**
+
+1. Per-call `service_tier=` kwarg — popped from `kwargs` so it never reaches the SDK (`_resolve_service_tier`).
+2. Constructor `service_tier=` / `GEMINI_SERVICE_TIER` env (the instance default).
+3. `DEFAULT_SERVICE_TIER` = `standard`.
+
+`_effective_service_tier` applies the unsupported-model downgrade and is idempotent. The resolved tier reaches the API via `_service_tier_config` (native `service_tier` field on SDK ≥ 1.68, else `http_options.extra_body`). The API echoes the tier it actually served in the `x-gemini-service-tier` header; `_check_tier_downgrade` WARNs when the served tier is lower than requested (premium tier shedding load — a signal to reconsider capacity).
+
+**Billing must use the tier the request actually ran under.** Both cost seams thread the resolved per-call `tier`:
+
+| Seam | Call | Effect |
+|---|---|---|
+| Billed cost | `create_response(..., tier=tier)` | `PriceManager.calculate_cost` selects the `{tier}_paid` pricing keys. Omitting it mis-bills every flex/priority call at `standard` rates. |
+| Cache savings | `_cache_prices(cached_tokens, tier=tier)` → `cache_cost_saved` | The per-hit saving `(P_in − P_cr)` is valued at the same tier as the call. |
+
+The pricing-table key segment is `{tier}_paid` (`standard_paid` / `flex_paid` / `priority_paid`), built by `_pricing_tier_key(tier)`.
+
+**TTL helpers deliberately keep the instance-default tier.** `_optimal_*_ttl` and the cache-metrics helpers call `_cache_prices(token_count)` with no `tier` argument: a cache's lifetime is a property of the *shared* cache object, which may be read by calls of differing tiers, so it cannot be tied to any single request's tier. Only the per-response billed cost and `cache_cost_saved` are request-specific.
 
 ---
 
