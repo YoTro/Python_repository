@@ -1196,9 +1196,10 @@ Boundaries:
 
 ### 15.3 Cost tracking boundary
 
-- `_accum_tokens(session, response_obj)` runs after **every** LLM call. It adds to `token_usage` always, but to **`cloud_token_usage` only when the provider is not local** (`_LOCAL_PROVIDERS` = local/llama runs are free), and adds `response_obj.cost` to `total_cost`.
+- `_accum_tokens(session, response_obj)` runs after **every** LLM call. It adds to `token_usage` always, but to **`cloud_token_usage` only when the provider is not local** (`_LOCAL_PROVIDERS` = local/llama runs are free), and adds `response_obj.cost` to `total_cost`. It also accumulates `response_obj.cache_cost_saved` into `session.cache_cost_saved` — the running total of cost avoided through Gemini context cache hits (§16.9).
 - **The budget is measured in cloud tokens**, not total tokens or steps. `token_budget` (default 1,000,000 cloud tokens) is the hard ceiling; `max_steps` (default 15) is **progress display only, not a failure limit**.
-- Any new code path that calls the LLM must route through `_accum_tokens`, or budget enforcement silently drifts.
+- Any new code path that calls the LLM must route through `_accum_tokens`, or budget enforcement and cache savings tracking silently drift.
+- The per-step INFO log includes `cache saved: X.XXXX USD` when `session.cache_cost_saved > 0`, giving real-time cache ROI visibility: `MCPAgent [a381ee5f] Step 6/15 (tenant: default, cloud tokens: 63204/1000000, cost: 0.0198 USD, cache saved: 0.0042 USD)`. The segment is omitted on steps with no cache activity to keep noise-free steps clean.
 
 ### 15.4 Finalization paths (loop exits)
 
@@ -1250,7 +1251,9 @@ Then register it: add a branch in `ProviderFactory.get_provider()` keyed on `DEF
 
 ### 16.2 `LLMResponse` — the universal return type
 
-Every method returns `LLMResponse` (`src/intelligence/dto.py`): `text`, `provider_name`, `model_name`, `token_usage`, `cost`, `currency`, `metadata`. This is the contract the whole platform reads — the agent's cost tracker (§15.3) keys off `token_usage` + `provider_name`, and processors read `.text` (§Layer 5). **Never hand-build an `LLMResponse`.**
+Every method returns `LLMResponse` (`src/intelligence/dto.py`): `text`, `provider_name`, `model_name`, `token_usage`, `cost`, `currency`, `cache_cost_saved`, `metadata`. This is the contract the whole platform reads — the agent's cost tracker (§15.3) keys off `token_usage` + `provider_name` + `cache_cost_saved`, and processors read `.text` (§Layer 5). **Never hand-build an `LLMResponse`.**
+
+`cache_cost_saved` is the per-response cost avoided via a Gemini context cache hit: `(P_in − P_cr) × cached_tokens / 1,000,000`. It is `0.0` for all non-Gemini providers and for Gemini calls without a cache hit. The agent loop accumulates it into `AgentSession.cache_cost_saved` across the whole session (§16.9, §15.3).
 
 ### 16.3 Token & cost population — `create_response`
 
@@ -1360,6 +1363,118 @@ async def _handle_my_new_failure(context: dict) -> LLMResponse:
 # 3. Register it in _strategies
 FallbackHandler._strategies[FailureType.MY_NEW_FAILURE] = _handle_my_new_failure
 ```
+
+### 16.9 Gemini Context Caching (`GeminiProvider`)
+
+Context caching lets Gemini store a large system prompt or reference corpus server-side and bill subsequent reads at the cheaper cache-read rate (`P_cr`) instead of the full input rate (`P_in`). Every call that hits the cache also avoids the storage cost incurred while the cache is alive. The feature is Gemini-only; other providers silently ignore `cached_content`.
+
+#### Cost model
+
+| Charge | Formula | When |
+|---|---|---|
+| Creation | `P_in × T / 1M` | One-time, at `caches.create` |
+| Per-hit saving | `(P_in − P_cr) × T / 1M` | Every call with a cache hit |
+| Storage | `P_storage × T / 1M × hours` | Continuously while the cache lives |
+
+Break-even TTL (the maximum window within which one hit recoups one storage period):
+
+```
+renewal_ttl_breakeven = (P_in − P_cr) / P_storage × 3_600 seconds
+```
+
+All three prices are looked up dynamically from the pricing JSON at runtime via `_cache_prices()`, so the TTL automatically reflects model-tier changes.
+
+#### Creating and reusing a cache
+
+```python
+# Create once (or reuse if identical content is already cached)
+cache = provider.create_context_cache(
+    contents=[types.Content(role="user", parts=[types.Part(text=long_corpus)])],
+    system_instruction="You are a senior market analyst.",
+    expected_hits=10,       # ≥ 2 required; drives the initial TTL
+    display_name="corpus-v1",
+)
+
+# Pass the cache name to every subsequent generation call
+response = await provider.generate_text(
+    prompt="Summarize the top 3 risks.",
+    cached_content=cache.name,   # do NOT also pass system_message here
+)
+```
+
+**Deduplication.** `create_context_cache` fingerprints `(model, contents, system_instruction)` with SHA-256[:16]. If a live cache already exists for the same fingerprint, the method returns a lightweight `SimpleNamespace(name=…)` immediately — no API call, no creation fee. On a mismatch (content changed, or the cache expired) a fresh cache is created and the lookup entry is overwritten.
+
+#### Initial TTL — coverage window
+
+The initial TTL targets the expected total usage window:
+
+```
+initial_ttl = (expected_hits − 1) × renewal_ttl_breakeven
+```
+
+This ensures the cache stays alive long enough for all `expected_hits` to occur while breaking even on storage. Minimum clamped to 60 s (Gemini API floor).
+
+#### Adaptive renewal — closed-loop TTL
+
+After each generation call that produces `cached_tokens > 0`, `_maybe_renew_cache` is awaited synchronously. It uses `_adaptive_renewal_ttl` to decide both *whether* and *how long* to renew:
+
+| Condition | Decision |
+|---|---|
+| Fewer than `_MIN_CACHE_OBSERVATIONS = 3` hits recorded | Use formula-based `renewal_ttl_breakeven` (insufficient data) |
+| Observed inter-hit interval ≤ `renewal_ttl_breakeven` | Renew with TTL = `inter_hit × 1.5` (hits frequent enough to be profitable; shorter TTL trims storage waste) |
+| Observed inter-hit interval > `renewal_ttl_breakeven` | **Do not renew.** Each storage period now costs more than the saving from one hit; let the cache expire naturally |
+
+Renewal fires only when remaining TTL has dropped below 50 % of the computed renewal window (debounce). A renewal failure (network error) is logged at WARNING and is non-fatal — a missed renewal only means the cache may expire early.
+
+#### System instruction constraint
+
+The Gemini API rejects a request that carries both `cached_content` and `system_instruction` with a 400 error. The provider enforces this at two levels:
+
+1. **Config layer**: `_make_config` and `_build_structured_config` suppress `system_instruction` when `cached_content` is set, logging a WARNING if the caller passed one anyway.
+2. **Hash guard** (primary protection): at every generation call, the SHA-256[:16] fingerprint of the current `system_message` is compared against the hash stored in the cache's metrics record at creation time. On a **mismatch** (e.g. a grace-period extension rebuilds the system prompt with a new step limit), the cache is **discarded for this call** and the correct `system_message` is sent uncached. The call is recorded as a miss; the cache remains available for future calls.
+
+Consequence: **never assume the cache is always used when `cached_content` is passed** — a system-message change will silently fall back to uncached for that call, which is the correct behavior.
+
+#### Fault tolerance
+
+| Scenario | Detection | Outcome |
+|---|---|---|
+| Cache expired or deleted externally | Pre-flight: `_cache_is_alive(cache_name)` checks DataCache expiry record | Cache dropped, call proceeds uncached; recorded as miss |
+| Cache invalidated mid-flight (API 404) | On-error: `_is_cache_invalid_error` — requires both a not-found signal **and** a "cache" keyword to avoid false positives on unrelated 404s | Cache invalidated in DataCache (`−1.0` sentinel), retried uncached; original exception wrapped in `__cause__` chain |
+| System message changed since cache creation | Hash comparison via `_cached_system_matches` | Cache dropped, call proceeds with correct `system_message` uncached |
+
+#### Cache performance metrics
+
+```python
+metrics = provider.get_cache_metrics(cache_name)
+# {
+#   "hits": 7, "misses": 2, "renewals": 3,
+#   "cost_creation": 0.0021, "cost_storage_accrued": 0.0004, "cost_saved": 0.0147,
+#   "hit_rate": 0.7778, "net_savings": 0.0122, "cache_roi_positive": True,
+#   "last_hit_at": 1751273042.1, "created_at": 1751269800.0, ...
+# }
+```
+
+`get_cache_metrics` accrues storage cost to the instant of the call without writing back, so the snapshot is always current. `net_savings = cost_saved − cost_creation − cost_storage_accrued`; `cache_roi_positive` is a boolean summary. The agent loop exposes cumulative savings per session in the step log (§15.3).
+
+#### Internal DataCache domains (do not write to these directly)
+
+| Domain constant | Key | Value |
+|---|---|---|
+| `gemini_cache_expiry` | `cache_name` | `expires_at` epoch float; sentinel `−1.0` = invalidated |
+| `gemini_cache_lookup` | `content_hash` (SHA-256[:16] of model+contents+system) | `cache_name` |
+| `gemini_cache_metrics` | `cache_name` | Metrics dict including `system_hash`, `hits`, `misses`, `cost_*`, etc. |
+
+These domains are in-process by default (backed by `DataCache`). Set `REDIS_URL` to share them across workers — required when multiple processes may create caches for the same content.
+
+#### Constraints
+
+- `expected_hits` must be ≥ 2. Single-use caching never recoups the creation cost (raises `ValueError`).
+- `cached_content` is a `cache_name` string (e.g. `"cachedContents/abc123"`), not the content itself. Obtain it from `cache.name` after `create_context_cache`.
+- The system instruction is **baked into the cache** at creation time. Do not change `system_message` and expect the same cache to apply — the hash guard will fall back to uncached, which is correct but incurs a cache miss.
+- Cache TTLs are computed from live pricing data. If `P_storage` is zero (model not in pricing JSON), `_optimal_renewal_ttl` returns 300 s as a safe fallback.
+- `_maybe_renew_cache` is awaited **synchronously** inside `generate_text` / `generate_structured` before the response is returned. This adds one blocking API round-trip on renewal steps; the 50 %-remaining debounce ensures renewals are infrequent relative to the TTL window.
+- Only `GeminiProvider` populates `LLMResponse.cache_cost_saved`. Callers that inspect this field for non-Gemini providers will always see `0.0`.
 
 ---
 
