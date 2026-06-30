@@ -1,7 +1,7 @@
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Ensure project root is in path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -10,6 +10,16 @@ if project_root not in sys.path:
 
 from src.intelligence.providers.gemini import GeminiProvider
 from src.intelligence.providers.price_manager import PriceManager
+
+
+class _DummyStructuredSchema:
+    @classmethod
+    def model_json_schema(cls):
+        return {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        }
 
 
 class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
@@ -143,6 +153,96 @@ class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
         # 3. Test delete_context_cache
         mock_provider.delete_context_cache(cache.name)
         mock_provider.client.caches.delete.assert_called_once_with(name=cache.name)
+
+    @patch("google.genai.Client")
+    async def test_generate_text_cache_pricing_uses_per_call_service_tier(self, mock_client):
+        """
+        Per-call service_tier overrides must drive both response cost and cache savings.
+        """
+        mock_provider = GeminiProvider(
+            api_key="fake_key",
+            model_name="models/gemini-2.5-flash",
+            service_tier="standard",
+        )
+        mock_provider.model_name = "models/gemini-2.5-flash"
+        mock_provider._check_context_limit = AsyncMock()
+        mock_provider._generate_content_with_retry = AsyncMock(
+            return_value=self._mock_cached_response()
+        )
+
+        llm_res = await mock_provider.generate_text(
+            "Summarize key issues.",
+            cached_content="cachedContents/test_cache_id",
+            service_tier="flex",
+        )
+
+        expected_cost = self.pm.calculate_cost(
+            self.test_model,
+            1000,
+            500,
+            tier="flex",
+            cached_content_token_count=800,
+        )
+        expected_saved = self._expected_cache_saved("flex", 800)
+
+        self.assertAlmostEqual(llm_res.cost, expected_cost, places=10)
+        self.assertAlmostEqual(llm_res.cache_cost_saved, expected_saved, places=10)
+
+    @patch("google.genai.Client")
+    async def test_generate_structured_cache_pricing_uses_per_call_service_tier(self, mock_client):
+        """
+        Structured generation has the same per-call tier cache-savings requirement.
+        """
+        mock_provider = GeminiProvider(
+            api_key="fake_key",
+            model_name="models/gemini-2.5-flash",
+            service_tier="standard",
+        )
+        mock_provider.model_name = "models/gemini-2.5-flash"
+        mock_provider._check_context_limit = AsyncMock()
+        mock_provider._generate_content_with_retry = AsyncMock(
+            return_value=self._mock_cached_response('{"answer":"ok"}')
+        )
+
+        llm_res = await mock_provider.generate_structured(
+            "Return JSON.",
+            _DummyStructuredSchema,
+            cached_content="cachedContents/test_cache_id",
+            service_tier="flex",
+        )
+
+        expected_cost = self.pm.calculate_cost(
+            self.test_model,
+            1000,
+            500,
+            tier="flex",
+            cached_content_token_count=800,
+        )
+        expected_saved = self._expected_cache_saved("flex", 800)
+
+        self.assertAlmostEqual(llm_res.cost, expected_cost, places=10)
+        self.assertAlmostEqual(llm_res.cache_cost_saved, expected_saved, places=10)
+
+    @staticmethod
+    def _mock_cached_response(text="Analysis of cached reviews."):
+        mock_response = MagicMock()
+        mock_response.text = text
+        mock_response.usage_metadata = MagicMock(
+            prompt_token_count=1000,
+            candidates_token_count=500,
+            thought_token_count=0,
+            cached_content_token_count=800,
+        )
+        return mock_response
+
+    def _expected_cache_saved(self, tier: str, cached_tokens: int) -> float:
+        canonical_model = self.pm.normalize_model_name(self.test_model)
+        price_tier = f"{tier}_paid"
+        input_price = self.pm.lookup[f"{canonical_model}#{price_tier}#input#text"]["price"]
+        cache_read_price = self.pm.lookup[f"{canonical_model}#{price_tier}#cache_read#text"][
+            "price"
+        ]
+        return (input_price - cache_read_price) * cached_tokens / 1_000_000
 
 
 if __name__ == "__main__":

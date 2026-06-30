@@ -224,21 +224,25 @@ class GeminiProvider(BaseLLMProvider):
 
     # ── Context-cache TTL helpers ─────────────────────────────────────────────
 
-    @property
-    def _pricing_tier_key(self) -> str:
-        """Map the instance service_tier to the pricing table tier string.
+    def _pricing_tier_key(self, tier: str | None = None) -> str:
+        """Map a service_tier to the pricing table tier string.
 
         service_tier  → pricing key segment
         ─────────────────────────────────────
         "flex"        → "flex_paid"
         "priority"    → "priority_paid"
         "standard"    → "standard_paid"
-        None          → "standard_paid"  (API default)
-        """
-        tier = self.service_tier or DEFAULT_SERVICE_TIER
-        return f"{tier}_paid"
+        None          → instance default (then "standard_paid" if unset)
 
-    def _cache_prices(self, token_count: int = 0) -> tuple[float, float, float]:
+        Pass ``tier`` to price against a specific per-call tier; omit it to use
+        the provider's default service_tier.
+        """
+        resolved = tier or self.service_tier or DEFAULT_SERVICE_TIER
+        return f"{resolved}_paid"
+
+    def _cache_prices(
+        self, token_count: int = 0, tier: str | None = None
+    ) -> tuple[float, float, float]:
         """Return (P_in, P_cr, P_storage) per 1M tokens for the current model and tier.
 
         Most Gemini models use flat pricing (no context-size suffix).  Only a
@@ -250,10 +254,13 @@ class GeminiProvider(BaseLLMProvider):
         tier (≤200k vs >200k).  Pass the cached token count from usage_metadata,
         the stored token_count from the metrics record, or 0 when unknown (which
         conservatively selects lte_200k).
+
+        ``tier`` prices against a specific per-call service tier (already resolved
+        via ``_effective_service_tier``); omit it to use the provider default.
         """
         model = self.price_manager.normalize_model_name(self.model_name)
         lk = self.price_manager.lookup
-        pt = self._pricing_tier_key  # e.g. "standard_paid", "flex_paid", "priority_paid"
+        pt = self._pricing_tier_key(tier)  # e.g. "standard_paid", "flex_paid", "priority_paid"
 
         # Determine the context-tier suffix dynamically.
         has_tiered = bool(lk.get(f"{model}#{pt}#input#text#lte_200k"))
@@ -743,9 +750,10 @@ class GeminiProvider(BaseLLMProvider):
                 output_tokens=output_tokens,
                 thought_tokens=thought_tokens,
                 cached_tokens=cached_tokens,
+                tier=tier,
             )
             if cached_tokens > 0:
-                p_in, p_cr, _ = self._cache_prices(cached_tokens)
+                p_in, p_cr, _ = self._cache_prices(cached_tokens, tier=tier)
                 resp.cache_cost_saved = (p_in - p_cr) * cached_tokens / 1_000_000
             return resp
         except Exception as e:
@@ -975,9 +983,10 @@ class GeminiProvider(BaseLLMProvider):
                 output_tokens=output_tokens,
                 thought_tokens=thought_tokens,
                 cached_tokens=cached_tokens,
+                tier=tier,
             )
             if cached_tokens > 0:
-                p_in, p_cr, _ = self._cache_prices(cached_tokens)
+                p_in, p_cr, _ = self._cache_prices(cached_tokens, tier=tier)
                 resp.cache_cost_saved = (p_in - p_cr) * cached_tokens / 1_000_000
             return resp
         except Exception as e:
@@ -1080,7 +1089,25 @@ class GeminiProvider(BaseLLMProvider):
             )
             return SimpleNamespace(name=existing_name)
 
-        ttl_seconds = self._optimal_initial_ttl(expected_hits)
+        # Estimate the cached token count BEFORE creation so the TTL formula picks
+        # the correct pricing tier for tiered models (lte_200k vs gt_200k). The real
+        # count is only known post-creation (usage_metadata below); count_tokens uses
+        # the same tokenizer the API bills against. On failure we fall back to 0,
+        # which conservatively selects the lte_200k tier (matching prior behaviour).
+        try:
+            counted = self.client.models.count_tokens(
+                model=self.model_name,
+                contents=contents,
+                config=types.CountTokensConfig(system_instruction=system_instruction),
+            )
+            estimated_tokens = getattr(counted, "total_tokens", 0) or 0
+        except Exception as e:
+            logger.warning(
+                f"count_tokens failed for cache TTL estimate ({e}); assuming lte_200k tier."
+            )
+            estimated_tokens = 0
+
+        ttl_seconds = self._optimal_initial_ttl(expected_hits, token_count=estimated_tokens)
         try:
             config = types.CreateCachedContentConfig(
                 contents=contents,
