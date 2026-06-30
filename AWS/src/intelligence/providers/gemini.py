@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
+import time
+from types import SimpleNamespace
 from typing import Any, TypeVar
 
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
+from src.core.data_cache import data_cache
 from src.core.utils.decorators import exponential_backoff
 from src.intelligence.dto import BatchJobHandle, BatchRequest, LLMResponse
 
@@ -26,6 +31,30 @@ T = TypeVar("T", bound=BaseModel)
 # (Batch is a separate asynchronous path handled by generate_batch / poll_batch.)
 SERVICE_TIERS = frozenset({"flex", "priority", "standard"})
 DEFAULT_SERVICE_TIER = "standard"
+
+# DataCache domain used to track expiry timestamps for explicit context caches.
+# Key = cache_name (e.g. "cachedContents/abc123"), value = expires_at epoch float.
+# Sentinel -1.0 marks a cache that has been explicitly deleted.
+_CACHE_EXPIRY_DOMAIN = "gemini_cache_expiry"
+
+# Maps content_hash → cache_name for deduplication across calls and workers.
+_CACHE_LOOKUP_DOMAIN = "gemini_cache_lookup"
+
+# Detect whether the installed SDK exposes UpdateCachedContentConfig.
+_HAS_UPDATE_CACHE_CONFIG = hasattr(types, "UpdateCachedContentConfig")
+
+# Tracks per-cache performance metrics (hits, misses, costs, etc.).
+_CACHE_METRICS_DOMAIN = "gemini_cache_metrics"
+
+# Adaptive renewal: minimum observed hits before the closed-loop logic overrides the
+# formula-based break-even TTL.  Below this threshold there is not enough signal to
+# trust the observed inter-hit interval, so we fall back to the static formula.
+_MIN_CACHE_OBSERVATIONS = 3
+
+# Multiply the observed inter-hit interval by this factor when computing the adaptive
+# renewal TTL so that normal variance in request timing does not cause the cache to
+# expire between back-to-back hits.
+_ADAPTIVE_SAFETY_FACTOR = 1.5
 
 # Bare model ids that support the premium tiers (flex and priority share the same
 # support list). Matched as a substring against the fully-qualified model_name
@@ -194,6 +223,321 @@ class GeminiProvider(BaseLLMProvider):
         except Exception as exc:
             self._raise_mapped_error(exc)
 
+    # ── Context-cache TTL helpers ─────────────────────────────────────────────
+
+    @property
+    def _pricing_tier_key(self) -> str:
+        """Map the instance service_tier to the pricing table tier string.
+
+        service_tier  → pricing key segment
+        ─────────────────────────────────────
+        "flex"        → "flex_paid"
+        "priority"    → "priority_paid"
+        "standard"    → "standard_paid"
+        None          → "standard_paid"  (API default)
+        """
+        tier = self.service_tier or DEFAULT_SERVICE_TIER
+        return f"{tier}_paid"
+
+    def _cache_prices(self, token_count: int = 0) -> tuple[float, float, float]:
+        """Return (P_in, P_cr, P_storage) per 1M tokens for the current model and tier.
+
+        Most Gemini models use flat pricing (no context-size suffix).  Only a
+        small subset (e.g. gemini-2.5-pro) have lte_200k / gt_200k tiers.
+        We detect which variant applies by probing the pricing table rather than
+        hard-coding a model list, so new tiered models are handled automatically.
+
+        ``token_count`` is used only for tiered models — it selects the correct
+        tier (≤200k vs >200k).  Pass the cached token count from usage_metadata,
+        the stored token_count from the metrics record, or 0 when unknown (which
+        conservatively selects lte_200k).
+        """
+        model = self.price_manager.normalize_model_name(self.model_name)
+        lk = self.price_manager.lookup
+        pt = self._pricing_tier_key  # e.g. "standard_paid", "flex_paid", "priority_paid"
+
+        # Determine the context-tier suffix dynamically.
+        has_tiered = bool(lk.get(f"{model}#{pt}#input#text#lte_200k"))
+        if has_tiered:
+            tier_suffix = "#lte_200k" if token_count <= 200_000 else "#gt_200k"
+        else:
+            tier_suffix = ""
+
+        def _get(direction: str) -> float:
+            key = f"{model}#{pt}#{direction}#text{tier_suffix}"
+            key_flat = f"{model}#{pt}#{direction}#text"
+            v = lk.get(key, {}).get("price") or lk.get(key_flat, {}).get("price", 0.0)
+            return float(v or 0.0)
+
+        p_in = _get("input")
+        p_cr = _get("cache_read")
+        p_storage = float(lk.get(f"{model}#{pt}#cache_storage", {}).get("price", 0.0))
+        return p_in, p_cr, p_storage
+
+    def _optimal_renewal_ttl(self, token_count: int = 0) -> int:
+        """Seconds to extend a cache after each hit (creation cost already sunk).
+
+        Formula: (P_in - P_cr) / P_storage * 3600
+        This is the window in which exactly one future read pays for storage.
+        Minimum 60s (Gemini API lower bound). Falls back to 300s if prices are
+        unavailable or the model does not support context caching.
+        """
+        p_in, p_cr, p_storage = self._cache_prices(token_count)
+        if p_storage <= 0 or p_in <= p_cr:
+            return 300
+        return max(60, int((p_in - p_cr) / p_storage * 3600))
+
+    def _optimal_initial_ttl(self, expected_hits: int, token_count: int = 0) -> int:
+        """Seconds to set at cache creation, accounting for the creation fee.
+
+        Formula: (N-1) * h_renewal
+        The creation itself costs P_in (one full input), so only N-1 subsequent
+        reads contribute savings relative to the uncached baseline.
+        """
+        return max(60, (expected_hits - 1) * self._optimal_renewal_ttl(token_count))
+
+    def _content_hash(self, contents: list[Any], system_instruction: str | None) -> str:
+        """Stable 16-char hex key identifying (model, contents, system_instruction).
+
+        Used as the DataCache lookup key so identical content is never cached twice.
+        ``default=str`` handles any non-JSON-native SDK types without raising.
+        """
+        payload = {
+            "model": self.model_name,
+            "contents": contents,
+            "system": system_instruction or "",
+        }
+        raw = json.dumps(payload, sort_keys=True, default=str).encode()
+        return hashlib.sha256(raw).hexdigest()[:16]
+
+    def _cache_is_alive(self, cache_name: str) -> bool:
+        """Return True only if our DataCache record confirms the cache is still valid.
+
+        A missing record (never tracked) is treated as alive so callers that bypass
+        create_context_cache are not penalised. A sentinel of -1.0 or an expired
+        timestamp means the cache is definitively gone.
+        """
+        expires_at = data_cache.get(_CACHE_EXPIRY_DOMAIN, cache_name)
+        if expires_at is None:
+            return True
+        return float(expires_at) > 0 and float(expires_at) > time.time()
+
+    def _invalidate_cache_record(self, cache_name: str) -> None:
+        """Write the -1.0 sentinel so future calls skip this cache without an API round-trip."""
+        data_cache.set(_CACHE_EXPIRY_DOMAIN, cache_name, -1.0)
+
+    @staticmethod
+    def _is_cache_invalid_error(exc: Exception) -> bool:
+        """Return True when an exception was caused by a missing or expired context cache.
+
+        Works on both the raw SDK exception and the wrapped FatalError / RetryableError
+        produced by _raise_mapped_error, by inspecting the full __cause__ chain.
+        Requires both a "not-found" signal AND a "cache" mention to avoid false positives
+        on unrelated 404s (e.g. a missing model name).
+        """
+        chain = [exc]
+        cause = getattr(exc, "__cause__", None)
+        if cause is not None:
+            chain.append(cause)
+
+        for err in chain:
+            status = (
+                getattr(err, "status_code", None)
+                or getattr(err, "code", None)
+                or getattr(getattr(err, "response", None), "status_code", None)
+            )
+            msg = str(err).lower()
+            not_found = status == 404 or "not found" in msg or "404" in msg
+            cache_related = any(kw in msg for kw in ("cachedcontent", "cached_content", "cache"))
+            if not_found and cache_related:
+                return True
+        return False
+
+    async def _maybe_renew_cache(self, cache_name: str) -> None:
+        """Extend a context cache's TTL if it is approaching expiry.
+
+        Called synchronously (awaited) inside generate_text / generate_structured
+        after any response where cached_tokens > 0. Only fires when remaining TTL
+        has dropped below 50% of the renewal window (debounce). Logs a warning on
+        failure but never raises — a missed renewal is non-fatal.
+        """
+        expires_at = data_cache.get(_CACHE_EXPIRY_DOMAIN, cache_name)
+        if expires_at is None or float(expires_at) < 0:
+            return
+        renewal_ttl = self._adaptive_renewal_ttl(cache_name)
+        if renewal_ttl is None:
+            return  # observed hit rate is unprofitable; let the cache expire naturally
+        remaining = float(expires_at) - time.time()
+        if remaining >= 0.5 * renewal_ttl:
+            return
+        try:
+            if _HAS_UPDATE_CACHE_CONFIG:
+                config = types.UpdateCachedContentConfig(ttl=f"{renewal_ttl}s")
+            else:
+                config = {"ttl": f"{renewal_ttl}s"}
+            await asyncio.to_thread(self.client.caches.update, name=cache_name, config=config)
+            data_cache.set(_CACHE_EXPIRY_DOMAIN, cache_name, time.time() + renewal_ttl)
+            self._update_cache_metrics(cache_name, renewals=1)
+            logger.info(f"Renewed Gemini context cache {cache_name} for {renewal_ttl}s")
+        except Exception as e:
+            logger.warning(f"Cache renewal failed for {cache_name}: {e}; cache may expire early.")
+
+    # ── Cache metrics ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _system_hash(system_instruction: str | None) -> str:
+        """SHA-256[:16] fingerprint of a system instruction string (or empty string)."""
+        return hashlib.sha256((system_instruction or "").encode()).hexdigest()[:16]
+
+    def _cached_system_matches(self, cache_name: str, system_message: str | None) -> bool:
+        """Return True when *system_message* matches the instruction embedded in *cache_name*.
+
+        Falls back to True (assume match) when no metrics record exists — this covers
+        caches created before metrics tracking was added, so we don't regress.
+        Returns False only when we have a stored hash AND it differs from the current message.
+        """
+        record = data_cache.get(_CACHE_METRICS_DOMAIN, cache_name)
+        if record is None:
+            return True
+        stored = record.get("system_hash")
+        if stored is None:
+            return True
+        return stored == self._system_hash(system_message)
+
+    def _init_cache_metrics(
+        self,
+        cache_name: str,
+        content_hash: str,
+        system_hash: str,
+        token_count: int,
+        expected_hits: int,
+        initial_ttl: int,
+        display_name: str | None,
+    ) -> None:
+        """Create the initial metrics record immediately after a cache is created."""
+        p_in, _p_cr, _p_storage = self._cache_prices(token_count)
+        now = time.time()
+        data_cache.set(
+            _CACHE_METRICS_DOMAIN,
+            cache_name,
+            {
+                "cache_name": cache_name,
+                "content_hash": content_hash,
+                "system_hash": system_hash,
+                "model": self.model_name,
+                "display_name": display_name,
+                "created_at": now,
+                "token_count": token_count,
+                "expected_hits": expected_hits,
+                "initial_ttl_seconds": initial_ttl,
+                "hits": 0,
+                "misses": 0,
+                "renewals": 0,
+                "cost_creation": p_in * token_count / 1_000_000,
+                "cost_storage_accrued": 0.0,
+                "cost_saved": 0.0,
+                "last_hit_at": None,
+                "last_updated_at": now,
+            },
+        )
+
+    def _update_cache_metrics(self, cache_name: str, **deltas: int) -> None:
+        """Read-modify-write: accrue storage cost since last update and apply counter deltas."""
+        record = data_cache.get(_CACHE_METRICS_DOMAIN, cache_name)
+        if record is None:
+            return
+        now = time.time()
+        elapsed = now - float(record.get("last_updated_at", now))
+        token_count = int(record.get("token_count", 0))
+        p_in, p_cr, p_storage = self._cache_prices(token_count)
+        record["cost_storage_accrued"] = float(record.get("cost_storage_accrued", 0.0)) + (
+            p_storage * token_count / 1_000_000 * elapsed / 3600
+        )
+        record["hits"] = int(record.get("hits", 0)) + int(deltas.get("hits", 0))
+        record["misses"] = int(record.get("misses", 0)) + int(deltas.get("misses", 0))
+        record["renewals"] = int(record.get("renewals", 0)) + int(deltas.get("renewals", 0))
+        hit_tokens = int(deltas.get("hit_tokens", 0))
+        if hit_tokens > 0:
+            record["cost_saved"] = float(record.get("cost_saved", 0.0)) + (
+                (p_in - p_cr) * hit_tokens / 1_000_000
+            )
+            record["last_hit_at"] = now
+        record["last_updated_at"] = now
+        data_cache.set(_CACHE_METRICS_DOMAIN, cache_name, record)
+
+    def get_cache_metrics(self, cache_name: str) -> dict | None:
+        """Return metrics for *cache_name* with derived fields added.
+
+        Accrues storage cost to the current instant so the snapshot is always
+        up-to-date without writing back to the store.
+        Returns None when no record exists (cache pre-dates metrics tracking).
+        """
+        record = data_cache.get(_CACHE_METRICS_DOMAIN, cache_name)
+        if record is None:
+            return None
+        now = time.time()
+        elapsed = now - float(record.get("last_updated_at", now))
+        token_count = int(record.get("token_count", 0))
+        _p_in, _p_cr, p_storage = self._cache_prices(token_count)
+        cost_storage = float(record.get("cost_storage_accrued", 0.0)) + (
+            p_storage * token_count / 1_000_000 * elapsed / 3600
+        )
+        hits = int(record.get("hits", 0))
+        misses = int(record.get("misses", 0))
+        cost_creation = float(record.get("cost_creation", 0.0))
+        cost_saved = float(record.get("cost_saved", 0.0))
+        net_savings = cost_saved - cost_creation - cost_storage
+        total = hits + misses
+        out = dict(record)
+        out["cost_storage_accrued"] = cost_storage
+        out["hit_rate"] = round(hits / total, 4) if total > 0 else 0.0
+        out["net_savings"] = round(net_savings, 8)
+        out["cache_roi_positive"] = net_savings > 0
+        return out
+
+    def _adaptive_renewal_ttl(self, cache_name: str) -> int | None:
+        """Return the cost-optimal renewal TTL (seconds) derived from observed hit frequency.
+
+        Returns None when renewal would be unprofitable — the caller should let the cache
+        expire naturally rather than paying storage for hits that no longer come.
+
+        Decision logic
+        ──────────────
+        renewal_ttl_breakeven   : the maximum TTL at which one hit exactly offsets one
+                                  period's storage cost  (formula-based, model-price-aware).
+        inter_hit_seconds       : observed average seconds between consecutive cache hits
+                                  (total elapsed / total hits).
+
+        • inter_hit_seconds > renewal_ttl_breakeven
+              → hits are too infrequent; every renewal period loses money → return None.
+        • inter_hit_seconds ≤ renewal_ttl_breakeven
+              → cache is profitable; set TTL = inter_hit × SAFETY_FACTOR so the cache
+                stays alive long enough to absorb the next expected hit, while keeping
+                storage cost below the per-hit saving.
+
+        Falls back to the formula-based break-even TTL when fewer than
+        _MIN_CACHE_OBSERVATIONS hits have been recorded (insufficient data).
+        """
+        record = data_cache.get(_CACHE_METRICS_DOMAIN, cache_name)
+        hits = int(record.get("hits", 0)) if record else 0
+        token_count = int(record.get("token_count", 0)) if record else 0
+        renewal_ttl_breakeven = self._optimal_renewal_ttl(token_count)
+
+        if hits < _MIN_CACHE_OBSERVATIONS:
+            return renewal_ttl_breakeven
+
+        created_at = float(record.get("created_at", time.time()))
+        inter_hit_seconds = (time.time() - created_at) / hits
+
+        if inter_hit_seconds > renewal_ttl_breakeven:
+            logger.info(
+                f"Cache {cache_name}: observed inter-hit interval {inter_hit_seconds:.0f}s "
+                f"exceeds break-even TTL {renewal_ttl_breakeven}s — abandoning renewal."
+            )
+            return None
+
+        return max(60, int(inter_hit_seconds * _ADAPTIVE_SAFETY_FACTOR))
+
     def _discover_best_model(self, preferred: str | None) -> str:
         """Query the API to find the highest-tier available model."""
         try:
@@ -259,10 +603,16 @@ class GeminiProvider(BaseLLMProvider):
             "max_output_tokens": self._DEFAULT_MAX_TOKENS,
             **self._service_tier_config(service_tier),
         }
-        if system_message:
-            fields["system_instruction"] = system_message
         if cached_content:
+            # system_instruction is baked into the cache; sending it again causes a 400.
+            if system_message:
+                logger.warning(
+                    f"system_message ignored for cached request {cached_content}: "
+                    "system instruction is embedded in the cache."
+                )
             fields["cached_content"] = cached_content
+        elif system_message:
+            fields["system_instruction"] = system_message
         return types.GenerateContentConfig(**fields)
 
     async def generate_text(
@@ -273,15 +623,60 @@ class GeminiProvider(BaseLLMProvider):
             filtered_kwargs = self._filter_kwargs(kwargs)
             temp = filtered_kwargs.pop("temperature", 0.2)
             cached_content = filtered_kwargs.pop("cached_content", None)
+
+            # Pre-flight: drop references to caches we know are expired or invalidated.
+            if cached_content and not self._cache_is_alive(cached_content):
+                logger.warning(
+                    f"Context cache {cached_content} is expired/invalidated; proceeding uncached."
+                )
+                self._update_cache_metrics(cached_content, misses=1)
+                cached_content = None
+
+            # Guard: if the caller's system_message differs from what is baked into the
+            # cache, using the cache would give the LLM stale instructions (e.g. an old
+            # step-limit after a grace-period extension).  Drop the cache so the correct
+            # system_message reaches the model; record as a miss.
+            if (
+                cached_content
+                and system_message
+                and not self._cached_system_matches(cached_content, system_message)
+            ):
+                logger.warning(
+                    f"Context cache {cached_content} has a different system_instruction than the "
+                    "current system_message; discarding cache to preserve correct LLM behavior."
+                )
+                self._update_cache_metrics(cached_content, misses=1)
+                cached_content = None
+
             tier = self._effective_service_tier(self._resolve_service_tier(filtered_kwargs))
             config = self._make_config(system_message, temp, tier, cached_content=cached_content)
 
-            response = await self._generate_content_with_retry(
-                model=self.model_name,
-                contents=prompt,
-                config=config,
-                **filtered_kwargs,
-            )
+            try:
+                response = await self._generate_content_with_retry(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=config,
+                    **filtered_kwargs,
+                )
+            except Exception as cache_exc:
+                if cached_content and self._is_cache_invalid_error(cache_exc):
+                    logger.warning(
+                        f"Context cache {cached_content} invalid on API call: {cache_exc}. "
+                        "Invalidating record and retrying uncached."
+                    )
+                    self._update_cache_metrics(cached_content, misses=1)
+                    self._invalidate_cache_record(cached_content)
+                    cached_content = None
+                    config = self._make_config(system_message, temp, tier)
+                    response = await self._generate_content_with_retry(
+                        model=self.model_name,
+                        contents=prompt,
+                        config=config,
+                        **filtered_kwargs,
+                    )
+                else:
+                    raise
+
             self._check_tier_downgrade(tier, response)
 
             usage = getattr(response, "usage_metadata", None)
@@ -340,13 +735,20 @@ class GeminiProvider(BaseLLMProvider):
                         "Consider splitting the request."
                     )
 
-            return self.create_response(
+            if cached_tokens > 0 and cached_content:
+                self._update_cache_metrics(cached_content, hits=1, hit_tokens=cached_tokens)
+                await self._maybe_renew_cache(cached_content)
+            resp = self.create_response(
                 text=full_text,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 thought_tokens=thought_tokens,
                 cached_tokens=cached_tokens,
             )
+            if cached_tokens > 0:
+                p_in, p_cr, _ = self._cache_prices(cached_tokens)
+                resp.cache_cost_saved = (p_in - p_cr) * cached_tokens / 1_000_000
+            return resp
         except Exception as e:
             logger.error(f"Gemini text generation failed: {e}")
             self._raise_mapped_error(e)
@@ -484,24 +886,74 @@ class GeminiProvider(BaseLLMProvider):
             filtered_kwargs = self._filter_kwargs(kwargs)
             temp = filtered_kwargs.pop("temperature", 0.2)
             cached_content = filtered_kwargs.pop("cached_content", None)
+
+            # Pre-flight: drop references to caches we know are expired or invalidated.
+            if cached_content and not self._cache_is_alive(cached_content):
+                logger.warning(
+                    f"Context cache {cached_content} is expired/invalidated; proceeding uncached."
+                )
+                self._update_cache_metrics(cached_content, misses=1)
+                cached_content = None
+
+            # Guard: system_instruction mismatch — same rationale as generate_text.
+            if (
+                cached_content
+                and system_message
+                and not self._cached_system_matches(cached_content, system_message)
+            ):
+                logger.warning(
+                    f"Context cache {cached_content} has a different system_instruction than the "
+                    "current system_message; discarding cache to preserve correct LLM behavior."
+                )
+                self._update_cache_metrics(cached_content, misses=1)
+                cached_content = None
+
             tier = self._effective_service_tier(self._resolve_service_tier(filtered_kwargs))
 
-            config_fields = {
-                "system_instruction": system_message,
-                "response_mime_type": "application/json",
-                "response_schema": clean,
-                "temperature": temp,
-                **self._service_tier_config(tier),
-            }
-            if cached_content:
-                config_fields["cached_content"] = cached_content
+            def _build_structured_config(cc: str | None) -> types.GenerateContentConfig:
+                fields: dict[str, Any] = {
+                    "response_mime_type": "application/json",
+                    "response_schema": clean,
+                    "temperature": temp,
+                    **self._service_tier_config(tier),
+                }
+                if cc:
+                    # system_instruction is baked into the cache; sending it again causes a 400.
+                    if system_message:
+                        logger.warning(
+                            f"system_message ignored for cached request {cc}: "
+                            "system instruction is embedded in the cache."
+                        )
+                    fields["cached_content"] = cc
+                elif system_message:
+                    fields["system_instruction"] = system_message
+                return types.GenerateContentConfig(**fields)
 
-            response = await self._generate_content_with_retry(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(**config_fields),
-                **filtered_kwargs,
-            )
+            try:
+                response = await self._generate_content_with_retry(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=_build_structured_config(cached_content),
+                    **filtered_kwargs,
+                )
+            except Exception as cache_exc:
+                if cached_content and self._is_cache_invalid_error(cache_exc):
+                    logger.warning(
+                        f"Context cache {cached_content} invalid on API call: {cache_exc}. "
+                        "Invalidating record and retrying uncached."
+                    )
+                    self._update_cache_metrics(cached_content, misses=1)
+                    self._invalidate_cache_record(cached_content)
+                    cached_content = None
+                    response = await self._generate_content_with_retry(
+                        model=self.model_name,
+                        contents=prompt,
+                        config=_build_structured_config(None),
+                        **filtered_kwargs,
+                    )
+                else:
+                    raise
+
             self._check_tier_downgrade(tier, response)
 
             # Since we're asking for a schema, the text should be valid JSON
@@ -515,13 +967,20 @@ class GeminiProvider(BaseLLMProvider):
             thought_tokens = getattr(usage, "thought_token_count", 0) or 0
             cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
 
-            return self.create_response(
+            if cached_tokens > 0 and cached_content:
+                self._update_cache_metrics(cached_content, hits=1, hit_tokens=cached_tokens)
+                await self._maybe_renew_cache(cached_content)
+            resp = self.create_response(
                 text=text_response,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 thought_tokens=thought_tokens,
                 cached_tokens=cached_tokens,
             )
+            if cached_tokens > 0:
+                p_in, p_cr, _ = self._cache_prices(cached_tokens)
+                resp.cache_cost_saved = (p_in - p_cr) * cached_tokens / 1_000_000
+            return resp
         except Exception as e:
             logger.error(f"Structured generation failed on {self.model_name}: {e}")
             self._raise_mapped_error(e)
@@ -593,26 +1052,64 @@ class GeminiProvider(BaseLLMProvider):
         self,
         contents: list[Any],
         system_instruction: str | None = None,
-        ttl: str = "3600s",
+        expected_hits: int = 2,
         display_name: str | None = None,
     ) -> Any:
+        """Create a context cache with a cost-optimal TTL, reusing an existing one
+        when identical content has already been cached for this model.
+
+        Deduplication key: SHA-256[:16] of (model_name, contents, system_instruction).
+        If a live cache exists for the same key, returns a SimpleNamespace(name=...)
+        immediately — no API call, no creation fee.
+
+        TTL is derived from model pricing so that storage cost breaks even against
+        token savings at exactly ``expected_hits`` total uses (1 creation + N-1 reads).
+        Raises ValueError if expected_hits < 2 — caching is never profitable for a
+        single use since the creation fee equals one full input cost.
         """
-        Explicitly create a context cache using the google-genai SDK.
-        Useful for massive, reusable context like long scraped datasets or standard schemas.
-        """
+        if expected_hits < 2:
+            raise ValueError(
+                f"expected_hits={expected_hits} is too low; context caching requires at least "
+                "2 total uses to recover the creation cost. Pass expected_hits >= 2 or skip caching."
+            )
+
+        content_hash = self._content_hash(contents, system_instruction)
+        existing_name = data_cache.get(_CACHE_LOOKUP_DOMAIN, content_hash)
+        if existing_name and self._cache_is_alive(existing_name):
+            logger.info(
+                f"Reusing existing context cache {existing_name} (content_hash={content_hash})"
+            )
+            return SimpleNamespace(name=existing_name)
+
+        ttl_seconds = self._optimal_initial_ttl(expected_hits)
         try:
             config = types.CreateCachedContentConfig(
                 contents=contents,
                 system_instruction=system_instruction,
-                ttl=ttl,
+                ttl=f"{ttl_seconds}s",
                 display_name=display_name,
             )
             cache = self.client.caches.create(
                 model=self.model_name,
                 config=config,
             )
+            data_cache.set(_CACHE_LOOKUP_DOMAIN, content_hash, cache.name)
+            data_cache.set(_CACHE_EXPIRY_DOMAIN, cache.name, time.time() + ttl_seconds)
+            usage = getattr(cache, "usage_metadata", None)
+            token_count = getattr(usage, "total_token_count", 0) or 0
+            self._init_cache_metrics(
+                cache.name,
+                content_hash,
+                self._system_hash(system_instruction),
+                token_count,
+                expected_hits,
+                ttl_seconds,
+                display_name,
+            )
             logger.info(
-                f"Created Gemini context cache: {cache.name} (display_name: {display_name})"
+                f"Created Gemini context cache: {cache.name} (display_name={display_name}, "
+                f"ttl={ttl_seconds}s, expected_hits={expected_hits}, "
+                f"content_hash={content_hash})"
             )
             return cache
         except Exception as e:
@@ -620,11 +1117,10 @@ class GeminiProvider(BaseLLMProvider):
             raise
 
     def delete_context_cache(self, cache_name: str) -> None:
-        """
-        Explicitly delete a context cache.
-        """
+        """Delete a context cache and invalidate its expiry record."""
         try:
             self.client.caches.delete(name=cache_name)
+            self._invalidate_cache_record(cache_name)
             logger.info(f"Deleted Gemini context cache: {cache_name}")
         except Exception as e:
             logger.error(f"Failed to delete Gemini context cache {cache_name}: {e}")

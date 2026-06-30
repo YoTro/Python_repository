@@ -61,6 +61,9 @@ class MCPAgent(BaseAgent):
             if hasattr(response_obj, "currency"):
                 session.currency = response_obj.currency
 
+        if hasattr(response_obj, "cache_cost_saved") and response_obj.cache_cost_saved:
+            session.cache_cost_saved += response_obj.cache_cost_saved
+
     @staticmethod
     def _parse_tool_call(response: str) -> tuple[str | None, dict | None]:
         """Extract (action, action_input) from an LLM response. Returns (None, None) on failure."""
@@ -166,10 +169,15 @@ class MCPAgent(BaseAgent):
         try:
             while True:
                 session.current_step += 1
+                saved_str = (
+                    f", cache saved: {session.cache_cost_saved:.4f} {session.currency}"
+                    if session.cache_cost_saved > 0
+                    else ""
+                )
                 logger.info(
                     f"MCPAgent [{session.session_id}] Step {session.current_step}/{session.max_steps} "
                     f"(tenant: {session.tenant_id}, cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
-                    f"cost: {session.total_cost:.4f} {session.currency})"
+                    f"cost: {session.total_cost:.4f} {session.currency}{saved_str})"
                 )
 
                 # ── Step limit and Token budget management ────────────────────

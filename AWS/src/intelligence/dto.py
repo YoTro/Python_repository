@@ -15,6 +15,7 @@ class LLMResponse:
     token_usage: int = 0
     cost: float = 0.0
     currency: str = "USD"
+    cache_cost_saved: float = 0.0  # (P_in - P_cr) × cached_tokens / 1M; 0 when no cache hit
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

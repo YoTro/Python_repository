@@ -35,6 +35,7 @@ class AgentSession(BaseModel):
     token_usage: int = 0  # total (cloud + local)
     cloud_token_usage: int = 0  # cloud API tokens only (budget-relevant)
     total_cost: float = 0.0  # cumulative monetary cost
+    cache_cost_saved: float = 0.0  # cumulative cost avoided via context cache hits
     currency: str = "USD"  # currency of the cost
     max_steps: int = 15
     current_step: int = 0
