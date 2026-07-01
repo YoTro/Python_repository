@@ -25,9 +25,9 @@
         "billing": "charged_at_output_price",
         "formula": "(candidates_token_count + thoughts_token_count) * output_price / 1_000_000"
       },
-      "grounding_free_allowance_unit": "RPD (requests per day) — uniform across all models",
-      "image_output_schema": "single billing_unit=USD_per_image; token_count field documents token consumption for reference only — it does NOT change the billing_unit",
-      "caching_read_ratio": "cache read price = input price × ratio (documented per model for verification)"
+      "grounding_free_allowance_unit": "RPD (requests per day) \u2014 uniform across all models",
+      "image_output_schema": "single billing_unit=USD_per_image; token_count field documents token consumption for reference only \u2014 it does NOT change the billing_unit",
+      "caching_read_ratio": "cache read price = input price \u00d7 ratio (documented per model for verification)"
     },
     "model_string_normalization": "Strip leading 'models/' prefix, then lowercase. GeminiProvider: s.removeprefix('models/').strip().lower()",
     "lookup_key_pattern": "{model_string}#{tier}#{direction}#{modality}[#{context_tier|resolution|variant}]  |  tier = standard_free | standard_paid | batch_free | batch_paid  |  direction = input | output | cache_read | cache_storage | grounding_search | grounding_maps | image_gen",
@@ -1689,262 +1689,6 @@
       "billing_unit": "USD_per_1M_tokens",
       "is_free": false,
       "context_tier": "gt_200k"
-    },
-    "gemini-2.0-flash-001#standard_free#input#image": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-001#standard_free#input#audio": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-001#standard_free#input#text": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-001#standard_free#input#video": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-001#standard_free#output#text": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-001#standard_free#cache_read#image": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-001#standard_free#cache_read#audio": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-001#standard_free#cache_read#text": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-001#standard_free#cache_read#video": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-001#standard_free#image_gen#up_to_1024x1024px": {
-      "price": 0.039,
-      "billing_unit": "USD_per_image",
-      "is_free": false,
-      "resolution": "up_to_1024x1024px"
-    },
-    "gemini-2.0-flash-001#standard_paid#input#image": {
-      "price": 0.1,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#standard_paid#input#audio": {
-      "price": 0.7,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#standard_paid#input#text": {
-      "price": 0.1,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#standard_paid#input#video": {
-      "price": 0.1,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#standard_paid#output#text": {
-      "price": 0.4,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#standard_paid#cache_read#image": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#standard_paid#cache_read#audio": {
-      "price": 0.175,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#standard_paid#cache_read#text": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#standard_paid#cache_read#video": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#standard_paid#cache_storage": {
-      "price": 1.0,
-      "billing_unit": "USD_per_1M_tokens_per_hour",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#standard_paid#grounding_search": {
-      "price": 35.0,
-      "billing_unit": "USD_per_1000_prompts",
-      "is_free": false,
-      "free_rpd": 1500
-    },
-    "gemini-2.0-flash-001#standard_paid#grounding_maps": {
-      "price": 25.0,
-      "billing_unit": "USD_per_1000_prompts",
-      "is_free": false,
-      "free_rpd": 1500
-    },
-    "gemini-2.0-flash-001#standard_paid#image_gen#up_to_1024x1024px": {
-      "price": 0.039,
-      "billing_unit": "USD_per_image",
-      "is_free": false,
-      "resolution": "up_to_1024x1024px"
-    },
-    "gemini-2.0-flash-001#batch_paid#input#image": {
-      "price": 0.05,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#batch_paid#input#audio": {
-      "price": 0.35,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#batch_paid#input#text": {
-      "price": 0.05,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#batch_paid#input#video": {
-      "price": 0.05,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#batch_paid#output#text": {
-      "price": 0.2,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#batch_paid#cache_read#image": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#batch_paid#cache_read#audio": {
-      "price": 0.175,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#batch_paid#cache_read#text": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#batch_paid#cache_read#video": {
-      "price": 0.025,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#batch_paid#cache_storage": {
-      "price": 1.0,
-      "billing_unit": "USD_per_1M_tokens_per_hour",
-      "is_free": false
-    },
-    "gemini-2.0-flash-001#batch_paid#grounding_search": {
-      "price": 35.0,
-      "billing_unit": "USD_per_1000_prompts",
-      "is_free": false,
-      "free_rpd": 1500
-    },
-    "gemini-2.0-flash-001#batch_paid#image_gen#up_to_1024x1024px": {
-      "price": 0.0195,
-      "billing_unit": "USD_per_image",
-      "is_free": false,
-      "resolution": "up_to_1024x1024px"
-    },
-    "gemini-2.0-flash-lite-001#standard_free#input#image": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-lite-001#standard_free#input#audio": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-lite-001#standard_free#input#text": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-lite-001#standard_free#input#video": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-lite-001#standard_free#output#text": {
-      "price": 0,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": true
-    },
-    "gemini-2.0-flash-lite-001#standard_paid#input#image": {
-      "price": 0.075,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite-001#standard_paid#input#audio": {
-      "price": 0.075,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite-001#standard_paid#input#text": {
-      "price": 0.075,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite-001#standard_paid#input#video": {
-      "price": 0.075,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite-001#standard_paid#output#text": {
-      "price": 0.3,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite-001#batch_paid#input#image": {
-      "price": 0.0375,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite-001#batch_paid#input#audio": {
-      "price": 0.0375,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite-001#batch_paid#input#text": {
-      "price": 0.0375,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite-001#batch_paid#input#video": {
-      "price": 0.0375,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
-    },
-    "gemini-2.0-flash-lite-001#batch_paid#output#text": {
-      "price": 0.15,
-      "billing_unit": "USD_per_1M_tokens",
-      "is_free": false
     },
     "gemini-robotics-er-1.5-preview#standard_free#input#image": {
       "price": 0,
@@ -3906,7 +3650,7 @@
                 "billing_unit": "USD_per_image",
                 "token_count": 560,
                 "price": 0.0011,
-                "_token_rate_ref": "2.00 USD per 1M tokens (560 tokens × $2.00/1M = $0.00112 ≈ $0.0011)"
+                "_token_rate_ref": "2.00 USD per 1M tokens (560 tokens \u00d7 $2.00/1M = $0.00112 \u2248 $0.0011)"
               }
             },
             "output": {
@@ -3966,7 +3710,7 @@
                 "billing_unit": "USD_per_image",
                 "token_count": 560,
                 "price": 0.0006,
-                "_token_rate_ref": "1.00 USD per 1M tokens (560 tokens × $1.00/1M = $0.00056 ≈ $0.0006)"
+                "_token_rate_ref": "1.00 USD per 1M tokens (560 tokens \u00d7 $1.00/1M = $0.00056 \u2248 $0.0006)"
               }
             },
             "output": {
@@ -5311,9 +5055,6 @@
     },
     "models/gemini-1.0": {
       "max_output_tokens": 2048
-    },
-    "models/gemini-1.5": {
-      "max_output_tokens": 8192
     },
     "models/gemini-2.0": {
       "max_output_tokens": 8192

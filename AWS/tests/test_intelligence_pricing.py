@@ -21,8 +21,11 @@ def test_price_manager_normalization_gemini():
     assert pm.normalize_model_name("models/gemini-2.5-pro") == "gemini-2.5-pro"
     # Case-insensitive
     assert pm.normalize_model_name("Models/Gemini-2.5-Flash") == "gemini-2.5-flash"
-    # Index mapping
-    assert pm.normalize_model_name("gemini-2.0-flash-001") == "gemini-2.0-flash"
+    # Index mapping (preview alias → canonical)
+    assert (
+        pm.normalize_model_name("gemini-2.5-flash-native-audio-preview-12-2025")
+        == "gemini-2.5-flash-native-audio-live"
+    )
 
 
 def test_price_manager_calculation_gemini():
@@ -75,6 +78,8 @@ async def test_gemini_provider_cost_population():
     mock_usage = MagicMock()
     mock_usage.prompt_token_count = 1000
     mock_usage.candidates_token_count = 500
+    mock_usage.thoughts_token_count = None
+    mock_usage.cached_content_token_count = None
     mock_response.usage_metadata = mock_usage
 
     with (

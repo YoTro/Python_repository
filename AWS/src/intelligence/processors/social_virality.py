@@ -4,7 +4,7 @@ import logging
 import re
 import statistics
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ def _parse_yt_relative_time(text: str) -> int:
     now = int(time.time())
     m = re.match(r"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago", text.lower().strip())
     if not m:
-        return now
+        return 0
     n, unit = int(m.group(1)), m.group(2)
     offsets = {
         "second": 1,
@@ -122,6 +122,7 @@ class SocialViralityProcessor:
     PURCHASE_INTENT_THRESHOLD = 0.15  # purchase intent rate → "High Purchase Intent"
     POSITIVE_SENTIMENT_THRESHOLD = 0.40  # positive sentiment rate → "Strong Positive Sentiment"
     FADING_RECENCY_THRESHOLD = 0.20  # recency rate below which viral trend is "Fading"
+    RECENCY_WINDOW_DAYS = 30  # sub-window for recency_rate within the broader scored window
 
     # --- Monthly Distribution ---
     MONTHLY_DISTRIBUTION_MONTHS = 12  # calendar months to include in monthly_distribution output
@@ -153,8 +154,8 @@ class SocialViralityProcessor:
                 "likes": stats.get("diggCount", 0) or raw.get("likes", 0),
                 "comments": stats.get("commentCount", 0) or raw.get("comments", 0),
                 "shares": stats.get("shareCount", 0) or raw.get("shares", 0),
-                "followers": author_stats.get("followerCount", 0),
-                "uid": author.get("uniqueId", ""),
+                "followers": author_stats.get("followerCount", 0) or raw.get("followers", 0),
+                "uid": author.get("uniqueId", "") or raw.get("uid", ""),
                 "desc": raw.get("desc", ""),
                 "createTime": raw.get("createTime", 0),
                 # TikTok's own paid/branded-content signals (from /api/challenge/item_list/).
@@ -282,7 +283,10 @@ class SocialViralityProcessor:
         if not eng_rates:
             return self.BENCHMARK_ENGAGEMENT_RATE, self.BENCHMARK_SHARE_RATE
 
-        return statistics.median(eng_rates), statistics.median(share_rates)
+        return (
+            statistics.median(eng_rates) or self.BENCHMARK_ENGAGEMENT_RATE,
+            statistics.median(share_rates) or self.BENCHMARK_SHARE_RATE,
+        )
 
     def calculate_promotion_strength(
         self,
@@ -331,7 +335,9 @@ class SocialViralityProcessor:
 
         # Filter to the recent window using createTime already present in each video.
         # This uses the full adaptive sample fetched by L1 but scores only current content.
-        cutoff = int(time.time()) - window_days * 24 * 3600
+        now_ts = int(time.time())
+        cutoff = now_ts - window_days * 24 * 3600
+        recent_cutoff = now_ts - self.RECENCY_WINDOW_DAYS * 24 * 3600
         scored_videos = [v for v in videos if v.get("createTime", 0) >= cutoff]
 
         # Apply the same recency filter to reference videos so the benchmark reflects
@@ -417,8 +423,8 @@ class SocialViralityProcessor:
             # Share Virality Ratio: Shares / Views
             total_share_ratio += shares / views if views > 0 else 0
 
-            # All scored_videos are already within window_days — count every one as recent.
-            recent_video_count += 1
+            if v.get("createTime", 0) >= recent_cutoff:
+                recent_video_count += 1
 
             if any(kw in desc for kw in conversion_keywords if kw):
                 amazon_mentions += 1
@@ -429,7 +435,7 @@ class SocialViralityProcessor:
             native_ad = v.get("is_promoted", False)
             if native_ad:
                 native_ad_count += 1
-            if native_ad or any(tag in desc for tag in self.PROMO_TAGS):
+            if native_ad or frozenset(re.findall(r"#\w+", desc)) & self.PROMO_TAGS:
                 promo_tag_count += 1
 
             valid_videos += 1
@@ -598,6 +604,7 @@ class SocialViralityProcessor:
         final_score = base_score * kol_penalty * hhi_penalty * promo_tag_penalty
 
         # Negative Sentiment Penalty — neg_rate set by comment analysis block above
+        sentiment_penalty = 1.0
         if neg_rate > self.NEG_SENTIMENT_THRESHOLD:
             sentiment_penalty = 1.0 - min(
                 (neg_rate - self.NEG_SENTIMENT_THRESHOLD) * self.PENALTY_SLOPE,
@@ -622,7 +629,7 @@ class SocialViralityProcessor:
 
         # Monthly distribution of video counts and views over the past 12 calendar months.
         # Uses all normalized videos (not just the scored window) so older content is included.
-        _now = datetime.now(tz=timezone.utc)
+        _now = datetime.now(tz=UTC)
         monthly_dist: dict[str, dict[str, int]] = {}
         for _i in range(self.MONTHLY_DISTRIBUTION_MONTHS - 1, -1, -1):
             _m, _y = _now.month - _i, _now.year
@@ -634,7 +641,7 @@ class SocialViralityProcessor:
             _ts = _v.get("createTime", 0)
             if not _ts:
                 continue
-            _dt = datetime.fromtimestamp(_ts, tz=timezone.utc)
+            _dt = datetime.fromtimestamp(_ts, tz=UTC)
             _key = f"{_dt.year:04d}-{_dt.month:02d}"
             if _key in monthly_dist:
                 monthly_dist[_key]["video_count"] += 1
@@ -668,6 +675,7 @@ class SocialViralityProcessor:
                 "kol_dominance": round(kol_penalty, 4),
                 "hhi_concentration": round(hhi_penalty, 4),
                 "promo_tag": round(promo_tag_penalty, 4),
+                "negative_sentiment": round(sentiment_penalty, 4),
             },
             "comment_analysis": comment_analysis,
             "benchmarks": {

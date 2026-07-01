@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,7 +9,12 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.intelligence.providers.gemini import GeminiProvider
+from src.core.data_cache import data_cache
+from src.intelligence.providers.gemini import (
+    _CACHE_EXPIRY_DOMAIN,
+    _CACHE_METRICS_DOMAIN,
+    GeminiProvider,
+)
 from src.intelligence.providers.price_manager import PriceManager
 
 
@@ -92,7 +98,7 @@ class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
         mock_response.usage_metadata = MagicMock(
             prompt_token_count=1000,
             candidates_token_count=500,
-            thought_token_count=200,  # The key new field
+            thoughts_token_count=200,  # current google-genai SDK field name
             cached_content_token_count=300,
         )
 
@@ -136,7 +142,7 @@ class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
         mock_response.usage_metadata = MagicMock(
             prompt_token_count=1000,
             candidates_token_count=500,
-            thought_token_count=0,
+            thoughts_token_count=0,
             cached_content_token_count=800,
         )
 
@@ -223,6 +229,101 @@ class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(llm_res.cost, expected_cost, places=10)
         self.assertAlmostEqual(llm_res.cache_cost_saved, expected_saved, places=10)
 
+    @patch("google.genai.Client")
+    async def test_cache_renewal_uses_interval_before_current_hit(self, mock_client):
+        """
+        Adaptive renewal should not collapse to the 60s minimum because the current
+        hit updates last_hit_at immediately before renewal is computed.
+        """
+        mock_provider = GeminiProvider(api_key="fake_key", model_name="models/gemini-2.5-flash")
+        mock_provider.model_name = "models/gemini-2.5-flash"
+        mock_provider._check_context_limit = AsyncMock()
+        mock_provider._generate_content_with_retry = AsyncMock(
+            return_value=self._mock_cached_response()
+        )
+        mock_provider.client.caches.update = MagicMock()
+
+        now = time.time()
+        cache_name = f"cachedContents/test_renewal_{id(self)}"
+        data_cache.set(_CACHE_EXPIRY_DOMAIN, cache_name, now + 1)
+        data_cache.set(
+            _CACHE_METRICS_DOMAIN,
+            cache_name,
+            {
+                "cache_name": cache_name,
+                "content_hash": "test",
+                "system_hash": mock_provider._system_hash(None),
+                "model": mock_provider.model_name,
+                "display_name": None,
+                "created_at": now - 360,
+                "token_count": 1000,
+                "expected_hits": 4,
+                "initial_ttl_seconds": 300,
+                "hits": 2,
+                "misses": 0,
+                "renewals": 0,
+                "cost_creation": 0.0,
+                "cost_storage_accrued": 0.0,
+                "cost_saved": 0.0,
+                "last_hit_at": now - 120,
+                "last_updated_at": now - 120,
+            },
+        )
+
+        await mock_provider.generate_text("Summarize key issues.", cached_content=cache_name)
+
+        mock_provider.client.caches.update.assert_called_once()
+        config = mock_provider.client.caches.update.call_args.kwargs["config"]
+        ttl = getattr(config, "ttl", None) if not isinstance(config, dict) else config["ttl"]
+        self.assertGreater(int(ttl.rstrip("s")), 60)
+
+    @patch("google.genai.Client")
+    async def test_generate_structured_sets_max_output_tokens(self, mock_client):
+        """
+        Structured responses can be large JSON objects; they should use the same
+        provider output-token ceiling as text generation.
+        """
+        mock_provider = GeminiProvider(api_key="fake_key", model_name="models/gemini-2.5-flash")
+        mock_provider.model_name = "models/gemini-2.5-flash"
+        mock_provider._check_context_limit = AsyncMock()
+        mock_provider._generate_content_with_retry = AsyncMock(
+            return_value=self._mock_cached_response('{"answer":"ok"}')
+        )
+
+        await mock_provider.generate_structured("Return JSON.", _DummyStructuredSchema)
+
+        config = mock_provider._generate_content_with_retry.call_args.kwargs["config"]
+        self.assertEqual(config.max_output_tokens, mock_provider._DEFAULT_MAX_TOKENS)
+
+    @patch("google.genai.Client")
+    def test_explicit_model_name_survives_model_discovery_failure(self, mock_client):
+        """
+        A caller-supplied model_name is a configuration choice and should not be
+        silently replaced if model listing is unavailable.
+        """
+        mock_client.return_value.models.list.side_effect = RuntimeError("list unavailable")
+
+        provider = GeminiProvider(api_key="fake_key", model_name="models/gemini-2.5-pro")
+
+        self.assertEqual(provider.model_name, "models/gemini-2.5-pro")
+
+    @patch("google.genai.Client")
+    async def test_generate_text_handles_missing_response_text_as_empty_string(self, mock_client):
+        """
+        Gemini may return no text for blocked or empty candidates; the provider
+        should return an empty response object instead of crashing.
+        """
+        mock_provider = GeminiProvider(api_key="fake_key", model_name="models/gemini-2.5-flash")
+        mock_provider.model_name = "models/gemini-2.5-flash"
+        mock_provider._check_context_limit = AsyncMock()
+        mock_response = self._mock_cached_response(text=None)
+        mock_response.usage_metadata.cached_content_token_count = 0
+        mock_provider._generate_content_with_retry = AsyncMock(return_value=mock_response)
+
+        llm_res = await mock_provider.generate_text("Return nothing.")
+
+        self.assertEqual(llm_res.text, "")
+
     @staticmethod
     def _mock_cached_response(text="Analysis of cached reviews."):
         mock_response = MagicMock()
@@ -230,7 +331,7 @@ class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
         mock_response.usage_metadata = MagicMock(
             prompt_token_count=1000,
             candidates_token_count=500,
-            thought_token_count=0,
+            thoughts_token_count=0,
             cached_content_token_count=800,
         )
         return mock_response

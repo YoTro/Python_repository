@@ -89,13 +89,10 @@ class GeminiProvider(BaseLLMProvider):
     """
 
     # Context windows per model family (prefix-matched against self.model_name).
-    # Gemini 1.5 Pro has a 2M window; all other current models are 1M.
     _MODEL_CONTEXT_WINDOWS = {
         "models/gemini-2.5-pro": 1_048_576,
         "models/gemini-2.5-flash": 1_048_576,
         "models/gemini-2.0-pro": 1_048_576,
-        "models/gemini-1.5-pro": 2_097_152,
-        "models/gemini-1.5-flash": 1_048_576,
         "models/gemini-1.0-pro": 32_760,
     }
 
@@ -474,6 +471,7 @@ class GeminiProvider(BaseLLMProvider):
             record["cost_saved"] = float(record.get("cost_saved", 0.0)) + (
                 (p_in - p_cr) * hit_tokens / 1_000_000
             )
+            record["prev_hit_at"] = record.get("last_hit_at")
             record["last_hit_at"] = now
         record["last_updated_at"] = now
         data_cache.set(_CACHE_METRICS_DOMAIN, cache_name, record)
@@ -539,8 +537,19 @@ class GeminiProvider(BaseLLMProvider):
         if hits < _MIN_CACHE_OBSERVATIONS:
             return renewal_ttl_breakeven
 
-        last_hit_at = float(record.get("last_hit_at", record.get("created_at", time.time())))
-        inter_hit_seconds = time.time() - last_hit_at
+        # Global average: (elapsed since creation) / hits.
+        # Recent interval: gap between the last two hits (prev_hit_at → last_hit_at).
+        # Taking the max means a long cold gap dominates and triggers the breakeven
+        # abandonment check, even when the global average still looks profitable.
+        created_at = float(record.get("created_at", time.time()))
+        avg_interval = (time.time() - created_at) / hits
+        prev_hit_at = record.get("prev_hit_at")
+        last_hit_at = record.get("last_hit_at")
+        if prev_hit_at is not None and last_hit_at is not None:
+            recent_interval = float(last_hit_at) - float(prev_hit_at)
+            inter_hit_seconds = max(avg_interval, recent_interval)
+        else:
+            inter_hit_seconds = avg_interval
 
         if inter_hit_seconds > renewal_ttl_breakeven:
             logger.info(
@@ -568,8 +577,7 @@ class GeminiProvider(BaseLLMProvider):
 
             priorities = [
                 "models/gemini-2.5-flash",
-                "models/gemini-1.5-flash",
-                "models/gemini-1.5-pro",
+                "models/gemini-2.5-pro",
             ]
 
             if preferred and preferred in available:
@@ -579,10 +587,10 @@ class GeminiProvider(BaseLLMProvider):
                 if p in available:
                     return p
 
-            return available[0] if available else "models/gemini-1.5-flash"
+            return available[0] if available else "models/gemini-2.5-flash"
         except Exception as e:
             logger.error(f"Failed to list models: {e}. Falling back to default.")
-            return "models/gemini-1.5-flash"
+            return preferred if preferred else "models/gemini-2.5-flash"
 
     async def count_tokens(self, prompt: str, system_message: str | None = None) -> int:
         try:
@@ -701,7 +709,7 @@ class GeminiProvider(BaseLLMProvider):
             output_tokens = (usage.candidates_token_count or 0) if usage else 0
             thought_tokens = getattr(usage, "thoughts_token_count", 0) or 0
             cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
-            full_text = response.text
+            full_text = response.text or ""
 
             # ── Continuation loop ────────────────────────────────────────────
             # When Gemini hits its per-call output ceiling, ask it to continue
@@ -937,6 +945,7 @@ class GeminiProvider(BaseLLMProvider):
                     "response_mime_type": "application/json",
                     "response_schema": clean,
                     "temperature": temp,
+                    "max_output_tokens": self._DEFAULT_MAX_TOKENS,
                     **self._service_tier_config(tier),
                 }
                 if cc:
