@@ -169,13 +169,18 @@ class ClaudeProvider(BaseLLMProvider):
         prompt: str,
         schema: Any,
         system_message: str | None = None,
-        max_tokens: int = 1024,
+        **kwargs,
     ) -> Any:
         """
         Pass image URLs + text prompt to Claude and parse the response into *schema*.
         Images are passed as URL-sourced content blocks — no download required.
+        Accepted kwargs: temperature, max_tokens.
         """
         from src.intelligence.parsers.markdown_cleaner import OutputParser
+
+        filtered_kwargs = self._filter_kwargs(kwargs)
+        max_tokens = filtered_kwargs.pop("max_tokens", self._DEFAULT_MAX_TOKENS)
+        temp = filtered_kwargs.pop("temperature", 0.2)
 
         content: list[dict] = [
             {"type": "image", "source": {"type": "url", "url": url}} for url in image_urls
@@ -185,20 +190,24 @@ class ClaudeProvider(BaseLLMProvider):
         api_kwargs: dict = {
             "model": self.model_name,
             "max_tokens": max_tokens,
+            "temperature": temp,
             "messages": [{"role": "user", "content": content}],
         }
         if system_message:
             api_kwargs["system"] = system_message
 
-        response = await self.client.messages.create(**api_kwargs)
-        text = "".join(block.text for block in response.content if block.type == "text")
-
-        data = OutputParser.parse_dirty_json(text)
-        if not data:
-            raise ValueError(
-                f"Vision model returned unparsable JSON (len={len(text)}): {text[:200]!r}"
-            )
-        return schema(**data)
+        try:
+            response = await self.client.messages.create(**api_kwargs)
+            text = "".join(block.text for block in response.content if block.type == "text")
+            data = OutputParser.parse_dirty_json(text)
+            if not data:
+                raise ValueError(
+                    f"Vision model returned unparsable JSON (len={len(text)}): {text[:200]!r}"
+                )
+            return schema(**data)
+        except Exception as e:
+            logger.error(f"Claude vision generation failed: {e}")
+            self._raise_mapped_error(e)
 
     # ── Batch API ─────────────────────────────────────────────────────────────
     # Limits: 100,000 requests OR 256 MB per batch; expires after 24 h if not

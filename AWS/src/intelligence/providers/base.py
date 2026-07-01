@@ -179,11 +179,12 @@ class BaseLLMProvider(ABC):
         prompt: str,
         schema: Any,
         system_message: str | None = None,
-        max_tokens: int = 1024,
+        **kwargs,
     ) -> Any:
         """
         Evaluate image content and return a structured Pydantic object.
         Providers that support vision must override this method.
+        Accepted kwargs: temperature, max_tokens, service_tier (provider-dependent).
         """
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support vision-structured generation."

@@ -1022,15 +1022,22 @@ class GeminiProvider(BaseLLMProvider):
         prompt: str,
         schema: Any,
         system_message: str | None = None,
-        max_tokens: int = 1024,
-        service_tier: str | None = None,
+        **kwargs,
     ) -> Any:
         """
         Download image bytes in parallel, pass them as inline Blob parts alongside
         the text prompt, and return a structured Pydantic object via response_schema.
         Gemini does not support external HTTP image URLs directly — bytes required.
+        Accepted kwargs: temperature, max_tokens, service_tier.
         """
         import aiohttp
+
+        from src.intelligence.parsers.markdown_cleaner import OutputParser
+
+        filtered_kwargs = self._filter_kwargs(kwargs)
+        temp = filtered_kwargs.pop("temperature", 0.2)
+        max_tokens = filtered_kwargs.pop("max_tokens", self._DEFAULT_MAX_TOKENS)
+        tier = self._effective_service_tier(self._resolve_service_tier(filtered_kwargs))
 
         async def _fetch_bytes(url: str) -> bytes | None:
             try:
@@ -1042,42 +1049,43 @@ class GeminiProvider(BaseLLMProvider):
                 logger.warning(f"[vision] Failed to download image {url}: {e}")
             return None
 
-        raw_bytes = await asyncio.gather(*[_fetch_bytes(u) for u in image_urls])
-        parts: list = [
-            types.Part(inline_data=types.Blob(mime_type="image/jpeg", data=b))
-            for b in raw_bytes
-            if b is not None
-        ]
-        if not parts:
-            raise ValueError("No images could be downloaded for vision scoring.")
-        parts.append(types.Part(text=prompt))
+        try:
+            raw_bytes = await asyncio.gather(*[_fetch_bytes(u) for u in image_urls])
+            parts: list = [
+                types.Part(inline_data=types.Blob(mime_type="image/jpeg", data=b))
+                for b in raw_bytes
+                if b is not None
+            ]
+            if not parts:
+                raise ValueError("No images could be downloaded for vision scoring.")
+            parts.append(types.Part(text=prompt))
 
-        raw_schema = schema.model_json_schema()
-        clean = self._clean_schema(raw_schema)
+            raw_schema = schema.model_json_schema()
+            clean = self._clean_schema(raw_schema)
 
-        tier = self._effective_service_tier(service_tier)
-        response = await self._generate_content_with_retry(
-            model=self.model_name,
-            contents=types.Content(role="user", parts=parts),
-            config=types.GenerateContentConfig(
-                system_instruction=system_message,
-                response_mime_type="application/json",
-                response_schema=clean,
-                max_output_tokens=max_tokens,
-                **self._service_tier_config(tier),
-            ),
-        )
-        self._check_tier_downgrade(tier, response)
-
-        from src.intelligence.parsers.markdown_cleaner import OutputParser
-
-        data = OutputParser.parse_dirty_json(response.text or "")
-        if not data:
-            raise ValueError(
-                f"Vision model returned unparsable JSON (len={len(response.text or '')}): "
-                f"{(response.text or '')[:200]!r}"
+            response = await self._generate_content_with_retry(
+                model=self.model_name,
+                contents=types.Content(role="user", parts=parts),
+                config=types.GenerateContentConfig(
+                    system_instruction=system_message,
+                    response_mime_type="application/json",
+                    response_schema=clean,
+                    temperature=temp,
+                    max_output_tokens=max_tokens,
+                    **self._service_tier_config(tier),
+                ),
             )
-        return schema(**data)
+            self._check_tier_downgrade(tier, response)
+
+            data = OutputParser.parse_dirty_json(response.text or "")
+            if not data:
+                raise ValueError(
+                    f"Vision model returned unparsable JSON (len={len(response.text or '')}): "
+                    f"{(response.text or '')[:200]!r}"
+                )
+            return schema(**data)
+        except Exception as e:
+            self._raise_mapped_error(e)
 
     async def create_context_cache(
         self,
