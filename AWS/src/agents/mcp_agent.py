@@ -169,16 +169,6 @@ class MCPAgent(BaseAgent):
         try:
             while True:
                 session.current_step += 1
-                saved_str = (
-                    f", cache saved: {session.cache_cost_saved:.4f} {session.currency}"
-                    if session.cache_cost_saved > 0
-                    else ""
-                )
-                logger.info(
-                    f"MCPAgent [{session.session_id}] Step {session.current_step}/{session.max_steps} "
-                    f"(tenant: {session.tenant_id}, cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
-                    f"cost: {session.total_cost:.4f} {session.currency}{saved_str})"
-                )
 
                 # ── Step limit and Token budget management ────────────────────
 
@@ -218,25 +208,6 @@ class MCPAgent(BaseAgent):
                         session.status = "completed"
                         self.session_mgr.save(session)
                         return answer
-
-                # Persist progress
-                self.session_mgr.save(session)
-
-                # Progress callback
-                if callback:
-                    try:
-                        await callback.on_progress(
-                            step_index=session.current_step,
-                            total_steps=session.max_steps,
-                            step_name=f"Agent Reasoning (Step {session.current_step})",
-                            message=(
-                                f"Cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
-                                f"Cost: {session.total_cost:.4f} {session.currency}. "
-                                "Consulting LLM..."
-                            ),
-                        )
-                    except Exception as e:
-                        logger.warning(f"Agent callback on_progress failed: {e}")
 
                 # Scenario B: Hard Token budget exceeded
                 if not budget_exceeded and session.cloud_token_usage >= self.token_budget:
@@ -283,6 +254,35 @@ class MCPAgent(BaseAgent):
                 )
                 response = response_obj.text if response_obj else ""
                 self._accum_tokens(session, response_obj)
+                saved_str = (
+                    f", cache saved: {session.cache_cost_saved:.4f} {session.currency}"
+                    if session.cache_cost_saved > 0
+                    else ""
+                )
+                logger.info(
+                    f"MCPAgent [{session.session_id}] Step {session.current_step}/{session.max_steps} "
+                    f"(tenant: {session.tenant_id}, cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
+                    f"cost: {session.total_cost:.4f} {session.currency}{saved_str})"
+                )
+
+                # Persist progress
+                self.session_mgr.save(session)
+
+                # Progress callback — fires after accumulation so token/cost totals are current
+                if callback:
+                    try:
+                        await callback.on_progress(
+                            step_index=session.current_step,
+                            total_steps=session.max_steps,
+                            step_name=f"Agent Reasoning (Step {session.current_step})",
+                            message=(
+                                f"Cloud tokens: {session.cloud_token_usage}/{self.token_budget}, "
+                                f"Cost: {session.total_cost:.4f} {session.currency}{saved_str}"
+                            ),
+                        )
+                    except Exception as e:
+                        logger.warning(f"Agent callback on_progress failed: {e}")
+
                 logger.debug(
                     f"LLM Response via {response_obj.provider_name if response_obj else 'N/A'}: "
                     f"{len(response)} chars, {response_obj.token_usage if response_obj else 0} tokens"
