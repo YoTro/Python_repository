@@ -4,7 +4,7 @@ import logging
 import re
 import statistics
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,11 @@ def _parse_yt_view_count(text: str) -> int:
         return 0
     n, suffix = float(m.group(1)), m.group(2)
     return int(n * {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}.get(suffix, 1))
+
+
+def _has_shop_anchor(anchors: list[Any]) -> bool:
+    """Return True if any anchor is a TikTok shop/product link (promotional content signal)."""
+    return any(a.get("component_key") == "anchor_shop" for a in anchors)
 
 
 def _parse_yt_relative_time(text: str) -> int:
@@ -118,6 +123,9 @@ class SocialViralityProcessor:
     POSITIVE_SENTIMENT_THRESHOLD = 0.40  # positive sentiment rate → "Strong Positive Sentiment"
     FADING_RECENCY_THRESHOLD = 0.20  # recency rate below which viral trend is "Fading"
 
+    # --- Monthly Distribution ---
+    MONTHLY_DISTRIBUTION_MONTHS = 12  # calendar months to include in monthly_distribution output
+
     # --- Platform-specific conversion intent signals (in addition to brand/product name) ---
     PLATFORM_BUY_SIGNALS: dict[str, list[str]] = {
         "tiktok": ["link in bio", "amazon finds", "amazon must haves", "amazon"],
@@ -154,10 +162,16 @@ class SocialViralityProcessor:
                 # branded content often carries the native "Paid partnership" label only.
                 #   - isAd:            genuine paid Ad placement
                 #   - adAuthorization: creator's Branded-Content / paid-partnership disclosure toggle
+                #   - anchors[].component_key=="anchor_shop": embedded shop/product link,
+                #     indicates commercial intent even when no explicit ad label is present
                 # NOTE: adLabelVersion is intentionally excluded — verified against live
                 # hashtag data it is a schema-version constant (value 2) present on most
                 # *organic* videos, not a promotion flag, so it over-counts massively.
-                "is_promoted": bool(raw.get("isAd") or raw.get("adAuthorization")),
+                "is_promoted": bool(
+                    raw.get("isAd")
+                    or raw.get("adAuthorization")
+                    or _has_shop_anchor(raw.get("anchors") or [])
+                ),
             }
         if platform == "youtube_shorts":
             stats = raw.get("statistics", {})
@@ -606,6 +620,27 @@ class SocialViralityProcessor:
             else:
                 verdict = "Medium Virality (Growing Trend)"
 
+        # Monthly distribution of video counts and views over the past 12 calendar months.
+        # Uses all normalized videos (not just the scored window) so older content is included.
+        _now = datetime.now(tz=timezone.utc)
+        monthly_dist: dict[str, dict[str, int]] = {}
+        for _i in range(self.MONTHLY_DISTRIBUTION_MONTHS - 1, -1, -1):
+            _m, _y = _now.month - _i, _now.year
+            while _m <= 0:
+                _m += 12
+                _y -= 1
+            monthly_dist[f"{_y:04d}-{_m:02d}"] = {"video_count": 0, "total_views": 0}
+        for _v in videos:
+            _ts = _v.get("createTime", 0)
+            if not _ts:
+                continue
+            _dt = datetime.fromtimestamp(_ts, tz=timezone.utc)
+            _key = f"{_dt.year:04d}-{_dt.month:02d}"
+            if _key in monthly_dist:
+                monthly_dist[_key]["video_count"] += 1
+                monthly_dist[_key]["total_views"] += _v.get("views", 0)
+        monthly_distribution = [{"month": k, **v} for k, v in monthly_dist.items()]
+
         return {
             "strength_score": round(final_score, 2),
             "total_tag_videos": global_video_count,
@@ -614,6 +649,7 @@ class SocialViralityProcessor:
                 "scored": len(scored_videos),
                 "window_days": window_days,
             },
+            "monthly_distribution": monthly_distribution,
             "total_views_sample": total_views,
             "avg_views_per_video": int(total_views / valid_videos) if valid_videos > 0 else 0,
             "engagement_rate": round(engagement_rate, 4),
