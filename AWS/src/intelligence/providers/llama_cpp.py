@@ -83,6 +83,9 @@ class LlamaCppProvider(BaseLLMProvider):
         except TimeoutError:
             logger.error("Local LLM generation timed out after 120s")
             return await FallbackHandler.handle(FailureType.LOCAL_MODEL_TIMEOUT)
+        except Exception as e:
+            logger.error(f"Local LLM generation failed: {e}")
+            self._raise_mapped_error(e)
 
     def _sync_generate_text(
         self, prompt: str, system_message: str | None = None, **kwargs
