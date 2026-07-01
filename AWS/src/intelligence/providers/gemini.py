@@ -306,14 +306,21 @@ class GeminiProvider(BaseLLMProvider):
         """Stable 16-char hex key identifying (model, contents, system_instruction).
 
         Used as the DataCache lookup key so identical content is never cached twice.
-        ``default=str`` handles any non-JSON-native SDK types without raising.
+        Serializes Pydantic SDK models with exclude_none=True so the hash remains
+        stable even if new optional fields are added in future SDK versions.
         """
+
+        def _serializer(obj: Any) -> Any:
+            if hasattr(obj, "model_dump"):
+                return obj.model_dump(mode="json", exclude_none=True)
+            return str(obj)
+
         payload = {
             "model": self.model_name,
             "contents": contents,
             "system": system_instruction or "",
         }
-        raw = json.dumps(payload, sort_keys=True, default=str).encode()
+        raw = json.dumps(payload, sort_keys=True, default=_serializer).encode()
         return hashlib.sha256(raw).hexdigest()[:16]
 
     def _cache_is_alive(self, cache_name: str) -> bool:
@@ -532,8 +539,8 @@ class GeminiProvider(BaseLLMProvider):
         if hits < _MIN_CACHE_OBSERVATIONS:
             return renewal_ttl_breakeven
 
-        created_at = float(record.get("created_at", time.time()))
-        inter_hit_seconds = (time.time() - created_at) / hits
+        last_hit_at = float(record.get("last_hit_at", record.get("created_at", time.time())))
+        inter_hit_seconds = time.time() - last_hit_at
 
         if inter_hit_seconds > renewal_ttl_breakeven:
             logger.info(
@@ -692,7 +699,7 @@ class GeminiProvider(BaseLLMProvider):
                 else await self.count_tokens(prompt, system_message)
             )
             output_tokens = (usage.candidates_token_count or 0) if usage else 0
-            thought_tokens = getattr(usage, "thought_token_count", 0) or 0
+            thought_tokens = getattr(usage, "thoughts_token_count", 0) or 0
             cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
             full_text = response.text
 
@@ -731,7 +738,7 @@ class GeminiProvider(BaseLLMProvider):
                 if cont_usage:
                     input_tokens += cont_usage.prompt_token_count or 0
                     output_tokens += cont_usage.candidates_token_count or 0
-                    thought_tokens += getattr(cont_usage, "thought_token_count", 0) or 0
+                    thought_tokens += getattr(cont_usage, "thoughts_token_count", 0) or 0
                     cached_tokens += getattr(cont_usage, "cached_content_token_count", 0) or 0
                 full_text += response.text
             else:
@@ -753,7 +760,15 @@ class GeminiProvider(BaseLLMProvider):
                 tier=tier,
             )
             if cached_tokens > 0:
-                p_in, p_cr, _ = self._cache_prices(cached_tokens, tier=tier)
+                record = (
+                    data_cache.get(_CACHE_METRICS_DOMAIN, cached_content)
+                    if cached_content
+                    else None
+                )
+                total_cache_tokens = (
+                    int(record.get("token_count", cached_tokens)) if record else cached_tokens
+                )
+                p_in, p_cr, _ = self._cache_prices(total_cache_tokens, tier=tier)
                 resp.cache_cost_saved = (p_in - p_cr) * cached_tokens / 1_000_000
             return resp
         except Exception as e:
@@ -861,7 +876,7 @@ class GeminiProvider(BaseLLMProvider):
                 usage = getattr(gc_response, "usage_metadata", None)
                 input_tokens = usage.prompt_token_count if usage else 0
                 output_tokens = usage.candidates_token_count if usage else 0
-                thought_tokens = getattr(usage, "thought_token_count", 0) or 0
+                thought_tokens = getattr(usage, "thoughts_token_count", 0) or 0
                 cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
                 results[custom_id] = self.create_response(
                     text=gc_response.text,
@@ -971,7 +986,7 @@ class GeminiProvider(BaseLLMProvider):
             output_tokens = usage.candidates_token_count if usage else 0
 
             # Extract advanced usage stats for precise billing
-            thought_tokens = getattr(usage, "thought_token_count", 0) or 0
+            thought_tokens = getattr(usage, "thoughts_token_count", 0) or 0
             cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
 
             if cached_tokens > 0 and cached_content:
@@ -986,7 +1001,15 @@ class GeminiProvider(BaseLLMProvider):
                 tier=tier,
             )
             if cached_tokens > 0:
-                p_in, p_cr, _ = self._cache_prices(cached_tokens, tier=tier)
+                record = (
+                    data_cache.get(_CACHE_METRICS_DOMAIN, cached_content)
+                    if cached_content
+                    else None
+                )
+                total_cache_tokens = (
+                    int(record.get("token_count", cached_tokens)) if record else cached_tokens
+                )
+                p_in, p_cr, _ = self._cache_prices(total_cache_tokens, tier=tier)
                 resp.cache_cost_saved = (p_in - p_cr) * cached_tokens / 1_000_000
             return resp
         except Exception as e:
@@ -1056,7 +1079,7 @@ class GeminiProvider(BaseLLMProvider):
             )
         return schema(**data)
 
-    def create_context_cache(
+    async def create_context_cache(
         self,
         contents: list[Any],
         system_instruction: str | None = None,
@@ -1095,7 +1118,8 @@ class GeminiProvider(BaseLLMProvider):
         # the same tokenizer the API bills against. On failure we fall back to 0,
         # which conservatively selects the lte_200k tier (matching prior behaviour).
         try:
-            counted = self.client.models.count_tokens(
+            counted = await asyncio.to_thread(
+                self.client.models.count_tokens,
                 model=self.model_name,
                 contents=contents,
                 config=types.CountTokensConfig(system_instruction=system_instruction),
@@ -1115,7 +1139,8 @@ class GeminiProvider(BaseLLMProvider):
                 ttl=f"{ttl_seconds}s",
                 display_name=display_name,
             )
-            cache = self.client.caches.create(
+            cache = await asyncio.to_thread(
+                self.client.caches.create,
                 model=self.model_name,
                 config=config,
             )
@@ -1142,10 +1167,10 @@ class GeminiProvider(BaseLLMProvider):
             logger.error(f"Failed to create Gemini context cache: {e}")
             raise
 
-    def delete_context_cache(self, cache_name: str) -> None:
+    async def delete_context_cache(self, cache_name: str) -> None:
         """Delete a context cache and invalidate its expiry record."""
         try:
-            self.client.caches.delete(name=cache_name)
+            await asyncio.to_thread(self.client.caches.delete, name=cache_name)
             self._invalidate_cache_record(cache_name)
             logger.info(f"Deleted Gemini context cache: {cache_name}")
         except Exception as e:

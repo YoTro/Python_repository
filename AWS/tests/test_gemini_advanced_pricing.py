@@ -121,7 +121,7 @@ class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
         mock_provider.client.caches.delete = MagicMock()
 
         # 1. Test create_context_cache
-        cache = mock_provider.create_context_cache(
+        cache = await mock_provider.create_context_cache(
             contents=["Some massive competitor reviews dataset"],
             system_instruction="Analyze this reviews dataset carefully.",
             display_name="competitor_reviews_cache",
@@ -151,7 +151,7 @@ class TestGeminiAdvancedPricing(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(llm_res.metadata["cached_tokens"], 800)
 
         # 3. Test delete_context_cache
-        mock_provider.delete_context_cache(cache.name)
+        await mock_provider.delete_context_cache(cache.name)
         mock_provider.client.caches.delete.assert_called_once_with(name=cache.name)
 
     @patch("google.genai.Client")
