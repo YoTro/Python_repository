@@ -29,24 +29,27 @@ class XiyouZhaociAuth:
         self.state_file = os.path.join(config_dir, f"xiyou_{tenant_id}_state.json")
 
         self.session = requests.Session(impersonate="chrome")
-        self.base_url = "https://api.xiyouzhaoci.com"
+        self.base_url = "https://api.xydc.com"
 
         self.common_headers = {
             "accept": "application/json, text/plain, */*",
-            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "accept-language": "en,zh-CN;q=0.9,zh;q=0.8",
             "content-type": "application/json",
             "krs-ver": "1.0.0",
             "select-lang": "zh-cn",
             "web-version": "4.0",
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
             "priority": "u=1, i",
-            "sec-ch-ua": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+            "origin": "https://www.xydc.com",
+            "referer": "https://www.xydc.com/",
+            "sec-ch-ua": '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"macOS"',
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-site",
-            "referrer": "https://www.xiyouzhaoci.com/",
-            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36",
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
         }
 
     def _save_token(self, token: str):
