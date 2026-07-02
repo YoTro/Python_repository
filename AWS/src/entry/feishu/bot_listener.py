@@ -20,7 +20,7 @@ if project_root not in sys.path:
 
 from src.core.utils.config_helper import ConfigHelper
 from src.entry.feishu.commands import CommandDispatcher
-from src.jobs.interactions.registry import InteractionRegistry
+from src.jobs.interactions import InteractionRegistry
 
 # Configure Logging
 logging.basicConfig(
