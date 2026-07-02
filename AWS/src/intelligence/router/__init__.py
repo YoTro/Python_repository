@@ -86,7 +86,7 @@ class IntelligenceRouter:
             self.local = None
 
         try:
-            self.cloud = cloud_provider or ProviderFactory.get_provider("gemini")
+            self.cloud = cloud_provider or ProviderFactory.get_provider()
         except Exception as e:
             logger.error(
                 f"FATAL: Cloud provider failed to load: {e}. Full functionality will be degraded."
