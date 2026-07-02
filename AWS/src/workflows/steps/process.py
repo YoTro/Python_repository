@@ -236,6 +236,8 @@ class ProcessStep(Step):
                 items_to_process, results, strict=False
             ):
                 if isinstance(result, Exception):
+                    if isinstance(result, FatalError):
+                        raise result
                     logger.warning(f"[{self.name}] LLM call failed for item: {result}")
                     item[self.output_field] = None
                 else:
