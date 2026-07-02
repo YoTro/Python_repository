@@ -1,7 +1,7 @@
 {
   "metadata": {
     "source": "https://api-docs.deepseek.com/quick_start/pricing",
-    "last_verified": "2026-06-01",
+    "last_verified": "2026-07-02",
     "schema_version": "2",
     "conventions": {
       "price_entry_shape": {
@@ -11,13 +11,26 @@
         "dimension": "input | input_cache_hit | output"
       },
       "lookup_key_pattern": "{canonical_model_id}#{tier}#{dimension}",
-      "tier_values": "standard | batch | undiscounted",
+      "tier_values": "standard | standard_peak | undiscounted | undiscounted_peak",
       "resolution_flow": "any_string → model_string_index → canonical_id → lookup key",
       "cache_note": "Server-side KV cache. Cache hits billed at input_cache_hit price; misses at input price.",
-      "batch_note": "Batch API (async) offers 50% discount on input, cache hit, and output.",
       "deprecation_note": "deepseek-chat and deepseek-reasoner are deprecated aliases for deepseek-v4-flash (non-thinking and thinking modes). Their old independent pricing ($0.27/$2.19) is superseded.",
       "v4_pro_discount_note": "deepseek-v4-pro is at 75% off (standard tier) until 2026-05-31T15:59:00Z. After the promotion ends, the API price is officially set to 1/4 of the original launch price (numerically identical to the promotion price). Undiscounted tier reflects this post-promotion official price.",
-      "cache_hit_reduction_note": "Effective 2026-04-26T12:15Z, input_cache_hit price for all models is set to 1/10 of the pre-reduction launch cache-hit price."
+      "cache_hit_reduction_note": "Effective 2026-04-26T12:15Z, input_cache_hit price for all models is set to 1/10 of the pre-reduction launch cache-hit price.",
+      "peak_pricing_note": "Effective 2026-07-15, peak-hour surcharge applies: all billing dimensions cost 2x the off-peak rate. Peak hours (UTC): 01:00–04:00 and 06:00–10:00 (UTC+8: 09:00–12:00 and 14:00–18:00). Use *_peak tier variants for peak-hour cost estimation."
+    },
+    "peak_pricing": {
+      "effective_date": "2026-07-15",
+      "multiplier": 2.0,
+      "applies_to": "all billing dimensions (input, input_cache_hit, output) across all tiers",
+      "peak_windows_utc": [
+        {"start": "01:00", "end": "04:00"},
+        {"start": "06:00", "end": "10:00"}
+      ],
+      "peak_windows_utc_plus_8": [
+        {"start": "09:00", "end": "12:00"},
+        {"start": "14:00", "end": "18:00"}
+      ]
     }
   },
   "model_string_index": {
@@ -76,26 +89,26 @@
       "billing_unit": "per_1M_tokens",
       "dimension": "output"
     },
-    "deepseek-v4-flash#batch#input": {
-      "price": 0.07,
+    "deepseek-v4-flash#standard_peak#input": {
+      "price": 0.28,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input",
-      "discount_vs_standard": 0.5
+      "peak_multiplier": 2.0
     },
-    "deepseek-v4-flash#batch#input_cache_hit": {
-      "price": 0.0014,
+    "deepseek-v4-flash#standard_peak#input_cache_hit": {
+      "price": 0.0056,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit",
-      "discount_vs_standard": 0.5
+      "peak_multiplier": 2.0
     },
-    "deepseek-v4-flash#batch#output": {
-      "price": 0.14,
+    "deepseek-v4-flash#standard_peak#output": {
+      "price": 0.56,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
-      "discount_vs_standard": 0.5
+      "peak_multiplier": 2.0
     },
     "deepseek-v4-pro#standard#input": {
       "price": 0.435,
@@ -118,29 +131,26 @@
       "dimension": "output",
       "note": "75% off promotion until 2026-05-31T15:59:00Z; post-promotion official price $0.87 (1/4 of launch $3.48)"
     },
-    "deepseek-v4-pro#batch#input": {
-      "price": 0.2175,
+    "deepseek-v4-pro#standard_peak#input": {
+      "price": 0.87,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input",
-      "discount_vs_standard": 0.5,
-      "note": "Based on discounted standard price"
+      "peak_multiplier": 2.0
     },
-    "deepseek-v4-pro#batch#input_cache_hit": {
-      "price": 0.0018125,
+    "deepseek-v4-pro#standard_peak#input_cache_hit": {
+      "price": 0.00725,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit",
-      "discount_vs_standard": 0.5,
-      "note": "Based on discounted standard price"
+      "peak_multiplier": 2.0
     },
-    "deepseek-v4-pro#batch#output": {
-      "price": 0.435,
+    "deepseek-v4-pro#standard_peak#output": {
+      "price": 1.74,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
-      "discount_vs_standard": 0.5,
-      "note": "Based on discounted standard price"
+      "peak_multiplier": 2.0
     },
     "deepseek-v4-pro#undiscounted#input": {
       "price": 0.435,
@@ -162,6 +172,27 @@
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
       "note": "Official price after 2026-05-31T15:59:00Z; = 1/4 of launch price $3.48. Numerically identical to promotion price."
+    },
+    "deepseek-v4-pro#undiscounted_peak#input": {
+      "price": 0.87,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "peak_multiplier": 2.0
+    },
+    "deepseek-v4-pro#undiscounted_peak#input_cache_hit": {
+      "price": 0.00725,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "peak_multiplier": 2.0
+    },
+    "deepseek-v4-pro#undiscounted_peak#output": {
+      "price": 1.74,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "peak_multiplier": 2.0
     }
   },
   "model_limits": {
