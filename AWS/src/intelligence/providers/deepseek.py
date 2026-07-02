@@ -9,16 +9,39 @@ from src.intelligence.dto import LLMResponse
 
 from .base import BaseLLMProvider
 
+try:
+    from deepseek_tokenizer import ds_token as _ds_token
+except ImportError:
+    _ds_token = None
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "deepseek-v4-flash"
 
+# DeepSeek recommended temperatures (API default: 1.0).
+# Source: https://api-docs.deepseek.com/quick_start/token_usage
+#
+#   Coding / Math                → 0.0
+#   Data Cleaning / Analysis     → 1.0
+#   General Conversation         → 1.3
+#   Translation                  → 1.3
+#   Creative Writing / Poetry    → 1.5
+TEMPERATURE_PRESETS = {
+    "coding": 0.0,
+    "math": 0.0,
+    "data_cleaning": 1.0,
+    "data_analysis": 1.0,
+    "conversation": 1.3,
+    "translation": 1.3,
+    "creative": 1.5,
+}
+
 _CONTEXT_WINDOWS = {
     "deepseek-v4-flash": 131_072,
     "deepseek-v4-pro": 131_072,
-    # Legacy aliases — resolved to deepseek-v4-flash by PriceManager
+    # Legacy aliases — deprecated 2026-07-24, resolved to deepseek-v4-flash
     "deepseek-chat": 131_072,
-    "deepseek-reasoner": 65_536,
+    "deepseek-reasoner": 131_072,
 }
 
 
@@ -27,9 +50,11 @@ class DeepSeekProvider(BaseLLMProvider):
     DeepSeek provider using the OpenAI-compatible REST API.
     Requires `openai` package (pip install openai).
 
-    Supports:
-      - deepseek-chat     (DeepSeek-V3, general purpose)
-      - deepseek-reasoner (DeepSeek-R1, chain-of-thought reasoning)
+    Current models:
+      - deepseek-v4-flash  (general purpose, formerly deepseek-chat / deepseek-v3)
+      - deepseek-v4-pro    (reasoning, formerly deepseek-reasoner / deepseek-r1)
+
+    Deprecated aliases (removed 2026-07-24): deepseek-chat, deepseek-reasoner.
 
     Server-side KV cache is automatic; prompt_cache_hit_tokens in the
     usage response drives the cheaper cache-hit billing rate.
@@ -63,16 +88,68 @@ class DeepSeekProvider(BaseLLMProvider):
         _env = os.getenv("MAX_LLM_OUTPUT_TOKENS", "").strip()
         self._DEFAULT_MAX_TOKENS = min(int(_env) if _env else _ceiling, _ceiling)
 
+        self._resolved_model: str | None = None  # set on first call after live validation
+
         logger.info(
             f"DeepSeekProvider initialized: model={self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}"
         )
 
     # ── Token counting ────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Character-ratio fallback per DeepSeek docs: CJK ≈ 0.6 tok/char, other ≈ 0.3 tok/char."""
+        total = 0.0
+        for ch in text:
+            cp = ord(ch)
+            if (0x4E00 <= cp <= 0x9FFF    # CJK Unified Ideographs
+                    or 0x3400 <= cp <= 0x4DBF    # CJK Extension A
+                    or 0xF900 <= cp <= 0xFAFF):  # CJK Compatibility Ideographs
+                total += 0.6
+            else:
+                total += 0.3
+        return max(1, int(total))
+
     async def count_tokens(self, prompt: str, system_message: str | None = None) -> int:
-        # DeepSeek has no dedicated token-count endpoint; estimate via char count.
         full = (system_message or "") + prompt
-        return max(1, len(full) // 4)
+        if _ds_token is not None:
+            return max(1, len(_ds_token.encode(full)))
+        return self._estimate_tokens(full)
+
+    # ── Model listing & validation ────────────────────────────────────────────
+
+    async def list_models(self) -> list[dict]:
+        """Return all models available on the DeepSeek platform via GET /models."""
+        response = await self._client.models.list()
+        return [{"id": m.id, "owned_by": getattr(m, "owned_by", None)} for m in response.data]
+
+    async def _active_model(self) -> str:
+        """Return the validated model name, falling back to the first available if needed.
+
+        Result is cached after the first successful /models call so subsequent
+        inference calls pay no extra latency.
+        """
+        if self._resolved_model is not None:
+            return self._resolved_model
+
+        try:
+            available = [m["id"] for m in await self.list_models()]
+        except Exception as e:
+            logger.warning(f"DeepSeek /models lookup failed ({e}); using configured model as-is")
+            self._resolved_model = self.model_name
+            return self._resolved_model
+
+        if self.model_name in available:
+            self._resolved_model = self.model_name
+        else:
+            fallback = available[0] if available else _DEFAULT_MODEL
+            logger.warning(
+                f"Model '{self.model_name}' not in live model list {available}; "
+                f"falling back to '{fallback}'"
+            )
+            self._resolved_model = fallback
+
+        return self._resolved_model
 
     # ── Text generation ───────────────────────────────────────────────────────
 
@@ -88,9 +165,11 @@ class DeepSeekProvider(BaseLLMProvider):
 
         try:
             resp = await self._client.chat.completions.create(
-                model=self.model_name,
+                model=await self._active_model(),
                 messages=messages,
                 max_tokens=self._DEFAULT_MAX_TOKENS,
+                # Caller should pass temperature via kwargs; 0.0 suits coding/math tasks.
+                # See TEMPERATURE_PRESETS for DeepSeek's per-use-case recommendations.
                 temperature=filtered.pop("temperature", 0.0),
                 **filtered,
             )
@@ -128,9 +207,11 @@ class DeepSeekProvider(BaseLLMProvider):
 
         try:
             resp = await self._client.chat.completions.create(
-                model=self.model_name,
+                model=await self._active_model(),
                 messages=messages,
                 max_tokens=self._DEFAULT_MAX_TOKENS,
+                # Caller should pass temperature via kwargs; 0.0 suits coding/math tasks.
+                # See TEMPERATURE_PRESETS for DeepSeek's per-use-case recommendations.
                 temperature=filtered.pop("temperature", 0.0),
                 response_format={"type": "json_object"},
                 **filtered,
