@@ -5296,6 +5296,18 @@ _SNAPSHOT_FIELD_SOURCE: dict[str, str] = {
     "sp_ad_orders": "Ads API spCampaigns — SP ad-attributed orders (keyword + auto + PT campaigns; SB/SD/DSP and organic excluded); 7-day attribution window (purchases7d)",
     "sp_ad_clicks": "Ads API spCampaigns — SP ad-attributed clicks (keyword + auto + PT), data_start_date → data_end_date",
     "account_acos": "sp_ad_spend ÷ sp_ad_sales × 100",
+    # Ad-performance trend fields — cycle picked from cached daily rows
+    #   ≥ 60 rows → 30-day cycle, suffix "_60d"
+    #   14–59     → 7-day cycle,  suffix "_14d"
+    #   < 14      → fields absent (silence)
+    "cpc_60d_change": "(last 30d CPC − previous 30d CPC) ÷ previous 30d CPC × 100 — bidding-inflation rate",
+    "cpc_14d_change": "(last 7d CPC − previous 7d CPC) ÷ previous 7d CPC × 100 — bidding-inflation rate",
+    "acos_60d_change": "last 30d ACOS − previous 30d ACOS (percentage points) — profit-erosion rate",
+    "acos_14d_change": "last 7d ACOS − previous 7d ACOS (percentage points) — profit-erosion rate",
+    "daily_sales_60d_trend": "SP-attributed avg daily orders — last 30d vs previous 30d — demand/rank health",
+    "daily_sales_14d_trend": "SP-attributed avg daily orders — last 7d vs previous 7d — demand/rank health",
+    "cycle_alignment_60d": "actual sellable buffer vs stock_gate_days — 60-day replenishment cycle integrity",
+    "cycle_alignment_14d": "actual sellable buffer vs stock_gate_days — 14-day replenishment cycle integrity",
     "sb_ad_orders": "Ads API sbPurchasedProduct — SB orders where this ASIN was purchased (purchasedAsin filter); 14-day attribution window (orders14d); null if SB report unavailable",
     "sd_ad_orders": "Ads API sdAdvertisedProduct — SD click-attributed orders for this ASIN (purchasesClicks; excludes view-through); null if SD report unavailable",
     "sd_ad_spend": "Ads API sdAdvertisedProduct — SD spend for this ASIN (promotedAsin filter), data_start_date → data_end_date",
@@ -5622,6 +5634,180 @@ def _compute_organic_daily(item: dict, days: int) -> float | None:
         return None
     organic = total_orders - ad_orders
     return round(organic / float(days), 2)
+
+
+def _compute_trend_summary(item: dict, ctx: WorkflowContext) -> dict | None:
+    """
+    Ad-performance trend snapshot with a data-adaptive cycle length.
+
+    Reads spAdvertisedProduct daily records from ``ctx.cache`` under
+    ``_KEY_DAILY_PERF:<asin>`` — no extra I/O. Cached window depends on the
+    workflow's ``days`` config (default 30 → ~49 days cached; run with
+    ``days>=90`` for full-range 30-vs-30 split).
+
+    Cycle picked from the count of usable daily rows in the last 90 days
+    (SP has a 7-day attribution window, so anything below 14 days can't
+    yield two non-overlapping cycles):
+
+        rows <  14   →  return None (silence — insufficient data)
+        14 ≤ rows <  60  →  7-day cycle:  recent 7d  vs previous 7d   (suffix "_14d")
+        rows ≥ 60    →  30-day cycle: recent 30d vs previous 30d  (suffix "_60d")
+
+    Returns a dict combining:
+      * Flat display strings whose keys embed the actual total window
+        (``cpc_<Nd>_change``, ``acos_<Nd>_change``, ``daily_sales_<Nd>_trend``,
+        ``cycle_alignment_<Nd>``) — these render as rows in the snapshot table.
+        Only present when the underlying metric was computable (silence otherwise).
+      * A structured ``trend`` sub-dict with raw numbers for programmatic access.
+    """
+    asin = item.get("asin")
+    if not asin:
+        return None
+    daily = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}") or []
+    if not daily:
+        return None
+
+    today = datetime.now(tz=_store_tz(ctx)).date()
+    # SP daily_perf ends at yesterday (today's data is not yet available), so
+    # anchor the recent window at yesterday to keep it fully populated.
+    anchor = today - timedelta(days=1)
+    window_start = anchor - timedelta(days=89)  # 90-day scan window ending yesterday
+
+    dated_rows: list[tuple[_date_cls, dict]] = []
+    for r in daily:
+        raw = r.get("date")
+        if not raw:
+            continue
+        try:
+            d = datetime.strptime(raw, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        if window_start <= d <= anchor:
+            dated_rows.append((d, r))
+
+    unique_dates = {d for d, _ in dated_rows}
+    total_days = len(unique_dates)
+    if total_days < 14:
+        return None  # silence — SP 7-day attribution × 2 is the floor
+
+    cycle = 30 if total_days >= 60 else 7
+    total_window = cycle * 2
+    suffix = f"_{total_window}d"
+
+    recent_end = anchor
+    recent_start = recent_end - timedelta(days=cycle - 1)  # inclusive
+    previous_end = recent_start - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=cycle - 1)
+
+    recent_rows = [r for d, r in dated_rows if recent_start <= d <= recent_end]
+    previous_rows = [r for d, r in dated_rows if previous_start <= d <= previous_end]
+    r_days = len({r.get("date") for r in recent_rows if r.get("date")})
+    p_days = len({r.get("date") for r in previous_rows if r.get("date")})
+
+    def _totals(rows: list[dict]) -> tuple[float, int, int, float]:
+        return (
+            sum(float(r.get("spend") or 0) for r in rows),
+            sum(int(r.get("clicks") or 0) for r in rows),
+            sum(int(r.get("orders") or 0) for r in rows),
+            sum(float(r.get("sales") or 0) for r in rows),
+        )
+
+    r_spend, r_clicks, r_orders, r_sales = _totals(recent_rows)
+    p_spend, p_clicks, p_orders, p_sales = _totals(previous_rows)
+
+    def _fmt_signed(v: float, decimals: int = 1) -> str:
+        return f"{'+' if v >= 0 else ''}{round(v, decimals)}"
+
+    def _fmt_pct_change(previous: float, recent: float, val_decimals: int = 2) -> str | None:
+        if previous == 0:
+            return None
+        pct = round((recent - previous) / previous * 100, 1)
+        return f"{_fmt_signed(pct)}% ({previous:.{val_decimals}f}→{recent:.{val_decimals}f})"
+
+    # 1) CPC — bidding-inflation rate (% change)
+    r_cpc = r_spend / r_clicks if r_clicks > 0 else None
+    p_cpc = p_spend / p_clicks if p_clicks > 0 else None
+    cpc_change_raw: dict | None = None
+    cpc_display: str | None = None
+    if r_cpc is not None and p_cpc is not None:
+        pct = round((r_cpc - p_cpc) / p_cpc * 100, 1) if p_cpc != 0 else None
+        cpc_change_raw = {
+            "previous": round(p_cpc, 2),
+            "recent": round(r_cpc, 2),
+            "pct_change": pct,
+        }
+        cpc_display = _fmt_pct_change(round(p_cpc, 2), round(r_cpc, 2), val_decimals=2)
+
+    # 2) ACOS — profit-erosion rate (percentage points, not %)
+    r_acos = (r_spend / r_sales * 100) if r_sales > 0 else None
+    p_acos = (p_spend / p_sales * 100) if p_sales > 0 else None
+    acos_change_raw: dict | None = None
+    acos_display: str | None = None
+    if r_acos is not None and p_acos is not None:
+        pp = round(r_acos - p_acos, 1)
+        acos_change_raw = {
+            "previous_pct": round(p_acos, 1),
+            "recent_pct": round(r_acos, 1),
+            "pp_change": pp,
+        }
+        acos_display = f"{_fmt_signed(pp)} p.p. ({p_acos:.1f}%→{r_acos:.1f}%)"
+
+    # 3) Daily sales trend — SP-attributed daily orders as a demand/rank proxy
+    r_daily = r_orders / r_days if r_days > 0 else 0.0
+    p_daily = p_orders / p_days if p_days > 0 else 0.0
+    daily_sales_trend_raw = {
+        "previous_avg": round(p_daily, 1),
+        "recent_avg": round(r_daily, 1),
+        "pct_change": (round((r_daily - p_daily) / p_daily * 100, 1) if p_daily > 0 else None),
+    }
+    daily_sales_display = _fmt_pct_change(round(p_daily, 1), round(r_daily, 1), val_decimals=1)
+
+    # 4) Cycle alignment — current sellable-days buffer vs stock_gate_days
+    actual_buffer = item.get("can_sell_days")
+    if actual_buffer is None:
+        actual_buffer = item.get("effective_stock_days")
+    theoretical = ctx.config.get("stock_gate_days", 21)
+    cycle_alignment_raw: dict | None = None
+    cycle_alignment_display: str | None = None
+    if actual_buffer is not None:
+        actual_int = int(actual_buffer)
+        theo_int = int(theoretical)
+        aligned = actual_int >= theo_int
+        cycle_alignment_raw = {
+            "actual_buffer_days": actual_int,
+            "theoretical_days": theo_int,
+            "aligned": aligned,
+        }
+        if aligned:
+            cycle_alignment_display = (
+                f"✅ Aligned (actual buffer {actual_int}d ≥ {theo_int}d theoretical)"
+            )
+        else:
+            cycle_alignment_display = (
+                f"⚠️ Deviation (actual buffer {actual_int}d < {theo_int}d theoretical)"
+            )
+
+    result: dict = {
+        "trend": {
+            "cycle_days": cycle,
+            "recent_days": r_days,
+            "previous_days": p_days,
+            "total_window_days": total_window,
+            "cpc_change": cpc_change_raw,
+            "acos_change": acos_change_raw,
+            "daily_sales_trend": daily_sales_trend_raw,
+            "cycle_alignment": cycle_alignment_raw,
+        },
+    }
+    if cpc_display is not None:
+        result[f"cpc{suffix}_change"] = cpc_display
+    if acos_display is not None:
+        result[f"acos{suffix}_change"] = acos_display
+    if daily_sales_display is not None:
+        result[f"daily_sales{suffix}_trend"] = daily_sales_display
+    if cycle_alignment_display is not None:
+        result[f"cycle_alignment{suffix}"] = cycle_alignment_display
+    return result
 
 
 def _build_item_summary(item: dict, ctx: WorkflowContext) -> dict:
@@ -5986,6 +6172,21 @@ def _build_item_summary(item: dict, ctx: WorkflowContext) -> dict:
         if _hac
         else "—"
     )
+
+    # Ad-performance trend snapshot. Cycle length adapts to available data:
+    #   < 14 daily rows → no fields added (silence)
+    #   14–59 rows       → 7-day cycle,  suffix "_14d"
+    #   ≥ 60 rows        → 30-day cycle, suffix "_60d"
+    # Returns:
+    #   trend                       — structured raw numbers for programmatic use
+    #   cpc_<Nd>_change             — "+26.9% (0.78→0.99)" bidding-inflation display
+    #   acos_<Nd>_change            — "+3.8 p.p. (12.5%→16.3%)" profit-erosion display
+    #   daily_sales_<Nd>_trend      — "-9.0% (204.9→186.5)" SP daily-order trend
+    #   cycle_alignment_<Nd>        — "⚠️ Deviation …" / "✅ Aligned …" inventory-cycle
+    # Only computable metrics are surfaced as flat strings; the rest stay silent.
+    trend_out = _compute_trend_summary(item, ctx)
+    if trend_out:
+        summary.update(trend_out)
 
     return summary
 
