@@ -48,7 +48,7 @@ class ClaudeProvider(BaseLLMProvider):
 
         self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
 
-        selected_model = model_name or _MODEL_PRIORITIES[0]
+        selected_model = model_name or os.getenv("ANTHROPIC_MODEL") or _MODEL_PRIORITIES[0]
         super().__init__("claude", selected_model)
 
         from .config.limits import get_max_output_tokens
@@ -57,9 +57,50 @@ class ClaudeProvider(BaseLLMProvider):
         _env = os.getenv("MAX_LLM_OUTPUT_TOKENS", "").strip()
         self._DEFAULT_MAX_TOKENS = min(int(_env) if _env else _ceiling, _ceiling)
 
+        self._resolved_model: str | None = None
+
         logger.info(
             f"ClaudeProvider initialized with model: {self.model_name}, max_output_tokens: {self._DEFAULT_MAX_TOKENS}"
         )
+
+    async def list_models(self) -> list[dict]:
+        """Return all models available on the Anthropic platform via GET /models."""
+        try:
+            response = await self.client.models.list()
+            return [
+                {"id": m.id, "display_name": getattr(m, "display_name", None)}
+                for m in response.data
+            ]
+        except Exception as e:
+            logger.warning(f"Claude /models lookup failed: {e}")
+            return [{"id": m, "display_name": None} for m in _MODEL_PRIORITIES]
+
+    async def _active_model(self) -> str:
+        """Return the validated model name, falling back to the first available if needed.
+
+        Result is cached after the first successful /models call so subsequent
+        inference calls pay no extra latency.
+        """
+        if self._resolved_model is not None:
+            return self._resolved_model
+
+        try:
+            available = [m["id"] for m in await self.list_models()]
+        except Exception as e:
+            logger.warning(f"Claude model resolution failed ({e}); using configured model as-is")
+            self._resolved_model = self.model_name
+            return self._resolved_model
+
+        if self.model_name in available:
+            self._resolved_model = self.model_name
+        else:
+            fallback = available[0] if available else _MODEL_PRIORITIES[0]
+            logger.warning(
+                f"Model '{self.model_name}' not in live model list; falling back to '{fallback}'"
+            )
+            self._resolved_model = fallback
+
+        return self._resolved_model
 
     async def count_tokens(self, prompt: str, system_message: str | None = None) -> int:
         try:
@@ -109,7 +150,7 @@ class ClaudeProvider(BaseLLMProvider):
             cache_system = bool(kwargs.get("cache_system_prompt", False))
 
             api_kwargs = {
-                "model": self.model_name,
+                "model": await self._active_model(),
                 "max_tokens": self._DEFAULT_MAX_TOKENS,
                 "messages": [{"role": "user", "content": prompt}],
             }
@@ -188,7 +229,7 @@ class ClaudeProvider(BaseLLMProvider):
         content.append({"type": "text", "text": prompt})
 
         api_kwargs: dict = {
-            "model": self.model_name,
+            "model": await self._active_model(),
             "max_tokens": max_tokens,
             "temperature": temp,
             "messages": [{"role": "user", "content": content}],
@@ -227,10 +268,11 @@ class ClaudeProvider(BaseLLMProvider):
             )
         self._check_batch_context_limit_sync(requests)
         try:
+            active = await self._active_model()
             batch_requests = []
             for req in requests:
                 params: dict = {
-                    "model": self.model_name,
+                    "model": active,
                     "max_tokens": self._DEFAULT_MAX_TOKENS,
                     "messages": [{"role": "user", "content": req.prompt}],
                 }

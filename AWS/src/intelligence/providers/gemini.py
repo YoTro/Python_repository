@@ -112,7 +112,7 @@ class GeminiProvider(BaseLLMProvider):
 
         self.client = genai.Client(api_key=self.api_key)
 
-        discovered_model = self._discover_best_model(model_name)
+        discovered_model = self._discover_best_model(model_name or os.getenv("GEMINI_MODEL"))
         super().__init__("gemini", discovered_model)
 
         # Default tier for every request; overridable per call via a service_tier kwarg.

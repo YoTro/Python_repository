@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from src.intelligence.dto import LLMResponse
@@ -42,7 +43,7 @@ class OpenAIProvider(BaseLLMProvider):
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY missing.")
 
-        resolved = model_name or os.getenv("OPENAI_MODEL", _DEFAULT_MODEL)
+        resolved = model_name or os.getenv("OPENAI_MODEL") or _DEFAULT_MODEL
         super().__init__("openai", resolved)
 
         try:
@@ -63,6 +64,8 @@ class OpenAIProvider(BaseLLMProvider):
         _env = os.getenv("MAX_LLM_OUTPUT_TOKENS", "").strip()
         self._DEFAULT_MAX_TOKENS = min(int(_env) if _env else _ceiling, _ceiling)
 
+        self._resolved_model: str | None = None
+
         logger.info(
             f"OpenAIProvider initialized: model={self.model_name}, "
             f"max_output_tokens: {self._DEFAULT_MAX_TOKENS}"
@@ -70,10 +73,75 @@ class OpenAIProvider(BaseLLMProvider):
 
     # ── Token counting ────────────────────────────────────────────────────────
 
+    def _tiktoken_encoding(self) -> str:
+        """Return the tiktoken encoding name for the current model.
+
+        o200k_base: GPT-5+ and o-series (o1, o3, o4…)
+        cl100k_base: GPT-4 and older
+        """
+        m = self.model_name.lower()
+        if re.search(r"\bo\d", m):  # o1, o3, o4-mini, …
+            return "o200k_base"
+        match = re.search(r"gpt-(\d+)", m)
+        if match and int(match.group(1)) >= 5:
+            return "o200k_base"
+        return "cl100k_base"
+
+    async def list_models(self) -> list[dict]:
+        """Return all models available via GET /models."""
+        try:
+            response = await self._client.models.list()
+            return [{"id": m.id, "owned_by": getattr(m, "owned_by", None)} for m in response.data]
+        except Exception as e:
+            logger.warning(f"OpenAI /models lookup failed: {e}")
+            return [{"id": _DEFAULT_MODEL, "owned_by": None}]
+
+    async def _active_model(self) -> str:
+        """Return the validated model name, falling back to the first available if needed.
+
+        Result is cached after the first successful /models call so subsequent
+        inference calls pay no extra latency.
+        """
+        if self._resolved_model is not None:
+            return self._resolved_model
+
+        try:
+            # Filter to chat-completion-capable models only; /v1/models also returns
+            # dall-e, whisper, text-embedding, etc. which would crash at inference.
+            available = [
+                m["id"]
+                for m in await self.list_models()
+                if m["id"].startswith("gpt-") or re.match(r"o\d", m["id"])
+            ]
+        except Exception as e:
+            logger.warning(f"OpenAI model resolution failed ({e}); using configured model as-is")
+            self._resolved_model = self.model_name
+            return self._resolved_model
+
+        if self.model_name in available:
+            self._resolved_model = self.model_name
+        else:
+            fallback = available[0] if available else _DEFAULT_MODEL
+            logger.warning(
+                f"Model '{self.model_name}' not in live model list; falling back to '{fallback}'"
+            )
+            self._resolved_model = fallback
+
+        return self._resolved_model
+
     async def count_tokens(self, prompt: str, system_message: str | None = None) -> int:
-        # No dedicated count endpoint on the Chat Completions path; estimate by chars.
         full = (system_message or "") + prompt
-        return max(1, len(full) // 4)
+        try:
+            import tiktoken
+
+            try:
+                enc = tiktoken.encoding_for_model(self.model_name)
+            except KeyError:
+                enc = tiktoken.get_encoding(self._tiktoken_encoding())
+            return len(enc.encode(full))
+        except ImportError:
+            logger.debug("tiktoken not installed; falling back to char estimate")
+            return max(1, len(full) // 4)
 
     # ── Text generation ───────────────────────────────────────────────────────
 
@@ -84,7 +152,7 @@ class OpenAIProvider(BaseLLMProvider):
         **kwargs,
     ) -> LLMResponse:
         await self._check_context_limit(prompt, system_message)
-        params = self._build_params(prompt, system_message, kwargs)
+        params = self._build_params(prompt, system_message, kwargs, await self._active_model())
 
         try:
             resp = await self._client.chat.completions.create(**params)
@@ -113,7 +181,9 @@ class OpenAIProvider(BaseLLMProvider):
         except Exception:
             pass
 
-        params = self._build_params(prompt + schema_hint, system_message, kwargs)
+        params = self._build_params(
+            prompt + schema_hint, system_message, kwargs, await self._active_model()
+        )
         params["response_format"] = {"type": "json_object"}
 
         try:
@@ -127,12 +197,12 @@ class OpenAIProvider(BaseLLMProvider):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _build_params(
-        self, prompt: str, system_message: str | None, kwargs: dict
+        self, prompt: str, system_message: str | None, kwargs: dict, model: str | None = None
     ) -> dict[str, Any]:
         """Assemble chat.completions.create() params, honoring GPT-5/reasoning rules."""
         filtered = self._filter_kwargs(kwargs)
         params: dict[str, Any] = {
-            "model": self.model_name,
+            "model": model or self.model_name,
             "messages": self._build_messages(prompt, system_message),
             # GPT-5 / o-series require max_completion_tokens; max_tokens is rejected.
             "max_completion_tokens": self._DEFAULT_MAX_TOKENS,

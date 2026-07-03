@@ -22,6 +22,7 @@ dependencies = [
     "google-genai",
     "anthropic",
     "openai",
+    "tiktoken",
     "deepseek-tokenizer",
     "pyyaml",
     "jinja2",
