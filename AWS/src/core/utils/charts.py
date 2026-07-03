@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import io
 import logging
+import warnings
 
 import matplotlib
 
 matplotlib.use("Agg")
+# Arial Unicode MS lacks some symbol-block glyphs (e.g. ⚠ U+26A0); matplotlib
+# falls back to DejaVu Sans automatically, so these warnings are pure noise.
+warnings.filterwarnings("ignore", message="Glyph .* missing from font", category=UserWarning)
 import matplotlib.font_manager as _fm
 import matplotlib.pyplot as plt
 
