@@ -51,6 +51,54 @@ def _extract_dup_report_id(resp: requests.Response) -> str | None:
         return None
 
 
+# Amazon Ads API v3 offline-report retention windows (max lookback days from today).
+# Requests older than the retention window return empty results without an error,
+# so we proactively clamp start_date and warn the caller.
+# Sources: Amazon Advertising API v3 reporting docs (per-reportTypeId retention).
+_REPORT_RETENTION_DAYS: dict[str, int] = {
+    # Sponsored Products
+    "spCampaigns": 95,
+    "spCampaignsPlacement": 95,
+    "spAdvertisedProduct": 95,
+    "spKeywords": 95,
+    "spPurchasedProduct": 95,
+    "spSearchTerm": 65,
+    # Sponsored Brands
+    "sbCampaigns": 60,
+    "sbPurchasedProduct": 60,
+    # Sponsored Display
+    "sdCampaigns": 65,
+    "sdAdvertisedProduct": 65,
+    # Sponsored TV
+    "stCampaigns": 95,
+}
+
+
+def _clamp_lookback(start_date: str, end_date: str, max_lookback_days: int) -> tuple[str, bool]:
+    """
+    Clamp start_date so that (today − start_date) ≤ max_lookback_days.
+
+    Returns (possibly_adjusted_start, was_clamped).
+    Raises FatalError if end_date itself is older than the retention window
+    (i.e. the entire requested range is unreachable).
+    """
+    today = datetime.utcnow().date()
+    earliest = today - timedelta(days=max_lookback_days)
+    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    if end < earliest:
+        raise FatalError(
+            f"end_date {end_date} is beyond retention window "
+            f"(earliest available: {earliest.isoformat()}, "
+            f"limit: {max_lookback_days} days)",
+            code=ErrorCode.INVALID_PARAMS,
+        )
+    if start < earliest:
+        return earliest.isoformat(), True
+    return start_date, False
+
+
 class AmazonAdsClient:
     """
     Client for Amazon Advertising API (Sponsored Products v3/v5).
@@ -383,6 +431,18 @@ class AmazonAdsClient:
         today = datetime.utcnow().date()
         end = end_date or str(today - timedelta(days=1))
         start = start_date or str(today - timedelta(days=days))
+
+        # Clamp start_date to the report-type retention window (SP=95d, SB=60d,
+        # SD=65d, STV=60d, spSearchTerm=65d). Beyond that Amazon returns empty
+        # data with no error signal.
+        max_days = _REPORT_RETENTION_DAYS.get(report_type)
+        if max_days is not None:
+            start, was_clamped = _clamp_lookback(start, end, max_days)
+            if was_clamped:
+                logger.warning(
+                    f"[{report_type}] start_date clamped to {start} "
+                    f"— retention limit is {max_days} days"
+                )
 
         type_filters: list[dict] | None = None
         if report_type == "spSearchTerm":
@@ -729,6 +789,18 @@ class AmazonAdsClient:
         Raises on API failure; caller should catch and record the error per type.
         """
         cfg = self._AD_TYPE_CONFIG[ad_type]
+
+        # Clamp start_date to this ad type's retention window before
+        # requesting the report (SB=60d, SD=65d, STV=60d, etc.).
+        max_days = _REPORT_RETENTION_DAYS.get(cfg["reportTypeId"])
+        if max_days is not None:
+            start_date, was_clamped = _clamp_lookback(start_date, end_date, max_days)
+            if was_clamped:
+                logger.warning(
+                    f"[{ad_type}] start_date clamped to {start_date} "
+                    f"(reportTypeId={cfg['reportTypeId']}, retention={max_days} days)"
+                )
+
         url = f"{self.base_url}/reporting/reports"
         headers = {
             "Authorization": f"Bearer {self.auth.get_access_token()}",
