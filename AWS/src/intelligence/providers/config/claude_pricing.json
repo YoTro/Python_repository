@@ -1,7 +1,7 @@
 {
   "metadata": {
     "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-    "last_verified": "2026-06-27",
+    "last_verified": "2026-07-04",
     "schema_version": "4",
     "conventions": {
       "price_entry_shape": {
@@ -23,6 +23,11 @@
     }
   },
   "model_string_index": {
+    "claude-sonnet-5": {
+      "canonical_id": "claude-sonnet-5",
+      "is_alias": false,
+      "is_deprecated": false
+    },
     "claude-fable-5": {
       "canonical_id": "claude-fable-5",
       "is_alias": false,
@@ -165,6 +170,60 @@
     }
   },
   "lookup": {
+    "claude-sonnet-5#standard#input": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "Introductory pricing through 2026-08-31; standard price $3.00/MTok thereafter"
+    },
+    "claude-sonnet-5#standard#output": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "Introductory pricing through 2026-08-31; standard price $15.00/MTok thereafter"
+    },
+    "claude-sonnet-5#standard#cache_write_5m": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-sonnet-5#standard#cache_write_1h": {
+      "price": 4.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-sonnet-5#standard#cache_read": {
+      "price": 0.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.1,
+      "savings_pct_vs_input": 90
+    },
+    "claude-sonnet-5#batch#input": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-sonnet-5#batch#output": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
     "claude-fable-5#standard#input": {
       "price": 10.0,
       "unit": "USD",
@@ -1072,6 +1131,23 @@
   },
   "models": [
     {
+      "id": "claude-sonnet-5",
+      "display_name": "Claude Sonnet 5",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": ["text", "image"],
+      "output_modalities": ["text"],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 1000000,
+        "long_context_behavior": "flat_1M_no_surcharge",
+        "note": "900k-token request billed at same rate as 9k-token request"
+      },
+      "tiers_available": ["standard", "batch"],
+      "_lookup_key_prefix": "claude-sonnet-5",
+      "pricing_note": "Introductory pricing through 2026-08-31; standard $3/$15 per MTok thereafter"
+    },
+    {
       "id": "claude-opus-4-8",
       "display_name": "Claude Opus 4.8",
       "status": "stable",
@@ -1736,6 +1812,9 @@
       "max_output_tokens": 8192
     },
     "claude-sonnet-4": {
+      "max_output_tokens": 16384
+    },
+    "claude-sonnet-5": {
       "max_output_tokens": 16384
     },
     "claude-opus-4": {

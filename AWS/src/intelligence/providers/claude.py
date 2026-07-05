@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, TypeVar
 
 import anthropic
@@ -15,11 +16,15 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
-# Priority order for model selection
+# Priority order for model selection — newest/best first.
+# _active_model() validates against the live /v1/models list and falls back
+# to the first entry that is actually available.
 _MODEL_PRIORITIES = [
-    "claude-3-5-sonnet-20241022",
-    "claude-3-opus-20240229",
-    "claude-3-haiku-20240307",
+    "claude-sonnet-5",
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-3-5-sonnet-20241022",  # legacy fallback
 ]
 
 
@@ -29,16 +34,20 @@ class ClaudeProvider(BaseLLMProvider):
     """
 
     # Context windows per model family (prefix-matched against self.model_name).
-    # All Claude 3+ models share a 200k context window.
+    # All Claude 3+ / 4+ / 5 models share a 200k context window.
     _MODEL_CONTEXT_WINDOWS = {
+        "claude-sonnet-5": 1_000_000,
+        "claude-fable-5": 1_000_000,
+        "claude-mythos-5": 1_000_000,
+        "claude-opus-4": 1_000_000,
+        "claude-sonnet-4-6": 1_000_000,
+        "claude-sonnet-4": 200_000,
+        "claude-haiku-4": 200_000,
         "claude-3-5-sonnet": 200_000,
         "claude-3-5-haiku": 200_000,
         "claude-3-opus": 200_000,
         "claude-3-sonnet": 200_000,
         "claude-3-haiku": 200_000,
-        "claude-opus-4": 200_000,
-        "claude-sonnet-4": 200_000,
-        "claude-haiku-4": 200_000,
     }
 
     def __init__(self, api_key: str | None = None, model_name: str | None = None):
@@ -102,10 +111,23 @@ class ClaudeProvider(BaseLLMProvider):
 
         return self._resolved_model
 
+    def _is_reasoning_model(self, model: str) -> bool:
+        """Return True for Claude 4+ / 5 models that reject the temperature parameter.
+
+        Claude 3.x models accept temperature; all newer generations (claude-sonnet-4,
+        claude-opus-4, claude-sonnet-5, claude-fable-5, etc.) treat it as deprecated.
+        """
+        m = model.lower()
+        # claude-3-* and claude-2-* / claude-instant-* support temperature
+        if re.match(r"claude-[123]", m) or re.match(r"claude-instant", m):
+            return False
+        return True
+
     async def count_tokens(self, prompt: str, system_message: str | None = None) -> int:
         try:
+            active = await self._active_model()
             kwargs = {
-                "model": self.model_name,
+                "model": active,
                 "messages": [{"role": "user", "content": prompt}],
             }
             if system_message:
@@ -161,7 +183,12 @@ class ClaudeProvider(BaseLLMProvider):
             # Filter out internal metadata from kwargs (incl. cache_system_prompt)
             filtered_kwargs = self._filter_kwargs(kwargs)
 
-            # Merge extra kwargs (allows per-call max_tokens override)
+            # Claude 4+ / 5 models reject temperature; strip it for those.
+            temperature = filtered_kwargs.pop("temperature", None)
+            if temperature is not None and not self._is_reasoning_model(api_kwargs["model"]):
+                api_kwargs["temperature"] = temperature
+
+            # Merge remaining extra kwargs (allows per-call max_tokens override)
             api_kwargs.update(filtered_kwargs)
 
             response = await self.client.messages.create(**api_kwargs)
@@ -228,12 +255,14 @@ class ClaudeProvider(BaseLLMProvider):
         ]
         content.append({"type": "text", "text": prompt})
 
+        active = await self._active_model()
         api_kwargs: dict = {
-            "model": await self._active_model(),
+            "model": active,
             "max_tokens": max_tokens,
-            "temperature": temp,
             "messages": [{"role": "user", "content": content}],
         }
+        if not self._is_reasoning_model(active):
+            api_kwargs["temperature"] = temp
         if system_message:
             api_kwargs["system"] = system_message
 
