@@ -43,6 +43,15 @@ class MCPAgent(BaseAgent):
         self._prompt_builder = PromptBuilder()
         self.token_budget = token_budget
 
+        # Pre-build OpenAI native tool schemas once at init.
+        # Used when the cloud provider is OpenAI so tool calls come back as
+        # structured JSON (language-agnostic) rather than text ReAct JSON.
+        from src.intelligence.providers.openai import OpenAIProvider
+
+        self._openai_tool_schemas: list[dict] | None = (
+            tool_registry.get_openai_schemas() if isinstance(router.cloud, OpenAIProvider) else None
+        )
+
     # ── helpers ────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -246,11 +255,16 @@ class MCPAgent(BaseAgent):
                 # ── LLM call ──────────────────────────────────────────────────
                 conversation = session.format_history_as_text()
 
+                extra: dict = {}
+                if self._openai_tool_schemas:
+                    extra["tools"] = self._openai_tool_schemas
+
                 response_obj = await self.router.route_and_execute(
                     conversation,
                     system_message=system_message,
                     category=TaskCategory.DEEP_REASONING,
                     cache_system_prompt=True,
+                    **extra,
                 )
                 response = response_obj.text if response_obj else ""
                 self._accum_tokens(session, response_obj)
@@ -288,63 +302,12 @@ class MCPAgent(BaseAgent):
                     f"{len(response)} chars, {response_obj.token_usage if response_obj else 0} tokens"
                 )
 
-                # ── Final Answer detection ────────────────────────────────────
-                if "Final Answer:" in response:
-                    final_answer = response.split("Final Answer:")[-1].strip()
-                    session.add_message(role="assistant", content=response)
-
-                    # Enforce Attachment-First Policy: if the answer exceeds the
-                    # card/message limit, save to a local file and let the callback
-                    # handle channel-specific delivery (Feishu, WeChat, web, etc.).
-                    # Skip auto-export if the agent already called export_md explicitly
-                    # (session.context["report_file_path"] was set by the tool interception below).
-                    _CARD_LIMIT_BYTES = 28_000
-                    if len(
-                        final_answer.encode("utf-8")
-                    ) > _CARD_LIMIT_BYTES and not session.context.get("report_file_path"):
-                        try:
-                            import datetime as _dt
-                            import json as _json
-                            import re as _re
-
-                            slug = _re.sub(r"\W+", "_", session.session_id[:8])
-                            filename = f"report_{slug}_{_dt.date.today()}.md"
-                            export_res = await self.mcp.call_tool_json(
-                                "export_md",
-                                {
-                                    "content": final_answer,
-                                    "filename": filename,
-                                    "_metadata": {
-                                        "tenant_id": session.tenant_id,
-                                        "job_id": session.session_id,
-                                    },
-                                },
-                            )
-                            file_path = None
-                            if isinstance(export_res, dict):
-                                file_path = export_res.get("file_path")
-                            elif isinstance(export_res, list) and export_res:
-                                file_path = _json.loads(export_res[0].get("text", "{}")).get(
-                                    "file_path"
-                                )
-                            if file_path:
-                                # Store for _run_agent_mode to forward to on_complete
-                                session.context["report_file_path"] = file_path
-                                session.context["report_filename"] = filename
-                                preview = final_answer[:500].rstrip()
-                                final_answer = f"{preview}\n\n…（内容较长，完整报告已保存为附件：`{filename}`）"
-                                logger.info(
-                                    f"Oversized Final Answer ({len(final_answer)} chars) "
-                                    f"auto-exported to {file_path}"
-                                )
-                        except Exception as _e:
-                            logger.error(f"Auto-export of oversized Final Answer failed: {_e}")
-
-                    session.status = "completed"
-                    self.session_mgr.save(session)
-                    return final_answer
-
-                # ── Parse tool call ───────────────────────────────────────────
+                # ── Parse tool call (checked before Final Answer) ─────────
+                # Tool call takes priority: when a response contains BOTH a JSON
+                # action block and "Final Answer:", the model is pre-empting the
+                # result before the tool runs.  Execute the tool and continue the
+                # loop; the model will write a proper Final Answer after seeing the
+                # real observation.
                 action, action_input = self._parse_tool_call(response)
                 session.add_message(role="assistant", content=response)
 
@@ -444,8 +407,90 @@ class MCPAgent(BaseAgent):
                         observation = f"Error calling tool: {e}"
 
                     session.add_message(role="tool", content=observation, name=action)
+
+                elif "Final Answer:" in response:
+                    # No tool call found — genuine Final Answer.
+                    final_answer = response.split("Final Answer:")[-1].strip()
+
+                    # Enforce Attachment-First Policy: if the answer exceeds the
+                    # card/message limit, save to a local file and let the callback
+                    # handle channel-specific delivery (Feishu, WeChat, web, etc.).
+                    # Skip auto-export if the agent already called export_md explicitly
+                    # (session.context["report_file_path"] was set by the tool interception above).
+                    _CARD_LIMIT_BYTES = 28_000
+                    if len(
+                        final_answer.encode("utf-8")
+                    ) > _CARD_LIMIT_BYTES and not session.context.get("report_file_path"):
+                        try:
+                            import datetime as _dt
+                            import json as _json
+                            import re as _re
+
+                            slug = _re.sub(r"\W+", "_", session.session_id[:8])
+                            filename = f"report_{slug}_{_dt.date.today()}.md"
+                            export_res = await self.mcp.call_tool_json(
+                                "export_md",
+                                {
+                                    "content": final_answer,
+                                    "filename": filename,
+                                    "_metadata": {
+                                        "tenant_id": session.tenant_id,
+                                        "job_id": session.session_id,
+                                    },
+                                },
+                            )
+                            file_path = None
+                            if isinstance(export_res, dict):
+                                file_path = export_res.get("file_path")
+                            elif isinstance(export_res, list) and export_res:
+                                file_path = _json.loads(export_res[0].get("text", "{}")).get(
+                                    "file_path"
+                                )
+                            if file_path:
+                                session.context["report_file_path"] = file_path
+                                session.context["report_filename"] = filename
+                                preview = final_answer[:500].rstrip()
+                                final_answer = f"{preview}\n\n…（内容较长，完整报告已保存为附件：`{filename}`）"
+                                logger.info(
+                                    f"Oversized Final Answer ({len(final_answer)} chars) "
+                                    f"auto-exported to {file_path}"
+                                )
+                        except Exception as _e:
+                            logger.error(f"Auto-export of oversized Final Answer failed: {_e}")
+
+                    session.status = "completed"
+                    self.session_mgr.save(session)
+                    return final_answer
+
                 else:
-                    # No tool call and no Final Answer — assume conversational reply
+                    # No tool call JSON and no "Final Answer:" prefix.
+                    # OpenAI with native function calling: plain-text here is the model's
+                    # genuine completion (tool calls come via tool_calls struct, not text).
+                    # Text-based providers (Gemini, DeepSeek): re-prompt once if no tools
+                    # have been called yet — a safety net for format non-compliance.
+                    if self._openai_tool_schemas is None:
+                        tool_calls_made = sum(
+                            1
+                            for m in session.history
+                            if m.role == "tool" and m.name not in (None, "system")
+                        )
+                        if tool_calls_made == 0 and session.current_step <= 3:
+                            logger.warning(
+                                f"Step {session.current_step}: plain-text with no tool call "
+                                "and no 'Final Answer:', no tools used — re-prompting."
+                            )
+                            session.add_message(
+                                role="tool",
+                                name="system",
+                                content=(
+                                    "SYSTEM: Your response did not follow the required format. "
+                                    "You MUST either (a) call a tool using the JSON block format "
+                                    "to retrieve live data, or (b) write 'Final Answer:' followed "
+                                    "by your answer."
+                                ),
+                            )
+                            continue
+                    # Genuine completion (OpenAI native) or post-tool reply
                     session.status = "completed"
                     self.session_mgr.save(session)
                     return response.strip()

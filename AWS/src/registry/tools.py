@@ -68,6 +68,22 @@ class ToolRegistry:
             return {k: v for k, v in arguments.items() if k in allowed_keys}
         return arguments
 
+    def get_openai_schemas(self) -> list[dict]:
+        """Return all registered tools in OpenAI function-calling schema format."""
+        schemas = []
+        for tool in self._tools.values():
+            schemas.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": (tool.description or "")[:1024],
+                        "parameters": tool.inputSchema or {"type": "object", "properties": {}},
+                    },
+                }
+            )
+        return schemas
+
     async def call_tool(self, name: str, arguments: dict) -> list[TextContent]:
         if name not in self._handlers:
             raise ToolNotFoundError(

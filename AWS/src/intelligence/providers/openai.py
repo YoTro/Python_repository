@@ -196,22 +196,35 @@ class OpenAIProvider(BaseLLMProvider):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
+    def _is_reasoning_model(self, model: str) -> bool:
+        """Return True for o-series and GPT-5+ reasoning models that reject custom temperature."""
+        m = model.lower()
+        if re.match(r"o\d", m):
+            return True
+        match = re.search(r"gpt-(\d+)", m)
+        return bool(match and int(match.group(1)) >= 5)
+
     def _build_params(
         self, prompt: str, system_message: str | None, kwargs: dict, model: str | None = None
     ) -> dict[str, Any]:
         """Assemble chat.completions.create() params, honoring GPT-5/reasoning rules."""
         filtered = self._filter_kwargs(kwargs)
+        resolved = model or self.model_name
         params: dict[str, Any] = {
-            "model": model or self.model_name,
+            "model": resolved,
             "messages": self._build_messages(prompt, system_message),
             # GPT-5 / o-series require max_completion_tokens; max_tokens is rejected.
             "max_completion_tokens": self._DEFAULT_MAX_TOKENS,
         }
-        # Reasoning models accept only the default temperature, so forward it only
-        # when the caller explicitly set one.
+        # Reasoning models (o-series, gpt-5+) reject any non-default temperature.
         temperature = filtered.pop("temperature", None)
-        if temperature is not None:
+        if temperature is not None and not self._is_reasoning_model(resolved):
             params["temperature"] = temperature
+        # Native function calling: caller passes tool schemas via `tools` kwarg.
+        tools = filtered.pop("tools", None)
+        if tools:
+            params["tools"] = tools
+            params["tool_choice"] = "auto"
         params.update(filtered)
         return params
 
@@ -232,7 +245,21 @@ class OpenAIProvider(BaseLLMProvider):
 
     def _parse_response(self, resp, *, is_batch: bool) -> LLMResponse:
         choice = resp.choices[0]
-        text = choice.message.content or ""
+        # Native function calling: convert tool_calls to the text-based ReAct JSON
+        # format so the MCPAgent's _parse_tool_call can process it unchanged.
+        tool_calls = getattr(choice.message, "tool_calls", None)
+        if tool_calls:
+            tc = tool_calls[0]  # one tool call per turn matches the ReAct protocol
+            try:
+                action_input = json.loads(tc.function.arguments)
+            except Exception:
+                action_input = {}
+            text = json.dumps(
+                {"action": tc.function.name, "action_input": action_input},
+                ensure_ascii=False,
+            )
+        else:
+            text = choice.message.content or ""
         usage = resp.usage
 
         input_tokens = getattr(usage, "prompt_tokens", 0) or 0
