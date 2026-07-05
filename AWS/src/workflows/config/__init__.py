@@ -23,24 +23,27 @@ _DEFAULTS_PATH = os.path.join(
 )
 
 _defaults_cache: dict | None = None
+_defaults_mtime: float | None = None
 
 
 def _load_defaults() -> dict:
-    """Load workflow defaults from YAML file. Cached after first load."""
-    global _defaults_cache
-    if _defaults_cache is not None:
-        return _defaults_cache
+    """Load workflow defaults from YAML, re-reading only when the file changes."""
+    global _defaults_cache, _defaults_mtime
+    try:
+        mtime = os.path.getmtime(_DEFAULTS_PATH)
+        if _defaults_cache is not None and mtime == _defaults_mtime:
+            return _defaults_cache
+    except OSError:
+        logger.warning(f"Workflow defaults file not found: {_DEFAULTS_PATH}")
+        return _defaults_cache or {}
 
     try:
         import yaml
 
-        if os.path.exists(_DEFAULTS_PATH):
-            with open(_DEFAULTS_PATH) as f:
-                _defaults_cache = yaml.safe_load(f) or {}
-                logger.debug(f"Loaded workflow defaults from {_DEFAULTS_PATH}")
-        else:
-            logger.warning(f"Workflow defaults file not found: {_DEFAULTS_PATH}")
-            _defaults_cache = {}
+        with open(_DEFAULTS_PATH) as f:
+            _defaults_cache = yaml.safe_load(f) or {}
+            _defaults_mtime = mtime
+            logger.debug(f"Loaded workflow defaults from {_DEFAULTS_PATH}")
     except ImportError:
         logger.warning("PyYAML not installed, using empty defaults")
         _defaults_cache = {}
