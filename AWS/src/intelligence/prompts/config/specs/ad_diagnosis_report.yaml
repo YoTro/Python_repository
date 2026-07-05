@@ -1,7 +1,7 @@
 id: ad_diagnosis_report
 version: "1.0.0"
 scope: batch
-token_budget: 180000
+token_budget: 200000
 role_id: senior_ads_analyst
 framework_ids: []
 
@@ -61,6 +61,7 @@ template: |
     can_sell_days → total_available ÷ daily_sales (null if daily_sales unavailable; when daily_sales_source=ad_orders_only: this is an UPPER BOUND — actual stockout is sooner because organic orders are excluded from the denominator; can_sell_days_note field contains a human-readable caveat)
     inventory_risk → total_inventory_days < inventory_risk_days config (default 30d); uses total_inventory_days (available + fc_transfer), NOT can_sell_days (on-shelf only)
     shipment_lead_time → store-wide FBA shipment lead-time distribution. data_source field indicates measurement quality: 'lingxing_erp' = precise stage-level dates (SHIPPED/RECEIVING/CLOSED); 'sp_api_plans' = proxy (plan_creation → fba_receive for CN-source SHIPPED plans — sea_transit.p75 overestimates true sea transit by roughly the plan-creation-to-departure lag, typically 7–21d; treat as conservative upper bound); 'none' = no data, inbound_lead_days falls back to config default. Three phases (lingxing_erp only): (1) sea_transit_overall = SHIPPED→RECEIVING transit >12d; (2) local_to_fba_overall = SHIPPED→RECEIVING ≤12d (domestic 3PL→FBA); (3) fba_processing_overall = RECEIVING→CLOSED. Structure: {{sea_transit_overall: {{n, p25, median, p75, p90}}, local_to_fba_overall: {{n, p25, median, p75, p90}}, fba_processing_overall: {{n, p25, median, p75, p90}}, by_quarter: {{"YYYY-Qn": {{sea_median, sea_p75, ...}}}}, data_source: str}}. Reporting guidance per data_source in the Inventory insight section below. inbound_lead_days is set to sea_transit_p75 when available (from either source).
+    benchmark_data → list of crossProgramBenchmarks rows for this ASIN's brand (already filtered to SP adProduct; granularity is DAILY, WEEKLY, or MONTHLY depending on benchmark_time_unit config). Each row contains: browseCategory, adFormat, campaignGoal, campaignBudgetCurrencyCode, peerSetSize (a range string such as "5-10", "10-15", "50-55" — NOT a number), and the following metric groups each with own value + P25/P50/P75 peer percentiles: ctr, cpc, cpm, percentOfPurchasesNewToBrand, newToBrandPurchaseRate, costPerNewToBrandPurchase, completionRateVideoAd (video only), costPerCompletedViewVideoAd (video only). To derive a stable peer baseline: average each P50 column equally across rows (do NOT attempt to weight by peerSetSize — it is a label string, not a number). Compare account metrics from spCampaigns against the averaged peer P50. null or empty → benchmark data unavailable; omit the Category Peer Benchmarks bullet entirely. When rows span multiple browseCategory or adFormat values, use only rows matching the primary category/format (most frequent value across rows).
     campaign_count → count of campaigns matched to this ASIN (matching method in campaign_match_strategy)
     campaign_match_strategy → how campaigns were matched to this ASIN: explicit_config (most reliable) | spAdvertisedProduct (ground truth — campaigns that actually delivered ads for this ASIN per report data) | name_substring (fragile — ASIN in campaign name; may include unrelated campaigns) | none
     active_campaign_count → campaigns with state=ENABLED
@@ -197,6 +198,39 @@ template: |
     (A) mod=N% (non-zero): write 'N% modifier configured for [placement]'.
     (B) mod absent or mod=0: write 'no modifier set (0% boost; Amazon serves at base bid only)'.
     FORBIDDEN: do NOT write '5% default' — null/absent mod means 0% effective boost, not an Amazon-side default. When mod=5% is present in `placement_summary_str`, cite it as a real seller configuration. *Source: $placement_summary_str*
+  - **Category Peer Benchmarks**: Omit this bullet entirely if `benchmark_data` is null or empty.
+
+    **Step 1 — filter rows**: use only rows matching the primary browseCategory and adFormat (most frequent value across all rows); discard outlier rows from other categories or formats. peerSetSize is a label string like "5-10", "10-15", "50-55" — cite it verbatim, never convert to a number or use as a weight.
+
+    **Step 2 — determine period grouping** based on `lookback_days` (= `days` config):
+    - `lookback_days < 30`: display each row as a **week**. Use the `startDate` field (WEEKLY/MONTHLY data) or derive ISO week from `date` field (DAILY data) as the Period label (format: `YYYY-Www`).
+    - `lookback_days ≥ 30`: aggregate DAILY rows by **month** (group by YYYY-MM from `date` field, average each P50 within the month). For WEEKLY/MONTHLY data use `startDate` truncated to YYYY-MM. Period label format: `YYYY-MM`.
+
+    **Step 3 — render Table 1: Peer Benchmark Trend** (bare pipe markdown, no code fences). One row per period. Include only non-video metrics unless adFormat is a video format:
+
+    | Period | browseCategory | adFormat | peerSetSize | ctr P50 | cpc P50 | cpm P50 | NTB% P50 | NTB Rate P50 | Cost/NTB P50 |
+    |---|---|---|---|---|---|---|---|---|---|
+    | 2026-06 | Kitchen | Standard | 10-15 | 0.50% | $1.20 | $5.40 | 32% | 8% | $15.00 |
+    | ... | | | | | | | | | |
+
+    Include video columns (Completion Rate P50, Cost/Completed View P50) only when adFormat is a video format.
+
+    **Step 4 — render Table 2: Account vs Latest Period Peers**. Use the most recent period's averaged P25/P50/P75. Compute account values from spCampaigns data (CTR = sp_ad_clicks ÷ impressions; CPC = sp_ad_spend ÷ sp_ad_clicks; CPM = sp_ad_spend ÷ impressions × 1 000). Use "—" when the account value cannot be computed.
+
+    | Metric | Account | P25 | P50 (Peer Median) | P75 | vs Peers |
+    |---|---|---|---|---|---|
+    | CTR | $acct% | $P25% | $P50% | $P75% | ▲/≈/▼ |
+    | CPC | $$acct | $$P25 | $$P50 | $$P75 | ▲/≈/▼ |
+    | CPM | $$acct | $$P25 | $$P50 | $$P75 | ▲/≈/▼ |
+    | NTB Purchase % | $acct% | $P25% | $P50% | $P75% | ▲/≈/▼ |
+    | NTB Purchase Rate | $acct% | $P25% | $P50% | $P75% | ▲/≈/▼ |
+    | Cost per NTB Purchase | $$acct | $$P25 | $$P50 | $$P75 | ▲/≈/▼ |
+
+    vs Peers: ▲ = above P75; ▼ = below P25; ≈ = between P25–P75. Direction-awareness: CTR/NTB metrics — ▲ is good, ▼ is bad; CPC/CPM/cost metrics — ▼ is good, ▲ is bad.
+
+    After both tables, write 1–2 sentences on the most notable gaps or trends across the period range. If peerSetSize label is "5-10" or lower across all rows, prepend with '(small peer set — directional only)'.
+    FORBIDDEN: do NOT cite returnOnAdSpend, conversionRate, impressionShare, clickShare, or costPerOrder — these columns are not in the report.
+    *Source: benchmark_data rows=$n, time_unit=$val, period_grouping=monthly/weekly, browseCategory=$val, adFormat=$val, peerSetSize=$val*
   - **Keywords**: [Insight] — CRITICAL: state "lp_pause_candidates_count=$n keywords above-target ACOS (pause candidates); lp_hold_keywords_count=$m efficient keywords held by budget constraint". FORBIDDEN: do NOT write "LP identified $lp_zero_keywords_count keywords with high ACOS" — lp_zero_keywords_count includes both above-target and efficient hold keywords and MUST NOT be cited as a pause count. *Source: keyword_count=$n, match_type_dist={{exact:$a%, phrase:$b%}}, lp_pause_candidates_count=$n, lp_hold_keywords_count=$m*
   - **Organic & Market**: [Insight] — *Source: ad_traffic_ratio=$val, organic_rank_trend=improving/stable/declining for kw=$kw; SFR trend up/down in week YYYY-Www → demand increased/decreased[; traffic_divergence_label="$val" — omit if empty]; competitor_price_sample=$competitor_price_summary_str*
   - **Inventory**: [Insight] — *Source: inventory_risk=T/F, can_sell_days=$d*
