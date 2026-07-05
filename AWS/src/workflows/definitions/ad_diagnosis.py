@@ -314,11 +314,32 @@ async def _ensure_campaigns(ctx: WorkflowContext) -> list[dict]:
     l2_parts_fn=lambda ctx: ("sp_performance", ctx.config.get("days", 30)),
 )
 async def _ensure_performance(ctx: WorkflowContext) -> list[dict]:
-    records = await _ads_client(ctx).get_performance_report(
-        report_type="spCampaigns", days=ctx.config.get("days", 30)
-    )
-    logger.info(f"Fetched {len(records)} campaign performance records")
+    client = _ads_client(ctx)
+    days = ctx.config.get("days", 30)
+    today = datetime.now(tz=_store_tz(ctx)).date()
+    chunk_end = today - timedelta(days=1)
+    remaining = days
+    all_records: list[dict] = []
+
+    while remaining > 0:
+        chunk = min(remaining, _REPORT_MAX_DAYS)
+        chunk_start = chunk_end - timedelta(days=chunk - 1)
+        all_records.extend(
+            await client.get_performance_report(
+                report_type="spCampaigns",
+                start_date=str(chunk_start),
+                end_date=str(chunk_end),
+            )
+        )
+        chunk_end = chunk_start - timedelta(days=1)
+        remaining -= chunk
+
+    records = _merge_summary(all_records, key_fn=lambda r: r["campaign_id"])
+    logger.info(f"Fetched {len(records)} campaign performance records ({days}d)")
     return records
+
+
+_KW_PERF_MAX_DAYS = 31  # spSearchTerm DAILY API window limit
 
 
 @_l2_cached(
@@ -328,11 +349,28 @@ async def _ensure_performance(ctx: WorkflowContext) -> list[dict]:
 )
 async def _ensure_keyword_performance(ctx: WorkflowContext) -> list[dict]:
     """spSearchTerm daily report; each row is one (keyword, date) so callers can count active days."""
-    records = await _ads_client(ctx).get_performance_report(
-        report_type="spSearchTerm", days=ctx.config.get("days", 30), time_unit="DAILY"
-    )
-    logger.info(f"Fetched {len(records)} keyword performance records (daily)")
-    return records
+    client = _ads_client(ctx)
+    days = ctx.config.get("days", 30)
+    today = datetime.now(tz=_store_tz(ctx)).date()
+    chunk_end = today - timedelta(days=1)
+    remaining = days
+    all_records: list[dict] = []
+
+    while remaining > 0:
+        chunk = min(remaining, _KW_PERF_MAX_DAYS)
+        chunk_start = chunk_end - timedelta(days=chunk - 1)
+        batch = await client.get_performance_report(
+            report_type="spSearchTerm",
+            start_date=str(chunk_start),
+            end_date=str(chunk_end),
+            time_unit="DAILY",
+        )
+        all_records.extend(batch)
+        chunk_end = chunk_start - timedelta(days=1)
+        remaining -= chunk
+
+    logger.info(f"Fetched {len(all_records)} keyword performance records (daily, {days}d)")
+    return all_records
 
 
 @_l2_cached(
@@ -362,7 +400,31 @@ async def _ensure_keywords(ctx: WorkflowContext, campaign_ids: list[str]) -> lis
     return keywords
 
 
-_ADVERT_PROD_MAX_DAYS = 31  # spAdvertisedProduct API window limit
+_REPORT_MAX_DAYS = 31  # Amazon Ads API per-request window limit for all report types
+_ADVERT_PROD_MAX_DAYS = _REPORT_MAX_DAYS
+
+
+def _merge_summary(records: list[dict], key_fn) -> list[dict]:
+    """Merge chunked SUMMARY report records by groupBy key, summing additive fields."""
+    merged: dict = {}
+    for r in records:
+        key = key_fn(r)
+        if key not in merged:
+            merged[key] = dict(r)
+        else:
+            m = merged[key]
+            for f in ("impressions", "clicks", "spend", "orders", "sales"):
+                m[f] = (m.get(f) or 0) + (r.get(f) or 0)
+    for m in merged.values():
+        m["acos"] = round(m["spend"] / m["sales"] * 100, 2) if (m.get("sales") or 0) > 0 else None
+        m["ctr"] = (
+            round(m["clicks"] / m["impressions"] * 100, 4)
+            if (m.get("impressions") or 0) > 0
+            else None
+        )
+        if "cpc" in m:
+            m["cpc"] = round(m["spend"] / m["clicks"], 2) if (m.get("clicks") or 0) > 0 else None
+    return list(merged.values())
 
 
 @_l2_cached(
@@ -414,10 +476,28 @@ async def _ensure_daily_performance(ctx: WorkflowContext, asin: str) -> list[dic
 )
 async def _ensure_placement_performance(ctx: WorkflowContext) -> list[dict]:
     """Fetch account-wide spCampaignsPlacement report, cached once per run."""
-    records = await _ads_client(ctx).get_performance_report(
-        report_type="spCampaignsPlacement", days=ctx.config.get("days", 30)
-    )
-    logger.info(f"Fetched {len(records)} placement performance records")
+    client = _ads_client(ctx)
+    days = ctx.config.get("days", 30)
+    today = datetime.now(tz=_store_tz(ctx)).date()
+    chunk_end = today - timedelta(days=1)
+    remaining = days
+    all_records: list[dict] = []
+
+    while remaining > 0:
+        chunk = min(remaining, _REPORT_MAX_DAYS)
+        chunk_start = chunk_end - timedelta(days=chunk - 1)
+        all_records.extend(
+            await client.get_performance_report(
+                report_type="spCampaignsPlacement",
+                start_date=str(chunk_start),
+                end_date=str(chunk_end),
+            )
+        )
+        chunk_end = chunk_start - timedelta(days=1)
+        remaining -= chunk
+
+    records = _merge_summary(all_records, key_fn=lambda r: (r["campaign_id"], r.get("placement")))
+    logger.info(f"Fetched {len(records)} placement performance records ({days}d)")
     return records
 
 

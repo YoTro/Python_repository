@@ -5,7 +5,7 @@ import logging
 import os
 import re as _re
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import requests
@@ -788,6 +788,21 @@ class AmazonAdsClient:
         Returns raw parsed records from the gzip-JSON payload.
         Raises on API failure; caller should catch and record the error per type.
         """
+        # All campaign SUMMARY report types share a 31-day per-request window limit.
+        # Auto-chunk and concatenate so callers don't need to handle this.
+        _start = date.fromisoformat(start_date)
+        _end = date.fromisoformat(end_date)
+        if (_end - _start).days > 30:
+            all_records: list[dict] = []
+            chunk_end = _end
+            while chunk_end >= _start:
+                chunk_start = max(_start, chunk_end - timedelta(days=30))
+                all_records.extend(
+                    await self._fetch_ad_type_records(ad_type, str(chunk_start), str(chunk_end))
+                )
+                chunk_end = chunk_start - timedelta(days=1)
+            return all_records
+
         cfg = self._AD_TYPE_CONFIG[ad_type]
 
         # Clamp start_date to this ad type's retention window before
