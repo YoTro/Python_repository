@@ -1050,6 +1050,8 @@ The central discovery hub shared by both tracks. Three **independent** registrie
 
 The registry is a **discovery + invocation hub, not a business-logic layer.** It maps names to capabilities and is the call boundary; the actual work lives in the domain servers (`src/mcp/servers/<domain>/`). Specifically, `ToolRegistry.call_tool` is the one place that, in order: (1) pops `_metadata` and propagates `tenant_id`/`user_id`/`job_id`/`chat_id` to contextvars via `ContextPropagator`, (2) strips unknown arguments not in the tool's `inputSchema` (logged at WARNING), then (3) invokes the handler with clean business args. Keep cross-cutting concerns (context, arg validation, future ACL/versioning — §12.4) here; keep domain logic out.
 
+`ToolRegistry` also exposes `get_openai_schemas() -> list[dict]`, which converts every registered tool into the OpenAI function-calling schema format (`{"type": "function", "function": {"name", "description", "parameters"}}`). This is consumed once at `MCPAgent` init when the cloud provider is `OpenAIProvider`; the resulting list is passed as the `tools` kwarg on each `route_and_execute` call (see §16.11). No other caller should need this method.
+
 ### 12.2 Tools — import side-effect constraint
 
 Tool registration happens **only** as a side effect of importing a domain's `tools.py` (each calls `tool_registry.register_tool(...)` at module scope). The single trigger point is the **import block at the bottom of `src/registry/tools.py`**:
@@ -1193,6 +1195,7 @@ Boundaries:
 - Tools are called **only** through `self.mcp.call_tool_json(action, action_input)` (the MCP client, §6) — never by importing handlers.
 - **Identity is injected on every call:** the loop sets `action_input["_metadata"] = {tenant_id, user_id, job_id, chat_id}`; the registry propagates these to contextvars (§12.1). Preserve this when adding tool-call logic.
 - Tool calls are parsed from the LLM reply via `OutputParser.parse_dirty_json` (§13); an unparsable reply yields `(None, None)` and the loop treats it as a conversational reply, not a crash.
+- **OpenAI native function calling (§16.11):** when the cloud provider is `OpenAIProvider`, `MCPAgent.__init__` pre-builds the full tool catalog as OpenAI function schemas via `tool_registry.get_openai_schemas()` (§12.1) and stores them in `_openai_tool_schemas`. On each LLM call these are forwarded as a `tools` kwarg, so OpenAI returns a structured `tool_calls` field instead of emitting a text JSON block. `OpenAIProvider._parse_response` converts the first `tool_calls` entry back into the standard ReAct JSON text (`{"action": …, "action_input": …}`), so `_parse_tool_call` downstream is unchanged. The `_openai_tool_schemas` attribute is `None` for all other providers — the `tools` kwarg is not forwarded and the text-based ReAct protocol remains the only path.
 
 ### 15.3 Cost tracking boundary
 
@@ -1207,12 +1210,15 @@ The loop has exactly these terminal/transition outcomes — keep them exhaustive
 
 | Trigger | Outcome |
 |---|---|
-| `"Final Answer:"` in reply | extract → attachment policy (§15.5) → `status=completed`, save, return |
+| Reply contains a tool call JSON block | execute tool, add observation, **continue** — even if `"Final Answer:"` also appears in the same reply (tool call takes priority; the model is pre-empting before the tool result is seen) |
+| `"Final Answer:"` in reply (no tool call) | extract → attachment policy (§15.5) → `status=completed`, save, return |
 | `current_step > max_steps` **and** cloud usage < 80 % budget **and** < 2 extensions | grant **+5 steps** (max 2 grace extensions), inject a "converge" system message, continue |
 | step limit hit with low budget / extensions exhausted | `_force_final_answer` → `completed` |
 | `cloud_token_usage >= token_budget` | notify "switching to batch", `_force_final_answer` → `completed` |
 | tool returns `{"_type": "INTERACTION_REQUIRED"}` | `status=suspended_for_human`, save, forward signal to callback, **raise `JobSuspendedError`** → JobManager suspends the job (§3) |
-| reply has no tool call and no Final Answer | treat as conversational reply → `completed` |
+| reply has no tool call and no Final Answer — **OpenAI provider** | genuine completion (tool calls arrive via native struct, not text); treat as conversational reply → `completed` |
+| reply has no tool call and no Final Answer — **text-only provider**, no tools called yet, step ≤ 3 | inject a format-reminder system message and `continue` (re-prompt safety net for format non-compliance; fires at most once in the early steps) |
+| reply has no tool call and no Final Answer — **text-only provider**, tools have run or step > 3 | treat as conversational reply → `completed` |
 | same tool+args ≥ 2× consecutively | inject a hint and `continue` (not terminal) — prevents infinite identical calls |
 
 `_force_final_answer` appends a system message demanding a `Final Answer:`, makes one last `DEEP_REASONING` call, accumulates its tokens, and returns the text. It is the single forced-closure helper — reuse it rather than duplicating closure logic.
@@ -1501,6 +1507,47 @@ The pricing-table key segment is `{tier}_paid` (`standard_paid` / `flex_paid` / 
 
 **TTL helpers deliberately keep the instance-default tier.** `_optimal_*_ttl` and the cache-metrics helpers call `_cache_prices(token_count)` with no `tier` argument: a cache's lifetime is a property of the *shared* cache object, which may be read by calls of differing tiers, so it cannot be tied to any single request's tier. Only the per-response billed cost and `cache_cost_saved` are request-specific.
 
+### 16.11 OpenAI Native Function Calling
+
+By default all providers — including OpenAI — use the text-based ReAct protocol: the model emits a `{"action": …, "action_input": …}` JSON block in its reply text, and `MCPAgent._parse_tool_call` extracts it. OpenAI's Chat Completions API also supports a native function-calling channel where tool schemas are declared up front and the model returns a structured `tool_calls` field instead of producing text JSON. The native path is more reliable (no parser, no format non-compliance) and reduces token waste from JSON-in-text overhead.
+
+#### How the bridge works
+
+```
+MCPAgent.__init__
+  └─ if router.cloud is OpenAIProvider:
+        self._openai_tool_schemas = tool_registry.get_openai_schemas()
+     else:
+        self._openai_tool_schemas = None
+
+MCPAgent loop (each turn)
+  └─ if self._openai_tool_schemas:
+        kwargs["tools"] = self._openai_tool_schemas
+     route_and_execute(conversation, **kwargs)
+
+OpenAIProvider._build_params
+  └─ picks up tools kwarg → adds tools + tool_choice="auto" to API params
+
+OpenAIProvider._parse_response
+  └─ if tool_calls on response:
+        serialize first tool call → {"action": name, "action_input": args}
+        return as LLMResponse.text
+     else:
+        return choice.message.content as usual
+
+MCPAgent._parse_tool_call    ← unchanged; sees ReAct JSON regardless of path
+```
+
+The bridge is **transparent to the rest of the loop**: the agent's `_parse_tool_call`, `call_tool_json`, `_metadata` injection, and all finalization paths behave identically for OpenAI and text-based providers. Only `OpenAIProvider._parse_response` and `MCPAgent.__init__` know about the native path.
+
+#### Constraints
+
+- **One tool call per turn.** The ReAct protocol is strictly sequential (one action → one observation → next action). `_parse_response` always takes `tool_calls[0]`; if OpenAI returns multiple tool calls in one turn the extras are silently dropped. Do not design workflows that depend on parallel tool calls.
+- **`_is_reasoning_model` for temperature.** `OpenAIProvider._is_reasoning_model()` detects o-series and GPT-5+ models and strips the `temperature` kwarg for them; the same logic applies whether or not `tools` is present. Do not pass `temperature` explicitly to reasoning models.
+- **Re-prompt safety net is disabled for OpenAI.** When `_openai_tool_schemas is not None`, the "no tool call and no Final Answer" re-prompt path (§15.4) is bypassed — the model's plain-text reply is a legitimate native completion, not a format failure.
+- **`get_openai_schemas()` is called once at agent init**, not per turn. Adding a new tool at runtime (after `MCPAgent` construction) will not appear in the native schema list for that session. Both tracks discover tools at process start via the import side-effect (§12.2); runtime registration is not a supported pattern.
+- **System prompt is not changed.** The `mcp_agent_system.md` prompt instructs the model to use text-based JSON blocks. OpenAI ignores this instruction when `tool_choice="auto"` and responds via `tool_calls` instead. The instruction is kept for compatibility with text-only providers and does not harm OpenAI runs.
+
 ---
 
 ## 17. Workflow Engine — Step Authoring Reference (`src/workflows/`)
@@ -1645,7 +1692,7 @@ ProcessStep(
 
 Workflow parameters come from a two-layer merge managed by `src/workflows/config/`:
 
-1. **`config/workflow_defaults.yaml`** — baseline parameters keyed by workflow name; loaded once and cached.
+1. **`config/workflow_defaults.yaml`** — baseline parameters keyed by workflow name; loaded on first access and **hot-reloaded** whenever the file's mtime changes (see below).
 2. **Job-level overrides** — the `params` dict from the API caller, passed through `APIGateway`.
 
 ```python
@@ -1658,10 +1705,12 @@ def build_my_workflow(config: dict) -> Workflow:
 
 **Merge rules:** override wins for the same key; nested dicts are merged recursively; lists are replaced entirely (not appended); the result is a deep copy so the defaults dict is never mutated.
 
+**Hot-reload behaviour:** `_load_defaults()` checks `os.path.getmtime` on every call and re-reads the file only when the mtime has changed since the last load. This means edits to `workflow_defaults.yaml` take effect for the next workflow build without restarting the process — useful for long-running Feishu bot instances. The reload is **synchronous and in-process**: if the file is temporarily unreadable (e.g., mid-write), the previous cached dict is returned and a WARNING is logged; no exception propagates to the caller. On an `OSError` (file deleted or path wrong), the last valid cache — or `{}` if none exists — is returned.
+
 **Constraints:**
 
 - Add every new parameter to `workflow_defaults.yaml` with a sensible default. Never rely on `dict.get(key)` returning `None` as a silent fallback inside step logic — a missing key is a configuration bug, not a runtime condition to handle gracefully.
-- Read configuration from `ctx.config` inside steps; never call `merge_config` from within a step or extractor.
+- Read configuration from `ctx.config` inside steps; never call `merge_config` from within a step or extractor. The snapshot in `ctx.config` is taken at workflow build time; hot-reload only affects the *next* build, not a workflow already in flight.
 - To make a step conditionally executable, check `step.is_enabled(config=ctx.config)` — it respects a `config["steps"][step_name]["enabled"]` key. Use this for optional stages (social enrichment, ad metrics) rather than commenting out step definitions or setting `enabled=False` unconditionally in code.
 
 ### 17.7 Authoring Constraints and Invariants
