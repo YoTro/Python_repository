@@ -55,6 +55,7 @@ bsr_collection:
 ad_diagnosis:
   # ── Observation window ────────────────────────────────────────────────────
   days: 30                      # lookback period for all SP reports
+  benchmark_time_unit: WEEKLY    # crossProgramBenchmarks granularity: DAILY (max 90d), WEEKLY/MONTHLY (max 456d)
 
   # ── ACOS thresholds ───────────────────────────────────────────────────────
   target_acos: 0.30             # LP optimisation target; also used by campaign actions

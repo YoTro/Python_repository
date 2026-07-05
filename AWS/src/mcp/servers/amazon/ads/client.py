@@ -71,6 +71,8 @@ _REPORT_RETENTION_DAYS: dict[str, int] = {
     "sdAdvertisedProduct": 65,
     # Sponsored TV
     "stCampaigns": 95,
+    # Cross-Program Benchmarks
+    "crossProgramBenchmarks": 456,
 }
 
 
@@ -1087,6 +1089,191 @@ class AmazonAdsClient:
             f"SB={out['sb_ad_orders']} SD={out['sd_ad_orders']} orders"
         )
         return out
+
+    # ── Cross-Program Benchmarks ───────────────────────────────────────────
+
+    # Metric columns for crossProgramBenchmarks (time-unit-independent).
+    # The date column differs by time_unit: "date" (DAILY), "startDate"/"endDate"
+    # (WEEKLY/MONTHLY) — get_benchmark_report prepends the correct one at call time.
+    _BENCHMARK_COLUMNS: list[str] = [
+        "campaignCountry",
+        "brand",
+        "browseCategory",
+        "adProduct",
+        "adFormat",
+        "campaignGoal",
+        "peerSetSize",
+        "percentOfPurchasesNewToBrand",
+        "percentOfPurchasesNewToBrandP25",
+        "percentOfPurchasesNewToBrandP50",
+        "percentOfPurchasesNewToBrandP75",
+        "newToBrandPurchaseRate",
+        "newToBrandPurchaseRateP25",
+        "newToBrandPurchaseRateP50",
+        "newToBrandPurchaseRateP75",
+        "costPerNewToBrandPurchase",
+        "costPerNewToBrandPurchaseP25",
+        "costPerNewToBrandPurchaseP50",
+        "costPerNewToBrandPurchaseP75",
+        "ctr",
+        "ctrP25",
+        "ctrP50",
+        "ctrP75",
+        "cpc",
+        "cpcP25",
+        "cpcP50",
+        "cpcP75",
+        "cpm",
+        "cpmP25",
+        "cpmP50",
+        "cpmP75",
+        "completionRateVideoAd",
+        "completionRateVideoAdP25",
+        "completionRateVideoAdP50",
+        "completionRateVideoAdP75",
+        "costPerCompletedViewVideoAd",
+        "costPerCompletedViewVideoAdP25",
+        "costPerCompletedViewVideoAdP50",
+        "costPerCompletedViewVideoAdP75",
+        "campaignBudgetCurrencyCode",
+    ]
+
+    # Per-request date-range ceiling (not the same as the 456-day retention).
+    # DAILY is capped at 90 days; WEEKLY and MONTHLY allow the full 456-day window.
+    _BENCHMARK_MAX_RANGE_DAYS: dict[str, int] = {
+        "DAILY": 90,
+        "WEEKLY": 456,
+        "MONTHLY": 456,
+    }
+
+    async def get_benchmark_report(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        days: int = 30,
+        time_unit: str = "DAILY",
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch a crossProgramBenchmarks report.
+
+        Benchmarks compare your brand's SP/SB/SD/DSP performance against
+        anonymised category peers.  Each row covers one (date, adProduct,
+        adFormat, campaignGoal, browseCategory) slice and includes your brand's
+        metric alongside P25/P50/P75 percentiles of the peer set.
+
+        Data starts 2025-01-01 and refreshes every 48 hours.
+
+        Args:
+            start_date: "YYYY-MM-DD"; defaults to today − days.
+            end_date:   "YYYY-MM-DD"; defaults to yesterday.
+            days:       Lookback when start/end are omitted (default 30).
+            time_unit:  "DAILY" (max 90 d/req), "WEEKLY" or "MONTHLY" (max 456 d/req).
+
+        Returns:
+            List of raw benchmark record dicts; one entry per dimension combination.
+        """
+        time_unit = time_unit.upper()
+        if time_unit not in self._BENCHMARK_MAX_RANGE_DAYS:
+            raise FatalError(
+                f"Invalid time_unit '{time_unit}'. "
+                f"Must be one of: {list(self._BENCHMARK_MAX_RANGE_DAYS)}",
+                code=ErrorCode.INVALID_PARAMS,
+            )
+
+        today = datetime.utcnow().date()
+        _end = date.fromisoformat(end_date) if end_date else today - timedelta(days=1)
+        _start = date.fromisoformat(start_date) if start_date else _end - timedelta(days=days - 1)
+
+        # Clamp to the 456-day retention window.
+        start_str, was_clamped = _clamp_lookback(str(_start), str(_end), 456)
+        if was_clamped:
+            logger.warning(
+                f"[crossProgramBenchmarks] start_date clamped to {start_str} "
+                "— retention limit is 456 days"
+            )
+            _start = date.fromisoformat(start_str)
+
+        span_days = (_end - _start).days + 1
+        max_range = self._BENCHMARK_MAX_RANGE_DAYS[time_unit]
+        if span_days > max_range:
+            raise FatalError(
+                f"crossProgramBenchmarks {time_unit} requests are capped at {max_range} days "
+                f"(requested {span_days} days: {_start} → {_end}). "
+                "Reduce the range or switch to WEEKLY/MONTHLY.",
+                code=ErrorCode.INVALID_PARAMS,
+            )
+
+        url = f"{self.base_url}/reporting/reports"
+        headers = {
+            "Authorization": f"Bearer {self.auth.get_access_token()}",
+            "Amazon-Advertising-API-ClientId": self.auth.client_id,
+            "Amazon-Advertising-API-Scope": self.auth.get_profile_id(),
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        # DAILY uses "date"; WEEKLY/MONTHLY require "startDate" + "endDate".
+        date_cols = ["date"] if time_unit == "DAILY" else ["startDate", "endDate"]
+        columns = date_cols + self._BENCHMARK_COLUMNS
+
+        report_cfg: dict[str, Any] = {
+            "adProduct": "ALL",
+            "reportTypeId": "crossProgramBenchmarks",
+            "groupBy": ["brandCategoryBenchmarks"],
+            "columns": columns,
+            "timeUnit": time_unit,
+            "format": "GZIP_JSON",
+        }
+
+        @exponential_backoff(max_retries=4, base_delay=5.0, max_delay=60.0)
+        async def _post() -> requests.Response | str:
+            body = {
+                "name": f"crossProgramBenchmarks_{_start}_{_end}_{int(time.time())}",
+                "startDate": str(_start),
+                "endDate": str(_end),
+                "configuration": report_cfg,
+            }
+            resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
+            if _is_report_425(resp):
+                dup_id = _extract_dup_report_id(resp)
+                if dup_id:
+                    logger.info(
+                        f"[crossProgramBenchmarks] 425 duplicate — reusing report {dup_id}"
+                        f" ({_start}→{_end})"
+                    )
+                    return dup_id
+                raise RetryableError(
+                    "425 duplicate without extractable reportId",
+                    code=ErrorCode.DUPLICATE_REQUEST,
+                )
+            code = classify_http(resp.status_code, "amazon_ads")
+            if not resp.ok:
+                if is_retryable(code):
+                    raise RetryableError(resp.text[:200], code=code)
+                logger.error(
+                    f"[crossProgramBenchmarks] report creation failed "
+                    f"{resp.status_code}: {resp.text[:500]}"
+                )
+                resp.raise_for_status()
+            return resp
+
+        result = await _post()
+        if isinstance(result, str):
+            report_id = result
+        else:
+            report_id = result.json().get("reportId")
+            if not report_id:
+                raise ExtractorError(
+                    f"[crossProgramBenchmarks] no reportId in response: {result.text[:200]}"
+                )
+        logger.info(
+            f"[crossProgramBenchmarks] created report {report_id} ({_start}→{_end}, {time_unit})"
+        )
+        download_url = await self._poll_report(report_id)
+        records = await self._download_report(download_url)
+        logger.info(
+            f"[crossProgramBenchmarks] {len(records)} records ({_start}→{_end}, {time_unit})"
+        )
+        return records
 
     # ── Change History ─────────────────────────────────────────────────────
 

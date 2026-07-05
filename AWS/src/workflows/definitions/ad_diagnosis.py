@@ -105,6 +105,7 @@ _KEY_YOY_PERF = "ad_diag:yoy_perf"  # ERP YoY post-window (364d back)
 _KEY_TRAILING_EXT = "ad_diag:trailing_ext"  # ERP trailing 3M extension
 _KEY_LEAD_TIME = "ad_diag:lead_time"  # Lingxing shipment lead-time (store-wide)
 _KEY_NON_SP_ORDERS = "ad_diag:non_sp_orders"  # SB/SD per-ASIN orders (purchases14d)
+_KEY_BENCHMARKS = "ad_diag:benchmarks"  # crossProgramBenchmarks SP rows (account-wide)
 
 # ── Action priority tiers ────────────────────────────────────────────────────
 # Used by campaign_actions, keyword_actions, and mining_actions alike.
@@ -148,7 +149,7 @@ PRIORITY_SORT = ("P0", "P1", "P2")
 # L1 (ctx.cache) is always checked first — L2 is only hit on job start / resume.
 
 _L2_DOMAIN = "ad_diag"
-_TTL_STATIC = 7200  # campaigns, keywords — account config, stable within a session
+_TTL_STATIC = 14400  # campaigns, keywords — account config, stable within a session
 _TTL_PERF = 21600  # performance reports — fetched once per day range
 _TTL_CHANGE = 21600  # change history — historical data, 6h TTL to reduce /history API calls
 _TTL_YOY = 86400  # YoY / trailing-ext ERP data — historical, rarely changes
@@ -499,6 +500,42 @@ async def _ensure_placement_performance(ctx: WorkflowContext) -> list[dict]:
     records = _merge_summary(all_records, key_fn=lambda r: (r["campaign_id"], r.get("placement")))
     logger.info(f"Fetched {len(records)} placement performance records ({days}d)")
     return records
+
+
+@_l2_cached(
+    l1_key_fn=lambda ctx: _KEY_BENCHMARKS,
+    l2_ttl=_TTL_PERF,
+    l2_parts_fn=lambda ctx: (
+        "benchmarks",
+        ctx.config.get("days", 30),
+        ctx.config.get("benchmark_time_unit", "DAILY"),
+    ),
+)
+async def _ensure_benchmarks(ctx: WorkflowContext) -> list[dict]:
+    """Fetch crossProgramBenchmarks and keep only SP rows, cached once per run.
+
+    The API requires adProduct="ALL" — filtering by adProduct at request time
+    returns 400.  The SP filter is applied client-side.  Brand filtering is done
+    per-item in _enrich_benchmarks using the brand from _enrich_catalog.
+    """
+    days = ctx.config.get("days", 30)
+    time_unit = ctx.config.get("benchmark_time_unit", "DAILY")
+    today = datetime.now(tz=_store_tz(ctx)).date()
+    end_date = str(today - timedelta(days=1))
+    start_date = str(today - timedelta(days=days))
+    records = await _ads_client(ctx).get_benchmark_report(
+        start_date=start_date,
+        end_date=end_date,
+        time_unit=time_unit,
+    )
+    sp_records = [
+        r for r in records if (r.get("adProduct") or "").upper() in ("SPONSORED_PRODUCTS", "SP")
+    ]
+    logger.info(
+        f"Fetched {len(records)} benchmark records ({days}d, {time_unit}), "
+        f"filtered to {len(sp_records)} SP rows"
+    )
+    return sp_records
 
 
 @_l2_cached(
@@ -1314,6 +1351,20 @@ async def _enrich_placement(item: dict, ctx: WorkflowContext) -> dict:
         "placement_performance": placement_performance,
         "placement_configured_pcts": configured_adjustments,
     }
+
+
+async def _enrich_benchmarks(item: dict, ctx: WorkflowContext) -> dict:
+    """
+    Attach crossProgramBenchmarks rows matching this item's brand.
+
+    _ensure_benchmarks returns all SP rows for the account; we filter here by
+    the brand populated by _enrich_catalog (fetch_catalog runs before this step).
+    """
+    records = await _ensure_benchmarks(ctx)
+    brand = (item.get("brand") or "").lower()
+    if brand:
+        records = [r for r in records if (r.get("brand") or "").lower() == brand]
+    return {"benchmark_data": records}
 
 
 async def _enrich_change_history(item: dict, ctx: WorkflowContext) -> dict:
@@ -7795,6 +7846,12 @@ def build_ad_diagnosis(config: dict) -> Workflow:
         EnrichStep(
             name="fetch_placement",
             extractor_fn=_enrich_placement,
+            parallel=True,
+            concurrency=5,
+        ),
+        EnrichStep(
+            name="fetch_benchmarks",
+            extractor_fn=_enrich_benchmarks,
             parallel=True,
             concurrency=5,
         ),
