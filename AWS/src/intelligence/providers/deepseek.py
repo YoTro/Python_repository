@@ -102,9 +102,11 @@ class DeepSeekProvider(BaseLLMProvider):
         total = 0.0
         for ch in text:
             cp = ord(ch)
-            if (0x4E00 <= cp <= 0x9FFF    # CJK Unified Ideographs
-                    or 0x3400 <= cp <= 0x4DBF    # CJK Extension A
-                    or 0xF900 <= cp <= 0xFAFF):  # CJK Compatibility Ideographs
+            if (
+                0x4E00 <= cp <= 0x9FFF  # CJK Unified Ideographs
+                or 0x3400 <= cp <= 0x4DBF  # CJK Extension A
+                or 0xF900 <= cp <= 0xFAFF
+            ):  # CJK Compatibility Ideographs
                 total += 0.6
             else:
                 total += 0.3
