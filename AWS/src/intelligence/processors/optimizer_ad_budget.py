@@ -219,6 +219,27 @@ class AdBudgetOptimizer:
         status = self.solver.Solve()
 
         if status != pywraplp.Solver.OPTIMAL:
+            # Floors (min_daily_clicks > 0) are the most common source of
+            # infeasibility: they can conflict with C1 (global budget too small
+            # to cover all floor spends), C2 (campaign cap too tight), C3 (ACOS
+            # target irreconcilable with forced volume), or C4 (inventory cap
+            # exceeded by floor-implied orders).  Retry with floors zeroed so
+            # the solver can escape via zero allocation on constrained keywords.
+            has_floors = any(float(kw.get("min_daily_clicks", 0.0)) > 0 for kw in keywords)
+            if has_floors:
+                relaxed = AdBudgetOptimizer().optimize(
+                    [{**kw, "min_daily_clicks": 0.0} for kw in keywords],
+                    total_budget,
+                    campaign_budgets=campaign_budgets,
+                    target_acos=target_acos,
+                    avg_price=avg_price,
+                    max_daily_orders=max_daily_orders,
+                )
+                if relaxed.get("status") == "OPTIMAL":
+                    relaxed["relaxed"] = True
+                    relaxed["relaxed_constraints"] = ["floors"]
+                    return relaxed
+
             return {
                 "status": "FAILED",
                 "error_code": status,
