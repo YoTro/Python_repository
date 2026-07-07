@@ -27,13 +27,13 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
     *   `storage/`: Public-URL artifact storage abstraction (Strategy Pattern). Backend selected by `STORAGE_BACKEND` env var; supports S3-compatible stores (R2/S3/MinIO) and a VPS local-HTTP backend.
     *   `errors/`: Exception hierarchy, canonical error codes, HTTP status classifiers, and retry helpers shared by all layers.
     *   `telemetry/`: Per-job step-duration tracker for ETA estimation; backed by a rolling on-disk history file.
-    *   `utils/`: Config loader, cookie manager, proxy handler, and context propagation helpers.
+    *   `utils/`: Config loader, cookie manager, proxy handler, context propagation helpers, and `rate_headers.py` (response-header parser that self-calibrates token-bucket rates).
 
 *   **`src/entry/`** — Entry adapters; each normalizes channel-specific input into a `UnifiedRequest` and dispatches through the `APIGateway`.
     *   `cli/`: Synchronous, callback-free invocation supporting workflow and agent modes.
     *   `feishu/`: WebSocket bot listener with structured command parsing and async card/Bitable delivery.
 
-*   **`src/gateway/`** — Identity resolution, three-layer rate limiting (cooldown, concurrency slots, token buckets), and unified request dispatching. The single funnel for all entry adapters.
+*   **`src/gateway/`** — Identity resolution, three-layer rate limiting (cooldown, concurrency slots, composite-key token buckets with optional Redis backend), and unified request dispatching. The single funnel for all entry adapters.
 
 *   **`src/jobs/`** — Durable execution runtime shared by both orchestration tracks.
     *   `manager/`: Job state machine (PENDING → RUNNING → COMPLETED / FAILED / SUSPENDED / CANCELLED) with an async queue, worker pool, and two distinct resume paths: in-memory requeue and checkpoint-based rebuild after a process restart.
@@ -52,13 +52,13 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
     *   `erp/`: Multi-provider ERP integration (Strategy Pattern). Provider implementations (e.g., `lingxing/`) are added as sibling subpackages without modifying shared code.
     *   `output/`: File export (`export_html`, `export_csv`, `export_json`, `export_md`) and Feishu delivery (`send_card`, `create_doc`, `write_bitable`), all integrated with the storage backend.
 
-*   **`src/registry/`** — Central discovery hub for both orchestration tracks. Three independent registries: `ToolRegistry` (import side-effect), `ResourceRegistry` (filesystem scan of `.json` knowledge files), and `PromptRegistry` (imperative). Also the invocation boundary: propagates request context and strips unknown arguments before calling handlers. See §12.
+*   **`src/registry/`** — Central discovery hub for both orchestration tracks. Three independent registries: `ToolRegistry` (import side-effect), `ResourceRegistry` (filesystem scan of `.json` knowledge files), and `PromptRegistry` (imperative). Also the invocation boundary: propagates request context and strips unknown arguments before calling handlers. See [§12](#12-capability-registry-srcregistry).
 
 *   **`src/intelligence/`** — LLM provider abstraction, cost-aware routing, and AI processing.
-    *   `providers/`: Concrete LLM implementations (Gemini, Claude, DeepSeek, OpenAI, local llama.cpp), all returning a unified `LLMResponse` with cost and token metadata. See §16.
+    *   `providers/`: Concrete LLM implementations (Gemini, Claude, DeepSeek, OpenAI, local llama.cpp), all returning a unified `LLMResponse` with cost and token metadata. See [§16](#16-llm-providers-srcintelligenceproviders).
     *   `router/`: Task classifier and provider selector — heuristics-first, then LLM fallback, with full cost transparency.
     *   `processors/`: Specialized AI and pure-algorithm processors (monopoly analysis, listing diagnosis, comment/review analysis, virality scoring, sales estimation, etc.).
-    *   `parsers/`: Dirty-JSON recovery and per-channel markdown sanitization. See §13.
+    *   `parsers/`: Dirty-JSON recovery and per-channel markdown sanitization. See [§13](#13-output-parsing--post-processing-srcintelligenceparsers).
     *   `prompts/`: Centralized prompt management (roles, frameworks, output templates) via a `PromptManager` singleton.
     *   `fallback.py`: Graceful degradation when the primary LLM is unavailable.
 
@@ -68,7 +68,7 @@ This guide reflects the **Domain-Driven Design (DDD)** and **Dual Orchestration*
     *   `engine/`: Execution orchestration, idempotent replay, and batch suspension/resumption.
     *   `registry.py`: Maps workflow names to builder functions.
 
-*   **`src/agents/`** — Autonomous, LLM-driven exploratory reasoning. See §15.
+*   **`src/agents/`** — Autonomous, LLM-driven exploratory reasoning. See [§15](#15-mcp-agent--session-cost--finalization-srcagents).
     *   `mcp_agent.py`: ReAct loop with tool invocation, token-budget enforcement, step-extension grace periods, forced finalization, and the long-report attachment policy.
     *   `session.py`: Agent state persistence — conversation history, token and cost accounting, and job status.
     *   `prompts/`: System prompt templates and the prompt builder that injects the tool catalog and session constraints.
@@ -115,17 +115,62 @@ The CLI is the simplest channel — **synchronous and callback-free**. Use it as
 
 **Rate Limiting — Three Layers (`src/gateway/rate_limit.py`):**
 
-| Layer | Config Key | Enforced At | Purpose |
-|-------|-----------|-------------|---------|
-| 1a — Cooldown | `entry_limits.<type>.cooldown_seconds` | `check_limit()` before dispatch | Debounce Feishu double-clicks |
-| 1b — Concurrency | `entry_limits.<type>.concurrent_jobs` / `per_chat_concurrent` | `concurrent_slot()` inside `_run_job` | Prevent slot deadlock via `try/finally` |
-| 2 — Quota | `tenant_quotas.<tier>.daily_requests` | `check_limit()` before dispatch | Per-tenant daily budget |
-| 3 — Token Bucket | `source_limits.<name>.requests_per_minute` / `burst` | `acquire_source()` in each API client | Protect external API accounts |
+| RL Layer | Config Key | Enforced At | Purpose |
+|----------|-----------|-------------|---------|
+| RL-1a — Cooldown | `entry_limits.<type>.cooldown_seconds` | `check_limit()` before dispatch | Debounce Feishu double-clicks |
+| RL-1b — Concurrency | `entry_limits.<type>.concurrent_jobs` / `per_chat_concurrent` | `concurrent_slot()` inside `_run_job` | Prevent slot deadlock via `try/finally` |
+| RL-2 — Quota | `tenant_quotas.<tier>.daily_requests` | `check_limit()` before dispatch | Per-tenant daily budget |
+| RL-3 — Token Bucket | `source_limits.<name>` (flat or per-operation) | `acquire_source()` / `async_acquire_source()` in each API client | Protect external API rate quotas |
+
+**RL-3 in depth — composite bucket keys:**
+
+RL-3 (the token-bucket layer) uses a composite key `rate:{source}:{store_id}:{operation}` so each external API's rate limit is tracked independently per store credential and per endpoint. The lookup falls back through three levels so no configuration is required for every combination:
+
+```
+rate:sp_api:US:createReport        ← most specific (store + operation)
+rate:sp_api:default:createReport   ← operation default (all stores share)
+rate:sp_api:default:default        ← source default (all stores, all operations)
+```
+
+All existing callers that pass only a `source` name (`acquire_source("sellersprite")`) are unaffected — they map to `rate:{source}:default:default`.
+
+**RL-3 config formats (`config/settings.json → rate_limits.source_limits`):**
+
+*Flat format (existing sources — one bucket per source):*
+```json
+"sellersprite": { "requests_per_minute": 40, "burst": 3 }
+```
+
+*Per-operation nested format (SP-API — one bucket per endpoint):*
+```json
+"sp_api": {
+    "default":               { "requests_per_second": 0.5,    "burst": 3  },
+    "createReport":          { "requests_per_second": 0.0167, "burst": 1  },
+    "getReport":             { "requests_per_second": 2.0,    "burst": 10 },
+    "getReportDocument":     { "requests_per_second": 0.5,    "burst": 5  },
+    "getInventorySummaries": { "requests_per_second": 2.0,    "burst": 2  },
+    "getOrderMetrics":       { "requests_per_second": 0.5,    "burst": 5  }
+}
+```
+
+Detection: if the value dict contains `"requests_per_minute"` or `"requests_per_second"` it is flat; otherwise its nested keys are treated as operation names.
+
+**Self-calibration via response headers (`src/core/utils/rate_headers.py`):**
+
+Call `observe_response(resp, source)` after every HTTP response. It parses the source's rate-limit and `Retry-After` headers, calls `RateLimiter().update_source_rate()` to self-calibrate the RL-3 token bucket (on 2xx only — the header is absent on 429), and returns an `ApiRateLimitHeaders` dataclass (`limit_rps`, `request_id`, `retry_after`). Never raises. → See [§18.6 `rate_headers.py`](#186-rate_headerspy--api-response-header-parser) for the full `_SOURCE_HEADER_CFG` registry, dataclass reference, call-site patterns, and constraints.
+
+**`retry_after_seconds` in `exponential_backoff`:**
+
+`RetryableError.retry_after_seconds` is now honored by the `exponential_backoff` decorator. When a client raises `RetryableError(retry_after_seconds=N)`, the decorator uses N directly as the delay (capped at 4 hours) instead of computing `base_delay * 2^attempt`. This ensures SP-API quota exhaustion signals (`retry_after_seconds=60`) produce the correct wait without relying on the caller's backoff formula.
+
+**Optional Redis backend:**
+
+Set `REDIS_URL` in `.env` to activate a distributed Redis token bucket. The Lua script runs atomically on the Redis server so all workers share one token counter per bucket key. Falls back to in-memory `_TokenBucket` transparently if Redis is unreachable.
 
 **How to add a new external API source:**
-1.  Add an entry to `source_limits` in `config/settings.json` (section `rate_limits`).
-2.  Call `RateLimiter().acquire_source("<name>")` at the top of the client's `_request()` method.
-3.  Add 429 exponential backoff using `time.sleep(2 ** attempt + jitter)` in the retry loop.
+1.  Add an entry to `source_limits` in `config/settings.json`. Use flat format for a uniform per-source rate; use nested per-operation format when the API enforces different limits per endpoint.
+2.  In the client's request method, call `RateLimiter().acquire_source("<name>")` (sync) or `await RateLimiter().async_acquire_source("<name>")` (async coroutine) before the HTTP call. Pass `store_id` and `operation` when isolation per credential or endpoint is needed.
+3.  Add the source to `_SOURCE_HEADER_CFG` in `rate_headers.py`, call `observe_response(resp, "<name>")` after every HTTP call, and raise `RetryableError(..., retry_after_seconds=hdrs.retry_after or <default>)` on 429. → See [§18.6](#186-rate_headerspy--api-response-header-parser) for tuple format and naming constraints.
 
 ### Layer 3: Orchestration (`src/workflows/` & `src/agents/`)
 *The "Brains". Deciding HOW to solve the problem.*
@@ -140,22 +185,85 @@ The CLI is the simplest channel — **synchronous and callback-free**. Use it as
 1.  **System Prompt**: Edit the human-readable Markdown template in `src/agents/prompts/mcp_agent_system.md`.
 2.  **Constraints**: Adjust `token_budget` or `max_steps` in the Agent's session config.
 
-For the agent's internal contracts — session persistence, tool access, cost tracking, the loop's finalization paths, and the long-report attachment policy — see **§15**.
+For the agent's internal contracts — session persistence, tool access, cost tracking, the loop's finalization paths, and the long-report attachment policy — see [§15](#15-mcp-agent--session-cost--finalization-srcagents).
 
 ### Layer 4: Capabilities & Tools (`src/mcp/servers/`)
 *The "Hands". Where the actual work (scraping, calculating) happens.*
 
-**A. Adding a New Scraper (Amazon Domain)**
+**A. Amazon Domain — Three Client Tracks**
+
+The Amazon domain has three independent client tracks. Choose the right one before writing any new code:
+
+| Track | Module | Auth | Rate-limit source key |
+|-------|--------|------|-----------------------|
+| HTML Scraper | `amazon/extractors/` | Cookie pool (`CookieBrowserPool`) | `amazon_scraper` |
+| SP-API | `amazon/sp_api/` | LWA OAuth (`SPAPIAuth`) | `sp_api` |
+| Ads API | `amazon/ads/` | LWA OAuth (`AmazonAdsAuth`) | `amazon_ads` |
+
+**A1 — HTML Scrapers (`amazon/extractors/`)**
 1.  Place script in `src/mcp/servers/amazon/extractors/`.
 2.  Inherit from `AmazonBaseScraper` for built-in proxy and cookie support.
 3.  **High-Efficiency Alternative**: Use `ProfitabilitySearchExtractor` to fetch `price`, `weight`, `dimensions`, and `bsr_rank` in a single request, bypassing heavy HTML parsing.
-4.  **Multi-Account Pool Integration**: `AmazonBaseScraper.fetch()` accepts an optional `_session` keyword argument. When `CookieBrowserPool` is active, pass `slot.session` via `_session=slot.session` to route each request through a specific slot's `curl_cffi.AsyncSession` while still applying the shared rate limiter. Scrapers that do not pass `_session` continue to use the default single-account session. This is the consumer side of the identity pool — see **§9** for the full runtime model (slot selection, isolation, circuit breaker, and the `_session` invocation contract in §9.4).
+4.  **Multi-Account Pool Integration**: `AmazonBaseScraper.fetch()` accepts an optional `_session` keyword argument. When `CookieBrowserPool` is active, pass `slot.session` via `_session=slot.session` to route each request through a specific slot's `curl_cffi.AsyncSession` while still applying the shared rate limiter. Scrapers that do not pass `_session` continue to use the default single-account session. This is the consumer side of the identity pool — see [§9](#9-identity--account-pool-srccoreidentity) for the full runtime model (slot selection, isolation, circuit breaker, and the `_session` invocation contract in [§9.4](#94-invocation-boundary--the-_session-contract)).
+
+**A2. Adding a New SP-API Endpoint or Report Type**
+
+SP-API calls go through `SPAPIClient._post()` / `_get()` / a new `async` method in `src/mcp/servers/amazon/sp_api/client.py`. Every new endpoint touches **three files** in a fixed order:
+
+1. **Implement the method** in `src/mcp/servers/amazon/sp_api/client.py`.
+   - For `_post()` / `_get()` callers: rate-limiting and header parsing are automatic (both call `acquire_source` and `observe_response` internally — no extra code needed).
+   - For a new `async` method that calls `asyncio.to_thread(requests.get/post, ...)` directly (like `_fetch_inventory_page`), add `await RateLimiter().async_acquire_source("sp_api", store_id=self.auth.store_id, operation="<OperationName>")` before the thread call, and `observe_response(resp, "sp_api", store_id=..., operation="<OperationName>")` immediately after.
+
+2. **Register the URL pattern** in `src/mcp/servers/amazon/_http.py`.
+   Add a `_Rule` to the `_RULES` list so `sp_api_operation()` maps the new path to the operation name used in step 1:
+
+   ```python
+   # _RULES is ordered most-specific → least-specific; first match wins.
+   # Insert BEFORE any rule whose pattern is a prefix of the new path.
+   _Rule(re.compile(r"/your/new/endpoint/path"), "YourOperationName"),
+   ```
+
+   **Ordering constraint:** a more-specific pattern must appear above any rule whose regex could also match the same path. For example, `/reports/{version}/reports/{id}/document` must precede `/reports/{version}/reports/{id}`, which must precede `/reports/{version}/reports` — otherwise the shorter pattern matches first and the longer one is never reached.
+
+   **Naming constraint:** the operation name must exactly match what is passed to `acquire_source` / `async_acquire_source` / `observe_response` in step 1. A mismatch causes rate-limit tokens to be drawn from the wrong bucket (or the `default` fallback) silently.
+
+3. **Add a rate-limit bucket** in `config/settings.json` under `rate_limits.source_limits.sp_api`:
+
+   ```json
+   "YourOperationName": { "requests_per_second": <rps>, "burst": <burst> }
+   ```
+
+   Use the **Usage Plan** values from the [SP-API documentation](https://developer-docs.amazon.com/sp-api/docs/usage-plans-and-rate-limits-in-the-sp-api) for that endpoint (Rate = `requests_per_second`, Burst = `burst`). If no entry is added, the `"default"` bucket (`0.5 req/s, burst 3`) applies — this is safe but overly conservative for high-quota endpoints.
+
+**Checklist summary:**
+
+| Step | File | What to add |
+|------|------|-------------|
+| 1 | `sp_api/client.py` | New method; `async_acquire_source` + `observe_response` if bypassing `_post`/`_get` |
+| 2 | `amazon/_http.py` | New `_Rule` in `_RULES`, inserted at the correct specificity position |
+| 3 | `config/settings.json` | New operation entry under `source_limits.sp_api` |
+
+Skipping step 2 means every call to the new endpoint falls through to `sp_api_operation()` → `"default"` and shares the default bucket with all unrecognised paths, which can starve other default-bucket callers. Skipping step 3 is recoverable (falls back to the `"default"` bucket) but should not be left in production for report endpoints with tight daily quotas (e.g., `createReport` at 0.0167 req/s).
+
+**A3 — Ads API (`amazon/ads/`)**
+
+`AmazonAdsClient` (`src/mcp/servers/amazon/ads/client.py`) calls the Amazon Advertising API v3/v5 to fetch offline performance reports (SP, SB, SD, ST campaigns, keywords, search terms, benchmarks). Auth is LWA OAuth via `AmazonAdsAuth` — credentials: `AMAZON_ADS_CLIENT_ID`, `AMAZON_ADS_CLIENT_SECRET`, `AMAZON_ADS_REFRESH_TOKEN_{STORE_ID}`.
+
+When adding a new Ads report type:
+
+1. **Add the retention window** to `_REPORT_RETENTION_DAYS` in `client.py`. Every report type has a maximum lookback (e.g. SP = 95 days, SB = 60 days). `_clamp_lookback()` reads this dict and silently adjusts `start_date` if the requested range exceeds it; a missing entry means no clamping, which causes the API to silently return empty results for out-of-window dates.
+
+2. **Use `_post` / `_get` for the HTTP calls** — both methods call `RateLimiter().acquire_source("amazon_ads")` and `observe_response(resp, "amazon_ads")` internally. Do not call the Ads API via raw `requests` outside these helpers, or the rate limiter and header calibration are bypassed.
+
+3. **Handle the 425 duplicate-report quirk** — Amazon Ads returns HTTP 425 (or HTTP 200 with `{"code": "425"}`) when an identical report was requested recently. Use `_is_report_425(resp)` to detect it and `_extract_dup_report_id(resp)` to retrieve the existing report ID rather than retrying with a new request.
+
+4. **Poll constants** — `_REPORT_POLL_INTERVAL = 10 s`, `_REPORT_POLL_MAX = 360` (60-min ceiling). Large cross-program benchmark reports can take > 30 min; do not reduce these values.
 
 **B. Adding a New MCP Tool**
 1.  **Logic**: Implement an `async` handler in the relevant domain server.
 2.  **Definition**: Create a `mcp.types.Tool` object with a precise description (essential for LLM planning).
 3.  **Registry**: Call `tool_registry.register_tool(tool, handler, category="DATA", returns="...")` in the domain's `tools.py`.
-4.  **Discovery**: Add `import src.mcp.servers.<domain>.tools` to the import block at the **bottom** of `src/registry/tools.py` (a *new domain only* — existing domains are already listed). That import side-effect is the single registration trigger; without it the tool is invisible to the Agent track and the MCP server. See §12.
+4.  **Discovery**: Add `import src.mcp.servers.<domain>.tools` to the import block at the **bottom** of `src/registry/tools.py` (a *new domain only* — existing domains are already listed). That import side-effect is the single registration trigger; without it the tool is invisible to the Agent track and the MCP server. See [§12](#12-capability-registry-srcregistry).
 
 **C. Adding a New ERP Provider (Strategy Pattern)**
 
@@ -195,7 +303,7 @@ Config keys for the Lingxing provider:
 
 1.  **Heuristics**: Add high-speed rules to `_run_heuristics` in `src/intelligence/router/` to bypass LLM classification for simple tasks.
 2.  **Pricing**: Update `PriceManager` JSON configs if model costs change.
-2b. **Adding a new LLM provider**: subclass `BaseLLMProvider` and register it in `ProviderFactory` — see **§16** for the full interface contract (`LLMResponse`, `create_response` cost population, batch, error mapping, truncation).
+2b. **Adding a new LLM provider**: subclass `BaseLLMProvider` and register it in `ProviderFactory` — see [§16](#16-llm-providers-srcintelligenceproviders) for the full interface contract (`LLMResponse`, `create_response` cost population, batch, error mapping, truncation).
 3.  **Prompt Management (SSOT)**:
     *   **Roles**: Add new expert personas in `src/intelligence/prompts/config/roles.yaml`.
     *   **Frameworks**: Define analysis models (e.g., PSI, SWOT) in `src/intelligence/prompts/config/frameworks.yaml`. Use `$variable` syntax to inject values from `config/workflow_defaults.yaml`.
@@ -306,7 +414,7 @@ This layer is what Layers 6 (callbacks) and 7 (interactions) plug into — they 
 | FAILED / SUSPENDED | `resume(job_id)` | PENDING (requeued) |
 | SUSPENDED | reaper detects `now - suspended_at > suspend_timeout_sec` | CANCELLED |
 
-The reaper (`_reaper_loop` → `_cancel_expired_suspended`, 60 s) cancels **SUSPENDED** jobs past their per-job timeout and notifies the callback via `on_error`. The cancellation policy is **reason-aware** (`JobRecord.suspend_reason`): an *interaction* wait is the user's responsibility (short timeout, "no response" message), whereas a *batch* wait is the system's — its reaper timeout is only a far backstop (see §3). Concurrency-slot rejection surfaces as a `RuntimeError` containing `"concurrent limit reached"`, which `_run_job` maps to a friendly callback message rather than a raw error.
+The reaper (`_reaper_loop` → `_cancel_expired_suspended`, 60 s) cancels **SUSPENDED** jobs past their per-job timeout and notifies the callback via `on_error`. The cancellation policy is **reason-aware** (`JobRecord.suspend_reason`): an *interaction* wait is the user's responsibility (short timeout, "no response" message), whereas a *batch* wait is the system's — its reaper timeout is only a far backstop (see [§3](#3-suspended--batch-handling--the-full-loop)). Concurrency-slot rejection surfaces as a `RuntimeError` containing `"concurrent limit reached"`, which `_run_job` maps to a friendly callback message rather than a raw error.
 
 #### 2. Recovery Semantics — two distinct resume paths
 
@@ -420,7 +528,7 @@ Idempotency and heartbeats are automatic — `ActivityRunner` wraps every step; 
 
 *   **Async First**: All I/O MUST be `async`.
 *   **DDD Isolation**: Domain logic stays in `src/mcp/servers/<domain>/`. No cross-domain imports.
-*   **Pydantic Contracts**: Use typed models for data that crosses a boundary — see **§14** for ownership, versioning, the no-ad-hoc-dict rule, and when to add a model.
+*   **Pydantic Contracts**: Use typed models for data that crosses a boundary — see [§14](#14-data-models--dtos-srccoremodels) for ownership, versioning, the no-ad-hoc-dict rule, and when to add a model.
 *   **L1/L2 Split**: L1 (Scrapers) write to `DataCache`; L2 (Calculators/Output) read from `DataCache`.
 
 ---
@@ -524,7 +632,9 @@ These are the search strings to grep in production logs for recurring issues:
 | Symptom | Search pattern | Source |
 |---|---|---|
 | Truncated LLM report | `response truncated at max` | `claude.py`, `deepseek.py`, `gemini.py` |
-| Rate-limit token bucket hit | `token-bucket timeout` | `scraper.py` |
+| Rate-limit token bucket hit | `token-bucket timeout` | `rate_limit.py` |
+| SP-API response header parsed | `RequestId=` | `rate_headers.py` |
+| Bucket rate self-calibrated | `Updated bucket 'rate:` | `rate_limit.py` |
 | Scraper retry loop | `Attempt N/` | `scraper.py` |
 | LLM provider init (confirm model + ceiling) | `initialized with model` | `gemini.py`, `claude.py`, `deepseek.py` |
 | Batch job lifecycle | `batch submitted` / `batch complete` | `gemini.py` |
@@ -552,10 +662,10 @@ Every exception derives from `AWSBaseError` (carries `message`, `details`, optio
 | `RetryableError` | transient failure (rate limit, timeout, token expiry) | retried; carries `http_status`/`provider`/`retry_after_seconds`, auto-derives `code` |
 | `FatalError` | non-recoverable (wrong API key, unsupported op) | never retried |
 | `CheckpointError` | checkpoint save/load failure | surfaced; non-fatal to the artifact |
-| `BatchPendingError` | a step submitted a provider batch and must suspend | **control-flow, not an error** — see Layer 5.5 §3 |
+| `BatchPendingError` | a step submitted a provider batch and must suspend | **control-flow, not an error** — see [Layer 5.5 §3](#3-suspended--batch-handling--the-full-loop) |
 | `JobSuspendedError` | job needs human interaction (QR scan, approval) | **control-flow, not an error** |
 
-`BatchPendingError` and `JobSuspendedError` are **control-flow signals**, not failures: they drive the SUSPENDED state and must never reach `on_error` (see §6.7).
+`BatchPendingError` and `JobSuspendedError` are **control-flow signals**, not failures: they drive the SUSPENDED state and must never reach `on_error` (see [§6.7](#67-converting-errors-to-callbacks--user-facing-messages)).
 
 ### 6.2 Raising Errors
 
@@ -665,7 +775,7 @@ User-facing text is produced **only** by the callback layer (`JobCallback`), nev
 - **`notify(message)`** is for system-level notices not tied to a step or failure (rate-limit rejection, job queued). The default delegates to `on_progress`.
 - **Control-flow signals are not errors:** `BatchPendingError` produces an `on_progress` "batch submitted, results will follow" message; `JobSuspendedError` produces an interaction prompt. Neither calls `on_error`.
 - **Capability-aware degradation:** check `callback.capabilities` (`MARKDOWN`, `IMAGE_DISPLAY`, `INTERACTIVE_BUTTONS`, `FORM_INPUT`) before emitting rich content; fall back to plain text where unsupported (e.g. a URL instead of a rendered card in CLI).
-- **Logging vs. messaging are separate audiences:** log the technical detail (code, provider, status) per §4 at the point of handling; send the human a short, actionable message. Never conflate the two.
+- **Logging vs. messaging are separate audiences:** log the technical detail (code, provider, status) per [§4](#4-engineering-standards) at the point of handling; send the human a short, actionable message. Never conflate the two.
 
 ---
 
@@ -773,7 +883,7 @@ Public-URL artifact storage — charts, exported HTML reports, CSVs. Strategy Pa
 | export_csv | `exports/{uuid8}_{filename}.csv` | random uuid prefix |
 
 Guidelines for new keys:
-- Start with a **top-level namespace** folder (`reports/`, `exports/`, …) so artifacts stay groupable and lifecycle-manageable (see §8.4).
+- Start with a **top-level namespace** folder (`reports/`, `exports/`, …) so artifacts stay groupable and lifecycle-manageable (see [§8.4](#84-deletion-semantics)).
 - Use a **deterministic** path when re-runs should overwrite (idempotent workflows); use a **uuid** when every call must be unique.
 - Always sanitize a user/filename component with `os.path.basename` — never interpolate raw input into a key.
 - Keys are backend-agnostic: the same key must be valid on S3 *and* local-HTTP.
@@ -795,11 +905,11 @@ This contract is what makes backends swappable: a key uploaded under one backend
 - local-HTTP: `os.remove`; silent on `FileNotFoundError`, swallows other errors → `WARNING`.
 - The ABC permits a pure no-op (e.g. an immutable / CDN-fronted backend).
 
-Implication: callers **cannot rely on deletion** for correctness or security — treat every uploaded artifact as effectively immutable and public. There is currently **no caller of `delete()`**; artifact lifecycle (TTL / cleanup) is expected to be handled out-of-band (bucket lifecycle policy, or an nginx cron for local-HTTP), keyed on the namespace prefixes in §8.2 — not by calling `delete()` on the request path.
+Implication: callers **cannot rely on deletion** for correctness or security — treat every uploaded artifact as effectively immutable and public. There is currently **no caller of `delete()`**; artifact lifecycle (TTL / cleanup) is expected to be handled out-of-band (bucket lifecycle policy, or an nginx cron for local-HTTP), keyed on the namespace prefixes in [§8.2](#82-object-key-path-rules) — not by calling `delete()` on the request path.
 
 ### 8.5 Adding a new backend
 
-1. Subclass `StorageBackend` in `src/core/storage/<name>.py` — implement `upload`, `upload_file`, `delete`. `upload` must return `{public_url}/{key}` (§8.3); `delete` must not raise (§8.4).
+1. Subclass `StorageBackend` in `src/core/storage/<name>.py` — implement `upload`, `upload_file`, `delete`. `upload` must return `{public_url}/{key}` ([§8.3](#83-url-rules)); `delete` must not raise ([§8.4](#84-deletion-semantics)).
 2. Add a branch in `get_storage_backend()` in `src/core/storage/__init__.py`. **Lazy-import** the class *inside* the branch (matching the existing pattern) so optional deps like `boto3` aren't imported unless the backend is selected.
 3. Read config from env in `__init__` (constructor args optional, env fallback). Raise `KeyError` / `ValueError` when a required var is missing — `export_html` and `export_csv` catch `(ValueError, KeyError)` to **degrade gracefully** to local files, so a misconfigured backend must surface as one of those, not a custom exception.
 4. Set `STORAGE_BACKEND=<name>` in `.env`. No changes to `export_html`, `export_csv`, `charts`, or any other caller.
@@ -882,7 +992,7 @@ Rules:
        def is_hard_block(self, html: str) -> bool: return "captcha" in html
    ```
 2. Create a pool shim (e.g. `src/mcp/servers/walmart/cookie_pool.py`) that subclasses `IdentityPool` and pre-wires the strategy — mirror `src/mcp/servers/amazon/cookie_pool.py` (which adds `from_cookie_files` / `from_cookie_helper` factories so fresh browser cookies are written back to each account's JSON).
-3. In your scrapers, follow the §9.4 invocation pattern. No changes to `src/core/identity/`.
+3. In your scrapers, follow the [§9.4](#94-invocation-boundary--the-_session-contract) invocation pattern. No changes to `src/core/identity/`.
 
 ---
 
@@ -1031,7 +1141,7 @@ To instrument a **new callback / channel**: construct a `TelemetryTracker` with 
   - 🔴 `< 2` completed steps — elapsed-ratio guess only
   - 🟡 `2–4` completed steps — improving
   - 🟢 `≥ 3` samples for **every** remaining step — history-backed (ETA = 40 % elapsed-ratio + 60 % historical)
-- A step stuck at 🔴/🟡 for a workflow you've run many times usually means its `step_name` changed (history forked — §11.2) or it has fewer than 3 samples.
+- A step stuck at 🔴/🟡 for a workflow you've run many times usually means its `step_name` changed (history forked — [§11.2](#112-naming-convention-history-keys)) or it has fewer than 3 samples.
 - No ETA shown (`get_dynamic_eta` → `None`) before step 1 or after the last step is **expected**, not a bug.
 
 ---
@@ -1048,9 +1158,9 @@ The central discovery hub shared by both tracks. Three **independent** registrie
 
 ### 12.1 Responsibility boundaries
 
-The registry is a **discovery + invocation hub, not a business-logic layer.** It maps names to capabilities and is the call boundary; the actual work lives in the domain servers (`src/mcp/servers/<domain>/`). Specifically, `ToolRegistry.call_tool` is the one place that, in order: (1) pops `_metadata` and propagates `tenant_id`/`user_id`/`job_id`/`chat_id` to contextvars via `ContextPropagator`, (2) strips unknown arguments not in the tool's `inputSchema` (logged at WARNING), then (3) invokes the handler with clean business args. Keep cross-cutting concerns (context, arg validation, future ACL/versioning — §12.4) here; keep domain logic out.
+The registry is a **discovery + invocation hub, not a business-logic layer.** It maps names to capabilities and is the call boundary; the actual work lives in the domain servers (`src/mcp/servers/<domain>/`). Specifically, `ToolRegistry.call_tool` is the one place that, in order: (1) pops `_metadata` and propagates `tenant_id`/`user_id`/`job_id`/`chat_id` to contextvars via `ContextPropagator`, (2) strips unknown arguments not in the tool's `inputSchema` (logged at WARNING), then (3) invokes the handler with clean business args. Keep cross-cutting concerns (context, arg validation, future ACL/versioning — [§12.4](#124-extension-rules--versioning--acl)) here; keep domain logic out.
 
-`ToolRegistry` also exposes `get_openai_schemas() -> list[dict]`, which converts every registered tool into the OpenAI function-calling schema format (`{"type": "function", "function": {"name", "description", "parameters"}}`). This is consumed once at `MCPAgent` init when the cloud provider is `OpenAIProvider`; the resulting list is passed as the `tools` kwarg on each `route_and_execute` call (see §16.11). No other caller should need this method.
+`ToolRegistry` also exposes `get_openai_schemas() -> list[dict]`, which converts every registered tool into the OpenAI function-calling schema format (`{"type": "function", "function": {"name", "description", "parameters"}}`). This is consumed once at `MCPAgent` init when the cloud provider is `OpenAIProvider`; the resulting list is passed as the `tools` kwarg on each `route_and_execute` call (see [§16.11](#1611-openai-native-function-calling)). No other caller should need this method.
 
 ### 12.2 Tools — import side-effect constraint
 
@@ -1072,7 +1182,7 @@ Hard constraints:
 ### 12.3 Resources & Prompts
 
 - **Resources** need *no registration call*. `ResourceRegistry.get_all_resources()` walks `src/mcp/servers/**/*.json` and exposes each as `resource://aws-knowledge/{filename}`; `read_resource(uri)` returns its contents. Constraint: the URI is **filename-only, not path-qualified** — two `*.json` files with the same basename in different server dirs collide (last scanned wins). Name knowledge files uniquely. Drop a JSON file in a server dir and it is auto-discovered; nothing to import.
-- **Prompts** use imperative `prompt_registry.register_prompt(Prompt(...))`. Discovery is import-side-effect like tools, so a prompt module must likewise be imported to register. There are **no prompt registrations today** (only an example comment) — wire a bottom-of-file import block mirroring §12.2 when the first one is added.
+- **Prompts** use imperative `prompt_registry.register_prompt(Prompt(...))`. Discovery is import-side-effect like tools, so a prompt module must likewise be imported to register. There are **no prompt registrations today** (only an example comment) — wire a bottom-of-file import block mirroring [§12.2](#122-tools--import-side-effect-constraint) when the first one is added.
 
 ### 12.4 Extension rules — versioning & ACL
 
@@ -1122,7 +1232,7 @@ Rules for new callers:
 
 Display cleaning happens at the **output boundary** (router / callback), not inside domain logic:
 - The `IntelligenceRouter` applies `clean_for_feishu` on the **local-model route** (raw local output is the noisiest); cloud responses are not cleaned there. The authoritative cleaning happens at the channel boundary — `FeishuCallback` runs `clean_for_feishu` at send time regardless of route. Cleaning is idempotent, so the local route running it twice is harmless.
-- `clean_for_feishu` strips Markdown image syntax on purpose: Feishu interactive-card Markdown requires uploaded `image_key`s, not URLs, so a raw `![alt](url)` triggers ErrCode 11310 ("no imagekey is passed in"). Images must be delivered via the storage/upload path (§8), not embedded in card text.
+- `clean_for_feishu` strips Markdown image syntax on purpose: Feishu interactive-card Markdown requires uploaded `image_key`s, not URLs, so a raw `![alt](url)` triggers ErrCode 11310 ("no imagekey is passed in"). Images must be delivered via the storage/upload path ([§8](#8-storage-backend-srccorestorage)), not embedded in card text.
 - Add a **new channel** by adding a `clean_for_<channel>` method that composes `clean_markdown` with channel-specific rules, and call it from that channel's callback — keep the per-channel quirks here, not scattered across callers.
 
 ---
@@ -1157,7 +1267,7 @@ Models are validated against **persisted and in-flight data** that outlives a si
 "Pass a model, not a bare dict" applies **at boundaries** — cross-domain calls, persisted data, and LLM-facing schemas. A dict with an implicit, undocumented shape that crosses a boundary is the anti-pattern: callers can't see the contract, typos pass silently, and `DataCache` can't validate it.
 
 Two deliberate, *non*-violating uses of dict remain:
-- **The workflow item pipeline** (`list[dict]` flowing through steps) is dict by design — items accrete enrichment heterogeneously. But each item's shape should track a real model (`Product`), and `ProcessStep` coerces to `output_schema` at the AI boundary (§Layer 5). Don't invent parallel item shapes.
+- **The workflow item pipeline** (`list[dict]` flowing through steps) is dict by design — items accrete enrichment heterogeneously. But each item's shape should track a real model (`Product`), and `ProcessStep` coerces to `output_schema` at the AI boundary ([Layer 5](#layer-5-intelligence-routing--prompt-management-srcintelligence)). Don't invent parallel item shapes.
 - **`UnifiedRequest.params: Dict[str, Any]`** is an intentional open extension point for per-workflow parameters, normalized at the gateway.
 
 Everywhere else, if data crosses a domain, gets cached, or is returned to an LLM as structured output → define or extend a model.
@@ -1166,9 +1276,9 @@ Everywhere else, if data crosses a domain, gets cached, or is returned to an LLM
 
 Add one when **any** of these holds: the data crosses a domain boundary; it is persisted (cache/checkpoint); it is an LLM structured-output schema; or the same shape is built at ≥2 call sites. Otherwise:
 
-- **Extend, don't fork.** Add an `Optional` field to the existing model rather than creating a near-duplicate (§14.2 keeps it backward-compatible).
+- **Extend, don't fork.** Add an `Optional` field to the existing model rather than creating a near-duplicate ([§14.2](#142-dto-version-compatibility) keeps it backward-compatible).
 - **Keep it private** (`_`-prefixed, in the module) if it's internal to a single workflow/processor and not persisted — promote to `src/core/models/` only when a second domain needs it.
-- **Place by ownership** (§14.1): shared → `src/core/models/`; single-domain → that domain.
+- **Place by ownership** ([§14.1](#141-ownership--where-a-model-belongs)): shared → `src/core/models/`; single-domain → that domain.
 
 ---
 
@@ -1191,15 +1301,15 @@ Boundaries:
 
 ### 15.2 Allowed tools & invocation boundary
 
-- The agent's tool set is **the whole `tool_registry`** (§12) — there is no per-agent allowlist today. `PromptBuilder` renders the categorized catalog (DATA→COMPUTE→FILTER→OUTPUT) into the system prompt so the LLM can plan.
-- Tools are called **only** through `self.mcp.call_tool_json(action, action_input)` (the MCP client, §6) — never by importing handlers.
-- **Identity is injected on every call:** the loop sets `action_input["_metadata"] = {tenant_id, user_id, job_id, chat_id}`; the registry propagates these to contextvars (§12.1). Preserve this when adding tool-call logic.
-- Tool calls are parsed from the LLM reply via `OutputParser.parse_dirty_json` (§13); an unparsable reply yields `(None, None)` and the loop treats it as a conversational reply, not a crash.
-- **OpenAI native function calling (§16.11):** when the cloud provider is `OpenAIProvider`, `MCPAgent.__init__` pre-builds the full tool catalog as OpenAI function schemas via `tool_registry.get_openai_schemas()` (§12.1) and stores them in `_openai_tool_schemas`. On each LLM call these are forwarded as a `tools` kwarg, so OpenAI returns a structured `tool_calls` field instead of emitting a text JSON block. `OpenAIProvider._parse_response` converts the first `tool_calls` entry back into the standard ReAct JSON text (`{"action": …, "action_input": …}`), so `_parse_tool_call` downstream is unchanged. The `_openai_tool_schemas` attribute is `None` for all other providers — the `tools` kwarg is not forwarded and the text-based ReAct protocol remains the only path.
+- The agent's tool set is **the whole `tool_registry`** ([§12](#12-capability-registry-srcregistry)) — there is no per-agent allowlist today. `PromptBuilder` renders the categorized catalog (DATA→COMPUTE→FILTER→OUTPUT) into the system prompt so the LLM can plan.
+- Tools are called **only** through `self.mcp.call_tool_json(action, action_input)` (the MCP client, [§6](#6-error-handling-standards)) — never by importing handlers.
+- **Identity is injected on every call:** the loop sets `action_input["_metadata"] = {tenant_id, user_id, job_id, chat_id}`; the registry propagates these to contextvars ([§12.1](#121-responsibility-boundaries)). Preserve this when adding tool-call logic.
+- Tool calls are parsed from the LLM reply via `OutputParser.parse_dirty_json` ([§13](#13-output-parsing--post-processing-srcintelligenceparsers)); an unparsable reply yields `(None, None)` and the loop treats it as a conversational reply, not a crash.
+- **OpenAI native function calling ([§16.11](#1611-openai-native-function-calling)):** when the cloud provider is `OpenAIProvider`, `MCPAgent.__init__` pre-builds the full tool catalog as OpenAI function schemas via `tool_registry.get_openai_schemas()` ([§12.1](#121-responsibility-boundaries)) and stores them in `_openai_tool_schemas`. On each LLM call these are forwarded as a `tools` kwarg, so OpenAI returns a structured `tool_calls` field instead of emitting a text JSON block. `OpenAIProvider._parse_response` converts the first `tool_calls` entry back into the standard ReAct JSON text (`{"action": …, "action_input": …}`), so `_parse_tool_call` downstream is unchanged. The `_openai_tool_schemas` attribute is `None` for all other providers — the `tools` kwarg is not forwarded and the text-based ReAct protocol remains the only path.
 
 ### 15.3 Cost tracking boundary
 
-- `_accum_tokens(session, response_obj)` runs after **every** LLM call. It adds to `token_usage` always, but to **`cloud_token_usage` only when the provider is not local** (`_LOCAL_PROVIDERS` = local/llama runs are free), and adds `response_obj.cost` to `total_cost`. It also accumulates `response_obj.cache_cost_saved` into `session.cache_cost_saved` — the running total of cost avoided through Gemini context cache hits (§16.9).
+- `_accum_tokens(session, response_obj)` runs after **every** LLM call. It adds to `token_usage` always, but to **`cloud_token_usage` only when the provider is not local** (`_LOCAL_PROVIDERS` = local/llama runs are free), and adds `response_obj.cost` to `total_cost`. It also accumulates `response_obj.cache_cost_saved` into `session.cache_cost_saved` — the running total of cost avoided through Gemini context cache hits ([§16.9](#169-gemini-context-caching-geminiprovider)).
 - **The budget is measured in cloud tokens**, not total tokens or steps. `token_budget` (default 1,000,000 cloud tokens) is the hard ceiling; `max_steps` (default 15) is **progress display only, not a failure limit**.
 - Any new code path that calls the LLM must route through `_accum_tokens`, or budget enforcement and cache savings tracking silently drift.
 - The per-step INFO log includes `cache saved: X.XXXX USD` when `session.cache_cost_saved > 0`, giving real-time cache ROI visibility: `MCPAgent [a381ee5f] Step 6/15 (tenant: default, cloud tokens: 63204/1000000, cost: 0.0198 USD, cache saved: 0.0042 USD)`. The segment is omitted on steps with no cache activity to keep noise-free steps clean.
@@ -1211,11 +1321,11 @@ The loop has exactly these terminal/transition outcomes — keep them exhaustive
 | Trigger | Outcome |
 |---|---|
 | Reply contains a tool call JSON block | execute tool, add observation, **continue** — even if `"Final Answer:"` also appears in the same reply (tool call takes priority; the model is pre-empting before the tool result is seen) |
-| `"Final Answer:"` in reply (no tool call) | extract → attachment policy (§15.5) → `status=completed`, save, return |
+| `"Final Answer:"` in reply (no tool call) | extract → attachment policy ([§15.5](#155-long-report-attachment-strategy-attachment-first)) → `status=completed`, save, return |
 | `current_step > max_steps` **and** cloud usage < 80 % budget **and** < 2 extensions | grant **+5 steps** (max 2 grace extensions), inject a "converge" system message, continue |
 | step limit hit with low budget / extensions exhausted | `_force_final_answer` → `completed` |
 | `cloud_token_usage >= token_budget` | notify "switching to batch", `_force_final_answer` → `completed` |
-| tool returns `{"_type": "INTERACTION_REQUIRED"}` | `status=suspended_for_human`, save, forward signal to callback, **raise `JobSuspendedError`** → JobManager suspends the job (§3) |
+| tool returns `{"_type": "INTERACTION_REQUIRED"}` | `status=suspended_for_human`, save, forward signal to callback, **raise `JobSuspendedError`** → JobManager suspends the job ([§3](#3-suspended--batch-handling--the-full-loop)) |
 | reply has no tool call and no Final Answer — **OpenAI provider** | genuine completion (tool calls arrive via native struct, not text); treat as conversational reply → `completed` |
 | reply has no tool call and no Final Answer — **text-only provider**, no tools called yet, step ≤ 3 | inject a format-reminder system message and `continue` (re-prompt safety net for format non-compliance; fires at most once in the early steps) |
 | reply has no tool call and no Final Answer — **text-only provider**, tools have run or step > 3 | treat as conversational reply → `completed` |
@@ -1257,9 +1367,9 @@ Then register it: add a branch in `ProviderFactory.get_provider()` keyed on `DEF
 
 ### 16.2 `LLMResponse` — the universal return type
 
-Every method returns `LLMResponse` (`src/intelligence/dto.py`): `text`, `provider_name`, `model_name`, `token_usage`, `cost`, `currency`, `cache_cost_saved`, `metadata`. This is the contract the whole platform reads — the agent's cost tracker (§15.3) keys off `token_usage` + `provider_name` + `cache_cost_saved`, and processors read `.text` (§Layer 5). **Never hand-build an `LLMResponse`.**
+Every method returns `LLMResponse` (`src/intelligence/dto.py`): `text`, `provider_name`, `model_name`, `token_usage`, `cost`, `currency`, `cache_cost_saved`, `metadata`. This is the contract the whole platform reads — the agent's cost tracker ([§15.3](#153-cost-tracking-boundary)) keys off `token_usage` + `provider_name` + `cache_cost_saved`, and processors read `.text` ([Layer 5](#layer-5-intelligence-routing--prompt-management-srcintelligence)). **Never hand-build an `LLMResponse`.**
 
-`cache_cost_saved` is the per-response cost avoided via a Gemini context cache hit: `(P_in − P_cr) × cached_tokens / 1,000,000`, where `P_in`/`P_cr` are priced at the call's **effective service tier** (§16.10). It is `0.0` for all non-Gemini providers and for Gemini calls without a cache hit. The agent loop accumulates it into `AgentSession.cache_cost_saved` across the whole session (§16.9, §15.3).
+`cache_cost_saved` is the per-response cost avoided via a Gemini context cache hit: `(P_in − P_cr) × cached_tokens / 1,000,000`, where `P_in`/`P_cr` are priced at the call's **effective service tier** ([§16.10](#1610-gemini-service-tiers-standard--flex--priority)). It is `0.0` for all non-Gemini providers and for Gemini calls without a cache hit. The agent loop accumulates it into `AgentSession.cache_cost_saved` across the whole session ([§16.9](#169-gemini-context-caching-geminiprovider), [§15.3](#153-cost-tracking-boundary)).
 
 ### 16.3 Token & cost population — `create_response`
 
@@ -1284,11 +1394,11 @@ Declare `_MODEL_CONTEXT_WINDOWS = {"model-prefix": token_limit}` (prefix match c
 
 ### 16.5 Batch support (opt-in)
 
-To participate in the async batch pipeline (§3): override `supports_batch() → True`, `generate_batch(requests: list[BatchRequest]) -> BatchJobHandle`, and `poll_batch(handle) -> dict[custom_id, LLMResponse] | None` (**return `None` while pending**, the result map when complete). `BatchPoller` drives polling and reconstruction. Apply the batch discount by passing `is_batch=True` to `create_response` for batch completions. Providers without batch leave the defaults (e.g. DeepSeek `supports_batch()` stays `False`).
+To participate in the async batch pipeline ([§3](#3-suspended--batch-handling--the-full-loop)): override `supports_batch() → True`, `generate_batch(requests: list[BatchRequest]) -> BatchJobHandle`, and `poll_batch(handle) -> dict[custom_id, LLMResponse] | None` (**return `None` while pending**, the result map when complete). `BatchPoller` drives polling and reconstruction. Apply the batch discount by passing `is_batch=True` to `create_response` for batch completions. Providers without batch leave the defaults (e.g. DeepSeek `supports_batch()` stays `False`).
 
 ### 16.6 Error mapping
 
-SDK failures are mapped onto the framework hierarchy (§5) so retry/abort semantics work upstream. Use the base helper — **`self._raise_mapped_error(e)`** — from every API-call `except` block instead of a bare `raise`:
+SDK failures are mapped onto the framework hierarchy ([§5](#5-logging-guidelines)) so retry/abort semantics work upstream. Use the base helper — **`self._raise_mapped_error(e)`** — from every API-call `except` block instead of a bare `raise`:
 
 ```python
 try:
@@ -1300,16 +1410,16 @@ except Exception as e:
 ```
 
 What `_raise_mapped_error` does (in `BaseLLMProvider`):
-- **Context overflow** is already a `FatalError` from the pre-flight guard (§16.4) and passes straight through (framework errors are not re-wrapped).
-- Reads the HTTP status from the SDK exception (`.status_code` / `.code` / `.response.status_code`), runs `classify_http` + `classify_response_message` (§6.2), then raises `RetryableError(http_status=…, provider=self.provider_name)` for transient codes (429/5xx/401-token-expired) or `FatalError(code=…)` for permanent ones (bad key, 400).
+- **Context overflow** is already a `FatalError` from the pre-flight guard ([§16.4](#164-context-limit-guard-provided)) and passes straight through (framework errors are not re-wrapped).
+- Reads the HTTP status from the SDK exception (`.status_code` / `.code` / `.response.status_code`), runs `classify_http` + `classify_response_message` ([§6.2](#62-raising-errors)), then raises `RetryableError(http_status=…, provider=self.provider_name)` for transient codes (429/5xx/401-token-expired) or `FatalError(code=…)` for permanent ones (bad key, 400).
 - No HTTP status → exception-type heuristics (timeout/connection → `RetryableError`); otherwise the original exception is re-raised unchanged so unexpected bugs are never masked.
-- **Never swallow into a fake `LLMResponse`** — a silent empty response corrupts cost/budget accounting and hides failures (§6.6: raise low, handle high).
+- **Never swallow into a fake `LLMResponse`** — a silent empty response corrupts cost/budget accounting and hides failures ([§6.6](#66-propagation-policy--raise-low-handle-high): raise low, handle high).
 
 > Deliberate fallbacks stay as-is and must **not** be routed through `_raise_mapped_error`: `count_tokens` estimate fallbacks, the local-model timeout (`FallbackHandler`), and image-download failures in vision are intentional degradations, not API errors to classify.
 
 ### 16.7 Output truncation detection
 
-A response cut off at the output-token limit must be **detected and surfaced**, not returned as if complete. Each provider checks its SDK's signal and logs the grep-able marker `"response truncated at max"` (§5.6):
+A response cut off at the output-token limit must be **detected and surfaced**, not returned as if complete. Each provider checks its SDK's signal and logs the grep-able marker `"response truncated at max"` ([§5.6](#56-key-log-patterns-for-debugging)):
 
 | Provider | Truncation signal |
 |---|---|
@@ -1350,9 +1460,9 @@ response = await FallbackHandler.handle(
 
 **Constraints:**
 
-- **Do not call `FallbackHandler` from inside a provider.** Providers raise typed exceptions (§16.6) and let them propagate. `FallbackHandler` is called by the `IntelligenceRouter` or the agent loop at the call-site level — it is the *caller's* last resort, not the *provider's*.
-- **Do not confuse this with `exponential_backoff` (§18.5) or `RetryableError` (§6.2).** Those handle transient network/API errors with automatic retries at the HTTP layer. `FallbackHandler` is for situations where retrying is not appropriate (local model timeout) or where an immediate retry cannot succeed (cloud API down).
-- Responses from `FallbackHandler` always carry `provider_name="fallback"`. Callers that inspect `LLMResponse.provider_name` to decide whether to track cost must exclude `"fallback"` — the `AgentSession` cost tracker already skips it via `_LOCAL_PROVIDERS` (§15.3), but custom processors must do the same.
+- **Do not call `FallbackHandler` from inside a provider.** Providers raise typed exceptions ([§16.6](#166-error-mapping)) and let them propagate. `FallbackHandler` is called by the `IntelligenceRouter` or the agent loop at the call-site level — it is the *caller's* last resort, not the *provider's*.
+- **Do not confuse this with `exponential_backoff` ([§18.5](#185-exponential_backoff--retry-decorator)) or `RetryableError` ([§6.2](#62-raising-errors)).** Those handle transient network/API errors with automatic retries at the HTTP layer. `FallbackHandler` is for situations where retrying is not appropriate (local model timeout) or where an immediate retry cannot succeed (cloud API down).
+- Responses from `FallbackHandler` always carry `provider_name="fallback"`. Callers that inspect `LLMResponse.provider_name` to decide whether to track cost must exclude `"fallback"` — the `AgentSession` cost tracker already skips it via `_LOCAL_PROVIDERS` ([§15.3](#153-cost-tracking-boundary)), but custom processors must do the same.
 
 **Extending with a new failure type:**
 
@@ -1463,7 +1573,7 @@ metrics = provider.get_cache_metrics(cache_name)
 # }
 ```
 
-`get_cache_metrics` accrues storage cost to the instant of the call without writing back, so the snapshot is always current. `net_savings = cost_saved − cost_creation − cost_storage_accrued`; `cache_roi_positive` is a boolean summary. The agent loop exposes cumulative savings per session in the step log (§15.3).
+`get_cache_metrics` accrues storage cost to the instant of the call without writing back, so the snapshot is always current. `net_savings = cost_saved − cost_creation − cost_storage_accrued`; `cache_roi_positive` is a boolean summary. The agent loop exposes cumulative savings per session in the step log ([§15.3](#153-cost-tracking-boundary)).
 
 #### Internal DataCache domains (do not write to these directly)
 
@@ -1544,15 +1654,15 @@ The bridge is **transparent to the rest of the loop**: the agent's `_parse_tool_
 
 - **One tool call per turn.** The ReAct protocol is strictly sequential (one action → one observation → next action). `_parse_response` always takes `tool_calls[0]`; if OpenAI returns multiple tool calls in one turn the extras are silently dropped. Do not design workflows that depend on parallel tool calls.
 - **`_is_reasoning_model` for temperature.** `OpenAIProvider._is_reasoning_model()` detects o-series and GPT-5+ models and strips the `temperature` kwarg for them; the same logic applies whether or not `tools` is present. Do not pass `temperature` explicitly to reasoning models.
-- **Re-prompt safety net is disabled for OpenAI.** When `_openai_tool_schemas is not None`, the "no tool call and no Final Answer" re-prompt path (§15.4) is bypassed — the model's plain-text reply is a legitimate native completion, not a format failure.
-- **`get_openai_schemas()` is called once at agent init**, not per turn. Adding a new tool at runtime (after `MCPAgent` construction) will not appear in the native schema list for that session. Both tracks discover tools at process start via the import side-effect (§12.2); runtime registration is not a supported pattern.
+- **Re-prompt safety net is disabled for OpenAI.** When `_openai_tool_schemas is not None`, the "no tool call and no Final Answer" re-prompt path ([§15.4](#154-finalization-paths-loop-exits)) is bypassed — the model's plain-text reply is a legitimate native completion, not a format failure.
+- **`get_openai_schemas()` is called once at agent init**, not per turn. Adding a new tool at runtime (after `MCPAgent` construction) will not appear in the native schema list for that session. Both tracks discover tools at process start via the import side-effect ([§12.2](#122-tools--import-side-effect-constraint)); runtime registration is not a supported pattern.
 - **System prompt is not changed.** The `mcp_agent_system.md` prompt instructs the model to use text-based JSON blocks. OpenAI ignores this instruction when `tool_choice="auto"` and responds via `tool_calls` instead. The instruction is kept for compatibility with text-only providers and does not harm OpenAI runs.
 
 ---
 
 ## 17. Workflow Engine — Step Authoring Reference (`src/workflows/`)
 
-§3 Layer 3 covers registration and high-level composition; Layer 5.5 covers the durable execution runtime (checkpoints, batch polling, resume paths). This section is the authoring reference: step constructor contracts, behavioral constraints, and the invariants every step must respect.
+[Layer 3](#layer-3-orchestration-srcworkflows--srcagents) covers registration and high-level composition; [Layer 5.5](#layer-55-job-lifecycle--durable-execution-srcjobs) covers the durable execution runtime (checkpoints, batch polling, resume paths). This section is the authoring reference: step constructor contracts, behavioral constraints, and the invariants every step must respect.
 
 ### 17.1 ComputeTarget — Choosing an Execution Model
 
@@ -1652,7 +1762,7 @@ ProcessStep(
 **LLM execution:**
 
 1. Format `prompt_template` once per item using scalar item fields (`str`, `int`, `float`, `bool`, `None`). Auto-injected variables: `{count}`, `{items_json}`, `{report_date}`, `{_example_date}`.
-2. When `len(uncached_items) >= batch_threshold` and the cloud provider supports batches, submit all items as one batch job and raise `BatchPendingError` — the workflow suspends and the job resumes automatically via `BatchPoller` (Layer 5.5 §3). **Do not catch `BatchPendingError` anywhere in a step or extractor.**
+2. When `len(uncached_items) >= batch_threshold` and the cloud provider supports batches, submit all items as one batch job and raise `BatchPendingError` — the workflow suspends and the job resumes automatically via `BatchPoller` ([Layer 5.5 §3](#3-suspended--batch-handling--the-full-loop)). **Do not catch `BatchPendingError` anywhere in a step or extractor.**
 3. When batch is not available, run all items in parallel via `asyncio.gather`.
 4. A per-item LLM failure sets `item[output_field] = None` and continues; it does not abort the workflow.
 
@@ -1664,7 +1774,7 @@ ProcessStep(
 - **Prompt template formatting failure is a `FatalError`** — the workflow aborts rather than producing silently malformed prompts. Validate template variable names against real item field names before deploying a new `ProcessStep`.
 - Only scalar item fields are available in the prompt template. If a nested structure is needed, flatten it in a prior `ProcessStep(PURE_PYTHON)` step.
 - `batch_threshold` defaults to `10`. Set it explicitly to `1` to force batch behavior for single-item workflows (e.g., `ad_diagnosis` uses `batch_threshold=1` for its LLM step).
-- **Never call an LLM provider directly inside `fn`.** If LLM inference is needed, structure the step as `ProcessStep(CLOUD_LLM)` with a `prompt_template`. The only legitimate exception is a processor class that accepts an injected `BaseLLMProvider` (see §3 Layer 5 — AI-Backed Processors); those are called from `fn`, not written inline.
+- **Never call an LLM provider directly inside `fn`.** If LLM inference is needed, structure the step as `ProcessStep(CLOUD_LLM)` with a `prompt_template`. The only legitimate exception is a processor class that accepts an injected `BaseLLMProvider` (see [Layer 5 — AI-Backed Processors](#ai-backed-processors-call-llm)); those are called from `fn`, not written inline.
 
 ### 17.5 WorkflowContext — Access Patterns and Constraints
 
@@ -1686,7 +1796,7 @@ ProcessStep(
 - Call `ctx.heartbeat({...})` periodically inside long-running extractors or processing loops. It writes a `HEARTBEAT` event to the checkpoint and resets the suspended-job reaper timer, keeping the job alive during extended waits.
 - Never modify `ctx.config` at runtime. The config snapshot is taken at workflow build time; changes made during execution will not survive a checkpoint resume and will be silently ignored.
 - `ctx.router` and `ctx.mcp` may be `None` in unit tests unless explicitly injected. Design extractors and processor functions to tolerate `None` for those fields where they are optional.
-- Always invoke tools through `ctx.mcp.call_tool_json(...)`, never by importing the handler function directly. `call_tool_json` is the only call path that injects `tenant_id`, `user_id`, and `job_id` into the tool's context propagation (§12.1).
+- Always invoke tools through `ctx.mcp.call_tool_json(...)`, never by importing the handler function directly. `call_tool_json` is the only call path that injects `tenant_id`, `user_id`, and `job_id` into the tool's context propagation ([§12.1](#121-responsibility-boundaries)).
 
 ### 17.6 Configuration — Defaults and Job Overrides
 
@@ -1734,8 +1844,8 @@ def build_my_workflow(config: dict) -> Workflow:
 
 - Declare one `_L2_DOMAIN` constant at module scope (e.g., `_L2_DOMAIN = "product_screening"`).
 - Build keys via a module-local helper function — never inline the `":".join([tenant_id, store_id, ...])` construction at multiple call sites.
-- Define `_TTL_*` constants at module level; never pass raw integer literals to `data_cache.get()`. See the TTL reference table in §10.4.
-- L1 scraper domains and L2 workflow domains must never overlap — L1 writes raw scraped data; L2 writes computed results. See §10.3 for the full ownership rules.
+- Define `_TTL_*` constants at module level; never pass raw integer literals to `data_cache.get()`. See the TTL reference table in [§10.4](#104-ttl-reference).
+- L1 scraper domains and L2 workflow domains must never overlap — L1 writes raw scraped data; L2 writes computed results. See [§10.3](#103-l1-vs-l2-domain-ownership) for the full ownership rules.
 
 ---
 
@@ -1814,7 +1924,7 @@ ContextPropagator.reset(token)
 
 - `ContextPropagator` is **not a global mutable dict** — child tasks cannot write back to the parent. Never use it to return results from a task; use return values or a queue.
 - Always call `reset(token)` in a `try/finally` block after `set_all()` in middleware or test scaffolding. Failing to reset leaks context into subsequent requests on the same event loop.
-- Domain modules and MCP tool handlers may call `get()` to read propagated values. They must **never** call `set_all()`. Only `ToolRegistry.call_tool` (§12.1) and entry-point middleware are permitted to write context.
+- Domain modules and MCP tool handlers may call `get()` to read propagated values. They must **never** call `set_all()`. Only `ToolRegistry.call_tool` ([§12.1](#121-responsibility-boundaries)) and entry-point middleware are permitted to write context.
 
 ### 18.3 AmazonCookieHelper — Session Management
 
@@ -1871,7 +1981,31 @@ async def fetch_data(url: str) -> dict:
     ...
 ```
 
-**Retry schedule** (defaults, with `jitter=True`):
+**Parameters:**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `max_retries` | `5` | Maximum retry attempts after the initial call (total attempts = `max_retries + 1`) |
+| `base_delay` | `1.0` | Base delay in seconds for the computed backoff (`base_delay × 2^attempt`) |
+| `max_delay` | `60.0` | Cap on the computed backoff delay (does **not** cap `retry_after_seconds` — see below) |
+| `retry_on_exceptions` | `(ConnectionError, Timeout)` | Additional exception types that trigger a retry |
+| `jitter` | `True` | Multiply computed delay by a `[0.5, 1.0)` random factor to spread thundering herds |
+
+**Delay selection — two paths:**
+
+When `RetryableError` is raised, the decorator chooses the sleep duration as follows:
+
+```
+if e.retry_after_seconds > 0:
+    delay = min(e.retry_after_seconds, 14400)   # server-specified; cap at 4 h
+else:
+    delay = min(max_delay, base_delay × 2^attempt)
+    if jitter: delay *= uniform(0.5, 1.0)
+```
+
+Server-specified waits (`retry_after_seconds > 0`) skip jitter and ignore `max_delay` so the full server-mandated pause is always respected. The 4-hour cap guards against pathological `Retry-After` values. Raw network errors (`ConnectionError`, `Timeout`) always use the computed path.
+
+**Retry schedule — computed path** (defaults, `jitter=True`):
 
 | Attempt | Base delay | Jittered range |
 |---|---|---|
@@ -1885,20 +2019,126 @@ async def fetch_data(url: str) -> dict:
 
 **What is and is not retried:**
 
-| Exception | Behavior |
-|---|---|
-| `RetryableError` (from `src.core.errors`) | Retried up to `max_retries` times |
-| `requests.ConnectionError`, `requests.Timeout` | Retried up to `max_retries` times |
-| Any other `AWSBaseError` subclass (`FatalError`, etc.) | Propagated immediately — no retry |
-| Any other exception | Propagated immediately — no retry |
+| Exception | Delay path | Behavior |
+|---|---|---|
+| `RetryableError` with `retry_after_seconds > 0` | server-specified | Retried; waits exactly `retry_after_seconds` (capped at 4 h) |
+| `RetryableError` with `retry_after_seconds == 0` | computed backoff + jitter | Retried up to `max_retries` times |
+| `requests.ConnectionError`, `requests.Timeout` | computed backoff + jitter | Retried up to `max_retries` times |
+| Any other `AWSBaseError` subclass (`FatalError`, etc.) | — | Propagated immediately — no retry |
+| Any other exception | — | Propagated immediately — no retry |
+
+**Raising `RetryableError` with a server wait:**
+
+```python
+from src.core.errors import RetryableError
+from src.core.utils.rate_headers import observe_response
+
+resp = requests.get(url, ...)
+hdrs = observe_response(resp, "sp_api", store_id=store_id, operation=operation)
+if resp.status_code == 429:
+    raise RetryableError(
+        "SP-API rate limited",
+        retry_after_seconds=hdrs.retry_after or 60.0,   # floor at 60 s when header absent
+        http_status=429,
+        code=classify_http(429, "sp_api"),
+    )
+```
+
+The `exponential_backoff` decorator on the caller will then sleep exactly `retry_after_seconds` before the next attempt, honouring the server's explicit instruction.
 
 **Constraints:**
 
-- **Async only.** The decorator wraps `async def` functions. Using it on a sync function silently wraps it in a coroutine that will never be awaited.
-- `RetryableError` is the correct signal for domain code to request a retry (§6.2). Never raise `requests.ConnectionError` directly from business logic — let it bubble from the HTTP layer; the decorator handles it.
+- **Async only.** The decorator wraps `async def` functions. Using it on a sync function silently wraps it in a coroutine that will never be awaited. Synchronous clients must implement their own retry loop (see `sellersprite` and `xiyouzhaoci` `_request()` methods as reference).
+- `RetryableError` is the correct signal for domain code to request a retry ([§6.2](#62-raising-errors)). Never raise `requests.ConnectionError` directly from business logic — let it bubble from the HTTP layer; the decorator handles it.
 - Do not nest two `@exponential_backoff` decorators on the same call path for the same operation — retries compound multiplicatively (worst case: 6 × 6 = 36 total attempts at the outer level).
+- `retry_after_seconds` bypasses `max_delay`. If the server instructs a 300 s wait but `max_delay=60`, the decorator still waits 300 s. This is intentional: `max_delay` guards computed backoff from runaway growth; it does not override an explicit server instruction.
 
-### 18.6 Parser Helpers
+### 18.6 `rate_headers.py` — API Response Header Parser
+
+`rate_headers.py` (`src/core/utils/rate_headers.py`) centralises all knowledge of which HTTP response headers carry rate-limit information for each external API. It exposes one public function, `observe_response()`, that:
+
+1. Parses the source's rate-limit header and converts it to a uniform RPS float.
+2. Calls `RateLimiter().update_source_rate()` to self-calibrate the RL-3 token bucket when the server reports its actual limit (2xx only — the header is absent on 429).
+3. Extracts the `Retry-After` header when present, so callers can propagate it via `RetryableError(retry_after_seconds=...)`.
+4. Returns an `ApiRateLimitHeaders` dataclass with all parsed values.
+
+**Never raises.** Any parse or `update_source_rate` failure is swallowed at `DEBUG` level so it can never crash the HTTP caller.
+
+#### `_SOURCE_HEADER_CFG` — the per-source header registry
+
+```python
+_SOURCE_HEADER_CFG: dict[str, tuple[str | None, str, str | None, str | None]] = {
+    #  source        rate-limit header          unit   request-ID header    retry-after header
+    "sp_api":       ("x-amzn-RateLimit-Limit", "rps", "x-amzn-RequestId", None),
+    "amazon_ads":   ("x-ratelimit-limit",       "rpm", "x-amzn-RequestId", "Retry-After"),
+    "sellersprite": (None,                      "rps", None,               "Retry-After"),
+    "xiyouzhaoci":  (None,                      "rps", None,               "Retry-After"),
+    "tiktok":       (None,                      "rps", None,               "Retry-After"),
+}
+```
+
+Each tuple position has a fixed meaning:
+
+| Position | Field | Values | Effect when `None` |
+|----------|-------|--------|--------------------|
+| 0 | Rate-limit header name | `str` header, or `None` | No bucket self-calibration |
+| 1 | Rate-limit unit | `"rps"` or `"rpm"` | `"rpm"` → divided by 60 internally |
+| 2 | Request-ID header name | `str` header, or `None` | No request-ID logged |
+| 3 | Retry-After header name | `str` header, or `None` | `hdrs.retry_after` always `None` |
+
+#### `ApiRateLimitHeaders` — the return type
+
+```python
+@dataclass
+class ApiRateLimitHeaders:
+    source:      str
+    store_id:    str
+    operation:   str
+    limit_rps:   float | None   # None when rate-limit header absent (e.g. on 429)
+    request_id:  str   | None
+    retry_after: float | None   # seconds; None when Retry-After header absent
+```
+
+#### `observe_response()` — call site pattern
+
+```python
+from src.core.utils.rate_headers import observe_response
+
+resp = self.session.request(method, url, **kwargs)
+hdrs = observe_response(resp, "sellersprite")          # minimal — source only
+# — or, for per-store/per-operation isolation —
+hdrs = observe_response(resp, "sp_api",
+                        store_id=self.auth.store_id,
+                        operation=operation)
+
+if resp.status_code == 429:
+    raise RetryableError(
+        "rate limited",
+        retry_after_seconds=hdrs.retry_after or 60.0,
+    )
+```
+
+Call it **after every HTTP response** — both success and error paths. Calling it twice on the same response is harmless (idempotent).
+
+#### Adding a new external API source
+
+1. **Add an entry to `_SOURCE_HEADER_CFG`** using the tuple format above.
+
+2. **Key constraint — source name must be identical** to the string passed to `RateLimiter().acquire_source(source)` and to `observe_response(resp, source)` in the client code. A mismatch means the header config is silently ignored (the unknown source falls back to `(None, "rps", None, None)`), so no calibration or `Retry-After` extraction happens.
+
+3. **Unit field constraint** — use `"rpm"` only when the API reports its limit in *requests per minute* (e.g. Amazon Ads `x-ratelimit-limit`). Use `"rps"` for everything else. Getting this wrong scales the bucket by a factor of 60 in the wrong direction.
+
+4. **`None` for absent headers** — if the API does not send a rate-limit header (most third-party APIs), set position 0 to `None`. If it does not send `Retry-After` on 429 (Amazon SP-API), set position 3 to `None`. Do not set these to empty strings — only `None` suppresses parsing.
+
+5. **No new source entry needed for `store_id` / `operation` variants** — a single source entry covers all stores and all operations for that API. The `store_id` and `operation` arguments to `observe_response` are forwarded to `update_source_rate` to update the correct composite bucket; they do not require separate `_SOURCE_HEADER_CFG` entries.
+
+#### Modifying an existing entry
+
+- **Changing a header name** — update position 0 or 3 in the tuple. No other file needs to change; `observe_response` is the single read point for these strings.
+- **Switching unit from `"rps"` to `"rpm"`** — also update `config/settings.json → source_limits.<source>` to use `requests_per_minute` instead of `requests_per_second`, so the static bucket capacity matches what the server will report.
+- **Removing a source** — removing its entry means `observe_response` treats it as an unknown source (all-`None` config). Existing `acquire_source` calls are unaffected; the bucket still exists from `settings.json`. Only the self-calibration and `Retry-After` parsing are lost.
+
+### 18.7 Parser Helpers
 
 `parser_helper.py` extracts numeric values from raw HTML strings and API text. All three functions return `None` on failure and never raise.
 
@@ -1923,7 +2163,7 @@ parse_integer(None)                 # → None
 - Treat a `None` return as a scrape failure for that specific field, not as zero. Never silently substitute `0` — a missing price and a zero-dollar price have different meanings downstream.
 - These functions operate on strings. Passing an already-parsed numeric value returns `None`.
 
-### 18.7 CSVHelper — File I/O
+### 18.8 CSVHelper — File I/O
 
 `CSVHelper` (`csv_helper.py`) provides static methods for reading and writing CSV files. All methods catch exceptions internally and never raise.
 
@@ -1941,9 +2181,9 @@ asins = CSVHelper.read_asins_from_csv("data.csv", column_name="ASIN")  # [] on f
 
 - `save_to_csv()` derives column names from `data[0].keys()`. Items with extra keys not present in the first row are silently truncated. Normalize all items to the same schema before writing.
 - `read_csv()` returns `[]` for both an empty file and a read failure. The caller cannot distinguish the two from the return value alone.
-- `CSVHelper` is for **offline and operational data** (bulk ASIN import lists, human-review exports). Do not use it on the request hot path — for structured workflow results consumed by downstream systems, use the `export_csv` MCP tool (§2, `src/mcp/servers/output/`) which integrates with the storage backend.
+- `CSVHelper` is for **offline and operational data** (bulk ASIN import lists, human-review exports). Do not use it on the request hot path — for structured workflow results consumed by downstream systems, use the `export_csv` MCP tool ([§2](#2-directory-mapping-summary), `src/mcp/servers/output/`) which integrates with the storage backend.
 
-### 18.8 Charts — Matplotlib Utilities
+### 18.9 Charts — Matplotlib Utilities
 
 `charts.py` provides a shared color palette and two functions for generating and uploading PNG charts. It configures matplotlib at import time with a non-interactive Agg backend and selects a CJK-capable font if one is available on the host.
 
@@ -1978,5 +2218,5 @@ url = chart_upload(png, key="reports/ad_diagnosis/B01ABC/2025-06/impressions.png
 
 - `fig_to_png()` **always calls `plt.close(fig)`** in a `finally` block. Do not close the figure before calling it — closing before the conversion produces a blank PNG.
 - `chart_upload()` **never raises** — all exceptions are caught and `None` is returned. Always check the return value before embedding the URL in a report; a `None` result means the chart link will be broken.
-- The `key` argument follows the storage key rules in §8.2: no leading slash; use a deterministic path for idempotent re-runs so that re-running a workflow overwrites the existing chart rather than creating orphaned duplicates.
+- The `key` argument follows the storage key rules in [§8.2](#82-object-key-path-rules): no leading slash; use a deterministic path for idempotent re-runs so that re-running a workflow overwrites the existing chart rather than creating orphaned duplicates.
 - CJK font detection runs at module import. On servers without a CJK font installed, Chinese axis labels fall back to `"DejaVu Sans"` and render as boxes. Install `fonts-noto-cjk` on Linux hosts if charts include CJK text.
