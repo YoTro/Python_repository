@@ -159,6 +159,7 @@ class SPAPIClient:
 
     # ── Sales & Traffic Report ─────────────────────────────────────────────
 
+    _REPORTS_API_VERSION = "2021-06-30"
     _REPORT_POLL_INTERVAL = 15  # seconds between status polls
     _REPORT_POLL_MAX = 120  # max polls → 30 min ceiling
 
@@ -204,7 +205,9 @@ class SPAPIClient:
             },
         }
 
-        data = await asyncio.to_thread(self._post, "/reports/2021-06-30/reports", body)
+        data = await asyncio.to_thread(
+            self._post, f"/reports/{self._REPORTS_API_VERSION}/reports", body
+        )
         report_id = data.get("reportId")
         if not report_id:
             raise ExtractorError(f"No reportId in createReport response: {data}")
@@ -219,7 +222,7 @@ class SPAPIClient:
 
     async def _poll_sp_report(self, report_id: str) -> str:
         """Poll until DONE, return reportDocumentId."""
-        path = f"/reports/2021-06-30/reports/{report_id}"
+        path = f"/reports/{self._REPORTS_API_VERSION}/reports/{report_id}"
         for attempt in range(self._REPORT_POLL_MAX):
             data = await asyncio.to_thread(self._get, path)
             status = data.get("processingStatus")
@@ -239,7 +242,9 @@ class SPAPIClient:
 
     async def _download_sp_report(self, document_id: str) -> list[dict]:
         """Fetch document metadata, download the file, decompress if needed."""
-        meta = await asyncio.to_thread(self._get, f"/reports/2021-06-30/documents/{document_id}")
+        meta = await asyncio.to_thread(
+            self._get, f"/reports/{self._REPORTS_API_VERSION}/documents/{document_id}"
+        )
         url = meta.get("url")
         compression = meta.get("compressionAlgorithm", "")
         if not url:
@@ -253,6 +258,63 @@ class SPAPIClient:
             raw = gzip.decompress(raw)
 
         return json.loads(raw.decode("utf-8"))
+
+    async def _download_sp_report_tsv(self, document_id: str) -> str:
+        """Fetch document metadata, download flat-file report, decompress if needed."""
+        meta = await asyncio.to_thread(
+            self._get, f"/reports/{self._REPORTS_API_VERSION}/documents/{document_id}"
+        )
+        url = meta.get("url")
+        compression = meta.get("compressionAlgorithm", "")
+        if not url:
+            raise ExtractorError(f"No URL in SP report document metadata: {meta}")
+
+        resp = await asyncio.to_thread(requests.get, url, timeout=120)
+        resp.raise_for_status()
+
+        raw = resp.content
+        if compression.upper() == "GZIP":
+            raw = gzip.decompress(raw)
+
+        return raw.decode("utf-8")
+
+    # ── FBA Inventory Planning ─────────────────────────────────────────────
+
+    async def get_fba_inventory_planning(
+        self,
+        sku_filter: str | None = None,
+        asin_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Request GET_FBA_INVENTORY_PLANNING_DATA, poll until complete, download
+        and parse the tab-delimited result.
+
+        Not available in NL, PL, SE, or BE marketplaces.
+
+        Returns per-SKU planning records with inventory age buckets, sales
+        velocity (t7/t30/t60/t90), days of supply, recommended actions,
+        estimated aged-inventory surcharge fees, and inbound quantities.
+        All numeric columns are auto-coerced to int or float.
+
+        Args:
+            sku_filter:  Optional seller SKU to filter results (exact match).
+            asin_filter: Optional ASIN to filter results (exact match).
+        """
+        body: dict[str, Any] = {
+            "reportType": "GET_FBA_INVENTORY_PLANNING_DATA",
+            "marketplaceIds": [self.auth.marketplace_id],
+        }
+        data = await asyncio.to_thread(
+            self._post, f"/reports/{self._REPORTS_API_VERSION}/reports", body
+        )
+        report_id = data.get("reportId")
+        if not report_id:
+            raise ExtractorError(f"No reportId in createReport response: {data}")
+        logger.info(f"Created SP-API report {report_id} (GET_FBA_INVENTORY_PLANNING_DATA)")
+
+        document_id = await self._poll_sp_report(report_id)
+        tsv_text = await self._download_sp_report_tsv(document_id)
+        return _parse_fba_inventory_planning(tsv_text, sku_filter, asin_filter)
 
     # ── Order Metrics ─────────────────────────────────────────────────────
 
@@ -596,4 +658,47 @@ def _parse_sales_traffic_records(
                 }
             )
 
+    return results
+
+
+def _coerce(val: str | None) -> int | float | str | None:
+    """Best-effort numeric coercion for TSV report cells."""
+    if not val or not val.strip():
+        return None
+    v = val.strip()
+    try:
+        return int(v)
+    except ValueError:
+        pass
+    try:
+        return float(v)
+    except ValueError:
+        return v
+
+
+def _parse_fba_inventory_planning(
+    tsv_text: str,
+    sku_filter: str | None = None,
+    asin_filter: str | None = None,
+) -> list[dict[str, Any]]:
+    """Parse GET_FBA_INVENTORY_PLANNING_DATA tab-delimited report."""
+    import csv
+    from io import StringIO
+
+    reader = csv.DictReader(StringIO(tsv_text), delimiter="\t")
+    sku_upper = sku_filter.upper() if sku_filter else None
+    asin_upper = asin_filter.upper() if asin_filter else None
+
+    results = []
+    for row in reader:
+        if sku_upper and (row.get("sku") or "").upper() != sku_upper:
+            continue
+        if asin_upper and (row.get("asin") or "").upper() != asin_upper:
+            continue
+        results.append(
+            {
+                k.strip().lower().replace("-", "_").replace(" ", "_"): _coerce(v)
+                for k, v in row.items()
+            }
+        )
     return results

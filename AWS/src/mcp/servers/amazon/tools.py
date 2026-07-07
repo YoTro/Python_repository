@@ -428,6 +428,14 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await client.get_catalog_item(asin=arguments["asin"])
         return _json_response(result)
 
+    if name == "get_fba_inventory_planning":
+        client = SPAPIClient(store_id=arguments.get("store_id"))
+        result = await client.get_fba_inventory_planning(
+            sku_filter=arguments.get("sku_filter"),
+            asin_filter=arguments.get("asin_filter"),
+        )
+        return _json_response(result)
+
     if name == "get_sp_placement_report":
         client = AmazonAdsClient(
             store_id=arguments.get("store_id"),
@@ -1130,6 +1138,38 @@ amazon_tools = [
             "required": ["asin"],
         },
     ),
+    Tool(
+        name="get_fba_inventory_planning",
+        description=(
+            "Request GET_FBA_INVENTORY_PLANNING_DATA from SP-API, poll until complete, "
+            "and return parsed per-SKU planning records. "
+            "Covers: available stock, inventory age buckets (0-90, 91-180, 181-270, 271-365, 365+ days), "
+            "sales velocity (units shipped t7/t30/t60/t90 and sales revenue), days of supply, "
+            "weeks of cover (t30/t90), sell-through rate, recommended action "
+            "(INVESTIGATE / OUTLET / DISPOSE / SHIP), estimated aged-inventory surcharge (AIS) fees "
+            "per aging tier (181-210 … 365+ days), estimated excess quantity, "
+            "estimated storage cost next month, inbound quantities (working/shipped/received), "
+            "and FBA inventory health status. "
+            "Not available in NL, PL, SE, or BE marketplaces."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "sku_filter": {
+                    "type": "string",
+                    "description": "Optional seller SKU to filter results (exact match, case-insensitive).",
+                },
+                "asin_filter": {
+                    "type": "string",
+                    "description": "Optional ASIN to filter results (exact match, case-insensitive).",
+                },
+                "store_id": {
+                    "type": "string",
+                    "description": "Store ID suffix (e.g. 'US'). Defaults to env default.",
+                },
+            },
+        },
+    ),
     # ── Placement Report ──────────────────────────────────────────────────
     Tool(
         name="get_sp_placement_report",
@@ -1266,6 +1306,10 @@ _AMAZON_META = {
     "get_sp_catalog_item": (
         "DATA",
         "product metadata from Catalog API: title, brand, size, bullet points",
+    ),
+    "get_fba_inventory_planning": (
+        "DATA",
+        "per-SKU FBA planning report: inventory age buckets, sales velocity, days of supply, recommended actions, estimated AIS fees",
     ),
     # Ads Placement + Change History
     "get_sp_placement_report": (
