@@ -7,6 +7,7 @@ On 2xx: the rate-limit header is present — update the in-memory bucket to
 On 4xx/429: the rate-limit header may be absent — still extract retry_after
             so callers can propagate the wait time via RetryableError.
 """
+
 from __future__ import annotations
 
 import logging
@@ -55,7 +56,7 @@ class ApiRateLimitHeaders:
     source: str
     store_id: str
     operation: str
-    limit_rps: float | None   # None when header absent (e.g. on 429)
+    limit_rps: float | None  # None when header absent (e.g. on 429)
     request_id: str | None
     retry_after: float | None  # seconds; None when header absent
 

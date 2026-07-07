@@ -20,6 +20,7 @@ from src.core.errors import (
     is_retryable,
 )
 from src.core.utils.decorators import exponential_backoff
+from src.gateway.rate_limit import RateLimiter
 
 from .auth import AmazonAdsAuth
 
@@ -147,7 +148,9 @@ class AmazonAdsClient:
         }
 
         try:
-            # Wrap request in to_thread since requests is synchronous
+            await RateLimiter().async_acquire_source(
+                "amazon_ads", store_id=self.auth.store_id, operation="listSponsoredProducts"
+            )
             resp = await asyncio.to_thread(
                 requests.post, url, json={"maxResults": 10}, headers=headers
             )
@@ -227,6 +230,9 @@ class AmazonAdsClient:
                     "includeAnalysis": include_analysis,
                 }
 
+                await RateLimiter().async_acquire_source(
+                    "amazon_ads", store_id=self.auth.store_id, operation="getBidRecommendations"
+                )
                 response = await asyncio.to_thread(
                     requests.post, endpoint, json=payload, headers=headers
                 )
@@ -275,11 +281,16 @@ class AmazonAdsClient:
             "Accept": media_type,
         }
 
-    async def _post_list(self, path: str, media_type: str, body: dict) -> dict:
+    async def _post_list(
+        self, path: str, media_type: str, body: dict, operation: str = "default"
+    ) -> dict:
         url = f"{self.base_url}{path}"
 
         @exponential_backoff(max_retries=2, base_delay=10.0, max_delay=30.0, jitter=False)
         async def _do() -> dict:
+            await RateLimiter().async_acquire_source(
+                "amazon_ads", store_id=self.auth.store_id, operation=operation
+            )
             resp = await asyncio.to_thread(
                 requests.post, url, json=body, headers=self._v3_headers(media_type)
             )
@@ -319,6 +330,7 @@ class AmazonAdsClient:
                 "/sp/campaigns/list",
                 "application/vnd.spCampaign.v3+json",
                 body,
+                operation="listCampaigns",
             )
             page = data.get("campaigns", [])
             all_campaigns.extend([_parse_campaign(c) for c in page])
@@ -353,6 +365,7 @@ class AmazonAdsClient:
             "/sp/adGroups/list",
             "application/vnd.spAdGroup.v3+json",
             body,
+            operation="listAdGroups",
         )
         return [_parse_ad_group(g) for g in data.get("adGroups", [])]
 
@@ -390,6 +403,7 @@ class AmazonAdsClient:
                 "/sp/keywords/list",
                 "application/vnd.spKeyword.v3+json",
                 body,
+                operation="listKeywords",
             )
             page = data.get("keywords", [])
             all_keywords.extend([_parse_keyword(k) for k in page])
@@ -581,6 +595,9 @@ class AmazonAdsClient:
         async def _post() -> requests.Response | str:
             nonlocal body
             body["name"] = f"{report_type}_{start_date}_{end_date}_{int(time.time())}"
+            await RateLimiter().async_acquire_source(
+                "amazon_ads", store_id=self.auth.store_id, operation="createReport"
+            )
             resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
             if _is_report_425(resp):
                 dup_id = _extract_dup_report_id(resp)
@@ -630,6 +647,9 @@ class AmazonAdsClient:
         jitter=False,
     )
     async def _poll_request(self, url: str, headers: dict) -> requests.Response:
+        await RateLimiter().async_acquire_source(
+            "amazon_ads", store_id=self.auth.store_id, operation="getReport"
+        )
         return await asyncio.to_thread(
             requests.get, url, headers=headers, timeout=self._REPORT_POLL_TIMEOUT
         )
@@ -837,6 +857,9 @@ class AmazonAdsClient:
                 "endDate": end_date,
                 "configuration": report_cfg,
             }
+            await RateLimiter().async_acquire_source(
+                "amazon_ads", store_id=self.auth.store_id, operation="createReport"
+            )
             resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
             if _is_report_425(resp):
                 dup_id = _extract_dup_report_id(resp)
@@ -1224,6 +1247,9 @@ class AmazonAdsClient:
                 "endDate": str(_end),
                 "configuration": report_cfg,
             }
+            await RateLimiter().async_acquire_source(
+                "amazon_ads", store_id=self.auth.store_id, operation="createReport"
+            )
             resp = await asyncio.to_thread(requests.post, url, json=body, headers=headers)
             if _is_report_425(resp):
                 dup_id = _extract_dup_report_id(resp)
@@ -1348,6 +1374,9 @@ class AmazonAdsClient:
         @exponential_backoff(max_retries=5, base_delay=60.0, max_delay=300.0, jitter=False)
         async def _post_with_retry(body_dict: dict) -> dict:
             body_bytes = json.dumps(body_dict).encode("utf-8")
+            await RateLimiter().async_acquire_source(
+                "amazon_ads", store_id=self.auth.store_id, operation="getChangeHistory"
+            )
             resp = await asyncio.to_thread(requests.post, url, data=body_bytes, headers=headers)
             code = classify_http(resp.status_code, "amazon_ads")
             if code == ErrorCode.AUTH_TOKEN_EXPIRED:

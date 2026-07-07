@@ -1,4 +1,5 @@
 """Utility for deriving an SP-API operation name from a URL path."""
+
 from __future__ import annotations
 
 import re
