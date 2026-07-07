@@ -18,6 +18,7 @@ from src.core.errors import (
     is_auth_error,
     is_retryable,
 )
+from src.core.utils.rate_headers import observe_response
 from src.gateway.rate_limit import RateLimiter
 
 from .auth import XiyouZhaociAuth
@@ -112,10 +113,11 @@ class XiyouZhaociAPI:
                 )
 
             response = self.session.request(method, url, **kwargs)
+            hdrs = observe_response(response, "xiyouzhaoci")
             code = classify_http(response.status_code, "xiyouzhaoci")
 
             if is_retryable(code) and not is_auth_error(code):
-                wait = int(response.headers.get("Retry-After", 2 ** (attempt + 1)))
+                wait = hdrs.retry_after or 2 ** (attempt + 1)
                 jitter = random.uniform(0, 1)
                 total_wait = wait + jitter
                 logger.warning(

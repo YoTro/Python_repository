@@ -28,8 +28,29 @@
             "xiyouzhaoci":    { "requests_per_minute": 60,  "burst": 5  },
             "sellersprite":   { "requests_per_minute": 40,  "burst": 3,  "login_cooldown_seconds": 60 },
             "amazon_scraper": { "requests_per_minute": 12,  "burst": 3  },
-            "amazon_ads":     { "requests_per_minute": 100, "burst": 20 },
-            "tiktok":         { "requests_per_minute": 12,  "burst": 3  }
+            "amazon_ads": {
+                "default":               { "requests_per_second": 2.0, "burst": 10 },
+                "createReport":          { "requests_per_second": 0.5, "burst": 1  },
+                "getReport":             { "requests_per_second": 2.0, "burst": 5  },
+                "listCampaigns":         { "requests_per_second": 5.0, "burst": 10 },
+                "listAdGroups":          { "requests_per_second": 5.0, "burst": 10 },
+                "listKeywords":          { "requests_per_second": 5.0, "burst": 10 },
+                "listSponsoredProducts": { "requests_per_second": 5.0, "burst": 10 },
+                "getBidRecommendations": { "requests_per_second": 2.0, "burst": 5  },
+                "getChangeHistory":      { "requests_per_second": 2.0, "burst": 5  }
+            },
+            "tiktok":         { "requests_per_minute": 12,  "burst": 3  },
+            "sp_api": {
+                "default":               { "requests_per_second": 0.5,    "burst": 3  },
+                "createReport":          { "requests_per_second": 0.0167, "burst": 1  },
+                "getReport":             { "requests_per_second": 2.0,    "burst": 10 },
+                "getReportDocument":     { "requests_per_second": 0.5,    "burst": 5  },
+                "getInventorySummaries": { "requests_per_second": 2.0,    "burst": 2  },
+                "getOrderMetrics":       { "requests_per_second": 0.5,    "burst": 5  },
+                "getShipments":          { "requests_per_second": 1.0,    "burst": 5  },
+                "getCatalogItem":        { "requests_per_second": 2.0,    "burst": 10 },
+                "listInboundPlans":      { "requests_per_second": 2.0,    "burst": 5  }
+            }
         }
     }
 }

@@ -42,9 +42,14 @@ def exponential_backoff(
                     last_exception = e
                     if attempt == max_retries:
                         raise
-                    delay = min(max_delay, base_delay * (2**attempt))
-                    if jitter:
-                        delay *= 0.5 + random.random()
+                    if e.retry_after_seconds > 0:
+                        # Server explicitly told us how long to wait — honor it
+                        # (cap at 4 h to guard against bogus values).
+                        delay = min(e.retry_after_seconds, 14400.0)
+                    else:
+                        delay = min(max_delay, base_delay * (2**attempt))
+                        if jitter:
+                            delay *= 0.5 + random.random()
                     logger.warning(
                         f"Retrying {func.__name__} [{e.code}] "
                         f"(attempt {attempt + 1}/{max_retries}, waiting {delay:.2f}s)"

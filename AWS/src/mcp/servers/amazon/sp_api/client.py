@@ -19,6 +19,9 @@ from src.core.errors import (
     is_retryable,
 )
 from src.core.utils.decorators import exponential_backoff
+from src.core.utils.rate_headers import observe_response
+from src.gateway.rate_limit import RateLimiter
+from src.mcp.servers.amazon._http import sp_api_operation
 
 from .auth import SPAPIAuth
 
@@ -48,11 +51,24 @@ class SPAPIClient:
         }
 
     def _post(self, path: str, body: dict) -> dict[str, Any]:
+        operation = sp_api_operation(path)
+        store_id = self.auth.store_id
+        RateLimiter().acquire_source("sp_api", store_id=store_id, operation=operation)
         url = f"{self.auth.endpoint}{path}"
         try:
             resp = requests.post(url, headers=self._headers(), json=body, timeout=30)
+            hdrs = observe_response(resp, "sp_api", store_id=store_id, operation=operation)
+            if resp.status_code == 429:
+                raise RetryableError(
+                    f"SP-API POST {path} rate limited (QuotaExceeded)",
+                    retry_after_seconds=hdrs.retry_after or 60.0,
+                    http_status=429,
+                    code=classify_http(429, "sp_api"),
+                )
             resp.raise_for_status()
             return resp.json()
+        except RetryableError:
+            raise
         except requests.HTTPError as e:
             status = e.response.status_code if e.response is not None else None
             logger.error(
@@ -68,11 +84,24 @@ class SPAPIClient:
             raise ScraperError(f"SP-API POST {path} failed: {e}") from e
 
     def _get(self, path: str, params: dict | None = None) -> dict[str, Any]:
+        operation = sp_api_operation(path)
+        store_id = self.auth.store_id
+        RateLimiter().acquire_source("sp_api", store_id=store_id, operation=operation)
         url = f"{self.auth.endpoint}{path}"
         try:
             resp = requests.get(url, headers=self._headers(), params=params, timeout=30)
+            hdrs = observe_response(resp, "sp_api", store_id=store_id, operation=operation)
+            if resp.status_code == 429:
+                raise RetryableError(
+                    f"SP-API GET {path} rate limited (QuotaExceeded)",
+                    retry_after_seconds=hdrs.retry_after or 60.0,
+                    http_status=429,
+                    code=classify_http(429, "sp_api"),
+                )
             resp.raise_for_status()
             return resp.json()
+        except RetryableError:
+            raise
         except requests.HTTPError as e:
             status = e.response.status_code if e.response is not None else None
             logger.error(
@@ -92,10 +121,24 @@ class SPAPIClient:
     @exponential_backoff(max_retries=5, base_delay=1.0)
     async def _fetch_inventory_page(self, params: dict) -> dict:
         """Internal helper to fetch a single page of inventory with retries."""
+        store_id = self.auth.store_id
+        await RateLimiter().async_acquire_source(
+            "sp_api", store_id=store_id, operation="getInventorySummaries"
+        )
         url = f"{self.auth.endpoint}/fba/inventory/v1/summaries"
         resp = await asyncio.to_thread(
             requests.get, url, headers=self._headers(), params=params, timeout=30
         )
+        hdrs = observe_response(
+            resp, "sp_api", store_id=store_id, operation="getInventorySummaries"
+        )
+        if resp.status_code == 429:
+            raise RetryableError(
+                "SP-API getInventorySummaries rate limited",
+                retry_after_seconds=hdrs.retry_after or 60.0,
+                http_status=429,
+                code=classify_http(429, "sp_api"),
+            )
         code = classify_http(resp.status_code)
         if not resp.ok and is_retryable(code):
             raise RetryableError(resp.text[:200], code=code)

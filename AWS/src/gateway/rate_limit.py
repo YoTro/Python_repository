@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -10,10 +11,40 @@ from src.core.utils.config_helper import ConfigHelper
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Lua script for atomic Redis token-bucket (registered once on startup).
+# Returns [granted (0|1), wait_ms (int)] so the caller knows whether to
+# wait and for how long before retrying without a second round-trip.
+# ---------------------------------------------------------------------------
+_BUCKET_LUA = """
+local key          = KEYS[1]
+local capacity     = tonumber(ARGV[1])
+local refill_rate  = tonumber(ARGV[2])
+local now          = tonumber(ARGV[3])
+local h = redis.call('HMGET', key, 'tokens', 'ts')
+local tokens = tonumber(h[1])
+local ts     = tonumber(h[2])
+if not tokens then tokens = capacity; ts = now end
+local elapsed = math.max(0, now - ts)
+tokens = math.min(capacity, tokens + elapsed * refill_rate)
+local granted = 0
+local wait_ms = 0
+if tokens >= 1.0 then
+    tokens  = tokens - 1.0
+    granted = 1
+else
+    wait_ms = math.ceil((1.0 - tokens) / refill_rate * 1000)
+end
+local ttl = math.ceil(capacity / refill_rate) + 60
+redis.call('HMSET', key, 'tokens', tostring(tokens), 'ts', tostring(now))
+redis.call('EXPIRE', key, ttl)
+return {granted, wait_ms}
+"""
+
 
 @dataclass
 class _TokenBucket:
-    """Token bucket for Layer 3 source-level throttling."""
+    """In-memory token bucket for a single (source, store_id, operation) triple."""
 
     capacity: float
     tokens: float
@@ -22,13 +53,28 @@ class _TokenBucket:
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
+def _bucket_key(source: str, store_id: str, operation: str) -> str:
+    """Composite key used for both in-memory dict and Redis namespace."""
+    return f"rate:{source}:{store_id}:{operation}"
+
+
 class RateLimiter:
     """
     Three-layer rate limiter (singleton).
 
-    Layer 1 (Entry)   — cooldown debounce + concurrent slot per entry-type/chat
-    Layer 2 (Tenant)  — daily request quota per tenant/plan-tier
-    Layer 3 (Source)  — token-bucket throttling for each external API
+    RL-1 (Entry)   — cooldown debounce + concurrent slot per entry-type/chat
+                      RL-1a: per-chat cooldown  RL-1b: concurrency slot
+    RL-2 (Tenant)  — daily request quota per tenant/plan-tier
+    RL-3 (Source)  — token-bucket throttling for each external API
+
+    RL-3 supports two backends:
+      • In-memory  — default; fast, single-process.
+      • Redis      — enabled when REDIS_URL is set; atomic across workers.
+
+    Bucket keys use the composite format  rate:{source}:{store_id}:{operation}
+    so different stores (US/DE) and different SP-API endpoints each get their
+    own independent bucket.  Callers that do not supply store_id or operation
+    fall back to the "default" placeholder for full backward compatibility.
 
     Concurrency design:
       - check_limit()     : fast gate at dispatch time (cooldown + daily quota)
@@ -54,43 +100,194 @@ class RateLimiter:
         self._config: dict = ConfigHelper.get_section("rate_limits")
         logger.debug("[RateLimiter] Loaded rate_limits config from ConfigHelper")
 
-        # Layer 3: one token bucket per source (key: source_limits)
+        # RL-3: token buckets keyed by composite string
         self._source_buckets: dict[str, _TokenBucket] = {}
-        for source, cfg in self._config.get("source_limits", {}).items():
-            rpm = float(cfg.get("requests_per_minute", 60))
-            burst = float(cfg.get("burst", max(1, rpm // 10)))
-            self._source_buckets[source] = _TokenBucket(
-                capacity=burst,
-                tokens=burst,
-                refill_rate=rpm / 60.0,
-            )
+        self._bucket_lock = threading.Lock()  # guards dynamic bucket creation
 
-        # Layer 2: daily counters  {tenant_id: {"YYYY-MM-DD": count}}
+        for source, cfg in self._config.get("source_limits", {}).items():
+            if "requests_per_minute" in cfg:
+                # Flat format — one bucket per source
+                rpm = float(cfg["requests_per_minute"])
+                burst = float(cfg.get("burst", max(1, rpm // 10)))
+                key = _bucket_key(source, "default", "default")
+                self._source_buckets[key] = _TokenBucket(
+                    capacity=burst, tokens=burst, refill_rate=rpm / 60.0
+                )
+            elif "requests_per_second" in cfg:
+                # Flat RPS format — one bucket per source
+                rps = float(cfg["requests_per_second"])
+                burst = float(cfg.get("burst", max(1.0, rps)))
+                key = _bucket_key(source, "default", "default")
+                self._source_buckets[key] = _TokenBucket(
+                    capacity=burst, tokens=burst, refill_rate=rps
+                )
+            else:
+                # Per-operation nested format — one bucket per operation
+                for operation, op_cfg in cfg.items():
+                    if not isinstance(op_cfg, dict):
+                        continue
+                    rps = float(
+                        op_cfg.get(
+                            "requests_per_second",
+                            op_cfg.get("requests_per_minute", 30) / 60.0,
+                        )
+                    )
+                    burst = float(op_cfg.get("burst", max(1.0, rps)))
+                    key = _bucket_key(source, "default", operation)
+                    self._source_buckets[key] = _TokenBucket(
+                        capacity=burst, tokens=burst, refill_rate=rps
+                    )
+
+        # Optional Redis backend
+        self._redis = None
+        self._lua_script = None
+        redis_url = os.getenv("REDIS_URL")
+        if redis_url:
+            try:
+                import redis
+
+                self._redis = redis.from_url(redis_url, decode_responses=True)
+                self._lua_script = self._redis.register_script(_BUCKET_LUA)
+                self._redis.ping()
+                logger.info("[RateLimiter] Redis token-bucket backend active")
+            except Exception as exc:
+                logger.warning(f"[RateLimiter] Redis unavailable ({exc}); using in-memory buckets")
+                self._redis = None
+                self._lua_script = None
+
+        # RL-2: daily counters  {tenant_id: {"YYYY-MM-DD": count}}
         self._tenant_counters: dict[str, dict[str, int]] = {}
         self._tenant_lock = threading.Lock()
 
-        # Layer 1a: last trigger timestamp per chat_id  {chat_id: monotonic_ts}
+        # RL-1a: last trigger timestamp per chat_id  {chat_id: monotonic_ts}
         self._chat_last: dict[str, float] = {}
         self._chat_lock = threading.Lock()
 
-        # Layer 1b: concurrency counters (single dict, two key patterns)
+        # RL-1b: concurrency counters (single dict, two key patterns)
         #   global:   entry_type            → int
         #   per-chat: f"{entry_type}:{chat_id}" → int
         self._concurrent: dict[str, int] = {}
         self._concurrent_lock = threading.Lock()
 
-    # ── Layer 3: Source token bucket ─────────────────────────────────────
+    # ── RL-3 helpers ───────────────────────────────────────────────────
+
+    def _get_bucket(self, source: str, store_id: str, operation: str) -> _TokenBucket | None:
+        """
+        Look up a bucket with store/operation specificity, falling back through:
+          rate:{source}:{store_id}:{operation}
+          rate:{source}:default:{operation}
+          rate:{source}:default:default
+        Returns None when this source has no configured limit at all.
+        """
+        for key in (
+            _bucket_key(source, store_id, operation),
+            _bucket_key(source, "default", operation),
+            _bucket_key(source, "default", "default"),
+        ):
+            b = self._source_buckets.get(key)
+            if b is not None:
+                return b
+        return None
+
+    def _redis_acquire(
+        self, source: str, store_id: str, operation: str, timeout: float
+    ) -> tuple[bool, float]:
+        """
+        Execute the Lua token-bucket script on Redis.
+        Returns (granted, wait_seconds).  Falls back to (True, 0) on error.
+        """
+        bucket = self._get_bucket(source, store_id, operation)
+        if bucket is None:
+            return True, 0.0
+
+        key = _bucket_key(source, store_id, operation)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                result = self._lua_script(
+                    keys=[key],
+                    args=[bucket.capacity, bucket.refill_rate, time.time()],
+                )
+                granted, wait_ms = int(result[0]), int(result[1])
+                if granted:
+                    return True, 0.0
+                wait_sec = wait_ms / 1000.0
+                if time.monotonic() + wait_sec > deadline:
+                    logger.warning(
+                        f"[RateLimiter] Redis bucket '{key}' timeout after {timeout:.0f}s"
+                    )
+                    return False, 0.0
+                return False, wait_sec
+            except Exception as exc:
+                logger.debug(f"[RateLimiter] Redis acquire error ({exc}); allow through")
+                return True, 0.0
+
+    # ── RL-3: Source token bucket (public API) ─────────────────────────
 
     def get_source_config(self, source: str) -> dict:
         """Return the raw config dict for a source (empty dict if unconfigured)."""
         return self._config.get("source_limits", {}).get(source, {})
 
-    def acquire_source(self, source: str, timeout: float = 30.0) -> bool:
+    def update_source_rate(
+        self,
+        source: str,
+        rps: float,
+        store_id: str = "default",
+        operation: str = "default",
+    ) -> None:
         """
-        Synchronous blocking acquire. Use only from non-async call sites.
+        Dynamically update a bucket's refill_rate to match the server-reported
+        rate limit (from the x-amzn-RateLimit-Limit response header).
+
+        Creates a new in-memory bucket on the fly if one doesn't exist yet.
+        The update only adjusts refill_rate; existing token count is preserved
+        to avoid artificially granting extra burst capacity.
+        """
+        key = _bucket_key(source, store_id, operation)
+        with self._bucket_lock:
+            bucket = self._source_buckets.get(key)
+            if bucket is None:
+                # First observation for this (source, store, operation) triple
+                burst = max(1.0, rps)
+                self._source_buckets[key] = _TokenBucket(
+                    capacity=burst, tokens=burst, refill_rate=rps
+                )
+                logger.debug(
+                    f"[RateLimiter] Created bucket '{key}' rps={rps:.4f} burst={burst:.1f}"
+                )
+            elif abs(bucket.refill_rate - rps) > 0.001:
+                # Server-reported rate differs — self-calibrate
+                logger.debug(
+                    f"[RateLimiter] Updated bucket '{key}' rps {bucket.refill_rate:.4f} → {rps:.4f}"
+                )
+                bucket.refill_rate = rps
+                bucket.capacity = max(bucket.capacity, rps)
+
+    def acquire_source(
+        self,
+        source: str,
+        timeout: float = 30.0,
+        store_id: str = "default",
+        operation: str = "default",
+    ) -> bool:
+        """
+        Synchronous blocking acquire.  Use only from non-async call sites.
         Prefer async_acquire_source() inside coroutines to avoid blocking the event loop.
         """
-        bucket = self._source_buckets.get(source)
+        if self._redis is not None and self._lua_script is not None:
+            deadline = time.monotonic() + timeout
+            while True:
+                granted, wait_sec = self._redis_acquire(source, store_id, operation, timeout)
+                if granted:
+                    return True
+                if not wait_sec or time.monotonic() + wait_sec > deadline:
+                    return False
+                time.sleep(min(wait_sec, 0.5))
+            # unreachable
+            return False
+
+        # In-memory path
+        bucket = self._get_bucket(source, store_id, operation)
         if bucket is None:
             return True
 
@@ -110,21 +307,40 @@ class RateLimiter:
 
             if time.monotonic() + wait > deadline:
                 logger.warning(
-                    f"[RateLimiter] Source '{source}' token-bucket timeout after {timeout:.0f}s"
+                    f"[RateLimiter] '{_bucket_key(source, store_id, operation)}' "
+                    f"token-bucket timeout after {timeout:.0f}s"
                 )
                 return False
             time.sleep(min(wait, 0.5))
 
-    async def async_acquire_source(self, source: str, timeout: float = 30.0) -> bool:
+    async def async_acquire_source(
+        self,
+        source: str,
+        timeout: float = 30.0,
+        store_id: str = "default",
+        operation: str = "default",
+    ) -> bool:
         """
         Async-native token-bucket acquire for use inside coroutines.
-        Yields to the event loop with asyncio.sleep() instead of blocking with time.sleep(),
-        so concurrent tasks continue making progress while this one waits for a token.
-        Returns False if timeout is exceeded.
+        Yields to the event loop with asyncio.sleep() instead of blocking.
+        Returns False if the timeout is exceeded.
         """
         import asyncio
 
-        bucket = self._source_buckets.get(source)
+        if self._redis is not None and self._lua_script is not None:
+            deadline = time.monotonic() + timeout
+            while True:
+                granted, wait_sec = self._redis_acquire(source, store_id, operation, timeout)
+                if granted:
+                    return True
+                if not wait_sec or time.monotonic() + wait_sec > deadline:
+                    return False
+                await asyncio.sleep(min(wait_sec, 0.5))
+            # unreachable
+            return False
+
+        # In-memory path
+        bucket = self._get_bucket(source, store_id, operation)
         if bucket is None:
             return True
 
@@ -144,12 +360,13 @@ class RateLimiter:
 
             if time.monotonic() + wait > deadline:
                 logger.warning(
-                    f"[RateLimiter] Source '{source}' async token-bucket timeout after {timeout:.0f}s"
+                    f"[RateLimiter] '{_bucket_key(source, store_id, operation)}' "
+                    f"async token-bucket timeout after {timeout:.0f}s"
                 )
                 return False
             await asyncio.sleep(min(wait, 0.5))
 
-    # ── Layer 2: Tenant daily quota ───────────────────────────────────────
+    # ── RL-2: Tenant daily quota ───────────────────────────────────────
 
     def _check_tenant_quota(self, tenant_id: str, plan_tier: str) -> bool:
         """Increment daily counter and return False if limit exceeded."""
@@ -172,7 +389,7 @@ class RateLimiter:
             day_counts[today] = count + 1
         return True
 
-    # ── Layer 1a: Per-chat cooldown ───────────────────────────────────────
+    # ── RL-1a: Per-chat cooldown ───────────────────────────────────────
 
     def _check_chat_cooldown(self, chat_id: str, cooldown: float) -> bool:
         """Return False (and skip timestamp update) if still within cooldown window."""
@@ -195,7 +412,7 @@ class RateLimiter:
             self._chat_last[chat_id] = now
         return True
 
-    # ── Layer 1b: Concurrent slot context manager ─────────────────────────
+    # ── RL-1b: Concurrent slot context manager ─────────────────────────
 
     @contextlib.asynccontextmanager
     async def concurrent_slot(self, entry_type: str | None, chat_id: str | None):
@@ -286,14 +503,14 @@ class RateLimiter:
         tenant_id = identity.get("tenant_id", "default")
         plan_tier = identity.get("plan_tier", "free")
 
-        # Layer 1a: per-chat cooldown debounce
+        # RL-1a: per-chat cooldown debounce
         cooldown = (
             self._config.get("entry_limits", {}).get(request_type, {}).get("cooldown_seconds", 0)
         )
         if not self._check_chat_cooldown(chat_id or "", cooldown):
             return False
 
-        # Layer 2: tenant daily quota
+        # RL-2: tenant daily quota
         if not self._check_tenant_quota(tenant_id, plan_tier):
             return False
 

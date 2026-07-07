@@ -10,6 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from src.core.errors import RetryableError, classify_http, is_auth_error, is_retryable
+from src.core.utils.rate_headers import observe_response
 from src.gateway.rate_limit import RateLimiter
 
 from .auth import SellerspriteAuth
@@ -111,12 +112,11 @@ class SellerspriteAPI:
                 )
 
             response = self.session.request(method, url, **kwargs)
+            hdrs = observe_response(response, "sellersprite")
             code = classify_http(response.status_code, "sellersprite")
 
             if is_retryable(code) and response.status_code != 401:
-                wait = int(
-                    response.headers.get("Retry-After", 2 ** (attempt + 1))
-                ) + random.uniform(0, 1)
+                wait = (hdrs.retry_after or 2 ** (attempt + 1)) + random.uniform(0, 1)
                 logger.warning(
                     f"[sellersprite] {response.status_code} rate limited — "
                     f"waiting {wait:.1f}s (attempt {attempt + 1}/3)"
