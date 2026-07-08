@@ -338,7 +338,10 @@ class MCPAgent(BaseAgent):
                         duplicate_count = 1
                         last_tool_call = current_call
 
-                    logger.info(f"LLM called tool: {action} with args {action_input}")
+                    _args_repr = str(action_input)
+                    if len(_args_repr) > 200:
+                        _args_repr = _args_repr[:200] + f"... [{len(_args_repr)} chars total]"
+                    logger.info(f"LLM called tool: {action} with args {_args_repr}")
                     try:
                         # Inject identity metadata into the tool call
                         action_input["_metadata"] = {

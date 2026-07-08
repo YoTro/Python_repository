@@ -668,6 +668,11 @@ class AmazonAdsClient:
                 resp = await self._poll_request(url, headers)
                 poll_code = classify_http(resp.status_code, "amazon_ads")
 
+            if poll_code == ErrorCode.RATE_LIMITED:
+                logger.warning(f"Poll attempt {attempt + 1} for {report_id} got 429, waiting 60s")
+                await asyncio.sleep(60)
+                continue
+
             if poll_code == ErrorCode.SERVER_ERROR:
                 logger.warning(
                     f"Poll attempt {attempt + 1} for {report_id} got {resp.status_code}, "

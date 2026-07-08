@@ -274,6 +274,13 @@ class RateLimiter:
         Synchronous blocking acquire.  Use only from non-async call sites.
         Prefer async_acquire_source() inside coroutines to avoid blocking the event loop.
         """
+        # Floor timeout to one full refill cycle so slow-rate operations (e.g.
+        # getReport at 0.0167 rps → 60s/token) never time out before a token
+        # can become available.  Callers never need to pass an explicit timeout.
+        bucket = self._get_bucket(source, store_id, operation)
+        if bucket is not None and bucket.refill_rate > 0:
+            timeout = max(timeout, 1.0 / bucket.refill_rate + 5.0)
+
         if self._redis is not None and self._lua_script is not None:
             deadline = time.monotonic() + timeout
             while True:
@@ -286,8 +293,6 @@ class RateLimiter:
             # unreachable
             return False
 
-        # In-memory path
-        bucket = self._get_bucket(source, store_id, operation)
         if bucket is None:
             return True
 
@@ -327,6 +332,13 @@ class RateLimiter:
         """
         import asyncio
 
+        # Floor timeout to one full refill cycle so slow-rate operations (e.g.
+        # getReport at 0.0167 rps → 60s/token) never time out before a token
+        # can become available.  Callers never need to pass an explicit timeout.
+        bucket = self._get_bucket(source, store_id, operation)
+        if bucket is not None and bucket.refill_rate > 0:
+            timeout = max(timeout, 1.0 / bucket.refill_rate + 5.0)
+
         if self._redis is not None and self._lua_script is not None:
             deadline = time.monotonic() + timeout
             while True:
@@ -339,8 +351,6 @@ class RateLimiter:
             # unreachable
             return False
 
-        # In-memory path
-        bucket = self._get_bucket(source, store_id, operation)
         if bucket is None:
             return True
 

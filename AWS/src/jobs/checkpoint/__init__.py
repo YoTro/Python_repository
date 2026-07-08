@@ -13,6 +13,7 @@ Event log follows Temporal's event-sourcing pattern:
 import json
 import logging
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
@@ -69,6 +70,16 @@ class CheckpointManager:
     def _path(self, job_id: str) -> str:
         return os.path.join(self.checkpoint_dir, f"{job_id}.json")
 
+    def _atomic_write(self, path: str, data: dict) -> None:
+        """Write JSON atomically via temp file + os.replace (POSIX-atomic)."""
+        dir_ = os.path.dirname(path)
+        with tempfile.NamedTemporaryFile(
+            "w", dir=dir_, delete=False, suffix=".tmp", encoding="utf-8"
+        ) as f:
+            json.dump(data, f, ensure_ascii=False, default=str)
+            tmp_path = f.name
+        os.replace(tmp_path, path)
+
     def save(
         self,
         job_id: str,
@@ -94,8 +105,7 @@ class CheckpointManager:
 
         path = self._path(job_id)
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(asdict(checkpoint), f, ensure_ascii=False, default=str)
+            self._atomic_write(path, asdict(checkpoint))
             logger.debug(
                 f"Checkpoint saved: job={job_id}, step={step_index} ({step_name}), "
                 f"{len(items)} items"
@@ -124,6 +134,17 @@ class CheckpointManager:
                 f"{len(checkpoint.events)} events"
             )
             return checkpoint
+        except json.JSONDecodeError as e:
+            corrupt_path = path + ".corrupt"
+            try:
+                os.replace(path, corrupt_path)
+            except OSError:
+                pass
+            logger.warning(
+                f"Checkpoint for {job_id} is corrupt (truncated write?); "
+                f"renamed to {os.path.basename(corrupt_path)} — {e}"
+            )
+            return None
         except Exception as e:
             logger.warning(f"Failed to load checkpoint for {job_id}: {e}")
             return None
@@ -140,8 +161,7 @@ class CheckpointManager:
         checkpoint.events.append(event)
         path = self._path(job_id)
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(asdict(checkpoint), f, ensure_ascii=False, default=str)
+            self._atomic_write(path, asdict(checkpoint))
         except Exception as e:
             raise CheckpointError(f"Failed to append event for {job_id}: {e}") from e
 
