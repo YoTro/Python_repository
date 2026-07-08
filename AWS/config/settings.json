@@ -31,7 +31,7 @@
             "amazon_ads": {
                 "default":               { "requests_per_second": 2.0, "burst": 10 },
                 "createReport":          { "requests_per_second": 0.5, "burst": 1  },
-                "getReport":             { "requests_per_second": 2.0, "burst": 5  },
+                "getReport":             { "requests_per_second": 0.0167, "burst": 5  },
                 "listCampaigns":         { "requests_per_second": 5.0, "burst": 10 },
                 "listAdGroups":          { "requests_per_second": 5.0, "burst": 10 },
                 "listKeywords":          { "requests_per_second": 5.0, "burst": 10 },
@@ -43,8 +43,8 @@
             "sp_api": {
                 "default":               { "requests_per_second": 0.5,    "burst": 3  },
                 "createReport":          { "requests_per_second": 0.0167, "burst": 1  },
-                "getReport":             { "requests_per_second": 2.0,    "burst": 10 },
-                "getReportDocument":     { "requests_per_second": 0.5,    "burst": 5  },
+                "getReport":             { "requests_per_second": 0.0222,    "burst": 10 },
+                "getReportDocument":     { "requests_per_second": 0.0222,    "burst": 5  },
                 "getInventorySummaries": { "requests_per_second": 2.0,    "burst": 2  },
                 "getOrderMetrics":       { "requests_per_second": 0.5,    "burst": 5  },
                 "getShipments":          { "requests_per_second": 1.0,    "burst": 5  },

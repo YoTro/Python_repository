@@ -206,6 +206,26 @@ class SPAPIClient:
     _REPORT_POLL_INTERVAL = 15  # seconds between status polls
     _REPORT_POLL_MAX = 120  # max polls → 30 min ceiling
 
+    @exponential_backoff(max_retries=5, base_delay=30.0, max_delay=180.0, jitter=False)
+    async def _create_sp_report(self, body: dict) -> str:
+        await RateLimiter().async_acquire_source(
+            "sp_api", store_id=self.auth.store_id, operation="createReport"
+        )
+        url = f"{self.auth.endpoint}/reports/{self._REPORTS_API_VERSION}/reports"
+        resp = await asyncio.to_thread(
+            requests.post, url, headers=self._headers(), json=body, timeout=30
+        )
+        code = classify_http(resp.status_code, "sp_api")
+        if not resp.ok:
+            if is_retryable(code):
+                raise RetryableError(resp.text[:200], code=code)
+            logger.error(f"SP-API createReport failed {resp.status_code}: {resp.text[:400]}")
+            resp.raise_for_status()
+        report_id = resp.json().get("reportId")
+        if not report_id:
+            raise ExtractorError(f"No reportId in createReport response: {resp.text[:200]}")
+        return report_id
+
     async def get_sales_and_traffic(
         self,
         asin: str | None = None,
@@ -248,12 +268,7 @@ class SPAPIClient:
             },
         }
 
-        data = await asyncio.to_thread(
-            self._post, f"/reports/{self._REPORTS_API_VERSION}/reports", body
-        )
-        report_id = data.get("reportId")
-        if not report_id:
-            raise ExtractorError(f"No reportId in createReport response: {data}")
+        report_id = await self._create_sp_report(body)
         logger.info(
             f"Created SP-API report {report_id} (GET_SALES_AND_TRAFFIC_REPORT {start_dt}→{end_dt})"
         )
@@ -263,11 +278,48 @@ class SPAPIClient:
 
         return _parse_sales_traffic_records(raw_records, asin)
 
+    @exponential_backoff(
+        max_retries=5,
+        base_delay=15.0,
+        max_delay=120.0,
+        retry_on_exceptions=(
+            requests.exceptions.SSLError,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+        ),
+        jitter=False,
+    )
+    async def _poll_sp_request(self, url: str) -> requests.Response:
+        await RateLimiter().async_acquire_source(
+            "sp_api", store_id=self.auth.store_id, operation="getReport"
+        )
+        return await asyncio.to_thread(requests.get, url, headers=self._headers(), timeout=30)
+
     async def _poll_sp_report(self, report_id: str) -> str:
         """Poll until DONE, return reportDocumentId."""
-        path = f"/reports/{self._REPORTS_API_VERSION}/reports/{report_id}"
+        url = f"{self.auth.endpoint}/reports/{self._REPORTS_API_VERSION}/reports/{report_id}"
         for attempt in range(self._REPORT_POLL_MAX):
-            data = await asyncio.to_thread(self._get, path)
+            resp = await self._poll_sp_request(url)
+
+            poll_code = classify_http(resp.status_code, "sp_api")
+            if poll_code == ErrorCode.AUTH_TOKEN_EXPIRED:
+                logger.info(
+                    f"SP poll got 401 on attempt {attempt + 1}, refreshing token and retrying"
+                )
+                self.auth._token_cache.pop(self.auth.store_id, None)
+                resp = await self._poll_sp_request(url)
+                poll_code = classify_http(resp.status_code, "sp_api")
+
+            if poll_code == ErrorCode.SERVER_ERROR:
+                logger.warning(
+                    f"SP poll attempt {attempt + 1} for {report_id} got {resp.status_code}, "
+                    f"retrying after {self._REPORT_POLL_INTERVAL}s"
+                )
+                await asyncio.sleep(self._REPORT_POLL_INTERVAL)
+                continue
+
+            resp.raise_for_status()
+            data = resp.json()
             status = data.get("processingStatus")
             logger.debug(f"SP report {report_id} status: {status} (attempt {attempt + 1})")
             if status == "DONE":
@@ -347,12 +399,7 @@ class SPAPIClient:
             "reportType": "GET_FBA_INVENTORY_PLANNING_DATA",
             "marketplaceIds": [self.auth.marketplace_id],
         }
-        data = await asyncio.to_thread(
-            self._post, f"/reports/{self._REPORTS_API_VERSION}/reports", body
-        )
-        report_id = data.get("reportId")
-        if not report_id:
-            raise ExtractorError(f"No reportId in createReport response: {data}")
+        report_id = await self._create_sp_report(body)
         logger.info(f"Created SP-API report {report_id} (GET_FBA_INVENTORY_PLANNING_DATA)")
 
         document_id = await self._poll_sp_report(report_id)

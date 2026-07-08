@@ -436,6 +436,17 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         )
         return _json_response(result)
 
+    if name == "get_sp_sales_traffic":
+        client = SPAPIClient(store_id=arguments.get("store_id"))
+        result = await client.get_sales_and_traffic(
+            asin=arguments.get("asin"),
+            days=arguments.get("days", 30),
+            start_date=arguments.get("start_date"),
+            end_date=arguments.get("end_date"),
+            granularity=arguments.get("granularity", "DAY"),
+        )
+        return _json_response(result)
+
     if name == "get_sp_placement_report":
         client = AmazonAdsClient(
             store_id=arguments.get("store_id"),
@@ -1170,6 +1181,51 @@ amazon_tools = [
             },
         },
     ),
+    Tool(
+        name="get_sp_sales_traffic",
+        description=(
+            "Request GET_SALES_AND_TRAFFIC_REPORT from SP-API, poll until complete, "
+            "and return parsed traffic and sales records. "
+            "Without an ASIN filter returns both per-ASIN summary rows (date=null) and "
+            "account-level daily rows. With an ASIN filter returns only that ASIN's summary. "
+            "Each record includes: date, asin, parent_asin, sessions, session_percentage, "
+            "page_views, page_views_percentage, buy_box_percentage, units_ordered, "
+            "units_ordered_b2b, ordered_product_sales, ordered_product_sales_b2b, "
+            "total_order_items, total_order_items_b2b."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin": {
+                    "type": "string",
+                    "description": "Optional ASIN to filter results (child or parent).",
+                },
+                "days": {
+                    "type": "integer",
+                    "default": 30,
+                    "description": "Lookback window in days. Ignored when start_date is supplied.",
+                },
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date YYYY-MM-DD (inclusive).",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "End date YYYY-MM-DD (inclusive, defaults to yesterday).",
+                },
+                "granularity": {
+                    "type": "string",
+                    "enum": ["DAY", "MONTH"],
+                    "default": "DAY",
+                    "description": "DAY for daily rows; MONTH for monthly aggregation.",
+                },
+                "store_id": {
+                    "type": "string",
+                    "description": "Store ID suffix (e.g. 'US'). Defaults to env default.",
+                },
+            },
+        },
+    ),
     # ── Placement Report ──────────────────────────────────────────────────
     Tool(
         name="get_sp_placement_report",
@@ -1310,6 +1366,10 @@ _AMAZON_META = {
     "get_fba_inventory_planning": (
         "DATA",
         "per-SKU FBA planning report: inventory age buckets, sales velocity, days of supply, recommended actions, estimated AIS fees",
+    ),
+    "get_sp_sales_traffic": (
+        "DATA",
+        "SP-API sales and traffic report: sessions, page views, buy-box %, units ordered, revenue — per ASIN or account-level daily",
     ),
     # Ads Placement + Change History
     "get_sp_placement_report": (
