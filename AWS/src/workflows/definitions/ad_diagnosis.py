@@ -150,6 +150,7 @@ _TTL_STATIC = 14400  # campaigns, keywords — account config, stable within a s
 _TTL_PERF = 21600  # performance reports — fetched once per day range
 _TTL_CHANGE = 21600  # change history — historical data, 6h TTL to reduce /history API calls
 _TTL_YOY = 86400  # YoY / trailing-ext ERP data — historical, rarely changes
+_TTL_LEAD_TIME = 14 * 86400  # shipment lead-time distributions — ERP/SP-API, stable for 2 weeks
 _KEYWORD_LIST_MAX_RESULTS = 10000
 
 
@@ -704,7 +705,12 @@ async def _enrich_inventory(item: dict, ctx: WorkflowContext) -> dict:
         return {"inventory_records": [], "total_available": 0, "inventory_risk": False}
 
 
-async def _enrich_shipment_lead_time(item: dict, ctx: WorkflowContext) -> dict:
+@_l2_cached(
+    l1_key_fn=lambda ctx: _KEY_LEAD_TIME,
+    l2_ttl=_TTL_LEAD_TIME,
+    l2_parts_fn=lambda ctx: ("lead_time",),
+)
+async def _ensure_lead_time(ctx: WorkflowContext) -> dict:
     """
     Fetch and compute store-wide FBA shipment lead-time distributions.
 
@@ -717,12 +723,8 @@ async def _enrich_shipment_lead_time(item: dict, ctx: WorkflowContext) -> dict:
                          data_source = 'sp_api_plans' flags this.
       3. No data       — data_source = 'none'; inbound_lead_days falls back to config.
 
-    Result cached under _KEY_LEAD_TIME and shared across all ASINs in the run.
+    L2 TTL: 14 days — ERP shipment distributions are historically stable.
     """
-    if _KEY_LEAD_TIME in ctx.cache:
-        item["shipment_lead_time"] = ctx.cache[_KEY_LEAD_TIME]
-        return item
-
     from src.intelligence.processors.shipment_lead_time import compute_quarterly_lead_times
 
     result: dict = {}
@@ -769,17 +771,15 @@ async def _enrich_shipment_lead_time(item: dict, ctx: WorkflowContext) -> dict:
             lx["data_source"] = "lingxing_erp"
             result = lx
             logger.info(
-                f"_enrich_shipment_lead_time [lingxing]: {lx.get('total_input', 0)} shipments, "
+                f"_ensure_lead_time [lingxing]: {lx.get('total_input', 0)} shipments, "
                 f"sea n={sea_n}, fba n={lx.get('overseas_to_fba', {}).get('overall', {}).get('n', 0)}"
             )
         else:
             logger.warning(
-                f"_enrich_shipment_lead_time: Lingxing sea n={sea_n} < 5 — trying SP-API fallback"
+                f"_ensure_lead_time: Lingxing sea n={sea_n} < 5 — trying SP-API fallback"
             )
     except Exception as e:
-        logger.warning(
-            f"_enrich_shipment_lead_time: Lingxing failed ({e}) — trying SP-API fallback"
-        )
+        logger.warning(f"_ensure_lead_time: Lingxing failed ({e}) — trying SP-API fallback")
 
     # ── Fallback: SP-API Inbound Plans 2024-03-20 ─────────────────────────
     # Proxy measurement: plan_creation (createdAt) → FBA receive (lastUpdatedAt).
@@ -808,21 +808,21 @@ async def _enrich_shipment_lead_time(item: dict, ctx: WorkflowContext) -> dict:
                 sp["data_source"] = "sp_api_plans"
                 result = sp
                 logger.info(
-                    f"_enrich_shipment_lead_time [sp_api_plans]: sea n={sea_n} "
+                    f"_ensure_lead_time [sp_api_plans]: sea n={sea_n} "
                     f"(proxy plan_creation→fba_receive; p75 may overestimate by ~14d)"
                 )
             else:
                 logger.warning(
-                    f"_enrich_shipment_lead_time: SP-API plans sea n={sea_n} < 3 — no lead-time data"
+                    f"_ensure_lead_time: SP-API plans sea n={sea_n} < 3 — no lead-time data"
                 )
         except Exception as e:
-            logger.warning(f"_enrich_shipment_lead_time: SP-API fallback failed ({e})")
+            logger.warning(f"_ensure_lead_time: SP-API fallback failed ({e})")
 
-    if not result:
-        result = {"data_source": "none"}
+    return result or {"data_source": "none"}
 
-    ctx.cache[_KEY_LEAD_TIME] = result
-    item["shipment_lead_time"] = result
+
+async def _enrich_shipment_lead_time(item: dict, ctx: WorkflowContext) -> dict:
+    item["shipment_lead_time"] = await _ensure_lead_time(ctx)
     return item
 
 
