@@ -2267,6 +2267,9 @@ def _build_keyword_actions(
                         "campaign_id": cid,
                         "keyword_id": kw_id,
                         "current_bid": cur_bid,
+                        "avg_cpc": avg_cpc,
+                        "cvr": raw_cvr,
+                        "daily_clicks": cur_clicks,
                         "keyword_acos_pct": kw_acos_pct,
                         "acos_pct": kw_acos_pct,
                         "expected_order_delta": -round(cur_clicks * raw_cvr, 2),
@@ -2339,6 +2342,9 @@ def _build_keyword_actions(
                     "campaign_id": cid,
                     "keyword_id": kw_id,
                     "current_bid": cur_bid,
+                    "avg_cpc": avg_cpc,
+                    "cvr": raw_cvr,
+                    "daily_clicks": cur_clicks,
                     "keyword_acos_pct": kw_acos_pct,
                     "acos_pct": kw_acos_pct,
                     "estimated_order_uplift_per_10pct_bid": order_per_10pct_bid,
@@ -2366,6 +2372,9 @@ def _build_keyword_actions(
                             "campaign_id": cid,
                             "keyword_id": kw_id,
                             "current_bid": cur_bid,
+                            "avg_cpc": avg_cpc,
+                            "cvr": raw_cvr,
+                            "daily_clicks": cur_clicks,
                             "keyword_acos_pct": kw_acos_pct,
                             "acos_pct": kw_acos_pct,
                             "expected_order_delta": round(delta_clicks * raw_cvr, 2),
@@ -2388,6 +2397,9 @@ def _build_keyword_actions(
                             "campaign_id": cid,
                             "keyword_id": kw_id,
                             "current_bid": cur_bid,
+                            "avg_cpc": avg_cpc,
+                            "cvr": raw_cvr,
+                            "daily_clicks": cur_clicks,
                             "keyword_acos_pct": kw_acos_pct,
                             "acos_pct": kw_acos_pct,
                             "expected_order_delta": round(delta_clicks * raw_cvr, 2),
@@ -5969,7 +5981,6 @@ def _build_item_summary(item: dict, ctx: WorkflowContext) -> dict:
         "lp_summary": item.get("lp_summary"),
         "lp_top_allocations": (item.get("lp_top_allocations") or [])[:3],
         "lp_zero_keywords": (item.get("lp_zero_keywords") or [])[:10],
-        "lp_maxed_keywords": (item.get("lp_maxed_keywords") or [])[:10],
         # All three LP-zero counts are derived from keyword_actions (per keyword-campaign pair)
         # so they share the same basis and lp_zero_keywords_count = pause_candidates + hold + insufficient.
         # lp_zero_keywords[] is deduplicated by (text, match_type) for display purposes — its
@@ -5992,7 +6003,6 @@ def _build_item_summary(item: dict, ctx: WorkflowContext) -> dict:
         "lp_hold_keywords_count": sum(
             1 for ka in (item.get("keyword_actions") or []) if ka.get("action") == "hold_keyword"
         ),
-        "lp_reallocation_table": item.get("lp_reallocation_table") or [],
         "lp_reallocation_net": item.get("lp_reallocation_net"),
         "campaign_actions": (item.get("campaign_actions") or [])[:5],
         "keyword_actions": (item.get("keyword_actions") or [])[:10],
@@ -6045,8 +6055,6 @@ def _build_item_summary(item: dict, ctx: WorkflowContext) -> dict:
         "auto_mining_beta_prior": (item.get("auto_mining") or {}).get("beta_prior"),
         "auto_mining_negatives": (item.get("auto_mining") or {}).get("negatives", [])[:30],
         "auto_mining_harvest": (item.get("auto_mining") or {}).get("harvest", [])[:20],
-        # Per-campaign intraday budget coverage (full list in _summary_json)
-        "campaign_budget_coverage": item.get("campaign_budget_coverage") or [],
         # Shipment lead-time distribution (store-wide, from Lingxing ERP)
         "shipment_lead_time": _summarise_lead_time(item.get("shipment_lead_time")),
     }
@@ -6339,13 +6347,25 @@ def _prepare_for_llm(items: list[dict], ctx: WorkflowContext) -> list[dict]:
                                    already stored as scalar fields.
       - auto_mining              : moved into _summary_json at full depth;
                                    raw dict here would be a duplicate subset.
+      - campaigns                : all derived scalars (active_campaign_count,
+                                   paused_campaign_count, budget_by_targeting_type,
+                                   high_acos_campaigns_str) already absorbed into
+                                   _summary_json by _build_item_summary above;
+                                   actionable campaigns appear in campaign_actions.
       - keyword_performance      : trimmed to dynamic N via _trim_keyword_performance
                                    (Pareto 95%-spend coverage, floored by LP keyword
-                                   count, hard-capped at 300).
+                                   count, hard-capped at 300); then avg_cpc / cvr /
+                                   daily_clicks stripped from rows already covered by
+                                   keyword_actions (those fields are now structured
+                                   fields on every action entry).
     """
     import json as _json
 
-    _STRIP_FIELDS = ("performance_records", "auto_mining", "keywords")
+    _STRIP_FIELDS = (
+        "performance_records", "auto_mining", "keywords", "campaigns",
+        "covariate_series", "change_events",
+    )
+    _LP_INPUT_FIELDS = ("avg_cpc", "cvr", "daily_clicks")
     for item in items:
         summary = _build_item_summary(item, ctx)
         item["_summary_json"] = _json.dumps(summary, ensure_ascii=False, default=str)
@@ -6353,7 +6373,48 @@ def _prepare_for_llm(items: list[dict], ctx: WorkflowContext) -> list[dict]:
         item["n_top_actions"] = summary.get("n_top_actions", 5)
         for f in _STRIP_FIELDS:
             item.pop(f, None)
+
+        # Slim natural_rank_series: only totalRank is used (causal_analysis, chart).
+        # page + pageRank are never read downstream and together account for 70% of the field.
+        rank = item.get("natural_rank_series")
+        if rank:
+            item["natural_rank_series"] = {
+                kw: {d: v["totalRank"] for d, v in series.items() if v.get("totalRank") is not None}
+                for kw, series in rank.items()
+            }
+
+        # Factor out campaign_actions.prerequisite: all gated actions share an identical
+        # prerequisite object, so storing it 49× is pure duplication.  Keep one copy at
+        # the item level and replace per-action objects with a boolean gate flag.
+        actions = item.get("campaign_actions") or []
+        shared_gate = next((a["prerequisite"] for a in actions if a.get("prerequisite")), None)
+        if shared_gate is not None:
+            item["campaign_action_gate"] = shared_gate
+            for a in actions:
+                if a.get("prerequisite") is not None:
+                    a["prerequisite"] = True   # flag: gate applies; details in campaign_action_gate
+
         _trim_keyword_performance(item)
+        # Strip LP-input fields from keyword_performance rows whose keyword already
+        # appears in keyword_actions — those entries now carry avg_cpc/cvr/daily_clicks
+        # as structured fields, so keeping them in kw_perf is pure duplication.
+        _action_keys = {
+            (
+                (ka.get("keyword_text") or "").lower(),
+                (ka.get("match_type") or "").upper(),
+                str(ka.get("campaign_id") or ""),
+            )
+            for ka in (item.get("keyword_actions") or [])
+        }
+        for kw in item.get("keyword_performance") or []:
+            key = (
+                (kw.get("keyword_text") or "").lower(),
+                (kw.get("match_type") or "").upper(),
+                str(kw.get("campaign_id") or ""),
+            )
+            if key in _action_keys:
+                for f in _LP_INPUT_FIELDS:
+                    kw.pop(f, None)
     return items
 
 

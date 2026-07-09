@@ -560,10 +560,18 @@ class GeminiProvider(BaseLLMProvider):
 
         return max(60, int(inter_hit_seconds * _ADAPTIVE_SAFETY_FACTOR))
 
+    @staticmethod
+    def _normalize_model_name(name: str) -> str:
+        """Ensure model name has the 'models/' prefix the API uses."""
+        if name and not name.startswith("models/"):
+            return f"models/{name}"
+        return name
+
     def _discover_best_model(self, preferred: str | None) -> str:
         """Query the API to find the highest-tier available model."""
+        if preferred:
+            preferred = self._normalize_model_name(preferred)
         try:
-            # Try newer attribute first, then fallback to older
             all_models = self.client.models.list()
             available = []
             for m in all_models:
