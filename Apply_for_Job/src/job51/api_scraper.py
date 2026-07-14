@@ -140,7 +140,17 @@ def fetch_challenge(url):
     return None, html
 
 def parse_request_info(html):
-    """从 WAF 拦截页 HTML 提取 requestInfo"""
+    """从 WAF 拦截页 HTML 提取 requestInfo（仅适用旧版 NC 滑块页）"""
+    # 检测新版 Aliyun JS 挑战页（renderData / _waf_bd8ce2ce37）
+    # 新版不含 token/refer，NC 补环境方案对此无效
+    if 'renderData' in html or '_waf_bd' in html or 'aliyunwaf_' in html:
+        print('[WAF] 51job 已切换至新版 Aliyun JS 挑战（非 NC 滑块），'
+              'NC 补环境方案无法处理此类拦截。')
+        print('[WAF] 将自动回退至 DrissionPage 浏览器方案，请确保系统已安装 Chrome。')
+        with open(os.path.join(os.path.dirname(__file__), 'nc_env/data/waf_response.html'), 'w', encoding='utf-8') as f:
+            f.write(html)
+        return None
+
     m_token  = re.search(r"token\s*:\s*['\"]([^'\"]+)['\"]", html)
     m_refer  = re.search(r"refer\s*:\s*['\"]([^'\"]+)['\"]", html)
     m_appkey = re.search(r"aliyun_captchaid_\w+\s*=\s*['\"]([^'\"]+)['\"]", html)
@@ -148,19 +158,18 @@ def parse_request_info(html):
     m_url    = re.search(r"url\s*:\s*['\"]([^'\"]+)['\"]", html)
 
     if not m_token or not m_refer:
-        print('[ERROR] 未找到 token/refer，HTML 已保存到 waf_response.html')
+        print('[ERROR] 未找到 token/refer，WAF 响应已保存到 nc_env/data/waf_response.html')
         with open(os.path.join(os.path.dirname(__file__), 'nc_env/data/waf_response.html'), 'w', encoding='utf-8') as f:
             f.write(html)
         return None
 
-    result = {
+    return {
         'u_atoken': m_token.group(1),
         'u_aref':   m_refer.group(1),
         'appkey':   m_appkey.group(1) if m_appkey else 'CF_APP_WAF',
         'trace':    m_trace.group(1)  if m_trace  else '',
         'original_url': m_url.group(1) if m_url else '',
     }
-    return result
 
 # ----------------------------------------------------------------------
 # Merged from nc_env/main.py

@@ -1,0 +1,30 @@
+# config/applicants.yaml
+# 求职者通勤计算配置
+#
+# 每个 applicant 在 raw CSV 中生成对应通勤列，命名规则：
+#   commute_drive_min_{name}    驾车（分钟）
+#   commute_transit_min_{name}  公共交通（分钟）
+#   commute_walk_min_{name}     步行（分钟）
+#
+# 说明：
+#   name    列名后缀，不含空格，例如 "Jin" → commute_drive_min_Jin
+#   address 出发地址，支持详细街道或城市名，由高德地图 API 解析坐标
+#   city    城市名（公交换乘 API 必填），例如 "深圳"
+#   modes   计算哪些交通方式，可选：driving / transit / walking
+
+applicants:
+  - name: "Jin"
+    address: "深圳市龙华区民治街道上芬社区坳头老村9号楼"
+    city: "深圳"
+    modes:
+      - driving
+      - transit
+      - walking
+
+# 多人示例（取消注释即可启用）：
+# - name: "Alice"
+#   address: "深圳市福田区华强北地铁站"
+#   city: "深圳"
+#   modes:
+#     - driving
+#     - transit

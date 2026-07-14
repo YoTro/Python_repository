@@ -44,6 +44,8 @@ class JobSpider:
     def __init__(self, headless=False, proxy_url=None):
         co = ChromiumOptions()
         co.set_argument('--disable-blink-features=AutomationControlled')
+        # Always pick a free port so we never collide with the zhipin/debug Chrome at 9222
+        co.auto_port()
         if proxy_url:
             co.set_proxy(proxy_url)
         if headless:

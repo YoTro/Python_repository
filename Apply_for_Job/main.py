@@ -45,6 +45,7 @@ from src.zhipin import scraper as zhipin_scraper
 from src.ziprecruiter import scraper as zr_scraper
 from src.indeed import scraper as indeed_scraper
 from src.utils.http import build_session
+from src.utils.commute import enrich_commute
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,7 @@ def run_51job(keyword: str, city: str, pages: int, proxy_url=None) -> Path:
             time.sleep(t)
 
     logger.info("[51job] Done → %s", output_csv)
+    enrich_commute(str(output_csv), platform="job51")
     return output_csv
 
 
@@ -146,6 +148,7 @@ def run_zhipin(keyword: str, city: str, pages: int, proxy_url=None) -> Path:
         output_filename=str(output_csv), max_pages=pages, proxy_url=dp_proxy,
     )
     logger.info("[zhipin] Done → %s", output_csv)
+    enrich_commute(str(output_csv), platform="zhipin")
     return output_csv
 
 
@@ -163,6 +166,7 @@ def run_ziprecruiter(keyword: str, location: str, pages: int,
         max_pages=pages, proxy_url=dp_proxy, fetch_descriptions=fetch_descriptions,
     )
     logger.info("[ZipRecruiter] Done → %s", output_csv)
+    enrich_commute(str(output_csv), platform="ziprecruiter")
     return output_csv
 
 
@@ -180,6 +184,7 @@ def run_indeed(keyword: str, location: str, pages: int,
         max_pages=pages, proxy_url=dp_proxy, fetch_descriptions=fetch_descriptions,
     )
     logger.info("[Indeed] Done → %s", output_csv)
+    enrich_commute(str(output_csv), platform="indeed")
     return output_csv
 
 

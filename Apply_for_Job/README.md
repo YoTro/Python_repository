@@ -108,29 +108,29 @@
 
 ```bash
 # 单平台采集并生成分析报告
-python3 main.py 51job          "amazon运营"        深圳     3
-python3 main.py zhipin         "amazon运营"        深圳     5
-python3 main.py ziprecruiter   "amazon operations" Remote   3
-python3 main.py indeed         "amazon operations" Remote   3
+python3 main.py scrape 51job          "amazon运营"        深圳     3
+python3 main.py scrape zhipin         "amazon运营"        深圳     5
+python3 main.py scrape ziprecruiter   "amazon operations" Remote   3
+python3 main.py scrape indeed         "amazon operations" Remote   3
 
 # 双平台同时采集（中文）
-python3 main.py both "amazon运营" 深圳 3
+python3 main.py scrape both "amazon运营" 深圳 3
 
 # 四平台同时采集
-python3 main.py all "amazon" Remote 3
+python3 main.py scrape all "amazon" Remote 3
 
 # 启用 PSM 倾向得分匹配（控制选择偏差，需 scikit-learn）
-python3 main.py zhipin "数据分析师" 上海 5 --psm
+python3 main.py scrape zhipin "数据分析师" 上海 5 --psm
 
 # 仅采集，不分析
-python3 main.py zhipin "前端开发" 北京 3 --no-analyze
+python3 main.py scrape zhipin "前端开发" 北京 3 --no-analyze
 
 # 跳过详情页抓取（ZipRecruiter / Indeed 快速模式，只采集列表）
-python3 main.py ziprecruiter "product manager" Remote 5 --no-desc
-python3 main.py indeed       "product manager" Remote 5 --no-desc
+python3 main.py scrape ziprecruiter "product manager" Remote 5 --no-desc
+python3 main.py scrape indeed       "product manager" Remote 5 --no-desc
 
 # 不生成图表（无 matplotlib 环境时）
-python3 main.py both "算法工程师" 深圳 3 --no-plot
+python3 main.py scrape both "算法工程师" 深圳 3 --no-plot
 ```
 
 ### 仅分析已有数据
@@ -258,10 +258,10 @@ DEEPSEEK_API_KEY=sk-...
 
 ```bash
 # 自动获取代理
-python3 main.py 51job "python" 深圳 3 --proxy-url
+python3 main.py scrape 51job "python" 深圳 3 --proxy-url
 
 # 指定代理地址
-python3 main.py 51job "python" 深圳 3 --proxy-url http://127.0.0.1:7890
+python3 main.py scrape 51job "python" 深圳 3 --proxy-url http://127.0.0.1:7890
 ```
 
 ### Chrome 调试模式（Zhipin / ZipRecruiter / Indeed / Chat Bot 均需要）
@@ -477,10 +477,78 @@ categories:
 
 ---
 
+## 高德地图（Amap）地理编码 & 通勤时间
+
+### 地理编码 API（`src/utils/Amap.py`）
+
+| 函数 | 说明 |
+|---|---|
+| `geocode(address, city="")` | 地址/城市名 → 坐标 + 行政区信息（省/市/区/adcode）|
+| `regeocode(lng, lat)` | 坐标 → 结构化地址（省/市/区/街道）|
+| `route_driving(origin, dest)` | 驾车路径 → 时长（分钟）|
+| `route_transit(origin, dest, city)` | 公共交通路径 → 时长（分钟）|
+| `route_walking(origin, dest)` | 步行路径 → 时长（分钟）|
+| `city_tier(location_str)` | 位置字符串 → 线级（1/2/3），优先查静态表，未命中时调用 API |
+
+**配置：** `config/amapkey.json` 中填入高德 Web 服务 API Key：
+```json
+{"key": "YOUR_AMAP_KEY"}
+```
+申请地址：[lbs.amap.com](https://lbs.amap.com/)，选择「Web 服务」类型的 Key。
+
+### 通勤时间批量计算（`src/utils/commute.py`）
+
+每次 `scrape` 完成后，系统自动调用高德地图路径规划 API，为 raw CSV 中的每个职位计算通勤时间，并将结果追加为新列：
+
+| 列名 | 说明 |
+|---|---|
+| `commute_driving_min_{name}` | 驾车时长（分钟）|
+| `commute_transit_min_{name}` | 公共交通时长（分钟）|
+| `commute_walking_min_{name}` | 步行时长（分钟）|
+
+其中 `{name}` 来自 `config/applicants.yaml` 中的 `name` 字段，支持多人同时计算。
+
+**地址解析规则（各平台）：**
+
+| 平台 | 精确地址 | 回退地址 |
+|---|---|---|
+| BOSS直聘 | `jobAddress`（街道级）| `areaDistrict` + `businessDistrict` |
+| 51job | `Location`（城市/区级）| 所在城市 |
+| ZipRecruiter / Indeed | 美国地址，高德不覆盖，标记 N/A | — |
+
+**配置求职者（`config/applicants.yaml`）：**
+
+```yaml
+applicants:
+  - name: "Jin"               # 列名后缀，不含空格
+    address: "深圳市南山区科技园"  # 出发地，高德 API 解析坐标
+    city: "深圳"               # 公交换乘 API 必填
+    modes:
+      - driving
+      - transit
+      - walking
+
+# 多人示例：
+# - name: "Alice"
+#   address: "深圳市福田区华强北地铁站"
+#   city: "深圳"
+#   modes: [driving, transit]
+```
+
+**示例输出（zhipin raw CSV 新增列）：**
+```
+areaDistrict  commute_driving_min_Jin  commute_transit_min_Jin  commute_walking_min_Jin
+龙华区                              44                       58                      212
+龙岗区                              87                      100                      650
+光明区                              44                       74                      303
+```
+
+---
+
 ## 配置
 
 - `.env`：LLM provider 及 API Key（Chat Bot 必填，参见 `.env.example`）
-- `config/amapkey.json`：高德地图 API Key（地理编码需求时使用）
+- `config/amapkey.json`：高德地图 Web 服务 API Key（城市线级解析备用方案）
 - `config/job_categories.yaml`：岗位归一化词典（支持正则，修改后重启生效）
 - `src/job51/nc_env/data/`：51job WAF 绕过所需指纹/轨迹数据（遭遇持续 API 封锁时重新采集）
 

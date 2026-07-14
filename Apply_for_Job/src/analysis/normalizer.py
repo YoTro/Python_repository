@@ -451,7 +451,12 @@ def _enrich(df: pd.DataFrame,
         for city, tier in CITY_TIER.items():
             if city in loc:
                 return tier
-        return 3
+        # Fallback: resolve via Amap geocoding API
+        try:
+            from src.utils.Amap import city_tier as amap_tier
+            return amap_tier(loc)
+        except Exception:
+            return 3
 
     df["city_tier"] = df["location"].apply(_tier)
     return df
