@@ -11,6 +11,7 @@ required_vars:
   - _example_date
   - _summary_json
   - _snapshot_table
+  - _wow_mom_table_md
   - items_json
   - n_top_actions
 
@@ -40,6 +41,9 @@ template: |
   ### Quick Metrics Snapshot
 
   {_snapshot_table}
+
+  {_wow_mom_table_md}
+  [INSTRUCTION: _wow_mom_table_md is a pre-rendered period-over-period markdown table (Spend / Clicks / CPC / ACOS with deltas) — output it verbatim when non-empty, or omit it silently when empty. Do NOT re-derive, reformat, or modify any value in the table.]
 
   **Field interpretation guide** (apply when writing Diagnostic Findings and other sections — these rules explain what each field means, not how to fill the table above):
     title / brand / size / bullet_point_count → SP-API Catalog

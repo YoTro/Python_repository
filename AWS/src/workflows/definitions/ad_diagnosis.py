@@ -51,13 +51,17 @@ Config keys (with defaults):
 """
 
 import asyncio
+import calendar
 import functools
 import hashlib
+import json
 import logging
 import math
 import os
 import re
+from collections import defaultdict
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from datetime import date as _date_cls
 from enum import StrEnum
@@ -68,19 +72,36 @@ import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.dates as mdates
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
 from src.core.data_cache import data_cache as _data_cache
+from src.core.errors.exceptions import FatalError
 from src.core.utils.charts import CHART_PALETTE as _CHART_PALETTE
 from src.core.utils.charts import chart_upload as _chart_upload
 from src.core.utils.charts import fig_to_png as _fig_to_png
+from src.intelligence.processors.auto_mining import build_auto_mining_actions
 from src.intelligence.processors.causal_analysis import (
     ATTR_POST_END,
     ATTR_PRE_START,
     TRAILING_START,
     YOY_OFFSET_DAYS,
+    run_causal_analysis,
 )
+from src.intelligence.processors.optimizer_ad_budget import (
+    _K_CVR_MAX,
+    _K_CVR_MIN,
+    AdBudgetOptimizer,
+)
+from src.intelligence.processors.shipment_lead_time import (
+    adapt_lingxing_shipments,
+    adapt_sp_api_plans,
+    compute_quarterly_lead_times,
+)
+from src.intelligence.prompts.manager import prompt_manager
+from src.mcp.servers.amazon.ads.client import AmazonAdsClient
+from src.mcp.servers.amazon.sp_api.client import SPAPIClient
 from src.workflows.engine import Workflow, WorkflowContext
 from src.workflows.registry import WorkflowRegistry
 from src.workflows.steps.base import ComputeTarget
@@ -247,8 +268,6 @@ def _l2_cached(
 
 def _ads_client(ctx: WorkflowContext):
     """Construct AmazonAdsClient from workflow config."""
-    from src.mcp.servers.amazon.ads.client import AmazonAdsClient
-
     return AmazonAdsClient(
         store_id=ctx.config.get("store_id"),
         region=ctx.config.get("region", "NA"),
@@ -639,8 +658,6 @@ async def _enrich_non_sp_orders(item: dict, ctx: WorkflowContext) -> dict:
 
 async def _enrich_catalog(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch product title, brand, size from SP-API Catalog."""
-    from src.mcp.servers.amazon.sp_api.client import SPAPIClient
-
     asin = item.get("asin")
     if not asin:
         return {}
@@ -660,8 +677,6 @@ async def _enrich_catalog(item: dict, ctx: WorkflowContext) -> dict:
 
 async def _enrich_inventory(item: dict, ctx: WorkflowContext) -> dict:
     """Fetch FBA inventory for the item's SKU(s) from SP-API."""
-    from src.mcp.servers.amazon.sp_api.client import SPAPIClient
-
     asin = item.get("asin")
     sku = item.get("sku")
     try:
@@ -725,13 +740,10 @@ async def _ensure_lead_time(ctx: WorkflowContext) -> dict:
 
     L2 TTL: 14 days — ERP shipment distributions are historically stable.
     """
-    from src.intelligence.processors.shipment_lead_time import compute_quarterly_lead_times
-
     result: dict = {}
 
     # ── Primary: Lingxing ERP ─────────────────────────────────────────────
     try:
-        from src.intelligence.processors.shipment_lead_time import adapt_lingxing_shipments
         from src.mcp.servers.erp.lingxing.client import LingxingClient
 
         loop = asyncio.get_event_loop()
@@ -787,9 +799,6 @@ async def _ensure_lead_time(ctx: WorkflowContext) -> dict:
     # by the time between plan creation and actual factory departure (~7-21d).
     if not result:
         try:
-            from src.intelligence.processors.shipment_lead_time import adapt_sp_api_plans
-            from src.mcp.servers.amazon.sp_api.client import SPAPIClient
-
             sp_client = SPAPIClient()
             plans = await sp_client.get_inbound_plans(status="SHIPPED")
             normalised_sp = adapt_sp_api_plans(plans, cn_only=True, shipped_only=True)
@@ -837,8 +846,6 @@ async def _enrich_order_metrics(item: dict, ctx: WorkflowContext) -> dict:
     TTL: 4h — order data refreshes approximately once per day but we re-check
     frequently in case of intraday corrections.
     """
-    from src.mcp.servers.amazon.sp_api.client import SPAPIClient
-
     asin = item.get("asin")
     if not asin:
         return {}
@@ -1462,8 +1469,6 @@ def _compute_daily_budget_metrics(
     if not asin_daily or not cap_by_date:
         return {}
 
-    from collections import defaultdict
-
     raw_by_date: dict = defaultdict(float)
     for r in asin_daily:
         dt = r.get("date")
@@ -1671,8 +1676,6 @@ def _empirical_k(
     Falls back to _K_CVR_MAX when stratum is too small or sampling noise
     dominates (σ²_signal ≤ 0 — true between-keyword dispersion undetectable).
     """
-    from src.intelligence.processors.optimizer_ad_budget import _K_CVR_MAX, _K_CVR_MIN
-
     if len(pairs) < min_kws:
         return _K_CVR_MAX
 
@@ -1701,8 +1704,6 @@ def _compute_cvr_prior(
 
     Returns (mu_by_match_type, k_by_match_type, global_mu, global_k).
     """
-    from collections import defaultdict
-
     buckets: dict[str, list[tuple[int, float]]] = defaultdict(list)
     all_pairs: list[tuple[int, float]] = []
 
@@ -1760,8 +1761,6 @@ def _build_lp_input(
     k_by_match_type: dict[str, float] | None = None,
     global_k: float | None = None,
 ) -> list[dict]:
-    from src.intelligence.processors.optimizer_ad_budget import _K_CVR_MAX
-
     click_headroom = _p90_headroom(daily_perf or [], headroom)
     mu_map = mu_by_match_type or {}
     k_map = k_by_match_type or {}
@@ -2448,8 +2447,6 @@ def _optimize_budget(items: list[dict], ctx: WorkflowContext) -> list[dict]:
       lp_summary, lp_top_allocations, lp_zero_keywords, lp_maxed_keywords,
       campaign_actions, keyword_actions
     """
-    from src.intelligence.processors.optimizer_ad_budget import AdBudgetOptimizer
-
     headroom = ctx.config.get("lp_headroom_factor", 3.0)
     target_acos = ctx.config.get("target_acos")
     days = ctx.config.get("days", 30)
@@ -3129,8 +3126,6 @@ def _save_lp_snapshot(
     Written to data/intelligence/lp_snapshots/{ASIN}/{run_date}.json.
     Returns the path on success, None on failure (non-fatal).
     """
-    import json as _json
-
     snap_dir = os.path.join("data", "intelligence", "lp_snapshots", asin.upper())
     os.makedirs(snap_dir, exist_ok=True)
     snap_path = os.path.join(snap_dir, f"{run_date}.json")
@@ -3182,7 +3177,7 @@ def _save_lp_snapshot(
     }
     try:
         with open(snap_path, "w") as _f:
-            _json.dump(snapshot, _f, indent=2)
+            json.dump(snapshot, _f, indent=2)
         logger.info("LP snapshot → %s (%d keywords)", snap_path, len(keywords))
         return snap_path
     except Exception as exc:
@@ -3227,17 +3222,14 @@ async def _enrich_covariates(item: dict, ctx: WorkflowContext) -> dict:
         #   Attribution window  (days):                 aligns with change_history for Before/After
         #   Causal baseline window (rank_lookback_months): aligns with natural_rank_series for ITS
         # Use the longer of the two so covariate_series covers the full ITS baseline.
-        import calendar as _cal
-
         rank_months = min(ctx.config.get("rank_lookback_months", 6), 24)
         rm_y = end_dt.year - (rank_months // 12)
         rm_m = end_dt.month - (rank_months % 12)
         if rm_m <= 0:
             rm_m += 12
             rm_y -= 1
-        from datetime import date as _date
 
-        causal_start = _date(rm_y, rm_m, min(end_dt.day, _cal.monthrange(rm_y, rm_m)[1]))
+        causal_start = _date_cls(rm_y, rm_m, min(end_dt.day, calendar.monthrange(rm_y, rm_m)[1]))
         attr_start = today - timedelta(days=days + abs(ATTR_POST_END))
         start_dt = min(causal_start, attr_start)
 
@@ -3609,9 +3601,6 @@ async def _enrich_keyword_signals(item: dict, ctx: WorkflowContext) -> dict:
         logger.info(f"[keyword_signals] No keywords for {asin}, skipping.")
         return {}
 
-    import calendar as _cal
-    from datetime import date as _date
-
     rank_months = min(ctx.config.get("rank_lookback_months", 6), 24)
     weeks_needed = rank_months * 4 + 4  # slight overestimate; API caps internally
 
@@ -3624,7 +3613,7 @@ async def _enrich_keyword_signals(item: dict, ctx: WorkflowContext) -> dict:
     if m <= 0:
         m += 12
         y -= 1
-    rank_start = _date(y, m, min(end_dt.day, _cal.monthrange(y, m)[1]))
+    rank_start = _date_cls(y, m, min(end_dt.day, calendar.monthrange(y, m)[1]))
 
     try:
         from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
@@ -3856,8 +3845,6 @@ def _mine_auto_campaigns(items: list[dict], ctx: WorkflowContext) -> list[dict]:
     filters to auto/PT campaign IDs (all campaign_ids minus lp_scoped_cids),
     and writes item["auto_mining"] with negatives, harvest, beta_prior, summary.
     """
-    from src.intelligence.processors.auto_mining import build_auto_mining_actions
-
     raw_st_records: list[dict] = ctx.cache.get(_KEY_KW_PERFORMANCE, [])
     target_acos = ctx.config.get("target_acos", 0.30)
     days = ctx.config.get("days", 30)
@@ -3911,8 +3898,6 @@ def _run_causal_analysis(items: list[dict], ctx: WorkflowContext) -> list[dict]:
       P1 YoY (364d back, ERP)  → P2 trailing 3M (ERP extension) → P3 pre-window fallback
     Both ERP fetches are sync (curl_cffi), L1+L2 cached, non-fatal on error.
     """
-    from src.intelligence.processors.causal_analysis import run_causal_analysis
-
     for item in items:
         asin = item.get("asin", "?").upper()
         try:
@@ -4218,8 +4203,6 @@ def _chart_budget_utilization(item: dict, daily_perf: list[dict]) -> bytes | Non
             pass
 
     # Legend patches for colour tiers
-    from matplotlib.patches import Patch
-
     legend_patches = [
         Patch(color=_C["red"], label="Exhausted ≥ 85 %"),
         Patch(color=_C["orange"], label="High 60–84 %"),
@@ -4262,9 +4245,7 @@ def _chart_rank_trend(item: dict) -> bytes | None:
     ax.set_facecolor(_C["bg"])
     for idx, (kw, kw_data) in enumerate(list(rank_series.items())[:5]):
         y_vals = [
-            float(kw_data[d]["totalRank"])
-            if d in kw_data and kw_data[d].get("totalRank") is not None
-            else float("nan")
+            float(kw_data[d]) if d in kw_data and kw_data[d] is not None else float("nan")
             for d in dates
         ]
         ax.plot(
@@ -4737,13 +4718,11 @@ def _chart_placement_donut(item: dict) -> bytes | None:
         tbl[(i, 4)].set_facecolor(hc)
         tbl[(i, 4)].set_text_props(color="white", fontweight="bold")
 
-    from matplotlib.patches import Patch as _Patch
-
     ax_tbl.legend(
         handles=[
-            _Patch(facecolor=_C["green"], label=f"✓  ≤ {warn_pct * 0.85:.0f}%  healthy"),
-            _Patch(facecolor=_C["orange"], label=f"△  ≤ {warn_pct:.0f}%  watch"),
-            _Patch(facecolor=_C["red"], label=f"✗  > {warn_pct:.0f}%  over target"),
+            Patch(facecolor=_C["green"], label=f"✓  ≤ {warn_pct * 0.85:.0f}%  healthy"),
+            Patch(facecolor=_C["orange"], label=f"△  ≤ {warn_pct:.0f}%  watch"),
+            Patch(facecolor=_C["red"], label=f"✗  > {warn_pct:.0f}%  over target"),
         ],
         loc="lower center",
         fontsize=7.5,
@@ -4809,8 +4788,6 @@ def _chart_lead_time_dist(item: dict) -> bytes | None:
 
     Each quarter row shows: p25–p75 shaded bar + median tick + p90 marker.
     """
-    import matplotlib.patches as mpatches
-
     lt = item.get("shipment_lead_time") or {}
     sea_by_q = (lt.get("sea_transit") or {}).get("by_quarter") or {}
     ovs_by_q = (lt.get("overseas_to_fba") or {}).get("by_quarter") or {}
@@ -5013,10 +4990,7 @@ def _chart_comp_price_box(item: dict) -> bytes | None:
 
 def _generate_charts(items: list[dict], ctx: WorkflowContext) -> list[dict]:
     """Generate diagnostic PNG charts per ASIN, upload to storage, store URLs in item['chart_urls']."""
-    import datetime as _dt
-    from concurrent.futures import Future, ThreadPoolExecutor
-
-    date_str = _dt.datetime.now(tz=_store_tz(ctx)).date().isoformat()
+    date_str = datetime.now(tz=_store_tz(ctx)).date().isoformat()
     max_workers = ctx.config.get("chart_workers", 8)
 
     def _run_one(asin: str, name: str, fn, upload_key: str) -> str | None:
@@ -5372,16 +5346,9 @@ _SNAPSHOT_FIELD_SOURCE: dict[str, str] = {
     "sp_ad_orders": "Ads API spCampaigns — SP ad-attributed orders (keyword + auto + PT campaigns; SB/SD/DSP and organic excluded); 7-day attribution window (purchases7d)",
     "sp_ad_clicks": "Ads API spCampaigns — SP ad-attributed clicks (keyword + auto + PT), data_start_date → data_end_date",
     "account_acos": "sp_ad_spend ÷ sp_ad_sales × 100",
-    # Ad-performance trend fields — cycle picked from cached daily rows
-    #   ≥ 60 rows → 30-day cycle, suffix "_60d"
-    #   14–59     → 7-day cycle,  suffix "_14d"
-    #   < 14      → fields absent (silence)
-    "cpc_60d_change": "(last 30d CPC − previous 30d CPC) ÷ previous 30d CPC × 100 — bidding-inflation rate",
-    "cpc_14d_change": "(last 7d CPC − previous 7d CPC) ÷ previous 7d CPC × 100 — bidding-inflation rate",
-    "acos_60d_change": "last 30d ACOS − previous 30d ACOS (percentage points) — profit-erosion rate",
-    "acos_14d_change": "last 7d ACOS − previous 7d ACOS (percentage points) — profit-erosion rate",
-    "daily_sales_60d_trend": "SP-attributed avg daily orders — last 30d vs previous 30d — demand/rank health",
-    "daily_sales_14d_trend": "SP-attributed avg daily orders — last 7d vs previous 7d — demand/rank health",
+    # Ad-performance trend — CPC / ACOS / daily-sales deltas are now covered by
+    # the pre-rendered _wow_mom_table_md (WoW / MoM).  Only inventory-domain
+    # cycle alignment is retained as a snapshot scalar.
     "cycle_alignment_60d": "actual sellable buffer vs stock_gate_days — 60-day replenishment cycle integrity",
     "cycle_alignment_14d": "actual sellable buffer vs stock_gate_days — 14-day replenishment cycle integrity",
     "sb_ad_orders": "Ads API sbPurchasedProduct — SB orders where this ASIN was purchased (purchasedAsin filter); 14-day attribution window (orders14d); null if SB report unavailable",
@@ -5804,7 +5771,6 @@ def _compute_trend_summary(item: dict, ctx: WorkflowContext) -> dict | None:
     r_cpc = r_spend / r_clicks if r_clicks > 0 else None
     p_cpc = p_spend / p_clicks if p_clicks > 0 else None
     cpc_change_raw: dict | None = None
-    cpc_display: str | None = None
     if r_cpc is not None and p_cpc is not None:
         pct = round((r_cpc - p_cpc) / p_cpc * 100, 1) if p_cpc != 0 else None
         cpc_change_raw = {
@@ -5812,13 +5778,12 @@ def _compute_trend_summary(item: dict, ctx: WorkflowContext) -> dict | None:
             "recent": round(r_cpc, 2),
             "pct_change": pct,
         }
-        cpc_display = _fmt_pct_change(round(p_cpc, 2), round(r_cpc, 2), val_decimals=2)
+        _fmt_pct_change(round(p_cpc, 2), round(r_cpc, 2), val_decimals=2)
 
     # 2) ACOS — profit-erosion rate (percentage points, not %)
     r_acos = (r_spend / r_sales * 100) if r_sales > 0 else None
     p_acos = (p_spend / p_sales * 100) if p_sales > 0 else None
     acos_change_raw: dict | None = None
-    acos_display: str | None = None
     if r_acos is not None and p_acos is not None:
         pp = round(r_acos - p_acos, 1)
         acos_change_raw = {
@@ -5826,7 +5791,7 @@ def _compute_trend_summary(item: dict, ctx: WorkflowContext) -> dict | None:
             "recent_pct": round(r_acos, 1),
             "pp_change": pp,
         }
-        acos_display = f"{_fmt_signed(pp)} p.p. ({p_acos:.1f}%→{r_acos:.1f}%)"
+        f"{_fmt_signed(pp)} p.p. ({p_acos:.1f}%→{r_acos:.1f}%)"
 
     # 3) Daily sales trend — SP-attributed daily orders as a demand/rank proxy
     r_daily = r_orders / r_days if r_days > 0 else 0.0
@@ -5836,7 +5801,7 @@ def _compute_trend_summary(item: dict, ctx: WorkflowContext) -> dict | None:
         "recent_avg": round(r_daily, 1),
         "pct_change": (round((r_daily - p_daily) / p_daily * 100, 1) if p_daily > 0 else None),
     }
-    daily_sales_display = _fmt_pct_change(round(p_daily, 1), round(r_daily, 1), val_decimals=1)
+    _fmt_pct_change(round(p_daily, 1), round(r_daily, 1), val_decimals=1)
 
     # 4) Cycle alignment — current sellable-days buffer vs stock_gate_days
     actual_buffer = item.get("can_sell_days")
@@ -5875,12 +5840,6 @@ def _compute_trend_summary(item: dict, ctx: WorkflowContext) -> dict | None:
             "cycle_alignment": cycle_alignment_raw,
         },
     }
-    if cpc_display is not None:
-        result[f"cpc{suffix}_change"] = cpc_display
-    if acos_display is not None:
-        result[f"acos{suffix}_change"] = acos_display
-    if daily_sales_display is not None:
-        result[f"daily_sales{suffix}_trend"] = daily_sales_display
     if cycle_alignment_display is not None:
         result[f"cycle_alignment{suffix}"] = cycle_alignment_display
     return result
@@ -6335,6 +6294,127 @@ def _trim_keyword_performance(item: dict) -> None:
         item["keyword_performance_original_count"] = original_count
 
 
+def _build_wow_mom_table(
+    asin_daily: list[dict],
+    days: int,
+    data_start_date: str,
+    data_end_date: str,
+) -> str:
+    """
+    Pre-render a WoW (days < 30) or MoM (days >= 30) Spend / Clicks / ACOS table.
+
+    Groups daily_perf records into ISO-week or calendar-month buckets.  The
+    period immediately preceding the reporting window is used as a delta basis
+    but is NOT shown in the table.  Returns "" when fewer than 2 periods exist.
+    """
+    if not asin_daily:
+        return ""
+
+    use_weekly = days < 30
+
+    # ── aggregate by calendar date ────────────────────────────────────────────
+    by_date: dict[str, dict] = {}
+    for r in asin_daily:
+        d = (r.get("date") or r.get("report_date") or "")[:10]
+        if len(d) < 10:
+            continue
+        slot = by_date.setdefault(d, {"spend": 0.0, "clicks": 0, "sales": 0.0})
+        slot["spend"] += float(r.get("spend", 0) or 0)
+        slot["clicks"] += int(r.get("clicks", 0) or 0)
+        slot["sales"] += float(r.get("sales", 0) or 0)
+
+    if not by_date:
+        return ""
+
+    # ── bucket into periods ───────────────────────────────────────────────────
+    period_data: dict[str, dict] = {}
+    for date_str, vals in by_date.items():
+        try:
+            dt = _date_cls.fromisoformat(date_str)
+        except ValueError:
+            continue
+        if use_weekly:
+            iso = dt.isocalendar()
+            label = f"{iso[0]}-W{iso[1]:02d}"
+        else:
+            label = date_str[:7]
+        slot = period_data.setdefault(label, {"spend": 0.0, "clicks": 0, "sales": 0.0})
+        slot["spend"] += vals["spend"]
+        slot["clicks"] += vals["clicks"]
+        slot["sales"] += vals["sales"]
+
+    periods = sorted(period_data)
+    if len(periods) < 2:
+        return ""
+
+    # ── determine the display window ──────────────────────────────────────────
+    # Anchor on the period containing data_end_date; show up to max_show periods
+    # ending there.  The period just before the first shown one is the delta basis.
+    try:
+        dt_end = _date_cls.fromisoformat(data_end_date)
+        if use_weekly:
+            iso_e = dt_end.isocalendar()
+            end_label = f"{iso_e[0]}-W{iso_e[1]:02d}"
+        else:
+            end_label = data_end_date[:7]
+    except ValueError:
+        end_label = periods[-1]
+
+    end_idx = periods.index(end_label) if end_label in periods else len(periods) - 1
+    max_show = 5 if use_weekly else 3
+    # window includes one extra prior period as the delta baseline (not displayed)
+    window_start = max(0, end_idx - max_show)
+    window = periods[window_start : end_idx + 1]  # noqa: E203
+
+    if len(window) < 2:
+        return ""
+
+    # ── render markdown table ─────────────────────────────────────────────────
+    period_type = "WoW" if use_weekly else "MoM"
+    label_col = "Week" if use_weekly else "Month"
+    lines = [
+        f"**{period_type} Performance — SP Campaigns**\n",
+        f"| {label_col} | Spend | Clicks | CPC | ACOS | Δ Spend | Δ Clicks | Δ CPC | Δ ACOS |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+
+    prev = period_data[window[0]]
+    for label in window[1:]:
+        v = period_data[label]
+        spend, clicks, sales = v["spend"], v["clicks"], v["sales"]
+        acos = spend / sales * 100 if sales > 0 else None
+        cpc = spend / clicks if clicks > 0 else None
+
+        p_spend, p_clicks, p_sales = prev["spend"], prev["clicks"], prev["sales"]
+        p_acos = p_spend / p_sales * 100 if p_sales > 0 else None
+        p_cpc = p_spend / p_clicks if p_clicks > 0 else None
+
+        ds = spend - p_spend
+        dc = clicks - p_clicks
+        d_spend = f"+${ds:,.0f}" if ds >= 0 else f"-${abs(ds):,.0f}"
+        d_clicks = f"+{dc:,}" if dc >= 0 else f"{dc:,}"
+        if cpc is not None and p_cpc is not None:
+            d_cpc_pct = (cpc - p_cpc) / p_cpc * 100
+            d_cpc = f"{d_cpc_pct:+.1f}%"
+        else:
+            d_cpc = "—"
+        if acos is not None and p_acos is not None:
+            da = acos - p_acos
+            d_acos = f"{da:+.1f} pp"
+        else:
+            d_acos = "—"
+
+        cpc_str = f"${cpc:.2f}" if cpc is not None else "—"
+        acos_str = f"{acos:.1f}%" if acos is not None else "—"
+        lines.append(
+            f"| {label} | ${spend:,.0f} | {clicks:,} | {cpc_str} | {acos_str}"
+            f" | {d_spend} | {d_clicks} | {d_cpc} | {d_acos} |"
+        )
+        prev = v
+
+    return "\n".join(lines)
+
+
 def _prepare_for_llm(items: list[dict], ctx: WorkflowContext) -> list[dict]:
     """
     PURE_PYTHON step immediately before ad_diagnosis_llm.
@@ -6359,18 +6439,30 @@ def _prepare_for_llm(items: list[dict], ctx: WorkflowContext) -> list[dict]:
                                    keyword_actions (those fields are now structured
                                    fields on every action entry).
     """
-    import json as _json
-
     _STRIP_FIELDS = (
-        "performance_records", "auto_mining", "keywords", "campaigns",
-        "covariate_series", "change_events",
+        "performance_records",
+        "auto_mining",
+        "keywords",
+        "campaigns",
+        "covariate_series",
+        "change_events",
     )
     _LP_INPUT_FIELDS = ("avg_cpc", "cvr", "daily_clicks")
     for item in items:
         summary = _build_item_summary(item, ctx)
-        item["_summary_json"] = _json.dumps(summary, ensure_ascii=False, default=str)
+        item["_summary_json"] = json.dumps(summary, ensure_ascii=False, default=str)
         item["_snapshot_table"] = _render_snapshot_table(summary)
         item["n_top_actions"] = summary.get("n_top_actions", 5)
+
+        asin = (item.get("asin") or "").upper()
+        asin_daily = ctx.cache.get(f"{_KEY_DAILY_PERF}:{asin}", [])
+        item["_wow_mom_table_md"] = _build_wow_mom_table(
+            asin_daily,
+            summary.get("lookback_days", 30),
+            summary.get("data_start_date", ""),
+            summary.get("data_end_date", ""),
+        )
+
         for f in _STRIP_FIELDS:
             item.pop(f, None)
 
@@ -6392,7 +6484,7 @@ def _prepare_for_llm(items: list[dict], ctx: WorkflowContext) -> list[dict]:
             item["campaign_action_gate"] = shared_gate
             for a in actions:
                 if a.get("prerequisite") is not None:
-                    a["prerequisite"] = True   # flag: gate applies; details in campaign_action_gate
+                    a["prerequisite"] = True  # flag: gate applies; details in campaign_action_gate
 
         _trim_keyword_performance(item)
         # Strip LP-input fields from keyword_performance rows whose keyword already
@@ -6688,8 +6780,6 @@ def _annotate_top5_groups(top5: list[dict]) -> None:
     the LLM's grouping heuristic in Format B.  These values are authoritative;
     the LLM must NOT re-derive them by summing table rows.
     """
-    from collections import defaultdict
-
     buckets: dict[tuple, list[dict]] = defaultdict(list)
     for a in top5:
         key = (a.get("action_type"), a.get("action"), a.get("gated", False))
@@ -7606,15 +7696,9 @@ def _export_report(items: list[dict], ctx: WorkflowContext) -> list[dict]:
     on_complete shows a summary card instead of trying to upload the full
     text as a second attachment.
     """
-    import datetime as _dt
-    import json as _json
-    import os
-
-    from src.core.errors.exceptions import FatalError
-
     report_dir = os.path.abspath("data/reports")
     os.makedirs(report_dir, exist_ok=True)
-    date_str = _dt.datetime.now(tz=_store_tz(ctx)).date().isoformat()
+    date_str = datetime.now(tz=_store_tz(ctx)).date().isoformat()
     missing_report_asins: list[str] = []
 
     for item in items:
@@ -7624,7 +7708,7 @@ def _export_report(items: list[dict], ctx: WorkflowContext) -> list[dict]:
         elif isinstance(report_data, dict):
             text = report_data.get("text") or report_data.get("response") or ""
             if not text and report_data:
-                text = _json.dumps(report_data, ensure_ascii=False, default=str)
+                text = json.dumps(report_data, ensure_ascii=False, default=str)
         elif report_data:
             text = str(report_data)
         else:
@@ -7651,18 +7735,16 @@ def _export_report(items: list[dict], ctx: WorkflowContext) -> list[dict]:
 
         # Inject _METHODOLOGY_BLOCK unconditionally before "### Top N Prioritised Actions".
         # This replaces any LLM-written Methodology prose (which is generic and low-value).
-        import re as _re
-
-        _top_actions_re = _re.compile(r"(###\s+Top\s+\d+\s+Prioritis)", _re.IGNORECASE)
+        _top_actions_re = re.compile(r"(###\s+Top\s+\d+\s+Prioritis)", re.IGNORECASE)
         _m = _top_actions_re.search(text)
         if _m:
             # Remove any LLM-written Methodology section that precedes the injection point
             _before = text[: _m.start()]
             _after = text[_m.start() :]
             # Strip any LLM-written Methodology section (heading + prose) from _before
-            _meth_section_re = _re.compile(
+            _meth_section_re = re.compile(
                 r"###\s+(?:Statistical\s+)?Methodology\b.*?(?=\n###|\Z)",
-                _re.IGNORECASE | _re.DOTALL,
+                re.IGNORECASE | re.DOTALL,
             )
             _before = _meth_section_re.sub("", _before)
             text = _before.rstrip() + "\n\n" + _METHODOLOGY_BLOCK + "\n" + _after
@@ -7743,8 +7825,6 @@ def build_ad_diagnosis(config: dict) -> Workflow:
     Each input item must contain at least {"asin": "B0XXXXXXXX"}.
     Optional per-item fields: sku, cogs, price, daily_sales.
     """
-    from src.intelligence.prompts.manager import prompt_manager
-
     ad_spec = prompt_manager.get_spec("ad_diagnosis_report")
     ctx_vars = {name: f"{{{name}}}" for name in (ad_spec.required_vars if ad_spec else [])}
 
