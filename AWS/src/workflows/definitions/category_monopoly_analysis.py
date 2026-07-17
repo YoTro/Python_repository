@@ -8,11 +8,36 @@ and competition intensity across 7 dimensions.
 """
 
 import asyncio
+import calendar
 import hashlib as _hl
+import json
 import logging
+import os
+import re
+import statistics
+import time
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.core.data_cache import data_cache as _data_cache
+from src.intelligence.processors.monopoly_analyzer import CategoryMonopolyAnalyzer
+from src.intelligence.processors.sales_estimator import SalesEstimator
+from src.intelligence.processors.social_virality import SocialViralityProcessor
+from src.intelligence.prompts.manager import prompt_manager
+from src.intelligence.router import TaskCategory
+from src.mcp.servers.amazon.ads.client import AmazonAdsClient
+from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
+from src.mcp.servers.amazon.extractors.feedback import SellerFeedbackExtractor
+from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
+from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
+from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
+from src.mcp.servers.amazon.extractors.search import SearchExtractor
+from src.mcp.servers.market.deals.client import DealHistoryClient
+from src.mcp.servers.market.sellersprite.client import SellerspriteAPI
+from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
+from src.mcp.servers.social.tiktok.client import TikTokClient
 from src.workflows.engine import Workflow
 from src.workflows.registry import WorkflowRegistry
 from src.workflows.steps.base import ComputeTarget
@@ -72,8 +97,6 @@ async def _fetch_bsr_list(_items: list[dict], ctx: Any) -> list[dict]:
         logger.info(f"[cat_monopoly] BSR list L2 cache hit for url_hash={url_hash}")
         return cached
 
-    from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
-
     extractor = BestSellersExtractor()
     products = await extractor.get_bestsellers(url, max_pages=2)
     if not products:
@@ -87,8 +110,6 @@ async def _enrich_sales(items: list[dict], ctx: Any) -> list[dict]:
     """Fetch past month sales for all items in one batch (20 ASINs per request).
     Cache per-ASIN; only fetches ASINs that are not already in L2.
     """
-    from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
-
     all_asins = [(item.get("ASIN") or item.get("asin") or "").strip().upper() for item in items]
 
     # Resolve from cache where available
@@ -133,10 +154,6 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
     if cached is not None:
         return cached
 
-    from src.mcp.servers.amazon.extractors.feedback import SellerFeedbackExtractor
-    from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
-    from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
-
     f_extractor, s_extractor, rc_extractor = (
         FulfillmentExtractor(),
         SellerFeedbackExtractor(),
@@ -172,9 +189,6 @@ def _ngram_candidates(titles: list, min_doc_freq: int = 3, top_n: int = 15) -> l
     Used to anchor LLM keyword extraction to terms actually present in the data,
     preventing hallucination and ensuring stability across runs.
     """
-    import re as _re_ng
-    from collections import Counter
-
     _STOP = {
         "the",
         "a",
@@ -217,7 +231,7 @@ def _ngram_candidates(titles: list, min_doc_freq: int = 3, top_n: int = 15) -> l
     doc_counts: Counter = Counter()
     for title in titles:
         tokens = [
-            t for t in _re_ng.findall(r"[a-z0-9]+", title.lower()) if t not in _STOP and len(t) > 1
+            t for t in re.findall(r"[a-z0-9]+", title.lower()) if t not in _STOP and len(t) > 1
         ]
         seen_in_doc: set = set()
         for n in (1, 2):
@@ -284,10 +298,6 @@ async def _fetch_core_keywords(items: list[dict], ctx: Any) -> list[dict]:
     # ── Primary: cross-ASIN keyword intersection ──────────────────────────
     intersection_candidates: list = []
     try:
-        from datetime import datetime, timedelta
-
-        from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
-
         country = ctx.config.get("store_id", "US") if hasattr(ctx, "config") else "US"
         tenant_id = ctx.config.get("tenant_id", "default") if hasattr(ctx, "config") else "default"
         api = XiyouZhaociAPI(tenant_id=tenant_id)
@@ -310,8 +320,6 @@ async def _fetch_core_keywords(items: list[dict], ctx: Any) -> list[dict]:
         results = await asyncio.gather(*[_kw_for_asin(a) for a in top_asins])
 
         # Build term → set of ASINs that have this keyword
-        from collections import defaultdict
-
         term_asins: dict = defaultdict(set)
         term_vol: dict = defaultdict(list)
         for asin, kw_list in results:
@@ -323,10 +331,8 @@ async def _fetch_core_keywords(items: list[dict], ctx: Any) -> list[dict]:
                     term_vol[term].append(vol)
 
         # Keep only terms appearing across ≥ MIN_ASIN_OVERLAP distinct ASINs
-        import statistics as _stats
-
         qualified = [
-            (term, len(asins), _stats.median(term_vol[term]))
+            (term, len(asins), statistics.median(term_vol[term]))
             for term, asins in term_asins.items()
             if len(asins) >= _MIN_ASIN_OVERLAP
         ]
@@ -366,8 +372,6 @@ async def _fetch_core_keywords(items: list[dict], ctx: Any) -> list[dict]:
     )
     core_keywords = candidates[:3]
     try:
-        from src.intelligence.router import TaskCategory
-
         if ctx.router and candidates:
             source_label = (
                 "cross-ASIN traffic data" if intersection_candidates else "BSR title frequency"
@@ -378,25 +382,38 @@ async def _fetch_core_keywords(items: list[dict], ctx: Any) -> list[dict]:
                 f"The following search terms are grounded in {source_label} across the top BSR products: "
                 f"[{candidate_str}]. "
                 "From these candidates ONLY, pick the TOP 3 that best represent the core buyer "
-                "search intent for this niche — favour terms a buyer would type to find ANY of the "
-                "top products, not sub-niche specific ones. "
+                "search intent for this niche — terms a buyer would type when category-shopping, "
+                "before deciding on a specific type, brand, or variant.\n"
+                "A term is SUB-NICHE SPECIFIC (exclude it) if it:\n"
+                "  • names only one product subtype or mechanism "
+                "(e.g. 'glue board' or 'snap trap' when the category has both)\n"
+                "  • targets a specific demographic, species, or location "
+                "(e.g. 'for dogs', 'outdoor', 'kitchen')\n"
+                "  • is an attribute modifier rather than a product name "
+                "(e.g. 'reusable', 'electric', 'organic', 'heavy duty', 'scented')\n"
+                "  • is a brand name, proper noun, model number, or quantity descriptor "
+                "(e.g. 'Victor', 'v11', '2 pack', '12 count')\n"
+                "A term is CATEGORY-LEVEL (prefer it) if a buyer using it would consider "
+                "ALL or most of the top BSR products relevant results.\n"
                 "Return a comma-separated list of exactly 3 terms — no explanation, no numbering."
             )
             res = await ctx.router.route_and_execute(prompt, category=TaskCategory.SIMPLE_CLEANING)
-            import re as _re_kw
-
             raw_text = res.text.strip().replace('"', "").replace("'", "").lower()
-            raw_text = _re_kw.sub(r"(?m)^\s*\d+[\.\)]\s*", "", raw_text)
-            raw_text = _re_kw.sub(r"(?m)^\s*[-•*]\s*", "", raw_text)
-            raw_text = _re_kw.sub(r"\n+", ",", raw_text)
+            raw_text = re.sub(r"(?m)^\s*\d+[\.\)]\s*", "", raw_text)
+            raw_text = re.sub(r"(?m)^\s*[-•*]\s*", "", raw_text)
+            raw_text = re.sub(r"\n+", ",", raw_text)
             raw_text = raw_text.replace(";", ",")
             parsed = [k.strip() for k in raw_text.split(",") if k.strip()]
+            # Reject model-number / quantity-code patterns: terms starting with
+            # 0–3 letters then a digit (v11, xr2, 4pack) or a bare digit (12 count).
+            _brand_model_re = re.compile(r"^[a-z]{0,3}\d")
             llm_valid = [
                 k
                 for k in parsed
                 if 1 <= len(k.split()) <= 5
                 and not any(k.startswith(p) for p in _REFUSAL_PREFIXES)
                 and k in candidates  # must be from the data-grounded set
+                and not _brand_model_re.match(k)
             ]
             if len(llm_valid) >= 2:
                 core_keywords = llm_valid[:3]
@@ -424,6 +441,191 @@ async def _fetch_core_keywords(items: list[dict], ctx: Any) -> list[dict]:
     return items
 
 
+async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
+    """
+    Remove off-category products from the BSR list before any metrics are computed.
+
+    Phase 1 — keyword coherence (always-on, zero extra cost):
+      Score each title against core_keywords + top-title n-grams.  Items scoring 0
+      are outliers.  If outlier_rate ≤ adaptive threshold and the retained set is
+      large enough, they are removed silently.
+
+    Adaptive threshold — derived from the coherent-cluster median score:
+      median 3 (exact core-keyword hits)  → 35%  high confidence in the split
+      median 2 (n-gram hits)              → 20%  standard
+      median 1 (token overlap only)       → 10%  vocabulary is weak, be conservative
+    Caller may override via ctx.config["contamination_threshold"] (0.0–1.0).
+
+    Phase 2 — LLM taxonomy (only when outlier_rate exceeds adaptive threshold):
+      Ask the router to identify the dominant product type from the top-30 titles,
+      build a refined keyword set from the confirmed dominant cluster, then re-score
+      ALL items against that set.
+
+    Results are stored in ctx.cache["contamination_stats"] for report inclusion.
+    Must run AFTER fetch_core_keywords and BEFORE fetch_market_signals.
+    """
+    _MIN_RETAINED = 10  # never filter below this floor
+
+    if not items:
+        return items
+
+    core_keywords = ctx.cache.get("core_keywords", [])
+    if not core_keywords:
+        ctx.cache["contamination_stats"] = {"status": "skipped", "reason": "no_core_keywords"}
+        return items
+
+    # Build Phase 1 vocabulary: core keywords + n-grams from top-20 titles
+    top_titles = [item.get("Title", "") for item in items[:20] if item.get("Title")]
+    ngram_anchors = set(_ngram_candidates(top_titles, min_doc_freq=2, top_n=20))
+    kw_tokens = {tok for kw in core_keywords for tok in kw.lower().split() if len(tok) > 2}
+
+    def _score(title: str) -> int:
+        t = title.lower()
+        for kw in core_keywords:
+            if kw.lower() in t:
+                return 3
+        for ng in ngram_anchors:
+            if ng in t:
+                return 2
+        t_toks = set(re.findall(r"[a-z0-9]+", t))
+        return 1 if kw_tokens & t_toks else 0
+
+    scored = [(item, _score(item.get("Title", ""))) for item in items]
+    coherent = [item for item, s in scored if s > 0]
+    outliers = [item for item, s in scored if s == 0]
+    outlier_rate = len(outliers) / len(items)
+
+    if not outliers:
+        ctx.cache["contamination_stats"] = {
+            "status": "clean",
+            "n_removed": 0,
+            "n_retained": len(items),
+        }
+        return items
+
+    # Adaptive Phase 1 threshold
+    cfg_override = (
+        ctx.config.get("contamination_threshold") if hasattr(ctx, "config") and ctx.config else None
+    )
+    if cfg_override is not None:
+        _hard_thresh = float(cfg_override)
+        _thresh_source = "config"
+    elif coherent:
+        median_score = statistics.median(s for _, s in scored if s > 0)
+        if median_score >= 3:
+            _hard_thresh, _thresh_source = 0.35, "adaptive-high (median score ≥3)"
+        elif median_score >= 2:
+            _hard_thresh, _thresh_source = 0.20, "adaptive-mid (median score ≥2)"
+        else:
+            _hard_thresh, _thresh_source = 0.10, "adaptive-low (median score <2)"
+    else:
+        _hard_thresh, _thresh_source = 0.0, "adaptive-zero (no coherent items)"
+
+    # --- Phase 1: low contamination ----------------------------------------
+    if outlier_rate <= _hard_thresh and len(coherent) >= _MIN_RETAINED:
+        sample = [it.get("Title", "")[:60] for it in outliers[:5]]
+        ctx.cache["contamination_stats"] = {
+            "status": "filtered",
+            "method": "keyword_coherence",
+            "outlier_rate": round(outlier_rate, 3),
+            "threshold": round(_hard_thresh, 2),
+            "threshold_source": _thresh_source,
+            "n_removed": len(outliers),
+            "n_retained": len(coherent),
+            "sample_removed": sample,
+        }
+        logger.info(
+            f"[category_coherence] Removed {len(outliers)} outliers ({outlier_rate:.0%}) "
+            f"via keyword coherence (thresh={_hard_thresh:.0%}, {_thresh_source}); "
+            f"sample: {sample[:2]}"
+        )
+        return coherent
+
+    # --- Phase 2: high contamination → LLM taxonomy ------------------------
+    if ctx.router:
+        try:
+            classify_titles = [
+                item.get("Title", f"(no title #{i + 1})") for i, item in enumerate(items[:30])
+            ]
+            numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(classify_titles))
+            prompt = (
+                "You are a product taxonomy assistant. The list shows Amazon BSR product "
+                "titles from a category page that contains mixed product types.\n\n"
+                f"{numbered}\n\n"
+                "Identify the single DOMINANT product type (the majority group).\n"
+                "Return exactly two lines — no other text:\n"
+                "Line 1: dominant product type name (3–7 words, e.g. 'mouse snap trap')\n"
+                "Line 2: comma-separated 1-based index numbers of titles in that type"
+            )
+            res = await ctx.router.route_and_execute(prompt, category=TaskCategory.SIMPLE_CLEANING)
+            lines = [ln.strip() for ln in res.text.strip().splitlines() if ln.strip()]
+            if len(lines) >= 2:
+                dominant_type = lines[0].strip("\"'").lower()
+                keep_idx = {
+                    int(x) - 1
+                    for x in re.findall(r"\d+", lines[1])
+                    if x.isdigit() and 0 <= int(x) - 1 < len(classify_titles)
+                }
+                if len(keep_idx) >= _MIN_RETAINED:
+                    # Derive refined bigram+token vocabulary from the dominant cluster
+                    dom_titles = [items[i].get("Title", "") for i in sorted(keep_idx)]
+                    refined_ngrams = set(_ngram_candidates(dom_titles, min_doc_freq=2, top_n=15))
+                    refined_tokens = {
+                        tok for ng in refined_ngrams for tok in ng.split() if len(tok) > 2
+                    }
+                    refined_tokens |= {tok for tok in dominant_type.split() if len(tok) > 2}
+
+                    def _refined_score(title: str) -> int:
+                        t = title.lower()
+                        if dominant_type and dominant_type in t:
+                            return 3
+                        for ng in refined_ngrams:
+                            if len(ng.split()) >= 2 and ng in t:
+                                return 2
+                        t_toks = set(re.findall(r"[a-z0-9]+", t))
+                        overlap = refined_tokens & t_toks
+                        return len(overlap) if len(overlap) >= 2 else 0
+
+                    refined_scored = [(it, _refined_score(it.get("Title", ""))) for it in items]
+                    retained = [it for it, s in refined_scored if s > 0]
+                    if len(retained) < _MIN_RETAINED:
+                        retained = items  # safety floor
+                    n_removed = len(items) - len(retained)
+                    sample = [it.get("Title", "")[:60] for it, s in refined_scored if s == 0][:5]
+                    ctx.cache["contamination_stats"] = {
+                        "status": "filtered",
+                        "method": "llm_taxonomy",
+                        "dominant_type": dominant_type,
+                        "outlier_rate": round(n_removed / len(items), 3),
+                        "n_removed": n_removed,
+                        "n_retained": len(retained),
+                        "sample_removed": sample,
+                    }
+                    logger.info(
+                        f"[category_coherence] LLM taxonomy: dominant='{dominant_type}', "
+                        f"retained {len(retained)}/{len(items)}, removed {n_removed}"
+                    )
+                    return retained
+        except Exception as e:
+            logger.warning(f"[category_coherence] Phase 2 LLM failed: {e}")
+
+    # Fallback: contamination is high but filtering was unsafe → warn only
+    sample = [it.get("Title", "")[:60] for it in outliers[:5]]
+    ctx.cache["contamination_stats"] = {
+        "status": "warning",
+        "outlier_rate": round(outlier_rate, 3),
+        "n_removed": 0,
+        "n_retained": len(items),
+        "sample_outliers": sample,
+        "note": f"high contamination ({outlier_rate:.0%}) detected but filtering skipped",
+    }
+    logger.warning(
+        f"[category_coherence] High contamination ({outlier_rate:.0%}) — "
+        f"filtering skipped; sample: {sample[:2]}"
+    )
+    return items
+
+
 async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
     """
     Step 2 of 2 for market context. Depends on ctx.cache["core_keywords"].
@@ -444,8 +646,6 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
         return items
 
     async def _fetch_aba() -> None:
-        from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
-
         country = ctx.config.get("store_id", "US") if hasattr(ctx, "config") else "US"
         tenant_id = ctx.config.get("tenant_id", "default") if hasattr(ctx, "config") else "default"
         try:
@@ -460,8 +660,6 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
             ctx.cache.setdefault("keyword_data", {})
 
     async def _fetch_ad_ratio() -> None:
-        from src.mcp.servers.amazon.extractors.search import SearchExtractor
-
         try:
             search_results = await SearchExtractor().search(main_keyword, page=1)
             sponsored = sum(1 for r in search_results if getattr(r, "is_sponsored", False))
@@ -471,8 +669,6 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
             ctx.cache.setdefault("ad_ratio", 0.3)
 
     async def _fetch_cpc_bids() -> None:
-        from src.mcp.servers.amazon.ads.client import AmazonAdsClient
-
         try:
             ads_client = AmazonAdsClient(store_id=ctx.config.get("store_id"))
             kws = [
@@ -535,9 +731,6 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         logger.info(f"[cat_monopoly] External intensity L2 cache hit kw_hash={kw_hash}")
         return items
 
-    from src.intelligence.processors.social_virality import SocialViralityProcessor
-    from src.mcp.servers.social.tiktok.client import TikTokClient
-
     try:
         tag_info = await asyncio.to_thread(
             TikTokClient().get_tag_info, main_keyword.replace(" ", "")
@@ -563,8 +756,6 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     except Exception as e:
         logger.error(f"Error during social intensity analysis: {e}")
         ctx.cache.update({"category_social_psi": 0, "category_social_verdict": "Analysis Failed"})
-
-    from src.mcp.servers.market.deals.client import DealHistoryClient
 
     async def fetch_deal_count(item):
         return len(
@@ -612,11 +803,6 @@ async def _fetch_historical_trends(items: list[dict], ctx: Any) -> list[dict]:
       - _run_monopoly_analysis price-trend block           (price: first-30d vs last-30d median)
     Runs concurrently; failures are soft-skipped so the workflow is never blocked.
     """
-    from datetime import datetime, timedelta
-    from zoneinfo import ZoneInfo
-
-    from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
-
     top_asins = [
         (item.get("ASIN") or item.get("asin"))
         for item in items[:20]
@@ -734,14 +920,10 @@ async def _enrich_batch_traffic_scores(items: list[dict], ctx: Any) -> list[dict
             "xiyou_get_traffic_scores", {"asins": top_asins, "country": country}
         )
         if isinstance(resp, list) and len(resp) > 0:
-            import json
-
             data = json.loads(resp[0].get("text", "{}"))
             if data.get("success") and data.get("data"):
                 ratios = [d.get("advertisingTrafficScoreRatio", 0.0) for d in data["data"]]
                 if ratios:
-                    import statistics
-
                     avg_ratio = statistics.mean(ratios)
                     ctx.cache["actual_bsr_ad_ratio"] = avg_ratio
                     _l2_set(ctx, {"actual_bsr_ad_ratio": avg_ratio}, "traffic_scores", asins_hash)
@@ -762,8 +944,6 @@ async def _fetch_keyword_weekly_trends(items: list[dict], ctx: Any) -> list[dict
 
     Soft-fails: login errors or missing auth do not block the workflow.
     """
-    from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
-
     main_keyword = ctx.cache.get("main_keyword")
     if not main_keyword:
         logger.warning("[keyword_weekly_trends] No main_keyword in cache; skipping")
@@ -800,8 +980,6 @@ async def _fetch_time_series_data(items: list[dict], ctx: Any) -> list[dict]:
     concurrently. Both are independent XiyouZhaoci reads with no mutual dependency.
     Replaces the two sequential steps to save ~5-10s of serial wait time.
     """
-    from datetime import datetime, timedelta
-
     top_asins = sorted(
         (item.get("ASIN") or item.get("asin") or "").strip().upper()
         for item in items[:20]
@@ -849,11 +1027,6 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
     Churn rate = fraction of ASINs in T that were NOT present N months ago.
     Soft-fails: missing auth or API errors do not block the workflow.
     """
-    import re
-    from datetime import datetime
-
-    from src.mcp.servers.market.sellersprite.client import SellerspriteAPI
-
     url = ctx.config.get("url", "")
     m = re.search(r"/(?:gp/bestsellers|zgbs)/[^/]+/(\d+)", url)
     if not m:
@@ -1254,12 +1427,6 @@ def _detect_compliance_risks(scan_texts: list) -> dict:
 
 async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     """Calculates scores and generates flattened niche benchmarks."""
-    import json
-    import re as _re
-    import statistics
-
-    from src.intelligence.processors.monopoly_analyzer import CategoryMonopolyAnalyzer
-    from src.intelligence.processors.sales_estimator import SalesEstimator
 
     def _parse_float(raw, default: float = 0.0) -> float:
         """Extract the first decimal number from a US-locale price/rating string.
@@ -1270,7 +1437,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         "$1,299.99" as 1.299 when comma is naively replaced by a dot.
         """
         s = str(raw or "").replace(",", "")  # strip thousand separators
-        m = _re.search(r"\d+(?:\.\d+)?", s)
+        m = re.search(r"\d+(?:\.\d+)?", s)
         if not m:
             return default
         try:
@@ -1280,7 +1447,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
 
     def _parse_int(raw, default: int = 0) -> int:
         """Extract the first integer from a messy string (handles commas, suffixes, parens)."""
-        m = _re.search(r"\d+", str(raw or "").replace(",", ""))
+        m = re.search(r"\d+", str(raw or "").replace(",", ""))
         if not m:
             return default
         try:
@@ -1293,6 +1460,10 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         "social_psi": ctx.cache.get("category_social_psi"),
         "deal_intensity": ctx.cache.get("category_deal_intensity"),
     }
+
+    contamination_stats = ctx.cache.get("contamination_stats", {})
+    _cs_status = contamination_stats.get("status", "not_run")
+    _cs_n_removed = contamination_stats.get("n_removed", 0)
 
     # Build ASIN→brand lookup from the most recent Sellersprite snapshot.
     # Amazon's BSR card HTML carries no brand byline, so this is the authoritative source.
@@ -1519,8 +1690,6 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     # ── New entrant ratio: % of T-snapshot ASINs listed within last 12 months ─
     # availableDate from Sellersprite is ms-since-epoch (e.g. 1686873600000).
     # "new" = product went live within 12 months before the snapshot month (base_ym).
-    import time as _time
-
     base_ym = ctx.cache.get("sellersprite_base_ym", "")
     snapshots = ctx.cache.get("sellersprite_snapshots") or {}
     t_snapshot = snapshots.get(base_ym) or (snapshots.get(max(snapshots)) if snapshots else [])
@@ -1532,11 +1701,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             _by, _bm = int(base_ym[:4]), int(base_ym[4:])
             _total = _by * 12 + (_bm - 1) - 12
             _cy, _cm = _total // 12, _total % 12 + 1
-            import calendar as _cal
-
-            cutoff_ms = _cal.timegm((_cy, _cm, 1, 0, 0, 0)) * 1000
+            cutoff_ms = calendar.timegm((_cy, _cm, 1, 0, 0, 0)) * 1000
         else:
-            cutoff_ms = (_time.time() - 365 * 86400) * 1000  # fallback when base_ym missing
+            cutoff_ms = (time.time() - 365 * 86400) * 1000  # fallback when base_ym missing
         dated = [p for p in t_snapshot if p.get("available_date_ms")]
         new_entrants = [p for p in dated if p["available_date_ms"] >= cutoff_ms]
         new_entrant_ratio_val = len(new_entrants) / len(t_snapshot) if t_snapshot else 0.0
@@ -1688,43 +1855,43 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 opportunity_signals["price_gap_band"] = _gap_band
                 opportunity_signals["price_gap_count"] = _gap_cnt
 
-        # 3. Sub-niche fragmentation: classify each top-50 BSR title into a sub-niche
-        _SUB_NICHES = {
-            "insect_spray": [
-                "insect killer",
-                "bug killer",
-                "bug spray",
-                "mosquito killer",
-                "mosquito spray",
-                "ant killer",
-                "roach killer",
-                "spider killer",
-            ],
-            "flea_tick": ["flea", "tick"],
-            "weed_herbicide": ["weed killer", "herbicide", "weed control"],
-            "neem_natural": ["neem", "natural pest", "organic pest", "essential oil spray"],
-            "wasp_hornet": ["wasp", "hornet", "yellow jacket"],
-            "rodent": ["rat killer", "mouse killer", "rodent", "mice killer", "rat poison"],
-            "repellent": ["repellent", "repel", "deter", "deer repellent", "rabbit repellent"],
-            "aerosol_spray": ["spray concentrate", "spray barrier", "spray treatment"],
-        }
-        sub_counts: dict = dict.fromkeys(_SUB_NICHES, 0)
-        for raw_item in items[:50]:
-            title = (raw_item.get("Title") or "").lower()
-            for sub, triggers in _SUB_NICHES.items():
-                if any(t in title for t in triggers):
-                    sub_counts[sub] += 1
-                    break  # assign first match only
-        # Keep non-zero sub-niches; flag the smallest with ≥2 products
-        sub_counts_nz = {k: v for k, v in sub_counts.items() if v > 0}
-        if sub_counts_nz:
-            opportunity_signals["sub_niche_counts"] = sub_counts_nz
-            smallest = min(sub_counts_nz, key=sub_counts_nz.get)
-            if sub_counts_nz[smallest] >= 2:
-                opportunity_signals["least_crowded_sub_niche"] = {
-                    "name": smallest.replace("_", " "),
-                    "count": sub_counts_nz[smallest],
-                }
+        # 3. Sub-niche fragmentation: cluster top-50 BSR titles via LLM
+        if ctx.router and items[:50]:
+            try:
+                _sub_titles = [
+                    (raw_item.get("Title") or f"(no title #{i + 1})")[:80]
+                    for i, raw_item in enumerate(items[:50])
+                ]
+                _numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(_sub_titles))
+                _sub_prompt = (
+                    f"You are a product analyst for the '{ctx.cache.get('main_keyword', 'unknown')}' "
+                    f"Amazon category. Group the following {len(_sub_titles)} BSR product titles "
+                    "into 3–7 sub-niches based on distinct product type or use case.\n\n"
+                    f"{_numbered}\n\n"
+                    "Return ONLY a JSON object: keys are short snake_case sub-niche names "
+                    "(e.g. 'snap_trap', 'glue_board'), values are arrays of 1-based title indices. "
+                    "Every title must appear in exactly one sub-niche. No explanation, no markdown."
+                )
+                _sub_res = await ctx.router.route_and_execute(
+                    _sub_prompt, category=TaskCategory.SIMPLE_CLEANING
+                )
+                _raw = _sub_res.text.strip()
+                _m = re.search(r"\{[\s\S]*\}", _raw)
+                if _m:
+                    _sub_map: dict = json.loads(_m.group())
+                    sub_counts = {
+                        k: len(v) for k, v in _sub_map.items() if isinstance(v, list) and v
+                    }
+                    if sub_counts:
+                        opportunity_signals["sub_niche_counts"] = sub_counts
+                        smallest = min(sub_counts, key=sub_counts.get)
+                        if sub_counts[smallest] >= 2:
+                            opportunity_signals["least_crowded_sub_niche"] = {
+                                "name": smallest.replace("_", " "),
+                                "count": sub_counts[smallest],
+                            }
+            except Exception as _sub_err:
+                logger.warning(f"[sub_niche_fragmentation] LLM clustering failed: {_sub_err}")
 
         # 4. Rank positions with the lowest review counts (easiest to displace)
         ranked_by_reviews = sorted(
@@ -1815,8 +1982,36 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         f"Xiyouzhaoci ≥60-day history: {dq_hist}/{n_total} ({dq_hist / n_total:.0%}) | "
         f"written/global ratio data: {dq_ratio}/{n_total} ({dq_ratio / n_total:.0%}) | "
         f"Sellersprite BSR snapshots available: {dq_snapshots} months | "
-        f"CPC keyword entries: {dq_cpc}"
+        f"CPC keyword entries: {dq_cpc} | "
+        f"contamination check: {_cs_n_removed} products removed ({_cs_status})"
     )
+
+    # ── Contamination warning (full human-readable string for the report) ────
+    _cs = contamination_stats
+    if _cs_status == "clean":
+        contamination_warning = "none — all BSR products matched core category keywords"
+    elif _cs_status == "filtered":
+        _cs_dom = _cs.get("dominant_type", "")
+        _cs_dom_str = f"; dominant type: '{_cs_dom}'" if _cs_dom else ""
+        _cs_sample = _cs.get("sample_removed", [])
+        _cs_sample_str = f"; examples removed: {_cs_sample[:2]}" if _cs_sample else ""
+        contamination_warning = (
+            f"{_cs_n_removed} off-category products removed "
+            f"({_cs.get('outlier_rate', 0):.0%}) via {_cs.get('method', 'unknown')}"
+            f"{_cs_dom_str}; "
+            f"{_cs.get('n_retained', n_total)} products retained for analysis"
+            f"{_cs_sample_str}"
+        )
+    elif _cs_status == "warning":
+        contamination_warning = (
+            f"⚠️ HIGH CONTAMINATION ({_cs.get('outlier_rate', 0):.0%}) — "
+            f"filtering skipped; metrics may be skewed across mixed product types. "
+            f"Sample outliers: {_cs.get('sample_outliers', [])[:2]}"
+        )
+    elif _cs_status == "skipped":
+        contamination_warning = f"check skipped ({_cs.get('reason', 'unknown')})"
+    else:
+        contamination_warning = "not run"
 
     # ── Startup capital breakdown ─────────────────────────────────────────────
     # Conservative rule-of-thumb for a new FBA product launch.
@@ -1968,6 +2163,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "compliance_risks": json.dumps(compliance_risks, ensure_ascii=False),
             # Concrete opportunity anchors for the actionable section
             "opportunity_signals": json.dumps(opportunity_signals, ensure_ascii=False),
+            # Category contamination: off-category products detected and removed
+            "contamination_warning": contamination_warning,
+            "contamination_stats": json.dumps(contamination_stats, ensure_ascii=False),
         }
     ]
 
@@ -2030,13 +2228,8 @@ async def _prepare_report_artifact(items: list[dict], ctx: Any) -> list[dict]:
     # Strip LLM degeneration artifacts before persisting
     report_text = _trim_repetition(report_text)
 
-    import os
-    import re as _re
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
     raw_kw = str(ctx.cache.get("main_keyword", "niche"))
-    keyword = _re.sub(r"[^\w]", "_", raw_kw, flags=_re.ASCII)[:40].strip("_") or "niche"
+    keyword = re.sub(r"[^\w]", "_", raw_kw, flags=re.ASCII)[:40].strip("_") or "niche"
     _tz = ZoneInfo(ctx.config.get("timezone", "America/Los_Angeles"))
     filename = f"Monopoly_Analysis_{keyword}_{datetime.now(tz=_tz).strftime('%Y%m%d_%H%M')}.md"
     report_dir = os.path.abspath("data/reports")
@@ -2054,8 +2247,6 @@ async def _prepare_report_artifact(items: list[dict], ctx: Any) -> list[dict]:
 
 @WorkflowRegistry.register("category_monopoly_analysis")
 def build_category_monopoly_analysis(config: dict) -> Workflow:
-    from src.intelligence.prompts.manager import prompt_manager
-
     monopoly_spec = prompt_manager.get_spec("monopoly_report")
     ctx_vars = {
         name: f"{{{name}}}" for name in (monopoly_spec.required_vars if monopoly_spec else [])
@@ -2065,6 +2256,8 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
         name="category_monopoly_analysis",
         steps=[
             ProcessStep(name="fetch_bsr_top_100", fn=_fetch_bsr_list),
+            ProcessStep(name="fetch_core_keywords", fn=_fetch_core_keywords),
+            ProcessStep(name="filter_category_coherence", fn=_filter_category_coherence),
             ProcessStep(name="enrich_sales_data", fn=_enrich_sales),
             EnrichStep(
                 name="enrich_seller_background",
@@ -2072,7 +2265,6 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 parallel=True,
                 concurrency=5,
             ),
-            ProcessStep(name="fetch_core_keywords", fn=_fetch_core_keywords),
             ProcessStep(name="fetch_market_signals", fn=_fetch_market_signals),
             ProcessStep(name="enrich_external_intensity", fn=_enrich_external_intensity),
             ProcessStep(name="enrich_batch_traffic_scores", fn=_enrich_batch_traffic_scores),
