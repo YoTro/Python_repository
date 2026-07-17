@@ -163,6 +163,15 @@ class AmazonAdsClient:
                         logger.info(f"Discovered owned ASIN: {discovered_asin}")
                         self._owned_asin_cache = discovered_asin
                         return discovered_asin
+                logger.warning(
+                    f"Owned ASIN discovery: /sp/ads/list returned 200 but no ads with ASIN. "
+                    f"Response: {data}"
+                )
+            else:
+                logger.warning(
+                    f"Owned ASIN discovery: /sp/ads/list returned HTTP {resp.status_code}. "
+                    f"Body: {resp.text[:500]}"
+                )
         except Exception as e:
             logger.error(f"Owned ASIN discovery failed: {e}")
 
@@ -211,14 +220,15 @@ class AmazonAdsClient:
 
         for attempt in range(max_retries):
             try:
-                # Fallback if no ASINs
+                # Fallback if no ASINs — raise immediately; no point retrying if discovery fails
                 if not current_asins:
                     fallback = await self._get_owned_asin_fallback()
                     if fallback:
                         current_asins = [fallback]
                     else:
                         raise FatalError(
-                            "No owned ASIN available for bid recommendations.",
+                            "No owned ASIN available for bid recommendations. "
+                            "Set AMAZON_ADS_FALLBACK_ASIN env var to bypass discovery.",
                             code=ErrorCode.INVALID_PARAMS,
                         )
 
@@ -263,6 +273,8 @@ class AmazonAdsClient:
                 response.raise_for_status()
                 return response.json()
 
+            except FatalError:
+                raise
             except Exception:
                 if attempt == max_retries - 1:
                     raise

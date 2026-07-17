@@ -29,10 +29,10 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _DEFAULTS = {
-    "anthropic": "claude-haiku-4-5-20251001",
+    "anthropic": "claude-haiku-4-5",
     "openai":    "gpt-4o-mini",
-    "gemini":    "gemini-1.5-flash",
-    "deepseek":  "deepseek-chat",
+    "gemini":    "gemini-3.1-flash-lite",
+    "deepseek":  "deepseek-v4-flash",
 }
 
 

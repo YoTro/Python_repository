@@ -326,14 +326,123 @@ else
     echo "💻 No GPU detected — using CPU build"
 fi
 
+# Ubuntu 22.04 ships CUDA 11.5 via nvidia-cuda-toolkit.  CUDA < 12 cannot
+# compile llama.cpp's C++17 code with GCC 11 (std_function.h parameter-pack
+# bug).  Use g++-10 as the nvcc host compiler when that combination is
+# detected; this avoids a 4 GB CUDA 12 reinstall.
+CUDA_HOST_COMPILER_ARG=""
+if [ -n "$CUDA_VERSION" ] && [ "$CUDA_VERSION" -lt 120 ] 2>/dev/null; then
+    if ! command -v g++-10 &>/dev/null; then
+        echo "📦 Installing g++-10 (CUDA $CUDA_VERSION + GCC 11 C++17 workaround)..."
+        sudo apt install -y g++-10
+    fi
+    if command -v g++-10 &>/dev/null; then
+        CUDA_HOST_COMPILER_ARG="-DCMAKE_CUDA_HOST_COMPILER=$(which g++-10)"
+        echo "🔧 Using g++-10 as nvcc host compiler (CUDA $CUDA_VERSION < 12.0)"
+    else
+        echo "⚠️  g++-10 unavailable — source build may fail on GCC 11 + CUDA $CUDA_VERSION"
+    fi
+fi
+
 pip install --upgrade pip
+
+# ── llama-cpp-python installation helpers ────────────────────────────────────
+LLAMA_WHEEL_CACHE="$HOME/.cache/llama_cpp_wheels"
+
+# Install the minimal CUDA 12 runtime (libcudart.so.12) from NVIDIA's apt repo.
+# Does NOT install nvcc or the full toolkit — download is ~50 MB.
+# Required so pre-built cu12x wheels can dlopen libcudart at runtime.
+function _ensure_cuda12_runtime() {
+    if ldconfig -p 2>/dev/null | grep -q "libcudart.so.12"; then
+        echo "✅ libcudart.so.12 already present"
+        return 0
+    fi
+    # Detect Ubuntu release for the repo URL
+    local ubuntu_codename
+    ubuntu_codename=$(lsb_release -cs 2>/dev/null || echo "jammy")
+    local keyring_deb="/tmp/cuda-keyring.deb"
+    if ! apt-cache show cuda-cudart-12-4 &>/dev/null 2>&1; then
+        echo "📦 Adding NVIDIA CUDA 12 apt repository..."
+        wget -q -O "$keyring_deb" \
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${ubuntu_codename/./}/x86_64/cuda-keyring_1.1-1_all.deb" \
+            || wget -q -O "$keyring_deb" \
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb"
+        sudo dpkg -i "$keyring_deb"
+        sudo apt-get update -q
+    fi
+    # Try versions in descending order; install runtime only (not full toolkit)
+    for _ver in 12-6 12-4 12-2 12-1; do
+        if sudo apt-get install -y "cuda-cudart-${_ver}" 2>/dev/null; then
+            sudo ldconfig
+            echo "✅ Installed cuda-cudart-${_ver} (CUDA 12 runtime)"
+            return 0
+        fi
+    done
+    echo "⚠️  Could not install CUDA 12 runtime via apt" >&2
+    return 1
+}
+
+# Build from source using all CPU cores; cache the .whl so re-runs skip compile.
+function _install_llama_from_source() {
+    local cmake_args="$1"
+    local cpu_count
+    cpu_count=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+    mkdir -p "$LLAMA_WHEEL_CACHE"
+    local cached
+    cached=$(ls "$LLAMA_WHEEL_CACHE"/llama_cpp_python-*.whl 2>/dev/null | head -1)
+    if [ -n "$cached" ]; then
+        echo "⚡ Re-using cached wheel (skipping compile): $(basename "$cached")"
+        pip install "$cached"
+        return
+    fi
+    pip install cmake ninja
+    echo "⏱  Compiling with $cpu_count parallel jobs — wheel cached for future re-runs..."
+    CMAKE_ARGS="$cmake_args" CMAKE_BUILD_PARALLEL_LEVEL="$cpu_count" FORCE_CMAKE=1 \
+        pip wheel llama-cpp-python --no-binary llama-cpp-python \
+        --no-deps -w "$LLAMA_WHEEL_CACHE"
+    cached=$(ls "$LLAMA_WHEEL_CACHE"/llama_cpp_python-*.whl 2>/dev/null | head -1)
+    if [ -z "$cached" ]; then
+        echo "❌ Wheel build produced no output file." >&2; exit 1
+    fi
+    pip install "$cached"
+}
+
+# Try pre-built cu12x wheels when the installed CUDA is too old for abetlen's index.
+# Queries the driver's max CUDA capability from nvidia-smi (forward-compatible),
+# installs libcudart.so.12, then downloads the highest available cu12x wheel.
+# Returns 0 on success, 1 if upgrade is not possible.
+function _try_cuda12_prebuilt_wheel() {
+    local driver_cuda_major
+    driver_cuda_major=$(nvidia-smi 2>/dev/null \
+        | grep -oP "CUDA Version: \K[0-9]+" | head -1 || echo "0")
+    if [ "$driver_cuda_major" -lt 12 ] 2>/dev/null; then
+        echo "⚠️  Driver max CUDA is $driver_cuda_major — cannot use cu12x pre-built wheels"
+        return 1
+    fi
+    echo "ℹ️  Driver supports up to CUDA $driver_cuda_major — trying CUDA 12 pre-built wheel..."
+    _ensure_cuda12_runtime || return 1
+    for _cu in cu126 cu125 cu124 cu122 cu121; do
+        local _url="https://abetlen.github.io/llama-cpp-python/whl/$_cu"
+        local _status
+        _status=$(curl -sf -o /dev/null -w "%{http_code}" "$_url/" 2>/dev/null || echo "000")
+        if [ "$_status" = "200" ]; then
+            echo "⚙️  Installing llama-cpp-python pre-built wheel ($_cu)..."
+            pip install llama-cpp-python --extra-index-url "$_url" && return 0
+        fi
+    done
+    echo "⚠️  No cu12x wheel found on abetlen index"
+    return 1
+}
+# ─────────────────────────────────────────────────────────────────────────────
 
 if [ "$CUDA_RUNTIME_OK" = true ]; then
     if [ "$FORCE_SOURCE_BUILD" = true ]; then
-        # nvcc absent: version unknown, compile against the libcudart.so that is present
-        echo "⚙️ Compiling llama-cpp-python from source (nvcc unavailable, version unknown)..."
-        pip install cmake ninja
-        CMAKE_ARGS="-DGGML_CUDA=ON" FORCE_CMAKE=1 pip install llama-cpp-python --no-binary llama-cpp-python
+        # nvcc absent — driver CUDA version unknown; try cu12x pre-built first
+        echo "⚙️  nvcc unavailable — trying CUDA 12 pre-built wheel before source build..."
+        if ! _try_cuda12_prebuilt_wheel; then
+            echo "⚙️  Falling back to source compilation..."
+            _install_llama_from_source "-DGGML_CUDA=ON $CUDA_HOST_COMPILER_ARG"
+        fi
     else
         WHL_INDEX="cu${CUDA_VERSION}"
         WHL_URL="https://abetlen.github.io/llama-cpp-python/whl/$WHL_INDEX"
@@ -342,10 +451,13 @@ if [ "$CUDA_RUNTIME_OK" = true ]; then
             echo "⚙️ Installing llama-cpp-python from pre-built wheel (CUDA $CUDA_VERSION)..."
             pip install llama-cpp-python --extra-index-url "$WHL_URL"
         else
-            # No pre-built wheel for this CUDA version (e.g. cu115, cu118)
-            echo "⚙️ No pre-built wheel for cu$CUDA_VERSION — compiling from source..."
-            pip install cmake ninja
-            CMAKE_ARGS="-DGGML_CUDA=ON" FORCE_CMAKE=1 pip install llama-cpp-python --no-binary llama-cpp-python
+            # No pre-built wheel for this CUDA version (e.g. cu115, cu118) —
+            # try CUDA 12 upgrade path before falling back to source compilation.
+            echo "⚠️  No pre-built wheel for cu$CUDA_VERSION — trying CUDA 12 upgrade..."
+            if ! _try_cuda12_prebuilt_wheel; then
+                echo "⚙️  Falling back to source compilation..."
+                _install_llama_from_source "-DGGML_CUDA=ON $CUDA_HOST_COMPILER_ARG"
+            fi
         fi
     fi
 else
