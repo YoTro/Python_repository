@@ -5,6 +5,7 @@ token_budget: 32000
 role_id: senior_strategist
 framework_ids:
   - psi_benchmarking
+  - monopoly_thresholds
   - strategic_analysis
 include_system_in_prompt: true
 
@@ -58,9 +59,21 @@ required_vars:
   - compliance_risks
   - analysis_result
   - opportunity_signals
+  - monopoly_score
+  - monopoly_status
+  - category_cvr
+  - category_cvr_source
+  - median_cpc
+  - estimated_steady_state_acos
+  - ad_profit_drag
+  - fba_fee_pct
+  - breakeven_acos
+  - ad_burden_verdict
 
 optional_vars:
   core_keywords: "(none)"
+  brand_social_data: "[]"
+  concentration_data: "{}"
 
 output_schema: null
 
@@ -79,11 +92,19 @@ template: |
 
   ### TASK-SPECIFIC CONTEXT
   Advising on a **{recommended_capital}** minimum launch budget ({capital_units} units × {niche_median_price} median price).
+  DATA BREAKDOWN TABLE FORMAT (applies to every row in the table, no exceptions):
+  - Header row MUST be exactly: `| Metric | Value | Definition |`
+  - Separator row MUST be exactly: `| :--- | :--- | :--- |` — NEVER vary the dash count; never match it to cell width.
+  - Definition cells: plain English, ≤ 100 characters. NO JSON, NO raw API payloads, NO multi-line text, NO formulas inside a cell.
+  - If a Definition would exceed 100 chars, summarise it: keep the key number or label, cut the rest.
+  - Escape any literal pipe character inside a cell as `\|` so the table does not break.
+  - NEVER place the analysis_result, bid_insight JSON, or any other raw data block inside a table cell — those are rendered in their own dedicated sections.
+
   CAPITAL TABLE RULE: In the Data Breakdown table, Investment Capital MUST appear as FIVE consecutive rows — never collapsed into one:
     Row 1: Metric='Investment Capital (Total)' | Value='{recommended_capital}' | Definition='Subtotal × 1.20 working-capital buffer'
     Row 2: Metric='  └ Inventory ({capital_units} units, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_units} units × {niche_median_price} × {capital_cogs_pct} COGS'
     Row 3: Metric='  └ PPC Seed ({capital_acos_pct} ACOS on {capital_units} units, ~{capital_sell_months}mo sell-through)' | Value='{capital_ppc}' | Definition='{capital_units} units × {niche_median_price} × {capital_acos_pct} ACOS'
-    Row 4: Metric='  └ Platform Fees ({capital_fees_pct} on {capital_units} units)' | Value='{capital_fees}' | Definition='{capital_units} units × {niche_median_price} × {capital_fees_pct} platform fees'
+    Row 4: Metric='  └ Platform Fees ({capital_fees_pct} on {capital_units} units)' | Value='{capital_fees}' | Definition='{capital_units} units × {niche_median_price} × {capital_fees_pct} (referral 15% + FBA from 2026 fee schedule, Large Standard 12-16 oz at median price)'
     Row 5: Metric='  └ Fixed Overhead' | Value='{capital_overhead}' | Definition='Photography, A+ content, listing, inbound freight'
   NEVER show a single Investment Capital row without these four sub-rows.
   BIMODAL CAPITAL RULE: tier_capitals={tier_capitals}. If tier_capitals is non-empty (bimodal market detected), append a second capital table immediately after the breakdown rows under the sub-heading '### Capital by Price Tier' with columns: Tier | Tier Median | Inventory | PPC | Fees | Overhead | Total. Warn the operator: 'The base Investment Capital above uses the overall median price which falls in the gap between tiers — choose the tier you plan to enter and use the corresponding Total as your actual budget.'
@@ -95,17 +116,39 @@ template: |
   - Est. Niche Monthly Unit Sales: {niche_monthly_units} (scraped from Amazon 'X+ bought in past month' badge — unit count, NOT revenue)
   - Est. Niche Monthly GMV: {niche_monthly_gmv} (= unit_sales × median_price; use as market-size proxy)
   UNIT/REVENUE RULE: '{niche_monthly_units}' is a unit COUNT — NEVER prefix it with $. '{niche_monthly_gmv}' is revenue — always use the $ prefix. In the Data Breakdown table, report BOTH as separate rows: 'Total Est. Monthly Unit Sales' (integer, e.g. 40,694 units) and 'Est. Niche Monthly GMV' (dollar figure, e.g. $702,400). NEVER merge them into a single 'Total Est. Monthly Sales $...' row.
-  - Keyword Bid Recommendations (raw Amazon Ads API response): {bid_insight}
-    Structure: {{LEGACY_FOR_SALES: [...], AUTO_FOR_SALES: [...]}}. Each entry contains targetingExpression (keyword + matchType) and suggestedBid (amount, and possibly rangeStart/rangeEnd). Render this verbatim as a markdown table in the report with columns: Keyword | Match Type | Manual Bid (LEGACY) | Auto Bid (AUTO). LEGACY_FOR_SALES = flat manual bid cost per click. AUTO_FOR_SALES = Amazon's dynamic strategy estimate (usually higher — reflects platform-assessed competition). A large LEGACY→AUTO gap means the platform thinks this keyword is highly contested and automated bidding will aggressively overpay.
+  - Keyword Bid Recommendations: {bid_insight}
+    Structure: {{LEGACY_FOR_SALES: [...], AUTO_FOR_SALES: [...]}}. Each entry has targetingExpression (keyword + matchType) and suggestedBid (startBid / endBid). Render as a separate markdown table (NOT inside the Data Breakdown table) with header `| Keyword | Match Type | Manual CPC (LEGACY) | Auto CPC (AUTO) |` and separator `| :--- | :--- | :--- | :--- |`. One row per keyword; merge LEGACY and AUTO bids for the same keyword onto one row. LEGACY = flat manual bid. AUTO = Amazon dynamic estimate (usually higher). A large LEGACY→AUTO gap signals the platform rates this keyword as highly contested.
   - Review Disparity: {review_disparity}
-  - Typical Industry CR3: {industry_typical_cr3}
-  - Social PSI: {social_psi} ({social_verdict})
+  - Market Concentration: from concentration_data. Render as SEVEN consecutive rows in the Data Breakdown table (in this order):
+    Row 1: 'Brand CR3 (Position)' | brand.cr3_position as % | 'Top-3 brands' share of BSR rank slots'
+    Row 2: 'Brand CR5 (Position)' | brand.cr5_position as % | 'Top-5 brands' share of BSR rank slots'
+    Row 3: 'Brand CR3 (Sales)' | brand.cr3_sales as % or '—' if null | 'Top-3 brands' share of monthly units'
+    Row 4: 'Typical Industry CR3 (Benchmark)' | {industry_typical_cr3} | 'Category norm; DOJ: >40% = moderate concentration'
+    Row 5: 'HHI (Brand, Position)' | brand.hhi_position to 4 dp | 'Herfindahl index: <0.10 fragmented · 0.10–0.18 moderate · >0.18 concentrated'
+    Row 6: 'Seller CR3 (Position)' | seller.cr3_position as % or 'N/A — seller IDs unavailable' | 'Top-3 sellers' share of BSR slots (one seller may own multiple brands)'
+    Row 7: 'HHI (Seller, Position)' | seller.hhi_position to 4 dp or 'N/A' | 'Seller-level Herfindahl index'
+  - Monopoly Score: {monopoly_score}/100 — {monopoly_status}
+  - Social PSI: {social_psi} ({social_verdict}) [Category keyword, best signal across platforms — see Brand Social Signals below for brand-level breakdown]
+  - Brand Social Signals: {brand_social_data}
+    JSON array of multi-platform social results for top BSR brands and new-entrant brands (listed within past 12 months). Each entry: {{brand, is_top_brand, is_new_entrant, psi (max across platforms), verdict (from best platform), video_count (total), n_kol (KOL count — macro/mega tier creators, ≥500K followers, summed across platforms), n_koc (KOC/micro-influencer count — nano/micro tier, <100K followers, summed across platforms), unique_creators (all unique creator accounts across platforms; YouTube creators counted but not tiered — follower data unavailable on hashtag pages), platforms: [{{name, hashtag, psi, verdict, video_count, n_kol, n_koc, unique_creators}}, ...]}}. Render as a compact markdown table under the heading '## Brand Social Signals' (immediately after the Data Breakdown table, before Strategic Insights) with columns: Brand | Best PSI | Verdict | TikTok PSI | YouTube PSI | Total Videos | KOLs | KOCs | Category. In the 'Category' column write: 'Top Brand' if is_top_brand only, 'New Entrant' if is_new_entrant only, 'Top + New' if both, or '—' if neither. For TikTok PSI and YouTube PSI, look up psi from the platforms array by name; write '—' if the platform has psi=0 or verdict='No Tag Found'. KOLs = n_kol (macro+mega influencers, typically paid engagements); KOCs = n_koc (nano+micro creators, typically organic or lower-cost seeding). Sort by Best PSI descending. If brand_social_data is '[]' or empty, write one line: 'No brand social data available.'
+    KOL/KOC INVESTMENT ALERT rule (apply in Strategic Insights): A brand with n_kol ≥ 3 (across platforms) is running a structured paid influencer campaign — this requires substantial capital (macro/mega fees range from $500–$50,000+ per post) and represents a meaningful off-platform moat. A brand with n_kol=0 but n_koc ≥ 5 is doing lower-cost seeding (nano/micro creators). If the category leader has n_kol ≥ 3 but new entrants have n_kol=0, flag the asymmetry: 'Incumbent brands are investing in paid KOL campaigns; new entrants without equivalent budget face an off-platform spend gap in addition to PPC costs.'
   - Deal Intensity: {deal_intensity}/10
+
+  ### STEADY-STATE AD BURDEN
+  Derived from market-level data only — no owned product required.
+  Formula: Estimated ACOS = median_cpc ÷ (median_price × category_cvr). Both CPC and CVR sourced from the Amazon Ads ecosystem for internal consistency.
+  - Category CVR: {category_cvr} (source: {category_cvr_source})
+  - Median CPC: {median_cpc}
+  - Estimated Steady-State ACOS: {estimated_steady_state_acos}
+  - Breakeven ACOS: {breakeven_acos} (= 1 − 30% COGS − 15% referral − {fba_fee_pct} FBA [Large Standard 12-16 oz at median price, 2026 schedule])
+  - Ad Profit Drag: {ad_profit_drag} (= BSR ad traffic ratio × estimated ACOS; fraction of revenue consumed by ads at steady state)
+  - Ad Burden Verdict: **{ad_burden_verdict}**
+  In the Data Breakdown table, render these as six consecutive rows under the group heading 'Steady-State Ad Burden'. NEVER omit category_cvr or the breakeven ACOS formula components — they are the basis for the verdict.
 
   ### MARKET HEALTH SIGNALS
   - Price Trend: {price_trend}
   - Rating Churn Pattern: {churn_pattern} (score: {churn_score})
-  - New Product Flood Ratio: {new_product_ratio} | Rating Collapse Rate: {collapse_rate}
+  - Low-Review BSR Share: {new_product_ratio} (snapshot — % of current BSR products with < 50 reviews; high value = BSR positions not yet defended by social proof, low entry stickiness) | Rating Collapse Rate: {collapse_rate} (% of Xiyouzhaoci-tracked products where first-half peak rating dropped > 0.3★ vs second-half average)
   - BSR Listing Metabolism: **{bsr_churn_label}** | Snapshots: {bsr_snapshots}
     - 3-Month Churn: {bsr_churn_3m} | 6-Month Churn: {bsr_churn_6m} | 12-Month Churn: {bsr_churn_12m}
   - New Entrant Ratio (Sellersprite T-snapshot): {new_entrant_ratio}
@@ -123,6 +166,20 @@ template: |
   ### TOP ASIN EVIDENCE TABLE
   {top_asin_table}
   Render the above JSON as a markdown table with these exact columns (in this order): Rank | ASIN | Brand | Title | Price | Rating | Reviews | Units/Mo | Seller Type. Title: truncate at 40 chars with '…'. Place this table immediately after the Data Breakdown section under the heading '## Top 10 BSR Products (Evidence)'. Below the table add one line: '*Source: Amazon BSR page scrape + PastMonthSales badge. Units/Mo = Amazon-displayed past-month purchase count.*'
+
+  ### BRAND & SELLER CONCENTRATION
+  {concentration_data}
+  Render under the heading '## Brand & Seller Concentration' immediately after the Top 10 BSR Products section.
+  The scalar CR3/CR5/HHI metrics are already in the Data Breakdown table — do NOT repeat them here.
+  STRUCTURE (render ALL of the following sub-sections):
+  1. **Top Brands by Position** — inline sentence: 'Top N brands by BSR slots: Brand A (X slots, Y%), Brand B …' (list top-5 from brand.top_brands_by_position)
+  2. **Top Brands by Sales** — inline sentence listing top-5 from brand.top_brands_by_sales with monthly_units and sales_share%. Omit if brand.top_brands_by_sales is empty.
+  3. **Multi-Brand Sellers** — if seller.n_multi_brand_sellers > 0: render as a small table with columns: Seller ID (last 6 chars) | Brands Owned | Positions | Monthly Units | Position Share. Each row is one entry from seller.multi_brand_sellers. Add note: 'A single seller controlling multiple brands indicates seller-level monopoly stronger than brand-level metrics suggest.' If n_multi_brand_sellers == 0 and n_sellers_identified > 0: write 'No seller owns more than one brand in this BSR sample.' If n_sellers_identified == 0: write 'Seller IDs unavailable — seller-level analysis skipped.'
+  CONCENTRATION ALERT rule (apply in Strategic Insights section):
+  - If brand.cr3_sales > 0.60 OR brand.cr3_position > 0.45: flag 'Brand Duopoly Risk — top 3 brands control >X% of [positions/sales]; new entrants face a lock-in market.' Cite CR3 and HHI.
+  - If seller.n_multi_brand_sellers > 0 AND their combined position_share > 0.30: flag 'Hidden Seller Concentration — N sellers each own multiple brands, together holding X% of BSR positions. The true competitive power is more concentrated than brand-level CR3 indicates.'
+  - HHI interpretation: < 0.10 = fragmented, 0.10–0.18 = moderate, > 0.18 = concentrated (DOJ threshold).
+  DATA QUALITY CAVEAT: if n_brands contains 'Unknown' as a significant brand, note '(brand coverage may be incomplete — Unknown entries are products whose brand could not be resolved)'. Apply the mandatory caveat rule from DATA QUALITY if brand coverage < 50%.
 
   ### PRICE DISTRIBUTION
   {price_distribution}
@@ -172,6 +229,12 @@ template: |
   - PRICE TREND ALERT: If price_trend is 'deflating', warn that this category is in a price war — margin compression is accelerating and late entrants face structural disadvantage. If 'inflating', note that premium positioning may be viable.
   - NEW ENTRANT ALERT: If new_entrant_ratio > 40%, the category has low moat — many new products are breaking into the top-100, which means low ranking stickiness but also means a new entrant has a realistic shot. If < 15%, incumbents dominate and new entries rarely survive in the ranking.
   - INTEGRITY ALERT: If integrity_alert is 'HIGH', explicitly warn that this category has a severely compromised compliance environment — widespread fake review injection or coordinated negative review attacks are likely. New entrants should budget for additional compliance overhead, and the true review barrier is likely higher than the raw data suggests. Combine with review_disparity to assess whether high-review incumbents are defensible or artificially inflated.
+  - NEW ENTRANT SOCIAL ALERT: Examine brand_social_data for entries where is_new_entrant is true. The 'psi' field is the maximum across all platforms; check 'platforms' for per-platform detail.
+    • If any new-entrant brand has psi > 30: flag that recently-listed brands are already running active social campaigns (cite which platform(s) dominate) — external video promotion is likely a prerequisite for traction in this category, not an optional growth lever. Name each such brand and their PSI explicitly.
+    • If a brand has BOTH is_top_brand AND is_new_entrant true: call this a 'breakout pattern' — a brand that entered within the last 12 months and is simultaneously dominant in BSR rank AND social. This is the highest-conviction signal that a video-first launch strategy works here; cite the brand name, PSI, and which platform(s) are strongest.
+    • If all new-entrant brands have psi ≤ 30 (or brand_social_data has no new-entrant entries): note that new entrants are not yet promoting on social at scale — the category still relies primarily on internal PPC. An external-promotion-first entrant may have a first-mover advantage.
+    • If top brands score high on one platform but new entrants are active on a different platform: flag the platform split — incumbents and challengers may be competing on different channels simultaneously.
+    NEVER skip this alert if brand_social_data is non-empty. Combine with social_psi (category keyword signal) to distinguish between category-level buzz and brand-specific campaigns.
   - PORTER'S FIVE FORCES — DIRECTION RULE (CRITICAL): In Porter's Five Forces, the 'Threat' rating refers to how easy it is for a new player or substitute to enter and succeed — NOT how hard the barriers are. The direction is always the INVERSE of barrier height. MANDATORY mappings from this report's data:
     • Threat of New Entrants: LOW when new_entrant_ratio < 15% OR avg_reviews_top10 > 5,000 OR review_disparity > 5x — high barriers mean low threat. HIGH only when new_entrant_ratio > 40% AND review barrier is low.
     • Bargaining Power of Buyers: HIGH when deal_intensity > 7 OR price compression is severe (many sellers forced to discount). LOW when buyers have few alternatives.
@@ -179,3 +242,4 @@ template: |
     • Rivalry: HIGH when CR3 < 30% (fragmented competition, many rivals) OR churn is high. LOW when a few brands dominate and competition is stable.
     • Supplier Power: LOW for commodity inputs (most physical goods); HIGH only when key raw materials are scarce or proprietary.
   FORBIDDEN: do NOT write 'Threat of New Entrants: High' and then explain high review barriers or low new_entrant_ratio — those data points map to LOW threat. If you catch yourself writing this, flip the label to match the evidence.
+  - AD BURDEN ALERT: If ad_burden_verdict is 'Critical', ACOS exceeds 1.5× breakeven — ad-driven entry is structurally loss-making at scale; flag as P0 risk and require a COGS advantage or price premium before entry. If 'High', ACOS meets or exceeds breakeven — organic profit cannot cover ad losses; flag as a major risk. If 'Moderate', ACOS is within 70-100% of breakeven — marginal; advise careful bid management. If 'Low', ads are profitable at this price point — use as a positive entry signal. ALWAYS cite {estimated_steady_state_acos} vs {breakeven_acos} side-by-side when discussing ad burden.

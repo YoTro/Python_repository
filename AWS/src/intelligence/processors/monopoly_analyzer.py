@@ -6,8 +6,6 @@ import math
 import statistics
 from typing import Any
 
-from src.workflows.config import merge_config
-
 logger = logging.getLogger(__name__)
 
 
@@ -18,6 +16,8 @@ class CategoryMonopolyAnalyzer:
     """
 
     def __init__(self, custom_weights: dict[str, float] | None = None):
+        from src.workflows.config import merge_config  # deferred — avoids circular import
+
         config = merge_config("category_monopoly_analysis")
         self.weights = custom_weights or config.get("weights", {})
         self.thresholds = config.get("thresholds", {})
@@ -487,7 +487,7 @@ class CategoryMonopolyAnalyzer:
                 if len(ratings) >= 14:
                     mid = len(ratings) // 2
                     peak = max(ratings[:mid])
-                    recent_avg = statistics.mean(ratings[-14:])
+                    recent_avg = statistics.mean(ratings[mid:])
                     if peak - recent_avg > self.thresholds.get("rating_collapse_threshold", 0.3):
                         collapse_count += 1
 

@@ -22,6 +22,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.core.data_cache import data_cache as _data_cache
+from src.core.utils.decorators import exponential_backoff
 from src.intelligence.processors.monopoly_analyzer import CategoryMonopolyAnalyzer
 from src.intelligence.processors.sales_estimator import SalesEstimator
 from src.intelligence.processors.social_virality import SocialViralityProcessor
@@ -38,6 +39,7 @@ from src.mcp.servers.market.deals.client import DealHistoryClient
 from src.mcp.servers.market.sellersprite.client import SellerspriteAPI
 from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
 from src.mcp.servers.social.tiktok.client import TikTokClient
+from src.mcp.servers.social.youtube.client import YouTubeClient
 from src.workflows.engine import Workflow
 from src.workflows.registry import WorkflowRegistry
 from src.workflows.steps.base import ComputeTarget
@@ -58,6 +60,7 @@ _TTL_SS_BSR = 86_400  # 24 h — Sellersprite monthly snapshots
 _TTL_KEYWORDS = 21_600  # 6  h — LLM keyword extraction from BSR titles
 _TTL_EXTERNAL = 43_200  # 12 h — TikTok PSI + deal intensity
 _TTL_TRAFFIC = 21_600  # 6  h — Xiyouzhaoci batch ad-traffic ratios
+_TTL_CVR = 7 * 86_400  # 7 d  — Amazon Ads category CVR benchmark
 
 
 def _l2_key(ctx, *parts) -> str:
@@ -445,103 +448,284 @@ async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
     """
     Remove off-category products from the BSR list before any metrics are computed.
 
-    Phase 1 — keyword coherence (always-on, zero extra cost):
-      Score each title against core_keywords + top-title n-grams.  Items scoring 0
-      are outliers.  If outlier_rate ≤ adaptive threshold and the retained set is
-      large enough, they are removed silently.
+    Phase 1 — Jaccard + DBSCAN (reference-free, no core_keywords needed):
+      Tokenize each title, build a pairwise Jaccard distance matrix, run DBSCAN to
+      identify the dominant product cluster.  Items outside that cluster (noise points
+      and minority clusters) are removed.
 
-    Adaptive threshold — derived from the coherent-cluster median score:
-      median 3 (exact core-keyword hits)  → 35%  high confidence in the split
-      median 2 (n-gram hits)              → 20%  standard
-      median 1 (token overlap only)       → 10%  vocabulary is weak, be conservative
-    Caller may override via ctx.config["contamination_threshold"] (0.0–1.0).
+      Escalates to Phase 2 when:
+        - No cluster is found (all items are DBSCAN noise)
+        - A second cluster reaches ≥ 40% of the dominant cluster's size
+          (ambiguous category mix that lexical distance cannot resolve)
 
-    Phase 2 — LLM taxonomy (only when outlier_rate exceeds adaptive threshold):
+    Phase 2 — LLM taxonomy (escalation only):
       Ask the router to identify the dominant product type from the top-30 titles,
-      build a refined keyword set from the confirmed dominant cluster, then re-score
-      ALL items against that set.
+      build a refined keyword set from that cluster, then re-score all items.
 
-    Results are stored in ctx.cache["contamination_stats"] for report inclusion.
-    Must run AFTER fetch_core_keywords and BEFORE fetch_market_signals.
+    Results stored in ctx.cache["contamination_stats"] for report inclusion.
+    Must run BEFORE fetch_market_signals.
     """
-    _MIN_RETAINED = 10  # never filter below this floor
+    _MIN_RETAINED = 10
+    _DBSCAN_EPS = 0.75  # Jaccard distance ceiling for two titles to be neighbours
+    _DBSCAN_MIN_SAMPLES = 3  # minimum neighbourhood density to form a cluster core
+    _AMBIGUOUS_RATIO = 0.40  # second cluster ≥ 40% of dominant → ambiguous, escalate
+    # Stop-word list aligned with _ngram_candidates — prevents generic tokens
+    # (set, pack, kit, oz…) from creating false cross-category similarity
+    _STOP = {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "for",
+        "of",
+        "in",
+        "with",
+        "to",
+        "from",
+        "by",
+        "is",
+        "are",
+        "was",
+        "be",
+        "as",
+        "on",
+        "at",
+        "up",
+        "it",
+        "its",
+        "this",
+        "that",
+        "all",
+        "new",
+        "set",
+        "pack",
+        "pcs",
+        "piece",
+        "pieces",
+        "count",
+        "ct",
+        "oz",
+        "lb",
+        "ft",
+        "inch",
+    }
 
     if not items:
         return items
 
-    core_keywords = ctx.cache.get("core_keywords", [])
-    if not core_keywords:
-        ctx.cache["contamination_stats"] = {"status": "skipped", "reason": "no_core_keywords"}
-        return items
+    def _stem(t: str) -> str:
+        # Naive plural normalisation: "traps"→"trap", "gnats"→"gnat".
+        # Only strip trailing-s when len > 4 to avoid mangling short words.
+        return t[:-1] if t.endswith("s") and len(t) > 4 else t
 
-    # Build Phase 1 vocabulary: core keywords + n-grams from top-20 titles
-    top_titles = [item.get("Title", "") for item in items[:20] if item.get("Title")]
-    ngram_anchors = set(_ngram_candidates(top_titles, min_doc_freq=2, top_n=20))
-    kw_tokens = {tok for kw in core_keywords for tok in kw.lower().split() if len(tok) > 2}
+    def _tokenize(title: str) -> frozenset:
+        return frozenset(
+            _stem(t)
+            for t in re.findall(r"[a-z0-9]+", title.lower())
+            if t not in _STOP and len(t) > 1 and not t.isdigit()
+        )
 
-    def _score(title: str) -> int:
-        t = title.lower()
-        for kw in core_keywords:
-            if kw.lower() in t:
-                return 3
-        for ng in ngram_anchors:
-            if ng in t:
-                return 2
-        t_toks = set(re.findall(r"[a-z0-9]+", t))
-        return 1 if kw_tokens & t_toks else 0
+    def _jaccard_dist(a: frozenset, b: frozenset) -> float:
+        union = len(a | b)
+        return 1.0 - len(a & b) / union if union else 0.0
 
-    scored = [(item, _score(item.get("Title", ""))) for item in items]
-    coherent = [item for item, s in scored if s > 0]
-    outliers = [item for item, s in scored if s == 0]
-    outlier_rate = len(outliers) / len(items)
+    token_sets = [_tokenize(item.get("Title", "")) for item in items]
+    n = len(token_sets)
+    _phase2_reason = ""
 
-    if not outliers:
-        ctx.cache["contamination_stats"] = {
-            "status": "clean",
-            "n_removed": 0,
-            "n_retained": len(items),
-        }
-        return items
+    # ── Phase 1: Jaccard distance matrix + DBSCAN ────────────────────────────
+    try:
+        import numpy as np
+        from sklearn.cluster import DBSCAN as _DBSCAN
 
-    # Adaptive Phase 1 threshold
-    cfg_override = (
-        ctx.config.get("contamination_threshold") if hasattr(ctx, "config") and ctx.config else None
-    )
-    if cfg_override is not None:
-        _hard_thresh = float(cfg_override)
-        _thresh_source = "config"
-    elif coherent:
-        median_score = statistics.median(s for _, s in scored if s > 0)
-        if median_score >= 3:
-            _hard_thresh, _thresh_source = 0.35, "adaptive-high (median score ≥3)"
-        elif median_score >= 2:
-            _hard_thresh, _thresh_source = 0.20, "adaptive-mid (median score ≥2)"
-        else:
-            _hard_thresh, _thresh_source = 0.10, "adaptive-low (median score <2)"
-    else:
-        _hard_thresh, _thresh_source = 0.0, "adaptive-zero (no coherent items)"
+        dist = np.zeros((n, n), dtype=np.float32)
+        for i in range(n):
+            for j in range(i + 1, n):
+                d = _jaccard_dist(token_sets[i], token_sets[j])
+                dist[i, j] = dist[j, i] = d
 
-    # --- Phase 1: low contamination ----------------------------------------
-    if outlier_rate <= _hard_thresh and len(coherent) >= _MIN_RETAINED:
-        sample = [it.get("Title", "")[:60] for it in outliers[:5]]
+        labels = _DBSCAN(
+            eps=_DBSCAN_EPS, min_samples=_DBSCAN_MIN_SAMPLES, metric="precomputed"
+        ).fit_predict(dist)
+
+        cluster_sizes = Counter(lbl for lbl in labels if lbl >= 0)
+        noise_count = int(np.sum(labels < 0))
+
+        if not cluster_sizes:
+            _phase2_reason = "no_clusters (all DBSCAN noise)"
+            raise ValueError(_phase2_reason)
+
+        sorted_clusters = cluster_sizes.most_common()
+        dominant_label, dominant_size = sorted_clusters[0]
+        second_size = sorted_clusters[1][1] if len(sorted_clusters) > 1 else 0
+
+        if second_size >= _AMBIGUOUS_RATIO * dominant_size:
+            _phase2_reason = f"ambiguous (dominant={dominant_size}, second={second_size})"
+            raise ValueError(_phase2_reason)
+
+        # Partition into dominant-cluster indices vs the rest
+        dom_idx = [i for i, lbl in enumerate(labels) if lbl == dominant_label]
+        non_idx = [i for i, lbl in enumerate(labels) if lbl != dominant_label]
+
+        # ── Phase 1b: exclusion-token sweep ──────────────────────────────────
+        # Tokens that are ≥20% more frequent in the non-dominant set than in
+        # the dominant cluster are "off-category signals".  Expel any dominant-
+        # cluster item whose token set contains one — this catches products that
+        # leaked in through brand-name or generic-word transitive bridges
+        # (e.g. "mouse" appears in 0% of gnat traps but 30% of noise items).
+        _EXCL_CONTRAST = 0.20  # token must be ≥20% more frequent in non-dominant than dominant
+        _EXCL_MIN_COUNT = (
+            2  # token must appear in ≥2 non-dominant items (blocks 1-item brand noise)
+        )
+        n_non = len(non_idx)
+        if n_non >= 3:
+            dom_freq: Counter = Counter(tok for i in dom_idx for tok in token_sets[i])
+            non_freq: Counter = Counter(tok for i in non_idx for tok in token_sets[i])
+            excl_toks = frozenset(
+                tok
+                for tok, cnt in non_freq.items()
+                if cnt >= _EXCL_MIN_COUNT
+                and cnt / n_non - dom_freq.get(tok, 0) / dominant_size >= _EXCL_CONTRAST
+            )
+            if excl_toks:
+                dom_clean = [i for i in dom_idx if not (token_sets[i] & excl_toks)]
+                expelled = [i for i in dom_idx if token_sets[i] & excl_toks]
+                if len(dom_clean) >= _MIN_RETAINED:
+                    logger.info(
+                        f"[category_coherence] Phase 1b: expelled {len(expelled)} items "
+                        f"via exclusion tokens {sorted(excl_toks)[:6]}"
+                    )
+                    dom_idx = dom_clean
+                    dominant_size = len(dom_idx)
+                    non_idx = non_idx + expelled
+
+        # ── Phase 1c: configurable + data-driven off-category token filter ──────
+        # Two signal sources are unioned to form `active_contra`:
+        #
+        #  (A) Domain hints — injectable via ctx.cache["contra_token_hints"].
+        #      Defaults to a pest-control set; callers in other verticals can
+        #      supply their own (e.g. {"drill", "saw"} for a "screwdriver" BSR).
+        #
+        #  (B) Data-driven derivation from the non-dominant cluster: tokens
+        #      that appear more often in off-category items than in the dominant
+        #      cluster and are absent from core_keywords.  Works for any domain
+        #      without needing explicit hints.
+        #
+        # A token is only contra-active when it is NOT present in core_keywords,
+        # which prevents misfires (e.g. "ant" stays inactive for "ant trap" BSRs
+        # even though it is in the default hint set).
+        core_kw_text = " ".join(ctx.cache.get("core_keywords") or []).lower()
+        core_kw_toks = frozenset(
+            _stem(t) for t in re.findall(r"[a-z]+", core_kw_text) if len(t) > 2 and t not in _STOP
+        )
+        _DEFAULT_HINTS: frozenset = frozenset(
+            {
+                "mouse",
+                "mice",
+                "rat",
+                "roach",
+                "cockroach",
+                "ant",
+                "wasp",
+                "spider",
+                "snake",
+                "bedbug",
+            }
+        )
+        _hint_src = ctx.cache.get("contra_token_hints")
+        hint_contra = (frozenset(_hint_src) if _hint_src else _DEFAULT_HINTS) - core_kw_toks
+
+        # Data-driven: tokens in non-dom items with ≥20 pp frequency advantage
+        # over the dominant cluster and not in core_kw_toks.
+        derived_contra: frozenset = frozenset()
+        if non_idx and core_kw_toks:
+            _n_non = len(non_idx)
+            _non_freq: Counter = Counter(tok for i in non_idx for tok in token_sets[i])
+            _dom_freq2: Counter = Counter(tok for i in dom_idx for tok in token_sets[i])
+            _n_dom = len(dom_idx)
+            _c_floor = max(1, _n_non // 3)
+            derived_contra = frozenset(
+                tok
+                for tok, cnt in _non_freq.items()
+                if cnt >= _c_floor
+                and tok not in core_kw_toks
+                and cnt / _n_non - _dom_freq2.get(tok, 0) / max(_n_dom, 1) >= 0.20
+            )
+
+        active_contra = hint_contra | derived_contra
+        _phase1c_fired = False
+        if active_contra and core_kw_toks:
+            dom_1c = [i for i in dom_idx if not (token_sets[i] & active_contra)]
+            expelled_1c = [i for i in dom_idx if token_sets[i] & active_contra]
+            if len(dom_1c) >= max(5, _MIN_RETAINED // 2) and expelled_1c:
+                triggered = sorted(
+                    active_contra & frozenset().union(*(token_sets[i] for i in expelled_1c))
+                )
+                logger.info(
+                    f"[category_coherence] Phase 1c: expelled {len(expelled_1c)} items "
+                    f"via contra-tokens {triggered[:5]}"
+                )
+                dom_idx = dom_1c
+                dominant_size = len(dom_idx)
+                non_idx = non_idx + expelled_1c
+                _phase1c_fired = True
+        # ─────────────────────────────────────────────────────────────────────
+
+        # Clean: DBSCAN found a single cluster with no noise AND neither
+        # Phase 1b nor 1c expelled anything — nothing to filter.
+        if noise_count == 0 and len(cluster_sizes) == 1 and len(non_idx) == 0:
+            ctx.cache["contamination_stats"] = {
+                "status": "clean",
+                "method": "dbscan_jaccard",
+                "n_removed": 0,
+                "n_retained": n,
+            }
+            return items
+
+        kept = [items[i] for i in dom_idx]
+        removed = [items[i] for i in non_idx]
+
+        # Phase 1c is semantically grounded (pest type ≠ category keyword), so
+        # its results warrant a lower floor than the statistical DBSCAN minimum.
+        effective_min = max(5, _MIN_RETAINED // 2) if _phase1c_fired else _MIN_RETAINED
+        if len(kept) < effective_min:
+            ctx.cache["contamination_stats"] = {
+                "status": "warning",
+                "method": "dbscan_jaccard",
+                "outlier_rate": round(len(removed) / n, 3),
+                "n_removed": 0,
+                "n_retained": n,
+                "note": f"dominant cluster too small ({len(kept)}) — filtering skipped",
+                "sample_outliers": [it.get("Title", "")[:60] for it in removed[:5]],
+            }
+            return items
+
+        sample = [it.get("Title", "")[:60] for it in removed[:5]]
         ctx.cache["contamination_stats"] = {
             "status": "filtered",
-            "method": "keyword_coherence",
-            "outlier_rate": round(outlier_rate, 3),
-            "threshold": round(_hard_thresh, 2),
-            "threshold_source": _thresh_source,
-            "n_removed": len(outliers),
-            "n_retained": len(coherent),
+            "method": "dbscan_jaccard",
+            "outlier_rate": round(len(removed) / n, 3),
+            "dominant_cluster_size": dominant_size,
+            "noise_count": noise_count,
+            "n_removed": len(removed),
+            "n_retained": len(kept),
             "sample_removed": sample,
         }
         logger.info(
-            f"[category_coherence] Removed {len(outliers)} outliers ({outlier_rate:.0%}) "
-            f"via keyword coherence (thresh={_hard_thresh:.0%}, {_thresh_source}); "
+            f"[category_coherence] DBSCAN: dominant={dominant_size}/{n}, "
+            f"removed={len(removed)} ({len(removed) / n:.0%}), noise={noise_count}; "
             f"sample: {sample[:2]}"
         )
-        return coherent
+        return kept
 
-    # --- Phase 2: high contamination → LLM taxonomy ------------------------
+    except ImportError:
+        _phase2_reason = "sklearn/numpy unavailable"
+        logger.warning(f"[category_coherence] Phase 1 skipped: {_phase2_reason}")
+    except ValueError as exc:
+        logger.info(f"[category_coherence] Phase 1 → Phase 2: {exc}")
+
+    # ── Phase 2: LLM taxonomy (escalation only) ───────────────────────────────
     if ctx.router:
         try:
             classify_titles = [
@@ -567,7 +751,6 @@ async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
                     if x.isdigit() and 0 <= int(x) - 1 < len(classify_titles)
                 }
                 if len(keep_idx) >= _MIN_RETAINED:
-                    # Derive refined bigram+token vocabulary from the dominant cluster
                     dom_titles = [items[i].get("Title", "") for i in sorted(keep_idx)]
                     refined_ngrams = set(_ngram_candidates(dom_titles, min_doc_freq=2, top_n=15))
                     refined_tokens = {
@@ -589,13 +772,14 @@ async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
                     refined_scored = [(it, _refined_score(it.get("Title", ""))) for it in items]
                     retained = [it for it, s in refined_scored if s > 0]
                     if len(retained) < _MIN_RETAINED:
-                        retained = items  # safety floor
+                        retained = items
                     n_removed = len(items) - len(retained)
                     sample = [it.get("Title", "")[:60] for it, s in refined_scored if s == 0][:5]
                     ctx.cache["contamination_stats"] = {
                         "status": "filtered",
                         "method": "llm_taxonomy",
                         "dominant_type": dominant_type,
+                        "phase2_reason": _phase2_reason,
                         "outlier_rate": round(n_removed / len(items), 3),
                         "n_removed": n_removed,
                         "n_retained": len(retained),
@@ -609,19 +793,17 @@ async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
         except Exception as e:
             logger.warning(f"[category_coherence] Phase 2 LLM failed: {e}")
 
-    # Fallback: contamination is high but filtering was unsafe → warn only
-    sample = [it.get("Title", "")[:60] for it in outliers[:5]]
+    # Fallback: both phases failed or were unsafe → warn only
+    sample = [it.get("Title", "")[:60] for it in items[:5]]
     ctx.cache["contamination_stats"] = {
         "status": "warning",
-        "outlier_rate": round(outlier_rate, 3),
         "n_removed": 0,
-        "n_retained": len(items),
+        "n_retained": n,
         "sample_outliers": sample,
-        "note": f"high contamination ({outlier_rate:.0%}) detected but filtering skipped",
+        "note": f"filtering skipped ({_phase2_reason or 'both phases failed'})",
     }
     logger.warning(
-        f"[category_coherence] High contamination ({outlier_rate:.0%}) — "
-        f"filtering skipped; sample: {sample[:2]}"
+        f"[category_coherence] Filtering skipped ({_phase2_reason or 'both phases failed'})"
     )
     return items
 
@@ -718,45 +900,336 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
     return items
 
 
+_SOCIAL_PLATFORMS = ["tiktok", "youtube"]
+_SOCIAL_MAX_RETRIES = 2
+
+
 async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
-    """Fetches Social (TikTok) and Deal promotion intensity for the category."""
+    """
+    Fetches multi-platform social signals and deal promotion intensity for the category.
+
+    Platforms searched: TikTok, YouTube Shorts (concurrently per hashtag).
+    Hashtags searched:
+      1. Category keyword hashtag  (e.g. #gnattrapsforhouseindoor)
+      2. Top-3 brand hashtags by BSR frequency (e.g. #ZEVO, #Catchmaster)
+      3. New-entrant brand hashtags (products listed in last 12 months, up to 5)
+    Brand data requires fetch_sellersprite_bsr to have run first (previous step).
+    """
     main_keyword = ctx.cache.get("main_keyword")
     if not main_keyword:
         return items
 
-    kw_hash = _hl.md5(main_keyword.encode()).hexdigest()[:12]
-    cached = _l2_get(ctx, _TTL_EXTERNAL, "external_intensity", kw_hash)
-    if cached is not None:
-        ctx.cache.update(cached)
-        logger.info(f"[cat_monopoly] External intensity L2 cache hit kw_hash={kw_hash}")
-        return items
+    # ── brand sets from Sellersprite snapshot ────────────────────────────────
+    _MAX_TOP_BRANDS = 3
+    _MAX_NEW_ENTRANT_BRANDS = 5
+    ss_snapshots = ctx.cache.get("sellersprite_snapshots") or {}
+    _top_brand_set: set[str] = set()
+    _new_entrant_brand_set: set[str] = set()
 
-    try:
-        tag_info = await asyncio.to_thread(
-            TikTokClient().get_tag_info, main_keyword.replace(" ", "")
-        )
-        if tag_info.get("id"):
+    if ss_snapshots:
+        base_ym = ctx.cache.get("sellersprite_base_ym", "")
+        _latest_snap = ss_snapshots.get(max(ss_snapshots), [])
+
+        # Top brands by product count in BSR
+        _brand_counts: Counter = Counter(p["brand"] for p in _latest_snap if p.get("brand"))
+        _top_brand_set = {b for b, _ in _brand_counts.most_common(_MAX_TOP_BRANDS) if b}
+
+        # New-entrant brands: products listed within the last 12 months
+        # Anchor cutoff to base_ym (T-2 months) to match _run_monopoly_analysis logic
+        if base_ym and len(base_ym) == 6:
+            _by, _bm = int(base_ym[:4]), int(base_ym[4:])
+            _total = _by * 12 + (_bm - 1) - 12
+            _cy, _cm = _total // 12, _total % 12 + 1
+            _cutoff_ms = calendar.timegm((_cy, _cm, 1, 0, 0, 0)) * 1000
+        else:
+            _cutoff_ms = (time.time() - 365 * 86400) * 1000
+
+        _new_entrant_products = [
+            p
+            for p in _latest_snap
+            if p.get("available_date_ms")
+            and p["available_date_ms"] >= _cutoff_ms
+            and p.get("brand")
+        ]
+        # Preserve rank order (lower rank = higher BSR position = more relevant)
+        _seen: set[str] = set()
+        for _p in sorted(_new_entrant_products, key=lambda x: x.get("rank") or 999):
+            if _p["brand"] not in _seen and len(_seen) < _MAX_NEW_ENTRANT_BRANDS:
+                _new_entrant_brand_set.add(_p["brand"])
+                _seen.add(_p["brand"])
+
+    # All brands to search: top brands ∪ new entrants, deduped, top brands first
+    _all_brand_list = list(
+        dict.fromkeys(sorted(_top_brand_set) + sorted(_new_entrant_brand_set - _top_brand_set))
+    )
+
+    kw_hash = _hl.md5(
+        (main_keyword + "|" + ",".join(sorted(_all_brand_list))).encode()
+    ).hexdigest()[:12]
+
+    # ── helpers (defined before cache check so partial-retry can reuse them) ──
+
+    @exponential_backoff(
+        max_retries=_SOCIAL_MAX_RETRIES, base_delay=1.0, retry_on_exceptions=(Exception,)
+    )
+    async def _platform_psi(tag: str, platform: str) -> dict:
+        """Fetch PSI for one hashtag on one platform. Non-retryable soft failures
+        (no tag, unsupported platform) return a result dict; retryable network/API
+        errors are raised so the decorator can back off and retry."""
+        clean = re.sub(r"[^a-zA-Z0-9]", "", tag)
+        result_base = {
+            "platform": platform,
+            "hashtag": f"#{clean}",
+            "psi": 0,
+            "video_count": 0,
+            "n_kol": 0,
+            "n_koc": 0,
+            "unique_creators": 0,
+        }
+        if platform == "tiktok":
+            client = TikTokClient()
+            tag_info = await asyncio.to_thread(client.get_tag_info, clean)
+            if not tag_info.get("id"):
+                return {**result_base, "verdict": "No Tag Found"}
             videos = await asyncio.to_thread(
-                TikTokClient().get_hashtag_videos,
-                tag_info["id"],
-                main_keyword.replace(" ", ""),
-                count=20,
+                client.get_hashtag_videos, tag_info["id"], clean, count=20
             )
-            social_analysis = SocialViralityProcessor().calculate_promotion_strength(
-                videos, tag_metadata=tag_info
+            # TikTok's challenge page aggregates partial/superset/fuzzy tags server-side,
+            # so raw results include videos for #BAIM, #BAIMNOCMSJF, #BGAIMSNOCM when
+            # searching #BAIMNOCM.  Keep only videos whose desc contains the exact tag
+            # as a standalone token (not preceded or followed by another alphanumeric char).
+            _exact = re.compile(
+                r"(?<![a-zA-Z0-9])#" + re.escape(clean) + r"(?![a-zA-Z0-9])",
+                re.IGNORECASE,
             )
-            ctx.cache.update(
-                {
-                    "category_social_psi": social_analysis.get("strength_score", 0),
-                    "category_social_verdict": social_analysis.get("verdict", "Unknown"),
-                }
+            videos = [v for v in videos if _exact.search(v.get("desc", ""))]
+            if not videos:
+                return {**result_base, "verdict": "No Exact Tag Match"}
+            analysis = SocialViralityProcessor().calculate_promotion_strength(
+                videos, tag_metadata=tag_info, platform="tiktok"
+            )
+        elif platform == "youtube":
+            client = YouTubeClient()
+            tag_info = await asyncio.to_thread(client.get_hashtag_info, clean)
+            if not tag_info.get("video_count"):
+                return {**result_base, "verdict": "No Tag Found"}
+            videos = await asyncio.to_thread(client.get_hashtag_videos, clean, count=20)
+            # get_hashtag_videos returns raw ytInitialData videoRenderer dicts;
+            # "youtube_hashtag" is the correct normalizer (not "youtube_shorts" which
+            # expects YouTube Data API v3 statistics/snippet fields).
+            analysis = SocialViralityProcessor().calculate_promotion_strength(
+                videos, tag_metadata=tag_info, platform="youtube_hashtag"
             )
         else:
-            ctx.cache.update({"category_social_psi": 0, "category_social_verdict": "No Tag Found"})
-    except Exception as e:
-        logger.error(f"Error during social intensity analysis: {e}")
-        ctx.cache.update({"category_social_psi": 0, "category_social_verdict": "Analysis Failed"})
+            return {**result_base, "verdict": "Unsupported"}
+        _kol_koc = analysis.get("kol_koc_matrix", {})
+        return {
+            "platform": platform,
+            "hashtag": f"#{clean}",
+            "psi": analysis.get("strength_score", 0),
+            "verdict": analysis.get("verdict", "Unknown"),
+            "video_count": len(videos),
+            "n_kol": _kol_koc.get("n_kol_unique", 0),
+            "n_koc": _kol_koc.get("n_koc_unique", 0),
+            "unique_creators": _kol_koc.get("unique_creators_total", 0),
+        }
 
+    async def _tag_all_platforms(tag: str) -> dict:
+        """Search one hashtag across all platforms concurrently.
+        Each platform call retries internally via @exponential_backoff; only if
+        retries are exhausted does gather capture the exception here."""
+        clean = re.sub(r"[^a-zA-Z0-9]", "", tag)
+        raw = await asyncio.gather(
+            *[_platform_psi(tag, p) for p in _SOCIAL_PLATFORMS],
+            return_exceptions=True,
+        )
+        platform_results = []
+        for p, result in zip(_SOCIAL_PLATFORMS, raw, strict=False):
+            if isinstance(result, Exception):
+                logger.warning(f"[external_intensity] {p} #{clean} exhausted retries: {result}")
+                platform_results.append(
+                    {
+                        "platform": p,
+                        "hashtag": f"#{clean}",
+                        "psi": 0,
+                        "verdict": "Error",
+                        "video_count": 0,
+                        "n_kol": 0,
+                        "n_koc": 0,
+                        "unique_creators": 0,
+                    }
+                )
+            else:
+                platform_results.append(result)
+        best = max(platform_results, key=lambda x: x["psi"])
+        return {
+            "psi": best["psi"],
+            "verdict": best["verdict"],
+            "video_count": sum(r["video_count"] for r in platform_results),
+            "n_kol": sum(r.get("n_kol", 0) for r in platform_results),
+            "n_koc": sum(r.get("n_koc", 0) for r in platform_results),
+            "unique_creators": sum(r.get("unique_creators", 0) for r in platform_results),
+            "platforms": platform_results,
+        }
+
+    def _collect_failed(results: list[dict]) -> list[tuple]:
+        """Return (result_idx, platform_idx) pairs where verdict == 'Error'."""
+        return [
+            (ri, pi)
+            for ri, r in enumerate(results)
+            for pi, p in enumerate(r.get("platforms", []))
+            if p.get("verdict") == "Error"
+        ]
+
+    def _recompute_aggregate(result: dict) -> None:
+        """Recompute top-level aggregates from platforms list in-place."""
+        platforms = result["platforms"]
+        best = max(platforms, key=lambda x: x["psi"])
+        result.update(
+            {
+                "psi": best["psi"],
+                "verdict": best["verdict"],
+                "video_count": sum(p["video_count"] for p in platforms),
+                "n_kol": sum(p.get("n_kol", 0) for p in platforms),
+                "n_koc": sum(p.get("n_koc", 0) for p in platforms),
+                "unique_creators": sum(p.get("unique_creators", 0) for p in platforms),
+            }
+        )
+
+    # ── L2 cache check ────────────────────────────────────────────────────────
+    cached = _l2_get(ctx, _TTL_EXTERNAL, "external_intensity", kw_hash)
+    if cached is not None:
+        # Reconstruct tag_results shape from cache to reuse retry logic uniformly
+        _c_kw = {
+            "psi": cached.get("category_social_psi", 0),
+            "verdict": cached.get("category_social_verdict", "Unknown"),
+            "video_count": sum(
+                p.get("video_count", 0) for p in cached.get("category_social_platforms", [])
+            ),
+            "platforms": [dict(p) for p in cached.get("category_social_platforms", [])],
+        }
+        _c_brands_raw = cached.get("brand_social_data", [])
+        _c_brand_results = [
+            {
+                "psi": e["psi"],
+                "verdict": e["verdict"],
+                "video_count": e["video_count"],
+                "platforms": [dict(p) for p in e.get("platforms", [])],
+            }
+            for e in _c_brands_raw
+        ]
+        _c_all = [_c_kw] + _c_brand_results
+        _c_tags = [main_keyword.replace(" ", "")] + [e["brand"] for e in _c_brands_raw]
+
+        if not _collect_failed(_c_all):
+            ctx.cache.update(cached)
+            logger.info(f"[cat_monopoly] External intensity L2 cache hit kw_hash={kw_hash}")
+            return items
+
+        _failed = _collect_failed(_c_all)
+        logger.info(
+            f"[cat_monopoly] Cache hit but {len(_failed)} platform error(s) found, "
+            f"re-fetching kw_hash={kw_hash}"
+        )
+        # Call _platform_psi directly — @exponential_backoff handles retries per call.
+        retry_raw = await asyncio.gather(
+            *[
+                _platform_psi(_c_tags[ri], _c_all[ri]["platforms"][pi]["platform"])
+                for ri, pi in _failed
+            ],
+            return_exceptions=True,
+        )
+        for (ri, pi), result in zip(_failed, retry_raw, strict=False):
+            if isinstance(result, Exception):
+                logger.warning(
+                    f"[external_intensity] {_c_all[ri]['platforms'][pi]['platform']} "
+                    f"#{_c_tags[ri]} still failing after retries: {result}"
+                )
+            else:
+                _c_all[ri]["platforms"][pi] = result
+            _recompute_aggregate(_c_all[ri])
+
+        _upd_brand_data = [
+            {
+                **{
+                    k: v
+                    for k, v in e.items()
+                    if k not in ("psi", "verdict", "video_count", "platforms")
+                },
+                **tr,
+            }
+            for e, tr in zip(_c_brands_raw, _c_all[1:], strict=False)
+        ]
+        _upd_brand_data.sort(key=lambda x: x["psi"], reverse=True)
+        _upd_cached = {
+            **cached,
+            "category_social_psi": _c_all[0]["psi"],
+            "category_social_verdict": _c_all[0]["verdict"],
+            "category_social_platforms": _c_all[0]["platforms"],
+            "brand_social_data": _upd_brand_data,
+        }
+        ctx.cache.update(_upd_cached)
+        _still_errors = len(_collect_failed(_c_all))
+        if _still_errors == 0:
+            _l2_set(ctx, _upd_cached, "external_intensity", kw_hash)
+            logger.info(
+                f"[external_intensity] Partial re-fetch succeeded, cache refreshed kw_hash={kw_hash}"
+            )
+        else:
+            logger.warning(
+                f"[external_intensity] {_still_errors} platform(s) still failing after retries, "
+                f"skipping cache write kw_hash={kw_hash}"
+            )
+        return items
+
+    # ── fresh fetch ───────────────────────────────────────────────────────────
+    kw_tag = main_keyword.replace(" ", "")
+    all_tags = [kw_tag] + _all_brand_list
+    tag_results = list(await asyncio.gather(*[_tag_all_platforms(t) for t in all_tags]))
+    # _tag_all_platforms already exhausted per-platform retries via @exponential_backoff;
+    # any remaining "Error" entries represent genuinely unrecoverable failures.
+
+    kw_result = tag_results[0]
+    brand_results = [
+        {
+            "brand": brand,
+            "is_top_brand": brand in _top_brand_set,
+            "is_new_entrant": brand in _new_entrant_brand_set,
+            **res,
+        }
+        for brand, res in zip(_all_brand_list, tag_results[1:], strict=False)
+    ]
+    brand_results.sort(key=lambda x: x["psi"], reverse=True)
+
+    ctx.cache.update(
+        {
+            "category_social_psi": kw_result["psi"],
+            "category_social_verdict": kw_result["verdict"],
+            "category_social_platforms": kw_result["platforms"],
+            "brand_social_data": brand_results,
+        }
+    )
+    _platform_summary = ", ".join(
+        r["platform"] + "=" + str(r["psi"]) for r in kw_result["platforms"]
+    )
+    _brand_summary = " | ".join(
+        "#"
+        + re.sub(r"[^a-zA-Z0-9]", "", r["brand"])
+        + "("
+        + ("top" if r["is_top_brand"] else "")
+        + ("/" if r["is_top_brand"] and r["is_new_entrant"] else "")
+        + ("new" if r["is_new_entrant"] else "")
+        + ")"
+        + " PSI="
+        + str(r["psi"])
+        for r in brand_results
+    )
+    logger.info(
+        f"[external_intensity] #{kw_tag} PSI={kw_result['psi']} ({_platform_summary})"
+        + (f" | {_brand_summary}" if _brand_summary else "")
+    )
+
+    # ── deal intensity ────────────────────────────────────────────────────────
     async def fetch_deal_count(item):
         return len(
             await DealHistoryClient().get_deal_history(
@@ -765,29 +1238,33 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         )
 
     try:
-        results = await asyncio.gather(*(fetch_deal_count(item) for item in items[:10]))
-        total_deals_found = sum(results)
-        deal_intensity_score = (
-            9
-            if total_deals_found > 5
-            else 6
-            if total_deals_found > 2
-            else 3
-            if total_deals_found > 0
-            else 0
+        deal_counts = await asyncio.gather(*(fetch_deal_count(item) for item in items[:10]))
+        total_deals = sum(deal_counts)
+        ctx.cache["category_deal_intensity"] = (
+            9 if total_deals > 5 else 6 if total_deals > 2 else 3 if total_deals > 0 else 0
         )
-        ctx.cache["category_deal_intensity"] = deal_intensity_score
     except Exception as e:
-        logger.error(f"Error during deal intensity analysis: {e}")
+        logger.error(f"[external_intensity] Deal intensity: {e}")
 
     _ext = {
         "category_social_psi": ctx.cache.get("category_social_psi", 0),
         "category_social_verdict": ctx.cache.get("category_social_verdict", "Unknown"),
+        "category_social_platforms": ctx.cache.get("category_social_platforms", []),
         "category_deal_intensity": ctx.cache.get("category_deal_intensity", 0),
+        "brand_social_data": ctx.cache.get("brand_social_data", []),
     }
-    _l2_set(ctx, _ext, "external_intensity", kw_hash)
+    _remaining_errors = len(_collect_failed(tag_results))
+    if _remaining_errors == 0:
+        _l2_set(ctx, _ext, "external_intensity", kw_hash)
+    else:
+        logger.warning(
+            f"[external_intensity] {_remaining_errors} platform(s) still failing after retries, "
+            f"skipping cache write kw_hash={kw_hash}"
+        )
     logger.info(
-        f"External intensity: Social PSI={_ext['category_social_psi']}, Deal Intensity={_ext['category_deal_intensity']}"
+        f"External intensity: Social PSI={_ext['category_social_psi']}, "
+        f"Deal Intensity={_ext['category_deal_intensity']}, "
+        f"Brands searched: {len(_ext['brand_social_data'])}"
     )
     return items
 
@@ -826,48 +1303,80 @@ async def _fetch_historical_trends(items: list[dict], ctx: Any) -> list[dict]:
 
     def _parse_daily_records(res: dict, asin: str) -> list:
         """
-        Attempt to extract daily records from multiple known response shapes:
-          A. res["data"]["entities"][i]["dailyData"]   (list of entities)
-          B. res["data"][asin]["dailyData"]            (ASIN-keyed dict)
-          C. res["data"]                               (flat list of day dicts)
+        Extract daily records from the Xiyouzhaoci get_asin_daily_trends response.
+
+        Actual API shape (confirmed via test_xiyou_date_limits.py):
+          res["entities"][i]["trends"][j]["localDate" | "date", "bsr_rank", "rating",
+                                          "review_count", "price"]
+
+        Legacy / alternative shapes also handled:
+          res["data"]["entities"][i]["dailyData"]
+          res["data"][asin]["dailyData"]
+          res["data"]   (flat list)
+
         Returns a normalised list of {"date", "bsr", "stars", "ratings", "price"}.
-        price is retained for the price-trend calculation in _run_monopoly_analysis
-        (first-30d vs last-30d median per ASIN → avg_price_change / price_trend_direction).
         """
 
         def _normalise(daily_list: list) -> list:
-            return [
-                {
-                    "date": str(d.get("date", ""))[:10],
-                    "bsr": d.get("bsr") or d.get("bestSellerRank"),
-                    "stars": d.get("stars") or d.get("avgStarRating"),
-                    "ratings": d.get("ratings") or d.get("reviewCount"),
-                    "price": d.get("price"),
-                }
-                for d in daily_list
-                if d.get("date")
-            ]
+            out = []
+            for d in daily_list:
+                # Date field: actual API uses "localDate"; legacy used "date"
+                raw_date = d.get("localDate") or d.get("date") or ""
+                date_str = str(raw_date)[:10]
+                if not date_str or date_str == "N":
+                    continue
+                out.append(
+                    {
+                        "date": date_str,
+                        # Actual API: "bsr_rank"; legacy: "bsr" / "bestSellerRank"
+                        "bsr": d.get("bsr_rank") or d.get("bsr") or d.get("bestSellerRank"),
+                        # Actual API: "rating"; legacy: "stars" / "avgStarRating"
+                        "stars": d.get("rating") or d.get("stars") or d.get("avgStarRating"),
+                        # Actual API: "review_count"; legacy: "ratings" / "reviewCount"
+                        "ratings": d.get("review_count")
+                        or d.get("ratings")
+                        or d.get("reviewCount"),
+                        "price": d.get("price"),
+                    }
+                )
+            return out
+
+        def _entity_trends(entity: dict) -> list:
+            # Actual API uses "trends"; legacy used "dailyData"
+            return entity.get("trends") or entity.get("dailyData") or []
+
+        # ── Actual shape: {"entities": [...]} at top level (no "data" wrapper) ──
+        top_entities = res.get("entities")
+        if isinstance(top_entities, list):
+            for entity in top_entities:
+                if entity.get("asin") == asin:
+                    return _normalise(_entity_trends(entity))
 
         data = res.get("data") or {}
 
-        # Shape A: {"data": {"entities": [{"asin": ..., "dailyData": [...]}]}}
+        # ── Legacy shape A: {"data": {"entities": [...]}} ──
         if isinstance(data, dict) and "entities" in data:
             for entity in data["entities"] or []:
                 if entity.get("asin") == asin:
-                    return _normalise(entity.get("dailyData") or [])
+                    return _normalise(_entity_trends(entity))
 
-        # Shape B: {"data": {"B0xxx": {"dailyData": [...]}}}
+        # ── Legacy shape B: {"data": {"B0xxx": {"dailyData": [...]}}} ──
         if isinstance(data, dict) and asin in data:
             asin_data = data[asin]
-            daily = asin_data.get("dailyData") or (asin_data if isinstance(asin_data, list) else [])
+            daily = (
+                _entity_trends(asin_data)
+                if isinstance(asin_data, dict)
+                else (asin_data if isinstance(asin_data, list) else [])
+            )
             return _normalise(daily)
 
-        # Shape C: {"data": [{"date": ..., "bsr": ...}]}
+        # ── Legacy shape C: {"data": [...]} flat list ──
         if isinstance(data, list):
             return _normalise(data)
 
         logger.debug(
-            f"[historical_trends] Unrecognised response shape for {asin}: keys={list(data.keys()) if isinstance(data, dict) else type(data)}"
+            f"[historical_trends] Unrecognised response shape for {asin}: "
+            f"top-level keys={list(res.keys())}"
         )
         return []
 
@@ -1113,17 +1622,33 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
                     node_id_paths=[node_id_path],
                     size=100,
                 )
+                raw_items = result.get("items") or []
+                # Log actual field names on the first item so mismatches surface immediately.
+                if raw_items and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        f"[fetch_snapshot] item keys (ym={ym}): {sorted(raw_items[0].keys())}"
+                    )
                 slim = [
                     {
-                        "asin": p.get("asin") or p.get("parentAsin") or "",
-                        "rank": p.get("rank") or p.get("rankingPosition") or (i + 1),
-                        "brand": p.get("brand") or p.get("brandName") or "",
+                        "asin": p.get("asin") or p.get("parent") or "",
+                        # API field is "bsrRank"; "rank"/"rankingPosition" are legacy fallbacks
+                        "rank": p.get("bsrRank")
+                        or p.get("rank")
+                        or p.get("rankingPosition")
+                        or (i + 1),
+                        # "brand0" is the brand name at snapshot time; "brand" is the current value
+                        "brand": (p.get("brand") or p.get("brand0") or p.get("brandName") or ""),
                         # availableDate is ms-since-epoch; kept as-is for downstream math
                         "available_date_ms": p.get("availableDate"),
                     }
-                    for i, p in enumerate(result.get("items") or [])
-                    if p.get("asin") or p.get("parentAsin")
+                    for i, p in enumerate(raw_items)
+                    if p.get("asin") or p.get("parent")
                 ]
+                missing_brand = sum(1 for p in slim if not p["brand"])
+                if missing_brand:
+                    logger.warning(
+                        f"[fetch_snapshot] ym={ym}: {missing_brand}/{len(slim)} items have no brand"
+                    )
                 return ym, slim
             except Exception as e:
                 logger.warning(f"[sellersprite_bsr] Snapshot {ym} failed: {e}")
@@ -1425,6 +1950,65 @@ def _detect_compliance_risks(scan_texts: list) -> dict:
     }
 
 
+async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
+    """
+    Fetch category-median click-to-purchase CVR for steady-state ACOS estimation.
+
+    Primary:  Amazon Ads crossProgramBenchmarks → newToBrandPurchaseRateP50
+              (purchaseRate* removed by Amazon 2026-07; NTB rate is the closest proxy)
+    Default:  0.10  (conservative Amazon SP category average)
+
+    Stores:
+      ctx.cache["category_cvr"]         float
+      ctx.cache["category_cvr_source"]  str
+    """
+    store_id = ctx.config.get("store_id", "US") if hasattr(ctx, "config") else "US"
+    cvr_hash = _hl.md5(store_id.encode()).hexdigest()[:12]
+
+    cached = _l2_get(ctx, _TTL_CVR, "category_cvr", cvr_hash)
+    if cached is not None:
+        ctx.cache["category_cvr"] = cached["cvr"]
+        ctx.cache["category_cvr_source"] = cached["source"]
+        ctx.cache["category_cpc_p50"] = cached.get("cpc_p50")
+        logger.info(f"[cat_monopoly] Category CVR L2 cache hit store={store_id}")
+        return items
+
+    cvr: float | None = None
+    cpc_p50: float | None = None
+    source = "default_0.10"
+
+    try:
+        from src.mcp.servers.amazon.ads.client import AmazonAdsClient
+
+        result = await AmazonAdsClient(store_id=store_id).get_category_cvr_benchmark(
+            days=30, time_unit="MONTHLY"
+        )
+        median_cvr = result.get("category_median_cvr")
+        cpc_p50 = result.get("cpc_p50")
+        if median_cvr and 0 < median_cvr < 1:
+            cvr = median_cvr
+            source = (
+                f"amazon_ads_benchmark newToBrandPurchaseRateP50"
+                f" (category={result.get('browse_category', 'unknown')!r}"
+                f", peers={result.get('peer_set_size', 'N/A')})"
+            )
+            logger.info(f"[fetch_category_cvr] Amazon Ads CVR={cvr:.2%} — {source}")
+        if cpc_p50:
+            logger.info(f"[fetch_category_cvr] Amazon Ads cpcP50=${cpc_p50:.2f}")
+    except Exception as e:
+        logger.warning(f"[fetch_category_cvr] Amazon Ads benchmark failed: {e}; using default")
+
+    if cvr is None:
+        cvr = 0.10
+        source = "default_0.10 (Amazon Ads benchmark unavailable)"
+
+    ctx.cache["category_cvr"] = cvr
+    ctx.cache["category_cvr_source"] = source
+    ctx.cache["category_cpc_p50"] = cpc_p50
+    _l2_set(ctx, {"cvr": cvr, "source": source, "cpc_p50": cpc_p50}, "category_cvr", cvr_hash)
+    return items
+
+
 async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     """Calculates scores and generates flattened niche benchmarks."""
 
@@ -1485,6 +2069,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             or item.get("brand")
             or None,
             "seller_type": item.get("seller_type", "Unknown"),
+            "seller_id": item.get("seller_id"),
             "feedback_count": item.get("feedback_count", 0),
             "review_count": _parse_int(item.get("Reviews")),
             "rating": _parse_float(item.get("Stars")),
@@ -1531,6 +2116,84 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     median_price = statistics.median(prices) if prices else 25.0
     total_monthly_units = result.get("niche_benchmarks", {}).get("total_estimated_monthly_units", 0)
     niche_monthly_gmv = int(total_monthly_units * median_price)
+
+    # ── Steady-state ad burden ────────────────────────────────────────────────
+    # Estimated ACOS = median_cpc / (median_price × category_cvr)
+    # Ad profit drag = actual_bsr_ad_ratio × estimated_acos
+    # Both inputs (CPC and CVR) come from the Amazon Ads ecosystem so the
+    # estimate is internally consistent regardless of category.
+    _category_cvr = ctx.cache.get("category_cvr") or 0.10
+
+    _cpc_values: list[float] = []
+    for _strategy_recs in bid_raw.values():
+        for _rec in _strategy_recs:
+            for _expr in _rec.get("bidRecommendationsForTargetingExpressions", []):
+                _rb = _expr.get("recommendedBid", {})
+                _s = float(_rb.get("startBid") or _rb.get("bid") or 0)
+                _e = float(_rb.get("endBid") or _s)
+                if _s > 0:
+                    _cpc_values.append((_s + _e) / 2)
+
+    # Fall back to category benchmark cpcP50 when bid-recommendations API is unavailable
+    # (e.g. no owned listing in this category — the bid API requires an advertiser ASIN).
+    _median_cpc: float | None = (
+        statistics.median(_cpc_values) if _cpc_values else ctx.cache.get("category_cpc_p50")
+    )
+    _actual_ad_ratio: float | None = ctx.cache.get("actual_bsr_ad_ratio")
+
+    # Breakeven ACOS: 1 - COGS% - referral% - FBA%.  FBA is looked up from the
+    # 2026 fee schedule using the Large Standard 12-16 oz tier (most representative
+    # for general consumer goods) at the category's median price bracket, then the
+    # 3.5% fuel/logistics surcharge is applied on top.
+    _REFERRAL_FEE_PCT = 0.15
+    _COGS_PCT = 0.30
+    _fba_fee_pct = 0.18  # fallback: Large Standard 12-16 oz at $25 ≈ $4.76/25
+    try:
+        _fba_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "../../mcp/servers/finance/fba_fee.json",
+        )
+        with open(_fba_path) as _fba_f:
+            _fba_data = json.load(_fba_f)
+        _fuel_mult = 1 + _fba_data["meta"]["fuel_surcharge"]["rate_pct"] / 100
+        _rep_tier = next(
+            (
+                t
+                for t in _fba_data["fba_fulfillment_fees"]["standard_non_apparel"]["tiers"]
+                if t.get("size_tier") == "Large Standard"
+                and "12+ to 16" in (t.get("weight_range") or "")
+            ),
+            None,
+        )
+        if _rep_tier and median_price > 0:
+            _bracket = (
+                "under_10"
+                if median_price < 10
+                else ("over_50" if median_price > 50 else "10_to_50")
+            )
+            _fba_fee_usd = float(_rep_tier["price_brackets"][_bracket]) * _fuel_mult
+            _fba_fee_pct = _fba_fee_usd / median_price
+    except Exception:
+        pass  # use fallback 0.18
+
+    _breakeven_acos = max(0.0, 1.0 - _COGS_PCT - _REFERRAL_FEE_PCT - _fba_fee_pct)
+
+    if _median_cpc and median_price > 0 and _category_cvr > 0:
+        _estimated_acos = _median_cpc / (median_price * _category_cvr)
+        _ad_profit_drag = (_actual_ad_ratio or 0.5) * _estimated_acos
+        _ad_burden_verdict = (
+            "Critical"
+            if _estimated_acos >= _breakeven_acos * 1.5
+            else "High"
+            if _estimated_acos >= _breakeven_acos
+            else "Moderate"
+            if _estimated_acos >= _breakeven_acos * 0.7
+            else "Low"
+        )
+    else:
+        _estimated_acos = _ad_profit_drag = None
+        _ad_burden_verdict = "unknown"
+
     estimator = SalesEstimator()
     node_id = ctx.config.get("category_node_id")
     baseline = estimator.category_params.get(str(node_id), {}).get("market_logic", {})
@@ -2026,7 +2689,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     _CAP_UNITS = 1000  # first-batch order quantity (units)
     _CAP_COGS = 0.30  # COGS as fraction of retail price (China-manufactured)
     _CAP_ACOS = 0.30  # target ACOS during the ranking phase
-    _CAP_FEES = 0.25  # Amazon platform fees (referral ~15% + FBA ~10%)
+    _CAP_FEES = _REFERRAL_FEE_PCT + _fba_fee_pct  # referral 15% + FBA from 2026 fee schedule
     _CAP_SELL_MONTHS = 3  # expected months to sell through the first batch (display only)
     _CAP_OVERHEAD = 2000  # fixed launch costs: photography, A+, listing, freight ($)
     _CAP_BUFFER = 0.20  # working capital buffer on subtotal
@@ -2065,6 +2728,85 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 }
             )
 
+    # ── Brand & Seller concentration ──────────────────────────────────────────
+    _brand_pos: Counter = Counter()
+    _brand_sales_cnt: Counter = Counter()
+    _seller_pos: Counter = Counter()
+    _seller_sales_cnt: Counter = Counter()
+    _seller_brands: dict = {}
+
+    for _ai in analysis_input:
+        _b = _ai.get("brand") or "Unknown"
+        _s = _ai.get("sales") or 0
+        _sid = _ai.get("seller_id")
+        _brand_pos[_b] += 1
+        _brand_sales_cnt[_b] += _s
+        if _sid:
+            _seller_pos[_sid] += 1
+            _seller_sales_cnt[_sid] += _s
+            _seller_brands.setdefault(_sid, set()).add(_b)
+
+    _N_items = len(analysis_input)
+    _total_brand_sales = sum(_brand_sales_cnt.values())
+
+    def _conc_cr(counter: Counter, top_n: int) -> float:
+        _tot = sum(counter.values()) or 1
+        return round(sum(v for _, v in counter.most_common(top_n)) / _tot, 4)
+
+    def _conc_hhi(counter: Counter) -> float:
+        _tot = sum(counter.values()) or 1
+        return round(sum((v / _tot) ** 2 for v in counter.values()), 4)
+
+    _conc_brand = {
+        "cr3_position": _conc_cr(_brand_pos, 3),
+        "cr5_position": _conc_cr(_brand_pos, 5),
+        "hhi_position": _conc_hhi(_brand_pos),
+        "cr3_sales": _conc_cr(_brand_sales_cnt, 3) if _total_brand_sales else None,
+        "cr5_sales": _conc_cr(_brand_sales_cnt, 5) if _total_brand_sales else None,
+        "hhi_sales": _conc_hhi(_brand_sales_cnt) if _total_brand_sales else None,
+        "top_brands_by_position": [
+            {"brand": _b, "positions": _c, "position_share": round(_c / _N_items, 4)}
+            for _b, _c in _brand_pos.most_common(10)
+        ],
+        "top_brands_by_sales": [
+            {
+                "brand": _b,
+                "monthly_units": _c,
+                "sales_share": round(_c / max(_total_brand_sales, 1), 4),
+            }
+            for _b, _c in _brand_sales_cnt.most_common(10)
+            if _c > 0
+        ],
+    }
+    _multi_brand_sellers = sorted(
+        [
+            {
+                "seller_id": _sid,
+                "brands": sorted(_brands),
+                "positions": _seller_pos[_sid],
+                "monthly_units": _seller_sales_cnt[_sid],
+                "position_share": round(_seller_pos[_sid] / _N_items, 4),
+            }
+            for _sid, _brands in _seller_brands.items()
+            if len(_brands) > 1
+        ],
+        key=lambda x: x["positions"],
+        reverse=True,
+    )
+    _conc_seller = {
+        "n_sellers_identified": len(_seller_pos),
+        "cr3_position": _conc_cr(_seller_pos, 3) if _seller_pos else None,
+        "hhi_position": _conc_hhi(_seller_pos) if _seller_pos else None,
+        "n_multi_brand_sellers": len(_multi_brand_sellers),
+        "multi_brand_sellers": _multi_brand_sellers[:5],
+    }
+    concentration_data = {
+        "n_products": _N_items,
+        "n_brands": len(_brand_pos),
+        "brand": _conc_brand,
+        "seller": _conc_seller,
+    }
+
     # ── Top ASIN evidence table (top 10 by BSR rank) ──────────────────────────
     # analysis_input[i] corresponds to items[i] (same index).
     # Sort by rank using the original index so both arrays stay aligned.
@@ -2096,6 +2838,8 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     return [
         {
             "analysis_result": json.dumps(result, ensure_ascii=False),
+            "monopoly_score": round(result.get("overall_score", 0), 2),
+            "monopoly_status": result.get("status", "N/A"),
             "main_keyword": ctx.cache.get("main_keyword"),
             "core_keywords": ", ".join(ctx.cache.get("core_keywords", [])),
             "niche_median_price": f"${median_price:.2f}",
@@ -2136,6 +2880,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "social_psi": ctx.cache.get("category_social_psi", "N/A"),
             "social_verdict": ctx.cache.get("category_social_verdict", "N/A"),
             "deal_intensity": ctx.cache.get("category_deal_intensity", "N/A"),
+            "brand_social_data": json.dumps(
+                ctx.cache.get("brand_social_data", []), ensure_ascii=False
+            ),
             # Rating-based churn (xiyouzhaoci daily trends)
             "churn_pattern": churn.get("pattern", "unknown"),
             "churn_score": churn.get("churn_score", "N/A"),
@@ -2166,6 +2913,17 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             # Category contamination: off-category products detected and removed
             "contamination_warning": contamination_warning,
             "contamination_stats": json.dumps(contamination_stats, ensure_ascii=False),
+            # Steady-state ad burden (no owned product required — derived from market data)
+            "category_cvr": f"{_category_cvr:.1%}",
+            "category_cvr_source": ctx.cache.get("category_cvr_source", "N/A"),
+            "median_cpc": f"${_median_cpc:.2f}" if _median_cpc else "N/A",
+            "estimated_steady_state_acos": f"{_estimated_acos:.0%}" if _estimated_acos else "N/A",
+            "ad_profit_drag": f"{_ad_profit_drag:.0%}" if _ad_profit_drag else "N/A",
+            "fba_fee_pct": f"{_fba_fee_pct:.1%}",
+            "breakeven_acos": f"{_breakeven_acos:.0%}",
+            "ad_burden_verdict": _ad_burden_verdict,
+            # Brand & seller concentration (position share, sales share, CR3/CR5, HHI)
+            "concentration_data": json.dumps(concentration_data, ensure_ascii=False),
         }
     ]
 
@@ -2266,10 +3024,11 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 concurrency=5,
             ),
             ProcessStep(name="fetch_market_signals", fn=_fetch_market_signals),
+            ProcessStep(name="fetch_category_cvr", fn=_fetch_category_cvr),
+            ProcessStep(name="fetch_sellersprite_bsr", fn=_fetch_sellersprite_bsr),
             ProcessStep(name="enrich_external_intensity", fn=_enrich_external_intensity),
             ProcessStep(name="enrich_batch_traffic_scores", fn=_enrich_batch_traffic_scores),
             ProcessStep(name="fetch_time_series_data", fn=_fetch_time_series_data),
-            ProcessStep(name="fetch_sellersprite_bsr", fn=_fetch_sellersprite_bsr),
             ProcessStep(name="calculate_monopoly_score", fn=_run_monopoly_analysis),
             ProcessStep(
                 name="deliver_report",

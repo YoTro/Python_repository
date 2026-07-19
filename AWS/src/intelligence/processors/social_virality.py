@@ -369,8 +369,10 @@ class SocialViralityProcessor:
         promo_tag_count = 0  # videos flagged promotional: native ad flag OR promo hashtag
         native_ad_count = 0  # subset flagged by TikTok's own ad fields
 
-        # KOL/KOC tier counters
+        # KOL/KOC tier counters (videos per tier)
         tier_counts: dict[str, int] = {"nano": 0, "micro": 0, "mid": 0, "macro": 0, "mega": 0}
+        # unique creator uid → tier (classified by follower count on first appearance)
+        creator_tier: dict[str, str] = {}
         # views per unique creator uid — used for HHI and creator diversity
         creator_views: dict[str, int] = {}
 
@@ -396,17 +398,29 @@ class SocialViralityProcessor:
             followers = v.get("followers", 0)
             uid = v.get("uid", "")
 
-            # KOL/KOC tier classification
+            # KOL/KOC tier classification (video-level count)
             if followers > self.TIER_MACRO_MAX:
                 tier_counts["mega"] += 1
+                _tier = "mega"
             elif followers > self.TIER_MID_MAX:
                 tier_counts["macro"] += 1
+                _tier = "macro"
             elif followers > self.TIER_MICRO_MAX:
                 tier_counts["mid"] += 1
+                _tier = "mid"
             elif followers > self.TIER_NANO_MAX:
                 tier_counts["micro"] += 1
+                _tier = "micro"
+            elif followers > 0:
+                tier_counts["nano"] += 1
+                _tier = "nano"
             else:
                 tier_counts["nano"] += 1
+                _tier = "unknown"  # follower count not available for this platform
+
+            # First-seen tier per unique creator (deduplicates multi-video creators)
+            if uid and uid not in creator_tier:
+                creator_tier[uid] = _tier
 
             # Accumulate views per creator for HHI and diversity
             if uid:
@@ -451,6 +465,22 @@ class SocialViralityProcessor:
         kol_ratio = (tier_counts["macro"] + tier_counts["mega"]) / valid_videos
         kol_koc_matrix["koc_ratio"] = round(koc_ratio, 2)
         kol_koc_matrix["kol_ratio"] = round(kol_ratio, 2)
+
+        # Unique creator counts per tier — each creator counted once regardless of
+        # how many videos they posted.  "unknown" = follower count not exposed by
+        # this platform (e.g. YouTube hashtag page); can't classify tier without an
+        # extra channel-info API call.
+        unique_by_tier: dict[str, int] = dict.fromkeys(
+            ("nano", "micro", "mid", "macro", "mega", "unknown"), 0
+        )
+        for _t in creator_tier.values():
+            unique_by_tier[_t] += 1
+        n_kol_unique = unique_by_tier["macro"] + unique_by_tier["mega"]
+        n_koc_unique = unique_by_tier["nano"] + unique_by_tier["micro"]
+        kol_koc_matrix["unique_by_tier"] = unique_by_tier
+        kol_koc_matrix["n_kol_unique"] = n_kol_unique
+        kol_koc_matrix["n_koc_unique"] = n_koc_unique
+        kol_koc_matrix["unique_creators_total"] = len(creator_tier)
 
         mega_influencer_ratio = tier_counts["mega"] / valid_videos
 
