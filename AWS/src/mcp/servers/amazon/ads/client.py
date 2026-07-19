@@ -1135,18 +1135,18 @@ class AmazonAdsClient:
         "adFormat",
         "campaignGoal",
         "peerSetSize",
-        # "percentOfPurchasesNewToBrand",
-        # "percentOfPurchasesNewToBrandP25",
-        # "percentOfPurchasesNewToBrandP50",
-        # "percentOfPurchasesNewToBrandP75",
-        # "newToBrandPurchaseRate",
-        # "newToBrandPurchaseRateP25",
-        # "newToBrandPurchaseRateP50",
-        # "newToBrandPurchaseRateP75",
-        # "costPerNewToBrandPurchase",
-        # "costPerNewToBrandPurchaseP25",
-        # "costPerNewToBrandPurchaseP50",
-        # "costPerNewToBrandPurchaseP75",
+        "percentOfPurchasesNewToBrand",
+        "percentOfPurchasesNewToBrandP25",
+        "percentOfPurchasesNewToBrandP50",
+        "percentOfPurchasesNewToBrandP75",
+        "newToBrandPurchaseRate",
+        "newToBrandPurchaseRateP25",
+        "newToBrandPurchaseRateP50",
+        "newToBrandPurchaseRateP75",
+        "costPerNewToBrandPurchase",
+        "costPerNewToBrandPurchaseP25",
+        "costPerNewToBrandPurchaseP50",
+        "costPerNewToBrandPurchaseP75",
         "ctr",
         "ctrP25",
         "ctrP50",
@@ -1159,14 +1159,14 @@ class AmazonAdsClient:
         "cpmP25",
         "cpmP50",
         "cpmP75",
-        # "completionRateVideoAd",
-        # "completionRateVideoAdP25",
-        # "completionRateVideoAdP50",
-        # "completionRateVideoAdP75",
-        # "costPerCompletedViewVideoAd",
-        # "costPerCompletedViewVideoAdP25",
-        # "costPerCompletedViewVideoAdP50",
-        # "costPerCompletedViewVideoAdP75",
+        "completionRateVideoAd",
+        "completionRateVideoAdP25",
+        "completionRateVideoAdP50",
+        "completionRateVideoAdP75",
+        "costPerCompletedViewVideoAd",
+        "costPerCompletedViewVideoAdP25",
+        "costPerCompletedViewVideoAdP50",
+        "costPerCompletedViewVideoAdP75",
         "campaignBudgetCurrencyCode",
     ]
 
@@ -1178,12 +1178,29 @@ class AmazonAdsClient:
         "MONTHLY": 456,
     }
 
+    # Minimal columns for get_category_cvr_benchmark (MONTHLY time unit).
+    # purchaseRate* were removed by Amazon (400 as of 2026-07).
+    # newToBrandPurchaseRateP50 is the closest available CVR proxy: it measures
+    # the fraction of ad clicks that result in a first-time brand purchase.
+    # Slightly lower than overall CVR but directionally correct for ACOS estimation.
+    _CVR_BENCHMARK_COLUMNS: list[str] = [
+        "campaignCountry",
+        "brand",
+        "browseCategory",
+        "adProduct",
+        "peerSetSize",
+        "newToBrandPurchaseRateP50",
+        "cpcP50",
+        "campaignBudgetCurrencyCode",
+    ]
+
     async def get_benchmark_report(
         self,
         start_date: str | None = None,
         end_date: str | None = None,
         days: int = 30,
         time_unit: str = "DAILY",
+        columns: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Fetch a crossProgramBenchmarks report.
@@ -1200,6 +1217,8 @@ class AmazonAdsClient:
             end_date:   "YYYY-MM-DD"; defaults to yesterday.
             days:       Lookback when start/end are omitted (default 30).
             time_unit:  "DAILY" (max 90 d/req), "WEEKLY" or "MONTHLY" (max 456 d/req).
+            columns:    Metric columns to request; defaults to _BENCHMARK_COLUMNS.
+                        Pass _CVR_BENCHMARK_COLUMNS to fetch purchase-rate percentiles.
 
         Returns:
             List of raw benchmark record dicts; one entry per dimension combination.
@@ -1245,13 +1264,13 @@ class AmazonAdsClient:
         }
         # DAILY uses "date"; WEEKLY/MONTHLY require "startDate" + "endDate".
         date_cols = ["date"] if time_unit == "DAILY" else ["startDate", "endDate"]
-        columns = date_cols + self._BENCHMARK_COLUMNS
+        resolved_columns = date_cols + (columns if columns is not None else self._BENCHMARK_COLUMNS)
 
         report_cfg: dict[str, Any] = {
             "adProduct": "ALL",
             "reportTypeId": "crossProgramBenchmarks",
             "groupBy": ["brandCategoryBenchmarks"],
-            "columns": columns,
+            "columns": resolved_columns,
             "timeUnit": time_unit,
             "format": "GZIP_JSON",
         }
@@ -1309,6 +1328,57 @@ class AmazonAdsClient:
             f"[crossProgramBenchmarks] {len(records)} records ({_start}→{_end}, {time_unit})"
         )
         return records
+
+    async def get_category_cvr_benchmark(
+        self,
+        days: int = 30,
+        time_unit: str = "MONTHLY",
+    ) -> dict[str, Any]:
+        """
+        Fetch category CVR and CPC benchmarks from crossProgramBenchmarks.
+
+        CVR source: newToBrandPurchaseRateP50 — the category P50 fraction of ad
+        clicks that result in a first-time brand purchase.  purchaseRate* columns
+        were removed by Amazon as of 2026-07; this is the closest available proxy.
+        CPC source: cpcP50 — category median cost-per-click.
+
+        Returns:
+        {
+          "category_median_cvr": float | None,   # newToBrandPurchaseRateP50 for SP
+          "peer_set_size":       int   | None,
+          "browse_category":     str   | None,
+          "cpc_p50":             float | None,   # category median CPC
+        }
+        Raises on API failure — caller applies the fallback chain.
+        """
+        records = await self.get_benchmark_report(
+            days=days, time_unit=time_unit, columns=self._CVR_BENCHMARK_COLUMNS
+        )
+
+        # Prefer SP rows; fall back to all ad products if none
+        sp_rows = [r for r in records if (r.get("adProduct") or "").upper() == "SPONSORED_PRODUCTS"]
+        candidates = sp_rows or records
+        # Largest peer set = most representative category benchmark
+        # peerSetSize may be a range string like "5-10"; take the upper bound for sorting.
+        candidates.sort(
+            key=lambda r: int(str(r.get("peerSetSize") or "0").split("-")[-1]),
+            reverse=True,
+        )
+        best = candidates[0] if candidates else {}
+
+        def _sf(v: Any) -> float | None:
+            try:
+                f = float(v)
+                return f if f > 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        return {
+            "category_median_cvr": _sf(best.get("newToBrandPurchaseRateP50")),
+            "peer_set_size": best.get("peerSetSize"),
+            "browse_category": best.get("browseCategory"),
+            "cpc_p50": _sf(best.get("cpcP50")),
+        }
 
     # ── Change History ─────────────────────────────────────────────────────
 
