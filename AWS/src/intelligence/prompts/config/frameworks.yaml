@@ -1,8 +1,9 @@
 psi_benchmarking:
-  title: "PSI Benchmarking Framework"
+  title: "Social PSI Benchmarking Framework (TikTok/Social Viral Momentum Only)"
   content: |
-    - Blue Ocean (Untapped/Niche): PSI < 40 AND Organic Multiplier > 5.0. Indicates high viral potential with low commercial saturation.
-    - Growth Market: PSI 40-75. Sizable audience with active competition.
+    NOTE: Social PSI measures viral promotional momentum on TikTok/social platforms only — it is NOT a market monopoly indicator. Do NOT use Social PSI to assess Amazon competitive concentration or conclude "Blue Ocean" market status.
+    - Social Whitespace (Low Viral Competition): PSI < 40 AND Organic Multiplier > 5.0. Indicates high viral potential with low commercial saturation on social platforms.
+    - Growth Market: PSI 40-75. Sizable social audience with active competition.
     - Saturated/Fad: PSI > 75. High noise, high CPC, or a potentially fading trend.
 
 sentiment_analysis:
