@@ -59,16 +59,19 @@ class SearchExtractor(AmazonBaseScraper):
                     parse_integer(sales_el.get_text(strip=True)) if sales_el else None
                 )
 
-                # Brand: Amazon renders brand byline as <a id="bylineInfo">Visit the X Store</a>
-                # or occasionally as plain text "Brand: X". Both forms live under the same id.
+                # Brand — three selectors in priority order (search cards lack the logo img):
+                #   A) Premium layout: <a id="visitStoreDesktopUrl">Visit the X Store</a>
+                #   B) Legacy layout:  <a id="bylineInfo">Visit the X Store</a>
+                #   C) Legacy layout:  <span id="bylineInfo">Brand: X</span>
                 brand = None
-                byline = result.find("a", id="bylineInfo")
-                if byline:
-                    text = byline.get_text(strip=True)
+                store_link = result.find("a", id="visitStoreDesktopUrl") or result.find(
+                    "a", id="bylineInfo"
+                )
+                if store_link:
+                    text = store_link.get_text(strip=True)
                     m = re.match(r"Visit the (.+?) Store$", text)
                     brand = m.group(1) if m else text or None
                 else:
-                    # Fallback: plain-text byline span (older layout / no store page)
                     byline_span = result.find("span", id="bylineInfo")
                     if byline_span:
                         text = byline_span.get_text(strip=True)

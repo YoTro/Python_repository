@@ -45,7 +45,30 @@ class ProductDetailsExtractor(AmazonBaseScraper):
             if title_span:
                 product.title = title_span.get_text(strip=True)
 
-        # 2. Features & Description (Always deep-dive)
+        # 2. Brand — four selectors in priority order:
+        #   A) Premium layout: <img id="brandLogoHiResByline" alt="BrandName"> (exact name, no parsing)
+        #   B) Premium layout: <a id="visitStoreDesktopUrl">Visit the X Store</a>
+        #   C) Legacy layout:  <a id="bylineInfo">Visit the X Store</a>
+        #   D) Legacy layout:  <span id="bylineInfo">Brand: X</span>
+        if not product.brand:
+            logo_img = soup.find("img", id="brandLogoHiResByline")
+            if logo_img and logo_img.get("alt", "").strip():
+                product.brand = logo_img["alt"].strip()
+            else:
+                store_link = soup.find("a", id="visitStoreDesktopUrl")
+                if not store_link:
+                    store_link = soup.find("a", id="bylineInfo")
+                if store_link:
+                    text = store_link.get_text(strip=True)
+                    m = re.match(r"Visit the (.+?) Store$", text)
+                    product.brand = m.group(1) if m else text or None
+                else:
+                    byline_span = soup.find("span", id="bylineInfo")
+                    if byline_span:
+                        text = byline_span.get_text(strip=True)
+                        product.brand = re.sub(r"^Brand:\s*", "", text, flags=re.I) or None
+
+        # 3. Features & Description (always deep-dive)
         feature_bullets_div = soup.find("div", id="feature-bullets")
         if feature_bullets_div:
             product.features = [
@@ -58,7 +81,7 @@ class ProductDetailsExtractor(AmazonBaseScraper):
         if desc_div:
             product.description = desc_div.get_text(separator="\n", strip=True)
 
-        # 3. Price/Rating/Reviews (Only update if missing from search)
+        # 4. Price/Rating/Reviews (only update if missing from search)
         if product.price is None:
             price_span = soup.find("span", class_="a-price-whole")
             product.price = parse_price(price_span.get_text(strip=True)) if price_span else None
@@ -73,7 +96,7 @@ class ProductDetailsExtractor(AmazonBaseScraper):
             rating_span = soup.select_one("i.a-icon-star span.a-icon-alt")
             product.rating = parse_rating(rating_span.get_text(strip=True)) if rating_span else None
 
-        # 4. Past Month Sales
+        # 5. Past Month Sales
         if product.past_month_sales is None:
             # Try social proofing span first
             sales_span = soup.find("span", id="social-proofing-faceout-title-tk_bought")
@@ -85,12 +108,12 @@ class ProductDetailsExtractor(AmazonBaseScraper):
             else:
                 product.past_month_sales = parse_integer(sales_span.get_text(strip=True))
 
-        # 5. Fulfillment
+        # 6. Fulfillment
         fba_span = soup.find("span", id="tabular-buybox-truncate-0")
         if fba_span and "Amazon" in fba_span.get_text():
             product.is_fba = True
 
-        # 6. A+ Content
+        # 7. A+ Content
         if product.has_a_plus_content is None:
             product.has_a_plus_content = bool(soup.find("div", class_="aplus-content-wrapper"))
 
@@ -98,14 +121,14 @@ class ProductDetailsExtractor(AmazonBaseScraper):
             product.aplus_images = self._extract_aplus_images(soup)
             logger.info(f"Found {len(product.aplus_images)} A+ images for {product.asin}")
 
-        # 7. Main images — extract URLs and resolution metadata from the same soup pass.
+        # 8. Main images — extract URLs and resolution metadata from the same soup pass.
         if not product.images:
             product.images, product.images_metadata = self._extract_main_images(soup, html_content)
             if product.images and not product.main_image_url:
                 product.main_image_url = product.images[0]
             logger.info(f"Extracted {len(product.images)} image(s) for {product.asin}")
 
-        # 8. Videos
+        # 9. Videos
         if not product.videos:
             video_urls, video_count = self._extract_video_meta(soup, html_content)
             if video_urls:
