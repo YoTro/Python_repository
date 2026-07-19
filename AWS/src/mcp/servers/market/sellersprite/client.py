@@ -600,6 +600,24 @@ class SellerspriteAPI:
             logger.error(f"[sellersprite] market-research failed with status {res.status_code}")
             return {}
 
+        # Soft-401: server returned 200 but redirected to boarding/login page.
+        # The market-research endpoint issues a 302 → boarding instead of 401,
+        # so _request's auth-error path never fires. Detect it here and retry.
+        if "guest/boarding" in res.url or "guest/boarding" in res.text[:500]:
+            logger.warning(
+                "[sellersprite] market-research soft-401 (boarding redirect) — re-logging in"
+            )
+            if self._safe_relogin():
+                res = self._request(
+                    "POST" if page == 1 else "GET",
+                    url,
+                    **({"data": data} if page == 1 else {"params": params}),
+                    headers=headers,
+                )
+                if not res.ok or "guest/boarding" in res.url:
+                    logger.error("[sellersprite] market-research still unauthorized after relogin")
+                    return {}
+
         return _parse_market_research_html(res.text, node_id_path)
 
 
