@@ -11,6 +11,17 @@ set -e
 REPO_URL="https://github.com/YoTro/Python_repository.git"
 PROJECT_NAME="Python_repository"
 APP_SUBDIR="AWS"
+
+# Guard: abort if script is being run from inside the project directory.
+# Running from within Python_repository/AWS would cause a nested clone and put
+# venv311 in the wrong location.
+_cwd=$(pwd)
+if [[ "$_cwd" == *"/$PROJECT_NAME/$APP_SUBDIR"* || "$_cwd" == *"/$PROJECT_NAME/$APP_SUBDIR" ]]; then
+    echo "❌ ERROR: Run this script from your HOME directory, not from inside the project." >&2
+    echo "   cd ~ && bash $_cwd/scripts/deploy_ubuntu.sh" >&2
+    exit 1
+fi
+unset _cwd
 PYTHON_VERSION="3.11"
 STATUS_FILE="$HOME/.deploy_status"
 
