@@ -138,13 +138,17 @@ class AmazonAdsClient:
 
         logger.info("422 detected. Attempting automated discovery of an owned ASIN...")
 
-        url = f"{self.base_url}/sp/ads/list"
+        # /sp/productAds/list is the correct v3 SP Product Ads endpoint.
+        # /sp/ads/list is not a valid Advertising API path — it hits AWS API Gateway's
+        # IAM auth layer directly and returns 403 "Invalid key=value pair".
+        url = f"{self.base_url}/sp/productAds/list"
+        media_type = "application/vnd.spProductAd.v3+json"
         headers = {
             "Authorization": f"Bearer {self.auth.get_access_token()}",
             "Amazon-Advertising-API-ClientId": self.auth.client_id,
             "Amazon-Advertising-API-Scope": self.auth.get_profile_id(),
-            "Content-Type": "application/vnd.spad.v3+json",
-            "Accept": "application/vnd.spad.v3+json",
+            "Content-Type": media_type,
+            "Accept": media_type,
         }
 
         try:
@@ -152,11 +156,14 @@ class AmazonAdsClient:
                 "amazon_ads", store_id=self.auth.store_id, operation="listSponsoredProducts"
             )
             resp = await asyncio.to_thread(
-                requests.post, url, json={"maxResults": 10}, headers=headers
+                requests.post,
+                url,
+                json={"stateFilter": {"include": ["ENABLED", "PAUSED"]}, "maxResults": 10},
+                headers=headers,
             )
             if resp.status_code == 200:
                 data = resp.json()
-                ads = data.get("ads", [])
+                ads = data.get("productAds", [])
                 if ads:
                     discovered_asin = ads[0].get("asin")
                     if discovered_asin:
@@ -164,12 +171,12 @@ class AmazonAdsClient:
                         self._owned_asin_cache = discovered_asin
                         return discovered_asin
                 logger.warning(
-                    f"Owned ASIN discovery: /sp/ads/list returned 200 but no ads with ASIN. "
+                    f"Owned ASIN discovery: /sp/productAds/list returned 200 but no ads with ASIN. "
                     f"Response: {data}"
                 )
             else:
                 logger.warning(
-                    f"Owned ASIN discovery: /sp/ads/list returned HTTP {resp.status_code}. "
+                    f"Owned ASIN discovery: /sp/productAds/list returned HTTP {resp.status_code}. "
                     f"Body: {resp.text[:500]}"
                 )
         except Exception as e:

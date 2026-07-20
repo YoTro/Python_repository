@@ -2098,24 +2098,27 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
         )
         browse_category = result.get("browse_category")
         median_cvr = result.get("category_median_cvr")
-        cpc_p50 = result.get("cpc_p50")
+        raw_cpc_p50 = result.get("cpc_p50")
 
         if median_cvr and 0 < median_cvr < 1:
             if _ads_category_matches_niche(browse_category, core_keywords):
                 cvr = median_cvr
+                cpc_p50 = raw_cpc_p50  # only trust CPC from a matching category
                 source = (
                     f"amazon_ads_benchmark newToBrandPurchaseRateP50"
                     f" (category={browse_category!r}"
                     f", peers={result.get('peer_set_size', 'N/A')})"
                 )
-                logger.info(f"[fetch_category_cvr] Amazon Ads CVR={cvr:.2%} — {source}")
+                logger.info(
+                    f"[fetch_category_cvr] Amazon Ads CVR={cvr:.2%}, "
+                    f"cpcP50={'$'+f'{cpc_p50:.2f}' if cpc_p50 else 'N/A'} — {source}"
+                )
             else:
                 logger.warning(
                     f"[fetch_category_cvr] Amazon Ads browse_category={browse_category!r} "
-                    f"does not match niche keywords {core_keywords}; discarding benchmark"
+                    f"does not match niche keywords {core_keywords}; "
+                    f"discarding benchmark CVR and CPC (raw_cpc=${raw_cpc_p50})"
                 )
-        if cpc_p50:
-            logger.info(f"[fetch_category_cvr] Amazon Ads cpcP50=${cpc_p50:.2f}")
     except Exception as e:
         logger.warning(f"[fetch_category_cvr] Amazon Ads benchmark failed: {e}")
 
@@ -2132,6 +2135,28 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
     if cvr is None:
         cvr = 0.10
         source = "default_0.10 (Amazon Ads category mismatch; SellerSprite unavailable)"
+
+    # ── CPC P50 fallback: derive from keyword bid recommendations ────────────
+    # Used when Amazon Ads benchmark was discarded (category mismatch) or failed.
+    # Bid recommendations are fetched in _fetch_market_signals for the actual niche
+    # keywords, so they are always category-correct regardless of the store's ad account.
+    if cpc_p50 is None:
+        _bid_data = ctx.cache.get("detailed_bid_analysis", {})
+        _bid_cpc_values: list[float] = []
+        for _strategy_recs in _bid_data.values():
+            for _rec in _strategy_recs:
+                for _expr in _rec.get("bidRecommendationsForTargetingExpressions", []):
+                    _rb = _expr.get("recommendedBid", {})
+                    _s = float(_rb.get("startBid") or _rb.get("bid") or 0)
+                    _e = float(_rb.get("endBid") or _s)
+                    if _s > 0:
+                        _bid_cpc_values.append((_s + _e) / 2)
+        if _bid_cpc_values:
+            cpc_p50 = statistics.median(_bid_cpc_values)
+            logger.info(
+                f"[fetch_category_cvr] CPC P50 from bid recommendations: "
+                f"${cpc_p50:.2f} (n={len(_bid_cpc_values)})"
+            )
 
     ctx.cache["category_cvr"] = cvr
     ctx.cache["category_cvr_source"] = source
