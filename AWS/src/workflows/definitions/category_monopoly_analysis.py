@@ -2414,7 +2414,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         if any(item.get("price", 0) > 0 for item in analysis_input)
         else None
     )
-    _rep_asin: str | None = _rep_item["asin"] if _rep_item else None
+    _rep_asin: str | None = (
+        (_rep_item.get("asin") or _rep_item.get("ASIN") or "").strip().upper() or None
+    ) if _rep_item else None
 
     # --- Primary: live API ---
     _api_fee_resolved = False
