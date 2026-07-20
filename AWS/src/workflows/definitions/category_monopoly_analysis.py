@@ -30,9 +30,11 @@ from src.intelligence.prompts.manager import prompt_manager
 from src.intelligence.router import TaskCategory
 from src.mcp.servers.amazon.ads.client import AmazonAdsClient
 from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
+from src.mcp.servers.amazon.extractors.comments import CommentsExtractor
 from src.mcp.servers.amazon.extractors.feedback import SellerFeedbackExtractor
 from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
 from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
+from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
 from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
 from src.mcp.servers.amazon.extractors.search import SearchExtractor
 from src.mcp.servers.market.deals.client import DealHistoryClient
@@ -61,6 +63,7 @@ _TTL_KEYWORDS = 21_600  # 6  h — LLM keyword extraction from BSR titles
 _TTL_EXTERNAL = 43_200  # 12 h — TikTok PSI + deal intensity
 _TTL_TRAFFIC = 21_600  # 6  h — Xiyouzhaoci batch ad-traffic ratios
 _TTL_CVR = 7 * 86_400  # 7 d  — Amazon Ads category CVR benchmark
+_TTL_CRITICAL_REVIEWS = 86_400  # 24 h — recent critical reviews per ASIN
 
 
 def _l2_key(ctx, *parts) -> str:
@@ -2009,6 +2012,257 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
     return items
 
 
+# ---------------------------------------------------------------------------
+# Non-fixable review pre-filter
+# ---------------------------------------------------------------------------
+
+# Class A — Logistics / fulfillment: shipping damage, wrong item, carrier delays.
+# Entirely outside the manufacturer's control; give no actionable entry signal.
+_NON_FIXABLE_LOGISTICS_RE = re.compile(
+    r"\b("
+    r"shipping|delivery|delivered|in[- ]transit|arrived damaged"
+    r"|package[d]?|box was (crushed|damaged|dented)|packaging (damaged|broken)"
+    r"|carrier|postal service|fedex|u\.?p\.?s\.?|usps"
+    r"|never arrived|lost in (mail|transit)"
+    r"|wrong item|wrong product|not what i ordered|sent the wrong|received (wrong|incorrect)"
+    r"|return (policy|process)|refund (request|issue)"
+    r"|amazon (fulfillment|warehouse)|prime delivery"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Class B — "Works as designed": reviewer dislikes the product category, not the
+# execution. A new entrant cannot fix an inherent category trade-off.
+_NON_FIXABLE_WAD_RE = re.compile(
+    r"("
+    r"works (exactly )?as (described|expected|advertised|intended|designed)"
+    r"|does (exactly )?what it('s| is) (supposed|meant) to"
+    r"|product (itself )?is (fine|good|great|okay|ok)\b"
+    r"|no (product |design )?(defect|flaw|issue|problem)"
+    r")",
+    re.IGNORECASE,
+)
+
+# Override: clear product-defect signal that overrides a single incidental logistics mention
+# (e.g. "fast shipping but the product broke" is a product complaint, not a logistics one).
+_PRODUCT_DEFECT_SIGNAL_RE = re.compile(
+    r"\b("
+    r"broke|broken|cracked|snapped|shattered|defective|defect|malfunction"
+    r"|stopped (working|after)|doesn'?t work|does not work|dead on arrival"
+    r"|poor (quality|build|material|construction)|cheap (plastic|material|quality|build)"
+    r"|flimsy|fell apart|peeled|rusted|leaked|leaking|disintegrat"
+    r"|missing (part|piece|component|accessory|screw|hardware)"
+    r"|wrong size|incorrect size|doesn'?t fit|too small|too large|too short|too long"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_fixable_review(title: str | None, content: str | None) -> bool:
+    """
+    Return True when the review describes a fixable product deficiency.
+
+    Rejection rules (applied in order):
+    1. "Works as designed" signal — unconditional reject.
+    2. 2+ logistics hits — logistics-dominant, reject.
+    3. 1 logistics hit in a short review (< 40 words) WITHOUT a product-defect
+       signal — logistics-only short rant, reject.
+       Exception: if a product-defect signal is also present (e.g. "fast
+       shipping but the product broke"), the logistics mention is incidental
+       and the review is kept.
+    """
+    text = f"{title or ''} {content or ''}"
+    if _NON_FIXABLE_WAD_RE.search(text):
+        return False
+    logistics_hits = _NON_FIXABLE_LOGISTICS_RE.findall(text)
+    if len(logistics_hits) >= 2:
+        return False
+    if logistics_hits and len(text.split()) < 40:
+        if not _PRODUCT_DEFECT_SIGNAL_RE.search(text):
+            return False
+    return True
+
+
+async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> list[dict]:
+    """
+    Fetch recent critical (1–3 star) reviews using stratified sampling across
+    three market segments so no single segment dominates the signal:
+
+      Stratum A — Leaders     (BSR rank  1–10):  up to 2 brands
+      Stratum B — Mid-tier    (BSR rank 11–30):  up to 2 brands  (excl. A)
+      Stratum C — New entrants (listed ≤12 mo):  up to 1 brand   (excl. A+B)
+
+    Cross-stratum complaint themes are the strongest category-wide entry
+    signals; stratum-specific complaints surface segment weaknesses only.
+    Reviews older than 90 days are discarded — incumbents may have already
+    patched those issues.
+
+    Stores: ctx.cache["critical_reviews_data"]
+      {asin: {"brand": str, "rank": int, "stratum": str,
+              "recent_critical_reviews": [...]}}
+    """
+    _RECENCY_DAYS = 90
+    _MAX_PAGES = 2
+    _CONCURRENCY = 3
+    _STRATA_ALLOC = {"leaders": 2, "mid_tier": 2, "new_entrant": 1}
+
+    # Sellersprite snapshot → authoritative brand byline + listing date
+    ss_snapshots = ctx.cache.get("sellersprite_snapshots", {})
+    _brand_lookup: dict = {}
+    _asin_available_ms: dict = {}
+    if ss_snapshots:
+        _latest = ss_snapshots.get(max(ss_snapshots), [])
+        for p in _latest:
+            if p.get("asin"):
+                if p.get("brand"):
+                    _brand_lookup[p["asin"]] = p["brand"]
+                if p.get("available_date_ms"):
+                    _asin_available_ms[p["asin"]] = p["available_date_ms"]
+
+    # "New entrant" cutoff anchored to Sellersprite base snapshot (same as elsewhere)
+    base_ym = ctx.cache.get("sellersprite_base_ym", "")
+    if base_ym and len(base_ym) == 6:
+        _by, _bm = int(base_ym[:4]), int(base_ym[4:])
+        _total = _by * 12 + (_bm - 1) - 12
+        _cy, _cm = _total // 12, _total % 12 + 1
+        new_entrant_cutoff_ms = calendar.timegm((_cy, _cm, 1, 0, 0, 0)) * 1000
+    else:
+        new_entrant_cutoff_ms = (time.time() - 365 * 86400) * 1000
+
+    def _parse_rank(raw) -> int:
+        m = re.search(r"\d+", str(raw or "9999").replace(",", ""))
+        return int(m.group()) if m else 9999
+
+    # Build candidate list with rank, brand, and new-entrant flag
+    candidates: list[dict] = []
+    for item in items:
+        asin = (item.get("ASIN") or item.get("asin") or "").strip().upper()
+        if not asin:
+            continue
+        brand = _brand_lookup.get(asin) or item.get("Brand") or item.get("brand") or "Unknown"
+        if brand == "Unknown":
+            continue
+        rank = _parse_rank(item.get("Rank"))
+        avail_ms = _asin_available_ms.get(asin)
+        is_new = avail_ms is not None and avail_ms >= new_entrant_cutoff_ms
+        candidates.append({"asin": asin, "brand": brand, "rank": rank, "is_new": is_new})
+
+    def _pick_stratum(pool: list[dict], n: int, exclude_brands: set) -> list[dict]:
+        """Return up to n entries — one per brand — sorted by rank, excluding known brands."""
+        brand_best: dict = {}
+        for e in pool:
+            b = e["brand"]
+            if b in exclude_brands:
+                continue
+            if b not in brand_best or e["rank"] < brand_best[b]["rank"]:
+                brand_best[b] = e
+        return sorted(brand_best.values(), key=lambda x: x["rank"])[:n]
+
+    leaders_pool = [e for e in candidates if e["rank"] <= 10]
+    mid_tier_pool = [e for e in candidates if 11 <= e["rank"] <= 30]
+    new_entrant_pool = [e for e in candidates if e["is_new"]]
+
+    leaders = _pick_stratum(leaders_pool, _STRATA_ALLOC["leaders"], set())
+    used = {e["brand"] for e in leaders}
+    mid_tier = _pick_stratum(mid_tier_pool, _STRATA_ALLOC["mid_tier"], used)
+    used |= {e["brand"] for e in mid_tier}
+    new_entrants = _pick_stratum(new_entrant_pool, _STRATA_ALLOC["new_entrant"], used)
+
+    for e in leaders:
+        e["stratum"] = "leaders"
+    for e in mid_tier:
+        e["stratum"] = "mid_tier"
+    for e in new_entrants:
+        e["stratum"] = "new_entrant"
+
+    top_entries = leaders + mid_tier + new_entrants
+    if not top_entries:
+        logger.warning("[critical_reviews] No stratified candidates found; skipping")
+        return items
+
+    logger.info(
+        f"[critical_reviews] Stratified selection: "
+        f"leaders={len(leaders)}, mid_tier={len(mid_tier)}, new_entrant={len(new_entrants)}"
+    )
+
+    asin_key = ",".join(sorted(e["asin"] for e in top_entries))
+    reviews_hash = _hl.md5(asin_key.encode()).hexdigest()[:12]
+
+    cached = _l2_get(ctx, _TTL_CRITICAL_REVIEWS, "critical_reviews", reviews_hash)
+    if cached is not None:
+        ctx.cache["critical_reviews_data"] = cached
+        logger.info(f"[cat_monopoly] Critical reviews L2 cache hit hash={reviews_hash}")
+        return items
+
+    # Parse "Reviewed in the United States on March 15, 2025" or bare "March 15, 2025"
+    _DATE_RE = re.compile(r"(\w+ \d+, \d{4})")
+    _cutoff = datetime.now() - timedelta(days=_RECENCY_DAYS)
+
+    def _is_recent(date_str: str | None) -> bool:
+        if not date_str:
+            return False
+        m = _DATE_RE.search(date_str)
+        if not m:
+            return False
+        try:
+            return datetime.strptime(m.group(1), "%B %d, %Y") >= _cutoff
+        except ValueError:
+            return False
+
+    sem = asyncio.Semaphore(_CONCURRENCY)
+
+    async def _fetch_one(entry: dict) -> tuple[str, list]:
+        asin = entry["asin"]
+        async with sem:
+            try:
+                extractor = CommentsExtractor()
+                reviews = await extractor.get_negative_reviews(asin, max_pages=_MAX_PAGES)
+                recent = [r for r in reviews if _is_recent(r.date)]
+                fixable = [r for r in recent if _is_fixable_review(r.title, r.content)]
+                n_dropped = len(recent) - len(fixable)
+                logger.info(
+                    f"[critical_reviews] [{entry['stratum']}] ASIN={asin} "
+                    f"brand={entry['brand']}: {len(fixable)} fixable "
+                    f"(dropped {n_dropped} non-fixable, {len(reviews) - len(recent)} stale) "
+                    f"of {len(reviews)} total"
+                )
+                return asin, fixable
+            except Exception as e:
+                logger.warning(f"[critical_reviews] Failed for ASIN={asin}: {e}")
+                return asin, []
+
+    results = await asyncio.gather(*[_fetch_one(e) for e in top_entries])
+
+    critical_data: dict = {}
+    for entry, (asin, reviews) in zip(top_entries, results, strict=False):
+        critical_data[asin] = {
+            "brand": entry["brand"],
+            "rank": entry["rank"],
+            "stratum": entry["stratum"],
+            "recent_critical_reviews": [
+                {
+                    "rating": r.rating,
+                    "title": r.title,
+                    "content": (r.content or "")[:500],
+                    "date": r.date,
+                    "is_verified": r.is_verified,
+                    "helpful_votes": r.helpful_votes,
+                }
+                for r in reviews
+            ],
+        }
+
+    ctx.cache["critical_reviews_data"] = critical_data
+    _l2_set(ctx, critical_data, "critical_reviews", reviews_hash)
+    total = sum(len(v["recent_critical_reviews"]) for v in critical_data.values())
+    logger.info(
+        f"[critical_reviews] {total} recent critical reviews collected "
+        f"({_RECENCY_DAYS}d filter): "
+        f"leaders={len(leaders)}, mid_tier={len(mid_tier)}, new_entrant={len(new_entrants)}"
+    )
+    return items
+
+
 async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     """Calculates scores and generates flattened niche benchmarks."""
 
@@ -2141,40 +2395,104 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     )
     _actual_ad_ratio: float | None = ctx.cache.get("actual_bsr_ad_ratio")
 
-    # Breakeven ACOS: 1 - COGS% - referral% - FBA%.  FBA is looked up from the
-    # 2026 fee schedule using the Large Standard 12-16 oz tier (most representative
-    # for general consumer goods) at the category's median price bracket, then the
-    # 3.5% fuel/logistics surcharge is applied on top.
+    # Breakeven ACOS: 1 - COGS% - referral% - FBA%.
+    # Primary: call Amazon's public fee calculator API for the BSR product whose
+    # price is closest to the category median — this gives the real 2026 fee for
+    # the actual product weight/size class in this category.
+    # Fallback: select the appropriate weight tier from the local 2026 fee schedule
+    # using a price→weight heuristic on comparable-price BSR products.
     _REFERRAL_FEE_PCT = 0.15
     _COGS_PCT = 0.30
     _fba_fee_pct = 0.18  # fallback: Large Standard 12-16 oz at $25 ≈ $4.76/25
-    try:
-        _fba_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "../../mcp/servers/finance/fba_fee.json",
+
+    # Pick the BSR product with price closest to median_price as the representative ASIN.
+    _rep_item = (
+        min(
+            (item for item in analysis_input if item.get("price", 0) > 0),
+            key=lambda x: abs(x["price"] - median_price),
         )
-        with open(_fba_path) as _fba_f:
-            _fba_data = json.load(_fba_f)
-        _fuel_mult = 1 + _fba_data["meta"]["fuel_surcharge"]["rate_pct"] / 100
-        _rep_tier = next(
-            (
-                t
-                for t in _fba_data["fba_fulfillment_fees"]["standard_non_apparel"]["tiers"]
-                if t.get("size_tier") == "Large Standard"
-                and "12+ to 16" in (t.get("weight_range") or "")
-            ),
-            None,
-        )
-        if _rep_tier and median_price > 0:
-            _bracket = (
-                "under_10"
-                if median_price < 10
-                else ("over_50" if median_price > 50 else "10_to_50")
+        if any(item.get("price", 0) > 0 for item in analysis_input)
+        else None
+    )
+    _rep_asin: str | None = _rep_item["asin"] if _rep_item else None
+
+    # --- Primary: live API ---
+    _api_fee_resolved = False
+    if _rep_asin and median_price > 0:
+        try:
+            _fee_data = await ProfitabilitySearchExtractor().get_fees(_rep_asin, median_price)
+            # Response shape: {"programResults": {"Core#0": {"fees": [...], "totalFee": N}}}
+            _prog = (_fee_data.get("programResults") or {}).get("Core#0") or {}
+            _total: float | None = _prog.get("totalFee")
+            if _total is None:
+                # Sum individual fee components that represent fulfillment charges.
+                _total = sum(
+                    float(f.get("amount") or f.get("feeAmount", {}).get("amount") or 0)
+                    for f in (_prog.get("fees") or [])
+                    if "fulfillment" in (f.get("type") or f.get("feeType") or "").lower()
+                ) or None
+            if _total and _total > 0:
+                _fba_fee_pct = _total / median_price
+                _api_fee_resolved = True
+                logger.info(
+                    f"[monopoly] FBA fee from API: ${_total:.2f} ({_fba_fee_pct:.1%}) "
+                    f"for ASIN {_rep_asin} @ ${median_price:.2f}"
+                )
+        except Exception:
+            pass  # fall through to local JSON lookup
+
+    # --- Fallback: local 2026 fee schedule with price→weight heuristic ---
+    if not _api_fee_resolved:
+        try:
+            _fba_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "../../mcp/servers/finance/fba_fee.json",
             )
-            _fba_fee_usd = float(_rep_tier["price_brackets"][_bracket]) * _fuel_mult
-            _fba_fee_pct = _fba_fee_usd / median_price
-    except Exception:
-        pass  # use fallback 0.18
+            with open(_fba_path) as _fba_f:
+                _fba_data = json.load(_fba_f)
+            _fuel_mult = 1 + _fba_data["meta"]["fuel_surcharge"]["rate_pct"] / 100
+            # Narrow to products priced within ±35% of the category median to avoid
+            # outliers skewing the representative weight tier.
+            _comp_prices = [p for p in prices if median_price * 0.65 <= p <= median_price * 1.35]
+            _ref_price = statistics.median(_comp_prices) if _comp_prices else median_price
+            # Price → typical weight tier for standard US consumer goods (2026 schedule).
+            # Lighter/cheaper items map to Small Standard; heavier/pricier to Large Standard.
+            _PRICE_TO_TIER: list[tuple[float, str, str]] = [
+                (10,           "Small Standard", "8+ to 10"),
+                (18,           "Small Standard", "14+ to 16"),
+                (30,           "Large Standard", "8+ to 12"),
+                (50,           "Large Standard", "12+ to 16"),
+                (75,           "Large Standard", "1+ to 1.25 lb"),
+                (float("inf"), "Large Standard", "1.75+ to 2 lb"),
+            ]
+            _rep_tier = None
+            for _max_p, _size, _wt_fragment in _PRICE_TO_TIER:
+                if _ref_price < _max_p:
+                    _rep_tier = next(
+                        (
+                            t
+                            for t in _fba_data["fba_fulfillment_fees"]["standard_non_apparel"][
+                                "tiers"
+                            ]
+                            if t.get("size_tier") == _size
+                            and _wt_fragment in (t.get("weight_range") or "")
+                            and isinstance(
+                                t.get("price_brackets", {}).get("10_to_50"), (int, float)
+                            )
+                        ),
+                        None,
+                    )
+                    break
+            if _rep_tier and median_price > 0:
+                _bracket = (
+                    "under_10"
+                    if median_price < 10
+                    else ("over_50" if median_price > 50 else "10_to_50")
+                )
+                _fba_fee_usd = float(_rep_tier["price_brackets"][_bracket]) * _fuel_mult
+                _fba_fee_pct = _fba_fee_usd / median_price
+        except Exception:
+            pass  # use fallback 0.18
 
     _breakeven_acos = max(0.0, 1.0 - _COGS_PCT - _REFERRAL_FEE_PCT - _fba_fee_pct)
 
@@ -2924,6 +3242,10 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "ad_burden_verdict": _ad_burden_verdict,
             # Brand & seller concentration (position share, sales share, CR3/CR5, HHI)
             "concentration_data": json.dumps(concentration_data, ensure_ascii=False),
+            # Recent critical reviews for top brands (≤90 days — fixable deficiency signals)
+            "critical_reviews_data": json.dumps(
+                ctx.cache.get("critical_reviews_data", {}), ensure_ascii=False
+            ),
         }
     ]
 
@@ -3029,9 +3351,14 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
             ProcessStep(name="enrich_external_intensity", fn=_enrich_external_intensity),
             ProcessStep(name="enrich_batch_traffic_scores", fn=_enrich_batch_traffic_scores),
             ProcessStep(name="fetch_time_series_data", fn=_fetch_time_series_data),
+            ProcessStep(
+                name="fetch_critical_reviews_top_brands",
+                fn=_fetch_critical_reviews_top_brands,
+            ),
             ProcessStep(name="calculate_monopoly_score", fn=_run_monopoly_analysis),
             ProcessStep(
                 name="deliver_report",
+                batch_threshold=1,
                 prompt_template=prompt_manager.render_spec("monopoly_report", ctx_vars),
                 compute_target=ComputeTarget.CLOUD_LLM,
             ),

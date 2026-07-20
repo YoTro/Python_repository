@@ -74,6 +74,7 @@ optional_vars:
   core_keywords: "(none)"
   brand_social_data: "[]"
   concentration_data: "{}"
+  critical_reviews_data: "{}"
 
 output_schema: null
 
@@ -218,6 +219,34 @@ template: |
   - 'compliance_accessible_angle': if present, include this as a P0 item. A new entrant avoiding FIFRA registration is a structural cost advantage, not a nice-to-have.
   - 'recent_breakthrough_examples': if present, name 1–2 product titles as proof that new entrants CAN break into this BSR within the last 12 months.
   FORBIDDEN in the Actionable section: 'superior efficacy', 'compelling brand story', 'clear value proposition', 'eco-friendly formulation' (unless eco-friendly is in opportunity_signals), 'unique application method' — these are filler. Every P0/P1 item MUST contain at least one specific number or named sub-niche from the data above.
+
+  ### CRITICAL REVIEWS ANALYSIS (Recent ≤90 days, stratified sample)
+  {critical_reviews_data}
+  This JSON contains recent critical reviews (1–3 stars, ≤90 days old) collected via stratified sampling across three market segments. Each entry carries a 'stratum' field:
+    • 'leaders'     — BSR rank 1–10 products (up to 2 brands): what even the best incumbents get wrong
+    • 'mid_tier'    — BSR rank 11–30 (up to 2 brands, excluding leaders): challenger-segment weaknesses
+    • 'new_entrant' — products listed within the last 12 months that reached BSR (up to 1 brand): what recent entrants are still failing to fix
+  Sampling across strata prevents top-brand complaints from dominating; cross-stratum themes carry the highest signal value.
+  RENDER under the heading '## Market Entry via Deficiency Fix (Recent Critical Reviews)' immediately after the Compliance & Regulatory Risk section.
+  ANALYSIS STEPS (apply in order):
+  1. For each ASIN, extract recurring complaint themes from 'title' and 'content'. Merge near-duplicates (e.g. 'broke after two weeks' + 'cheap plastic' → 'Build Quality'). Count how many reviews per theme per ASIN.
+  2. Sort themes by total helpful_votes across all ASINs (buyer-impact proxy). Prefer verified-purchase (is_verified=true) reviews as primary evidence.
+  3. Classify each theme:
+     - FIXABLE: QC failures, unclear instructions, packaging defects, missing accessories, size/calibration errors, features that better sourcing could provide. These are entry opportunities.
+     - STRUCTURAL: Trade-offs intrinsic to the product type, regulatory constraints, or price-floor issues no entrant can solve without a fundamentally different product.
+  4. Scope classification — CRITICAL for interpretation:
+     - CATEGORY-WIDE PAIN POINT: theme appears in ≥2 ASINs from different strata (strongest entry signal — even market leaders and challengers share this flaw).
+     - CROSS-STRATUM (same tier): theme appears in ≥2 ASINs within one stratum only.
+     - BRAND-SPECIFIC WEAKNESS: theme appears in only one brand's ASIN (competitor's unique flaw, not a category opportunity).
+  5. Render a compact markdown table: Complaint Theme | # Reviews | Helpful Votes | Type (Fixable/Structural) | Scope | Strata Affected
+  6. Close with a one-line verdict: 'New-entrant fix-it viability: HIGH / MEDIUM / LOW — [1-2 sentence rationale citing the top fixable, category-wide complaint and which strata it spans]'
+  GUARD RULES:
+  - If critical_reviews_data is '{{}}' or all ASINs returned 0 recent reviews, write: 'No recent critical reviews (≤90 days) collected — product quality cannot be assessed from this data.' and skip the table.
+  - All reviews in this dataset have already been pre-filtered in Python: logistics/shipping complaints and "works as designed" disclaimers are removed before reaching this prompt. Do NOT re-introduce those categories as structural complaints — they are absent by design, not by omission.
+  - NEVER cite a complaint absent from the provided review text. Do not generalise beyond what reviewers wrote.
+  - A single 1-star rant is not a structural flaw. Require ≥3 corroborating reviews to label a theme STRUCTURAL.
+  - If helpful_votes = 0 for all reviews, sort by rating (lowest first) as severity proxy.
+  - NEVER conflate stratum rank with complaint severity — a mid-tier flaw that spans all three strata outranks a leaders-only flaw.
 
   ### ADDITIONAL TACTICAL RULES
   - 400-550 words. No filler.
