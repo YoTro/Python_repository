@@ -2111,7 +2111,7 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
                 )
                 logger.info(
                     f"[fetch_category_cvr] Amazon Ads CVR={cvr:.2%}, "
-                    f"cpcP50={'$'+f'{cpc_p50:.2f}' if cpc_p50 else 'N/A'} — {source}"
+                    f"cpcP50={'$' + f'{cpc_p50:.2f}' if cpc_p50 else 'N/A'} — {source}"
                 )
             else:
                 logger.warning(
@@ -2146,11 +2146,13 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
         for _strategy_recs in _bid_data.values():
             for _rec in _strategy_recs:
                 for _expr in _rec.get("bidRecommendationsForTargetingExpressions", []):
-                    _rb = _expr.get("recommendedBid", {})
-                    _s = float(_rb.get("startBid") or _rb.get("bid") or 0)
-                    _e = float(_rb.get("endBid") or _s)
-                    if _s > 0:
-                        _bid_cpc_values.append((_s + _e) / 2)
+                    _bids = [
+                        float(b["suggestedBid"])
+                        for b in _expr.get("bidValues", [])
+                        if b.get("suggestedBid")
+                    ]
+                    if _bids:
+                        _bid_cpc_values.append(statistics.median(_bids))
         if _bid_cpc_values:
             cpc_p50 = statistics.median(_bid_cpc_values)
             logger.info(
@@ -2535,11 +2537,13 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     for _strategy_recs in bid_raw.values():
         for _rec in _strategy_recs:
             for _expr in _rec.get("bidRecommendationsForTargetingExpressions", []):
-                _rb = _expr.get("recommendedBid", {})
-                _s = float(_rb.get("startBid") or _rb.get("bid") or 0)
-                _e = float(_rb.get("endBid") or _s)
-                if _s > 0:
-                    _cpc_values.append((_s + _e) / 2)
+                _bids = [
+                    float(b["suggestedBid"])
+                    for b in _expr.get("bidValues", [])
+                    if b.get("suggestedBid")
+                ]
+                if _bids:
+                    _cpc_values.append(statistics.median(_bids))
 
     # Fall back to category benchmark cpcP50 when bid-recommendations API is unavailable
     # (e.g. no owned listing in this category — the bid API requires an advertiser ASIN).

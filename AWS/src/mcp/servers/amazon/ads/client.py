@@ -118,14 +118,28 @@ class AmazonAdsClient:
     _REPORT_POLL_MAX = 360  # max attempts → 60 min ceiling (large reports need > 30 min)
     _REPORT_POLL_TIMEOUT = 30  # per-request timeout for poll GET (seconds)
 
+    # Class-level pool keyed by store_id — shared across all instances so that
+    # evictions from one call are visible to concurrent calls on the same store,
+    # and the pool survives across multiple AmazonAdsClient instantiations.
+    _owned_asin_pools: dict[str, list[str]] = {}
+
     def __init__(self, store_id: str | None = None, region: str = "NA"):
         self.auth = AmazonAdsAuth(store_id)
         self.base_url = self.ENDPOINTS.get(region.upper(), self.ENDPOINTS["NA"])
-        self._owned_asin_cache = None
+
+    @property
+    def _owned_asin_pool(self) -> list[str]:
+        return AmazonAdsClient._owned_asin_pools.setdefault(self.auth.store_id, [])
 
     async def _get_owned_asin_fallback(self) -> str | None:
         """
-        Attempts to find a valid owned ASIN from the account.
+        Return the first candidate from the owned-ASIN pool, refreshing it when empty.
+
+        Pool is class-level (keyed by store_id) so evictions and discoveries are
+        shared across concurrent instances and across re-instantiations within the
+        same process.  Populated from /sp/productAds/list filtered to ENABLED only —
+        active ads are overwhelmingly for live listings; paused ads frequently
+        reference discontinued or deleted products.
         """
         env_fallback = os.getenv(f"AMAZON_ADS_FALLBACK_ASIN_{self.auth.store_id}") or os.getenv(
             "AMAZON_ADS_FALLBACK_ASIN"
@@ -133,10 +147,10 @@ class AmazonAdsClient:
         if env_fallback:
             return env_fallback
 
-        if self._owned_asin_cache:
-            return self._owned_asin_cache
+        if self._owned_asin_pool:
+            return self._owned_asin_pool[0]
 
-        logger.info("422 detected. Attempting automated discovery of an owned ASIN...")
+        logger.info("Owned-ASIN pool empty — discovering from /sp/productAds/list (ENABLED)...")
 
         # /sp/productAds/list is the correct v3 SP Product Ads endpoint.
         # /sp/ads/list is not a valid Advertising API path — it hits AWS API Gateway's
@@ -158,20 +172,27 @@ class AmazonAdsClient:
             resp = await asyncio.to_thread(
                 requests.post,
                 url,
-                json={"stateFilter": {"include": ["ENABLED", "PAUSED"]}, "maxResults": 10},
+                json={"stateFilter": {"include": ["ENABLED"]}, "maxResults": 50},
                 headers=headers,
             )
             if resp.status_code == 200:
                 data = resp.json()
                 ads = data.get("productAds", [])
-                if ads:
-                    discovered_asin = ads[0].get("asin")
-                    if discovered_asin:
-                        logger.info(f"Discovered owned ASIN: {discovered_asin}")
-                        self._owned_asin_cache = discovered_asin
-                        return discovered_asin
+                pool = self._owned_asin_pool
+                existing = set(pool)
+                for ad in ads:
+                    asin = ad.get("asin", "").strip()
+                    if asin and asin not in existing:
+                        pool.append(asin)
+                        existing.add(asin)
+                if pool:
+                    logger.info(
+                        f"Discovered {len(pool)} owned ASIN(s): "
+                        f"{pool[:3]}{'...' if len(pool) > 3 else ''}"
+                    )
+                    return pool[0]
                 logger.warning(
-                    f"Owned ASIN discovery: /sp/productAds/list returned 200 but no ads with ASIN. "
+                    f"Owned ASIN discovery: /sp/productAds/list returned 200 but no ENABLED ads. "
                     f"Response: {data}"
                 )
             else:
@@ -264,6 +285,11 @@ class AmazonAdsClient:
                             f"422 with ASINs {current_asins} — retrying with owned-ASIN fallback. "
                             f"Detail: {error_details}"
                         )
+                        # Evict the failing ASIN from the pool so the next candidate
+                        # is tried without a fresh API round-trip.
+                        for bad in current_asins:
+                            if bad in self._owned_asin_pool:
+                                self._owned_asin_pool.remove(bad)
                         fallback = await self._get_owned_asin_fallback()
                         if fallback and fallback not in current_asins:
                             current_asins = [fallback]
