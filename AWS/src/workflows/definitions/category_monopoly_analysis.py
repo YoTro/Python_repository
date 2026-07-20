@@ -3496,6 +3496,7 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
         name="category_monopoly_analysis",
         steps=[
             ProcessStep(name="fetch_bsr_top_100", fn=_fetch_bsr_list),
+            ProcessStep(name="fetch_sellersprite_bsr", fn=_fetch_sellersprite_bsr),
             ProcessStep(name="fetch_core_keywords", fn=_fetch_core_keywords),
             ProcessStep(name="filter_category_coherence", fn=_filter_category_coherence),
             ProcessStep(name="enrich_sales_data", fn=_enrich_sales),
@@ -3506,7 +3507,6 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 concurrency=5,
             ),
             ProcessStep(name="fetch_market_signals", fn=_fetch_market_signals),
-            ProcessStep(name="fetch_sellersprite_bsr", fn=_fetch_sellersprite_bsr),
             ProcessStep(name="fetch_category_cvr", fn=_fetch_category_cvr),
             ProcessStep(name="enrich_external_intensity", fn=_enrich_external_intensity),
             ProcessStep(name="enrich_batch_traffic_scores", fn=_enrich_batch_traffic_scores),
