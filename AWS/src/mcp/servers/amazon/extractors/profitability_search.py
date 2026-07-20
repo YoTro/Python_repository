@@ -37,10 +37,9 @@ class ProfitabilitySearchExtractor(AmazonBaseScraper):
             resp = await self.session.get(url, headers=headers, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
-                products = (
-                    data.get("data", {}).get("otherProducts", {}).get("products", [])
-                    or data.get("data", {}).get("myProducts", {}).get("products", [])
-                )
+                products = data.get("data", {}).get("otherProducts", {}).get(
+                    "products", []
+                ) or data.get("data", {}).get("myProducts", {}).get("products", [])
                 if products:
                     return products[0].get("gl", "")
         except Exception:
@@ -105,22 +104,20 @@ class ProfitabilitySearchExtractor(AmazonBaseScraper):
         }
 
         try:
-            logger.info(f"Fetching FBA fees for ASIN {asin} (gl={gl or 'unknown'}) at ${price:.2f}...")
+            logger.info(
+                f"Fetching FBA fees for ASIN {asin} (gl={gl or 'unknown'}) at ${price:.2f}..."
+            )
             response = await self.session.post(url, json=payload, headers=headers, timeout=20)
 
             if response.status_code != 200:
                 code = classify_http(response.status_code)
-                logger.warning(
-                    f"FBA fee API [{code}] status {response.status_code} for {asin}"
-                )
+                logger.warning(f"FBA fee API [{code}] status {response.status_code} for {asin}")
                 return {}
 
             try:
                 data = response.json()
             except Exception:
-                logger.error(
-                    f"FBA fee API [{ErrorCode.PARSE_ERROR}] malformed JSON for {asin}"
-                )
+                logger.error(f"FBA fee API [{ErrorCode.PARSE_ERROR}] malformed JSON for {asin}")
                 return {}
 
             if not data.get("succeed"):
@@ -128,9 +125,7 @@ class ProfitabilitySearchExtractor(AmazonBaseScraper):
                 code = classify_response_message(error_msg, _PROVIDER)
                 if code == ErrorCode.UNKNOWN:
                     code = ErrorCode.SERVER_ERROR
-                logger.warning(
-                    f"FBA fee API [{code}] reported failure for {asin}: {error_msg}"
-                )
+                logger.warning(f"FBA fee API [{code}] reported failure for {asin}: {error_msg}")
                 return {}
 
             return data.get("data", {})
@@ -183,17 +178,13 @@ class ProfitabilitySearchExtractor(AmazonBaseScraper):
 
             if response.status_code != 200:
                 code = classify_http(response.status_code)
-                logger.warning(
-                    f"Profitability search API [{code}] status {response.status_code}"
-                )
+                logger.warning(f"Profitability search API [{code}] status {response.status_code}")
                 return []
 
             try:
                 data = response.json()
             except Exception:
-                logger.error(
-                    f"Profitability search API [{ErrorCode.PARSE_ERROR}] malformed JSON"
-                )
+                logger.error(f"Profitability search API [{ErrorCode.PARSE_ERROR}] malformed JSON")
                 return []
 
             if not data.get("succeed"):
@@ -201,9 +192,7 @@ class ProfitabilitySearchExtractor(AmazonBaseScraper):
                 code = classify_response_message(error_msg, _PROVIDER)
                 if code == ErrorCode.UNKNOWN:
                     code = ErrorCode.SERVER_ERROR
-                logger.warning(
-                    f"Profitability search API [{code}] reported failure: {error_msg}"
-                )
+                logger.warning(f"Profitability search API [{code}] reported failure: {error_msg}")
                 return []
 
             products = data.get("data", {}).get("products", [])

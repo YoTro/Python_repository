@@ -171,13 +171,35 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
     )
 
     seller_id = f_res.get("SellerId")
+    fulfilled_by = f_res.get("FulfilledBy")
+
+    # SellerSprite fallback when Amazon page scraping fails (FulfilledBy is None)
+    if fulfilled_by is None:
+        ss_snapshots = ctx.cache.get("sellersprite_snapshots") or {}
+        if ss_snapshots:
+            _latest = ss_snapshots.get(max(ss_snapshots), [])
+            _ss_item = next((p for p in _latest if p.get("asin") == asin), None)
+            if _ss_item:
+                _fba = _ss_item.get("fba")
+                _ss_seller_name = _ss_item.get("seller_name") or ""
+                if _fba is True:
+                    fulfilled_by = "Amazon"
+                elif _fba is False:
+                    fulfilled_by = _ss_seller_name or "3P"
+                if not seller_id:
+                    seller_id = _ss_item.get("seller_id")
+                logger.info(
+                    f"[enrich_seller_info] {asin}: SellerSprite fallback → "
+                    f"seller_type={fulfilled_by!r}, seller_id={seller_id!r}"
+                )
+
     feedback_count = 0
     if seller_id:
         s_res = await s_extractor.get_seller_feedback_count(seller_id)
         feedback_count = s_res.get("FeedbackCount", 0)
 
     result = {
-        "seller_type": f_res.get("FulfilledBy", "Unknown"),
+        "seller_type": fulfilled_by or "Unknown",
         "seller_id": seller_id,
         "feedback_count": feedback_count,
         "global_ratings": rc_res.get("GlobalRatings"),
@@ -1577,6 +1599,11 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
         if cached is not None:
             ctx.cache["sellersprite_snapshots"] = cached.get("snapshots", {})
             ctx.cache["sellersprite_base_ym"] = cached.get("base_ym", base_ym)
+            if cached.get("ss_median_cvr"):
+                ctx.cache["ss_median_cvr"] = cached["ss_median_cvr"]
+            if cached.get("ss_node_id_path"):
+                ctx.cache["ss_node_id_path"] = cached["ss_node_id_path"]
+                ctx.cache["ss_market_id"] = cached.get("ss_market_id", market_id)
             logger.info(
                 f"[cat_monopoly] Sellersprite BSR L2 cache hit node={node_id} base_ym={base_ym}"
             )
@@ -1588,32 +1615,48 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
             logger.warning("[sellersprite_bsr] No auth token; skipping")
             return items
 
-        # Resolve the full nodeIdPath by searching each snapshot table until a
-        # match is found. get_category_nodes with the bare node_id returns the
-        # node entry whose ``id`` field is the colon-joined full path we need.
-        # node_id is a numeric ID from the URL → exact match, take items[0]["id"]
+        # Resolve the full nodeIdPath by searching each snapshot table.
+        # Primary: bare Amazon numeric node_id (works when it appears in SellerSprite's
+        #   nodeIdPath, i.e. the SellerSprite internal ID matches Amazon's).
+        # Fallback: label-based search derived from the URL slug, tried from shortest
+        #   leaf label to progressively wider prefixes.  Needed when Amazon's short
+        #   node ID (e.g. 3741941 for Air Fryers) differs from SellerSprite's internal
+        #   IDs (e.g. 17659096011), so the numeric query returns no match.
+        def _label_candidates_from_url(bsr_url: str) -> list[str]:
+            m2 = re.search(r"/Best-Sellers[-_](.+?)/zgbs/", bsr_url, re.IGNORECASE)
+            if not m2:
+                return []
+            words = m2.group(1).replace("-", " ").replace("_", " ").split()
+            return [" ".join(words[-n:]) for n in range(2, min(5, len(words) + 1))]
+
         node_id_path = None
-        for ym in snapshot_yms:
-            table = f"bsr_sales_monthly_{ym}"
-            nodes = await asyncio.to_thread(
-                api.resolve_node_path, market_id=market_id, table=table, query=node_id
-            )
-            if nodes:
-                node_id_path = nodes[0].get("id")
-            if node_id_path:
-                logger.info(
-                    f"[sellersprite_bsr] Resolved node_id={node_id} → {node_id_path} (table={table})"
+        _resolve_queries = [node_id] + _label_candidates_from_url(url)
+        for query in _resolve_queries:
+            for ym in snapshot_yms:
+                table = f"bsr_sales_monthly_{ym}"
+                nodes = await asyncio.to_thread(
+                    api.resolve_node_path, market_id=market_id, table=table, query=query
                 )
+                if nodes:
+                    node_id_path = nodes[0].get("id")
+                if node_id_path:
+                    logger.info(
+                        f"[sellersprite_bsr] Resolved query={query!r} → {node_id_path} (table={table})"
+                    )
+                    break
+            if node_id_path:
                 break
-            logger.debug(
-                f"[sellersprite_bsr] node_id={node_id} not found in table={table}, trying next"
-            )
 
         if not node_id_path:
             logger.warning(
-                f"[sellersprite_bsr] Could not resolve nodeIdPath for node_id={node_id} in any snapshot"
+                f"[sellersprite_bsr] Could not resolve nodeIdPath for node_id={node_id} "
+                f"or URL labels in any snapshot"
             )
             return items
+
+        # Persist so _fetch_category_cvr can use SellerSprite market research as CVR fallback.
+        ctx.cache["ss_node_id_path"] = node_id_path
+        ctx.cache["ss_market_id"] = market_id
 
         async def fetch_snapshot(ym: str) -> tuple:
             table = f"bsr_sales_monthly_{ym}"
@@ -1643,6 +1686,12 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
                         "brand": (p.get("brand") or p.get("brand0") or p.get("brandName") or ""),
                         # availableDate is ms-since-epoch; kept as-is for downstream math
                         "available_date_ms": p.get("availableDate"),
+                        # per-product click-to-purchase rate; used as category CVR proxy
+                        "conversion_rate": p.get("conversionRate"),
+                        # seller fields — used as FulfillmentExtractor fallback
+                        "fba": p.get("fba"),
+                        "seller_id": p.get("sellerId"),
+                        "seller_name": p.get("sellerName"),
                     }
                     for i, p in enumerate(raw_items)
                     if p.get("asin") or p.get("parent")
@@ -1661,7 +1710,34 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
         snapshots = {ym: products for ym, products in results if products}
         ctx.cache["sellersprite_snapshots"] = snapshots
         ctx.cache["sellersprite_base_ym"] = base_ym
-        _l2_set(ctx, {"snapshots": snapshots, "base_ym": base_ym}, "ss_bsr", ss_cache_key)
+
+        # Compute category-level CVR from the latest snapshot so _fetch_category_cvr
+        # can use it directly without an extra get_market_research API call.
+        _latest_for_cvr = snapshots.get(max(snapshots)) if snapshots else []
+        _cvr_vals = [
+            float(p["conversion_rate"])
+            for p in _latest_for_cvr
+            if p.get("conversion_rate") is not None and float(p["conversion_rate"]) > 0
+        ]
+        if _cvr_vals:
+            ctx.cache["ss_median_cvr"] = statistics.median(_cvr_vals)
+            logger.info(
+                f"[sellersprite_bsr] ss_median_cvr={ctx.cache['ss_median_cvr']:.2%} "
+                f"(n={len(_cvr_vals)})"
+            )
+
+        _l2_set(
+            ctx,
+            {
+                "snapshots": snapshots,
+                "base_ym": base_ym,
+                "ss_node_id_path": node_id_path,
+                "ss_market_id": market_id,
+                "ss_median_cvr": ctx.cache.get("ss_median_cvr"),
+            },
+            "ss_bsr",
+            ss_cache_key,
+        )
         logger.info(
             "[sellersprite_bsr] Snapshots: "
             + ", ".join(f"{ym}({len(p)})" for ym, p in sorted(snapshots.items()))
@@ -1923,8 +1999,13 @@ def _detect_compliance_risks(scan_texts: list) -> dict:
     detected = []
     all_triggers: list = []
 
+    def _trigger_hit(trigger: str) -> bool:
+        # Use word-boundary regex so "tick" does not match inside "nonstick",
+        # "ant" does not match "antifog", etc.
+        return bool(re.search(r"\b" + re.escape(trigger) + r"\b", combined))
+
     for entry in _COMPLIANCE_DB:
-        hit_triggers = [t for t in entry["triggers"] if t in combined]
+        hit_triggers = [t for t in entry["triggers"] if _trigger_hit(t)]
         if not hit_triggers:
             continue
         detected.append(
@@ -1953,57 +2034,104 @@ def _detect_compliance_risks(scan_texts: list) -> dict:
     }
 
 
+def _ads_category_matches_niche(browse_category: str | None, core_keywords: list[str]) -> bool:
+    """
+    Return True when the Amazon Ads benchmark category is relevant to the analyzed niche.
+
+    Strategy: tokenise both sides, strip common stop-words, and check for any token
+    overlap.  A hit means the store's ad history is from the same broad category as
+    the BSR page being analyzed so the benchmark CVR is valid.
+
+    When there is no overlap (e.g. browse_category="Patio, Lawn & Garden" while the
+    keywords are ["bluetooth speaker", "wireless earbuds"]), the benchmark CVR belongs
+    to a different category and must be discarded.
+    """
+    if not browse_category or not core_keywords:
+        return False
+    _STOP = {"the", "a", "an", "for", "in", "of", "and", "&", "or", "to", "with", "by"}
+    cat_tokens = {t for t in re.split(r"[\s,&/]+", browse_category.lower()) if t and t not in _STOP}
+    kw_tokens = {t for kw in core_keywords for t in kw.lower().split() if t not in _STOP}
+    return bool(cat_tokens & kw_tokens)
+
+
 async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
     """
     Fetch category-median click-to-purchase CVR for steady-state ACOS estimation.
 
-    Primary:  Amazon Ads crossProgramBenchmarks → newToBrandPurchaseRateP50
-              (purchaseRate* removed by Amazon 2026-07; NTB rate is the closest proxy)
-    Default:  0.10  (conservative Amazon SP category average)
+    Primary:   Amazon Ads crossProgramBenchmarks → newToBrandPurchaseRateP50,
+               accepted only when browse_category overlaps the analyzed niche keywords
+               (guard against the store's ad account being in a different category).
+    Fallback:  SellerSprite get_market_research → search_to_buy_ratio_pm / 1000
+               (requires fetch_sellersprite_bsr to have run first so ss_node_id_path
+               is already in ctx.cache).
+    Default:   0.10  (conservative Amazon SP category average)
 
     Stores:
       ctx.cache["category_cvr"]         float
       ctx.cache["category_cvr_source"]  str
     """
     store_id = ctx.config.get("store_id", "US") if hasattr(ctx, "config") else "US"
-    cvr_hash = _hl.md5(store_id.encode()).hexdigest()[:12]
+    # Include the SellerSprite node_id_path in the cache key so different categories
+    # served by the same store_id get independent CVR values.
+    ss_node = ctx.cache.get("ss_node_id_path") or ""
+    cvr_hash = _hl.md5(f"{store_id}:{ss_node}".encode()).hexdigest()[:12]
 
     cached = _l2_get(ctx, _TTL_CVR, "category_cvr", cvr_hash)
     if cached is not None:
         ctx.cache["category_cvr"] = cached["cvr"]
         ctx.cache["category_cvr_source"] = cached["source"]
         ctx.cache["category_cpc_p50"] = cached.get("cpc_p50")
-        logger.info(f"[cat_monopoly] Category CVR L2 cache hit store={store_id}")
+        logger.info(
+            f"[cat_monopoly] Category CVR L2 cache hit store={store_id} node={ss_node[:20]}"
+        )
         return items
 
+    core_keywords: list[str] = ctx.cache.get("core_keywords") or []
     cvr: float | None = None
     cpc_p50: float | None = None
     source = "default_0.10"
 
+    # ── Primary: Amazon Ads benchmark ────────────────────────────────────────
     try:
-        from src.mcp.servers.amazon.ads.client import AmazonAdsClient
-
         result = await AmazonAdsClient(store_id=store_id).get_category_cvr_benchmark(
             days=30, time_unit="MONTHLY"
         )
+        browse_category = result.get("browse_category")
         median_cvr = result.get("category_median_cvr")
         cpc_p50 = result.get("cpc_p50")
+
         if median_cvr and 0 < median_cvr < 1:
-            cvr = median_cvr
-            source = (
-                f"amazon_ads_benchmark newToBrandPurchaseRateP50"
-                f" (category={result.get('browse_category', 'unknown')!r}"
-                f", peers={result.get('peer_set_size', 'N/A')})"
-            )
-            logger.info(f"[fetch_category_cvr] Amazon Ads CVR={cvr:.2%} — {source}")
+            if _ads_category_matches_niche(browse_category, core_keywords):
+                cvr = median_cvr
+                source = (
+                    f"amazon_ads_benchmark newToBrandPurchaseRateP50"
+                    f" (category={browse_category!r}"
+                    f", peers={result.get('peer_set_size', 'N/A')})"
+                )
+                logger.info(f"[fetch_category_cvr] Amazon Ads CVR={cvr:.2%} — {source}")
+            else:
+                logger.warning(
+                    f"[fetch_category_cvr] Amazon Ads browse_category={browse_category!r} "
+                    f"does not match niche keywords {core_keywords}; discarding benchmark"
+                )
         if cpc_p50:
             logger.info(f"[fetch_category_cvr] Amazon Ads cpcP50=${cpc_p50:.2f}")
     except Exception as e:
-        logger.warning(f"[fetch_category_cvr] Amazon Ads benchmark failed: {e}; using default")
+        logger.warning(f"[fetch_category_cvr] Amazon Ads benchmark failed: {e}")
+
+    # ── Fallback: SellerSprite median conversionRate from BSR snapshot ──────────
+    # conversionRate is already fetched per-product during _fetch_sellersprite_bsr
+    # (stored as ss_median_cvr); no extra API call needed.
+    if cvr is None:
+        ss_cvr = ctx.cache.get("ss_median_cvr")
+        if ss_cvr and 0 < ss_cvr < 1:
+            cvr = ss_cvr
+            source = f"sellersprite_bsr_snapshot median conversionRate ({cvr:.2%})"
+            logger.info(f"[fetch_category_cvr] SellerSprite CVR={cvr:.2%} — {source}")
 
     if cvr is None:
         cvr = 0.10
-        source = "default_0.10 (Amazon Ads benchmark unavailable)"
+        source = "default_0.10 (Amazon Ads category mismatch; SellerSprite unavailable)"
 
     ctx.cache["category_cvr"] = cvr
     ctx.cache["category_cvr_source"] = source
@@ -2415,8 +2543,10 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         else None
     )
     _rep_asin: str | None = (
-        (_rep_item.get("asin") or _rep_item.get("ASIN") or "").strip().upper() or None
-    ) if _rep_item else None
+        ((_rep_item.get("asin") or _rep_item.get("ASIN") or "").strip().upper() or None)
+        if _rep_item
+        else None
+    )
 
     # --- Primary: live API ---
     _api_fee_resolved = False
@@ -2428,11 +2558,14 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             _total: float | None = _prog.get("totalFee")
             if _total is None:
                 # Sum individual fee components that represent fulfillment charges.
-                _total = sum(
-                    float(f.get("amount") or f.get("feeAmount", {}).get("amount") or 0)
-                    for f in (_prog.get("fees") or [])
-                    if "fulfillment" in (f.get("type") or f.get("feeType") or "").lower()
-                ) or None
+                _total = (
+                    sum(
+                        float(f.get("amount") or f.get("feeAmount", {}).get("amount") or 0)
+                        for f in (_prog.get("fees") or [])
+                        if "fulfillment" in (f.get("type") or f.get("feeType") or "").lower()
+                    )
+                    or None
+                )
             if _total and _total > 0:
                 _fba_fee_pct = _total / median_price
                 _api_fee_resolved = True
@@ -2460,11 +2593,11 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             # Price → typical weight tier for standard US consumer goods (2026 schedule).
             # Lighter/cheaper items map to Small Standard; heavier/pricier to Large Standard.
             _PRICE_TO_TIER: list[tuple[float, str, str]] = [
-                (10,           "Small Standard", "8+ to 10"),
-                (18,           "Small Standard", "14+ to 16"),
-                (30,           "Large Standard", "8+ to 12"),
-                (50,           "Large Standard", "12+ to 16"),
-                (75,           "Large Standard", "1+ to 1.25 lb"),
+                (10, "Small Standard", "8+ to 10"),
+                (18, "Small Standard", "14+ to 16"),
+                (30, "Large Standard", "8+ to 12"),
+                (50, "Large Standard", "12+ to 16"),
+                (75, "Large Standard", "1+ to 1.25 lb"),
                 (float("inf"), "Large Standard", "1.75+ to 2 lb"),
             ]
             _rep_tier = None
@@ -3348,8 +3481,8 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 concurrency=5,
             ),
             ProcessStep(name="fetch_market_signals", fn=_fetch_market_signals),
-            ProcessStep(name="fetch_category_cvr", fn=_fetch_category_cvr),
             ProcessStep(name="fetch_sellersprite_bsr", fn=_fetch_sellersprite_bsr),
+            ProcessStep(name="fetch_category_cvr", fn=_fetch_category_cvr),
             ProcessStep(name="enrich_external_intensity", fn=_enrich_external_intensity),
             ProcessStep(name="enrich_batch_traffic_scores", fn=_enrich_batch_traffic_scores),
             ProcessStep(name="fetch_time_series_data", fn=_fetch_time_series_data),
