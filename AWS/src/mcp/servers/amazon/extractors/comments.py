@@ -11,7 +11,7 @@ from urllib.parse import quote_plus
 
 from bs4 import BeautifulSoup
 
-from src.core.identity.pool import resolve_chrome_path
+from src.core.identity.pool import _resolve_headless, resolve_chrome_path
 from src.core.models.review import Review
 from src.core.scraper import AmazonBaseScraper
 from src.mcp.servers.amazon.cookie_pool import CookieBrowserPool, CookieSlot
@@ -627,7 +627,8 @@ class CommentsExtractor(AmazonBaseScraper):
                 co.set_argument("--disable-gpu")
                 co.set_argument("--no-sandbox")
                 co.set_argument("--disable-dev-shm-usage")
-                co.headless(False)
+                if _resolve_headless():
+                    co.set_argument("--headless=new")
 
                 session_ua = self._headers.get("User-Agent", "")
                 if session_ua:
