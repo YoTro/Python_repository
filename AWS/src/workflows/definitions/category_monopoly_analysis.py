@@ -1816,7 +1816,10 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
             if p.get("conversion_rate") is not None and float(p["conversion_rate"]) > 0
         ]
         if _cvr_vals:
-            ctx.cache["ss_median_cvr"] = statistics.median(_cvr_vals)
+            _raw_median = statistics.median(_cvr_vals)
+            # SellerSprite conversionRate is in per-mille (‰), e.g. 20.4 → 2.04%.
+            # Divide by 1000 to get a decimal fraction for _fetch_category_cvr's 0 < v < 1 guard.
+            ctx.cache["ss_median_cvr"] = _raw_median / 1000 if _raw_median > 1 else _raw_median
             logger.info(
                 f"[sellersprite_bsr] ss_median_cvr={ctx.cache['ss_median_cvr']:.2%} "
                 f"(n={len(_cvr_vals)})"
@@ -2259,7 +2262,11 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
     ctx.cache["category_cvr"] = cvr
     ctx.cache["category_cvr_source"] = source
     ctx.cache["category_cpc_p50"] = cpc_p50
-    _l2_set(ctx, {"cvr": cvr, "source": source, "cpc_p50": cpc_p50}, "category_cvr", cvr_hash)
+    # Only cache a real CVR — never persist the 0.10 hard fallback.  A stale
+    # "default_0.10" entry would prevent ss_median_cvr from being picked up on
+    # the next run even after SellerSprite data becomes available.
+    if not source.startswith("default_0.10"):
+        _l2_set(ctx, {"cvr": cvr, "source": source, "cpc_p50": cpc_p50}, "category_cvr", cvr_hash)
     return items
 
 

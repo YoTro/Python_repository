@@ -167,7 +167,7 @@ template: |
 
   ### TOP ASIN EVIDENCE TABLE
   {top_asin_table}
-  Render the above JSON as a markdown table with these exact columns (in this order): Rank | ASIN | Brand | Title | Price | Rating | Reviews | Units/Mo | Seller Type. Title: truncate at 40 chars with '…'. Place this table immediately after the Data Breakdown section under the heading '## Top 10 BSR Products (Evidence)'. Below the table add one line: '*Source: Amazon BSR page scrape + PastMonthSales badge. Units/Mo = Amazon-displayed past-month purchase count.*'
+  Render the above JSON as a markdown table with these exact columns (in this order): Rank | ASIN | Brand | Title | Price | Rating | Reviews | Feedback | Review Ratio | Units/Mo | Seller Type. Title: truncate at 40 chars with '…'. Feedback = feedback_count (number of Amazon seller-feedback entries for this ASIN's seller; 'N/A' if unavailable). Review Ratio = review_ratio rendered as a percentage (e.g. 12.34%); this is written_reviews ÷ global_ratings — a ratio far above ~10% may indicate review manipulation (cross-reference Integrity Alert). Place this table immediately after the Data Breakdown section under the heading '## Top 10 BSR Products (Evidence)'. Below the table add one line: '*Source: Amazon BSR page scrape + PastMonthSales badge. Units/Mo = Amazon-displayed past-month purchase count. Review Ratio = written reviews ÷ global ratings (natural ≈ 10%).*'
 
   ### BRAND & SELLER CONCENTRATION
   {concentration_data}
