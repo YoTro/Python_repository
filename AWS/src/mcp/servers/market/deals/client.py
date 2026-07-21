@@ -112,7 +112,7 @@ class DealHistoryClient:
         return all_deals
 
     async def _fetch_dealnews(self, search_term: str, max_pages: int) -> list[dict[str, Any]]:
-        encoded_term = urllib.parse.quote(search_term)
+        encoded_term = urllib.parse.quote(search_term[:64])
         all_deals = []
 
         # Site-specific headers with dynamic referer
@@ -187,6 +187,19 @@ class DealHistoryClient:
         deals = []
         for card in soup.select(".dealCardListView"):
             try:
+                title_el = card.select_one(".dealCardListView__title")
+                a_el = (
+                    title_el
+                    if (title_el and title_el.name == "a")
+                    else (title_el.find("a") if title_el else None)
+                )
+                raw_href = a_el.get("href", "") if a_el else ""
+                deal_url = (
+                    raw_href
+                    if raw_href.startswith("http")
+                    else (f"https://slickdeals.net{raw_href}" if raw_href else "")
+                )
+
                 deals.append(
                     {
                         "date": card.select_one(".slickdealsTimestamp").get("title", ""),
@@ -196,14 +209,140 @@ class DealHistoryClient:
                         "discount_pct": self._extract_percentage(
                             card.select_one(".dealCardListView__savings").get_text(strip=True)
                         ),
-                        "title": card.select_one(".dealCardListView__title").get_text(strip=True),
+                        "title": title_el.get_text(strip=True) if title_el else "",
                         "site": "slickdeals.net",
                         "type": "Search Result",
+                        "deal_url": deal_url,
                     }
                 )
             except Exception:
                 continue
         return deals
+
+    _ASIN_IN_URL = re.compile(r"/(?:dp|gp/product)/([A-Z0-9]{10})", re.I)
+
+    async def _follow_redirect_extract_asin(self, click_url: str, referer: str) -> str | None:
+        """Follow a tracking redirect and extract the ASIN from the final Amazon URL."""
+        headers = {
+            **self.base_headers,
+            "referer": referer,
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "same-origin",
+        }
+        try:
+            r = await asyncio.to_thread(
+                self.session.get, click_url, headers=headers, timeout=15, allow_redirects=True
+            )
+            final_url: str = r.url if isinstance(r.url, str) else str(r.url)
+            m = self._ASIN_IN_URL.search(final_url)
+            if m:
+                return m.group(1)
+            logger.debug(f"Redirect landed on non-ASIN URL: {final_url[:120]}")
+        except Exception as e:
+            logger.warning(f"Failed to follow redirect {click_url}: {e}")
+        return None
+
+    async def _resolve_asin_from_deal_page(self, deal_url: str) -> str | None:
+        """
+        Fetch a Slickdeals deal detail page, find the slickdeals.net/click tracking
+        link for "Visit Amazon", follow its redirect, and extract the ASIN from the
+        final Amazon URL.
+        """
+        if not deal_url:
+            return None
+
+        page_headers = {
+            **self.base_headers,
+            "referer": "https://slickdeals.net/",
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "same-origin",
+        }
+
+        try:
+            resp = await asyncio.to_thread(
+                self.session.get, deal_url, headers=page_headers, timeout=15
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Deal page returned {resp.status_code}: {deal_url}")
+                return None
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Collect slickdeals.net/click? tracking links; prefer "Visit Amazon" CTA
+            click_links: list[str] = []
+            for a in soup.find_all("a", href=True):
+                href: str = a["href"]
+                if "/click?" not in href:
+                    continue
+                params = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+                trd = params.get("trd", [""])[0]
+                if "amazon" in trd.lower():
+                    click_links.insert(0, href)
+                else:
+                    click_links.append(href)
+
+            if not click_links:
+                logger.debug(f"No /click? links found on {deal_url}")
+                return None
+
+            return await self._follow_redirect_extract_asin(click_links[0], referer=deal_url)
+
+        except Exception as e:
+            logger.warning(f"Failed to resolve ASIN from {deal_url}: {e}")
+
+        return None
+
+    async def get_deals_for_asin(
+        self, asin: str, brand: str, max_pages: int = 2
+    ) -> list[dict[str, Any]]:
+        """
+        2-phase ASIN-confirmed deal lookup across Slickdeals and DealNews.
+
+        Phase 1: search both sites by brand in parallel → candidate deals with click URLs.
+        Phase 2: resolve each candidate's click URL in parallel → filter to ASIN matches.
+          - Slickdeals: click URL is on the deal detail page (one extra fetch per candidate)
+          - DealNews:   click URL (lw/click) is already on the search result card
+        """
+        sd_candidates, dn_candidates = await asyncio.gather(
+            self._fetch_slickdeals(brand, max_pages),
+            self._fetch_dealnews(brand, max_pages),
+        )
+        candidates = sd_candidates + dn_candidates
+        if not candidates:
+            logger.info(f"[get_deals_for_asin] No candidates for brand={brand!r}")
+            return []
+
+        sem = asyncio.Semaphore(5)
+
+        async def resolve(deal: dict) -> tuple[dict, str | None]:
+            async with sem:
+                if deal["site"] == "slickdeals.net":
+                    resolved = await self._resolve_asin_from_deal_page(deal.get("deal_url", ""))
+                else:
+                    # DealNews: deal_url is already the lw/click tracking link
+                    resolved = await self._follow_redirect_extract_asin(
+                        deal.get("deal_url", ""), referer="https://www.dealnews.com/"
+                    )
+            return deal, resolved
+
+        results = await asyncio.gather(*(resolve(d) for d in candidates), return_exceptions=True)
+
+        matched = []
+        for r in results:
+            if isinstance(r, Exception):
+                continue
+            deal, resolved_asin = r
+            if resolved_asin == asin:
+                matched.append({**deal, "confirmed_asin": asin})
+
+        logger.info(
+            f"[get_deals_for_asin] ASIN={asin} brand={brand!r}: "
+            f"{len(matched)}/{len(candidates)} confirmed "
+            f"(SD={len(sd_candidates)} DN={len(dn_candidates)})"
+        )
+        return matched
 
     def _parse_dealnews(self, html: str) -> list[dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")
@@ -229,14 +368,28 @@ class DealHistoryClient:
                         "validFrom", ""
                     )
 
+                title_el = card.select_one(".title-link, .title")
+                a_el = (
+                    title_el
+                    if (title_el and title_el.name == "a")
+                    else (title_el.find("a") if title_el else None)
+                )
+                lw_click = a_el.get("href", "") if a_el else ""
+                deal_url = (
+                    lw_click
+                    if lw_click.startswith("http")
+                    else (f"https://www.dealnews.com{lw_click}" if lw_click else "")
+                )
+
                 deals.append(
                     {
                         "date": date_text,
                         "price": price,
                         "discount_pct": discount_pct,
-                        "title": card.select_one(".title-link, .title").get_text(strip=True),
+                        "title": title_el.get_text(strip=True) if title_el else "",
                         "site": "dealnews.com",
                         "type": "Search Result",
+                        "deal_url": deal_url,
                     }
                 )
             except Exception:

@@ -150,7 +150,7 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
         return {
             "seller_type": "Unknown",
             "seller_id": None,
-            "feedback_count": 0,
+            "feedback_count": None,
             "global_ratings": None,
             "written_reviews": None,
             "review_ratio": None,
@@ -193,10 +193,12 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
                     f"seller_type={fulfilled_by!r}, seller_id={seller_id!r}"
                 )
 
-    feedback_count = 0
+    feedback_count = None
     if seller_id:
         s_res = await s_extractor.get_seller_feedback_count(seller_id)
-        feedback_count = s_res.get("FeedbackCount", 0)
+        feedback_count = s_res.get(
+            "FeedbackCount"
+        )  # None if API didn't return it; 0 = genuine new seller
 
     result = {
         "seller_type": fulfilled_by or "Unknown",
@@ -1097,6 +1099,25 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             "platforms": platform_results,
         }
 
+    async def _try_kw_candidates(candidates: list[str]) -> tuple[str, dict]:
+        """Try keyword hashtag candidates in order; return (winning_tag, result).
+
+        Stops at the first candidate that any platform actually finds (verdict is
+        not 'No Tag Found').  This lets "#fruitflytrap" (real 3-word tag) resolve
+        correctly while still falling back to "#fruitfly" or "#fruit" when the
+        full concatenation doesn't exist.
+        """
+        last_tag, last_result = candidates[-1], {}
+        for candidate in candidates:
+            result = await _tag_all_platforms(candidate)
+            last_tag, last_result = candidate, result
+            if any(
+                p.get("verdict") not in ("No Tag Found", "Error")
+                for p in result.get("platforms", [])
+            ):
+                break
+        return last_tag, last_result
+
     def _collect_failed(results: list[dict]) -> list[tuple]:
         """Return (result_idx, platform_idx) pairs where verdict == 'Error'."""
         return [
@@ -1144,7 +1165,9 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             for e in _c_brands_raw
         ]
         _c_all = [_c_kw] + _c_brand_results
-        _c_tags = [main_keyword.replace(" ", "")] + [e["brand"] for e in _c_brands_raw]
+        _c_tags = [cached.get("category_kw_tag", "".join(main_keyword.split()))] + [
+            e["brand"] for e in _c_brands_raw
+        ]
 
         if not _collect_failed(_c_all):
             ctx.cache.update(cached)
@@ -1208,13 +1231,31 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         return items
 
     # ── fresh fetch ───────────────────────────────────────────────────────────
-    kw_tag = main_keyword.replace(" ", "")
-    all_tags = [kw_tag] + _all_brand_list
-    tag_results = list(await asyncio.gather(*[_tag_all_platforms(t) for t in all_tags]))
-    # _tag_all_platforms already exhausted per-platform retries via @exponential_backoff;
-    # any remaining "Error" entries represent genuinely unrecoverable failures.
+    # Build ordered keyword tag candidates: full concat first so "#fruitflytrap"
+    # resolves when it exists; shorter forms are tried only if the full tag has no
+    # presence on any platform.  Without this, long Amazon search phrases like
+    # "gnat killer indoor" would create "#gnatkillernindoor" — a non-existent tag.
+    _kw_words = main_keyword.split()
+    _kw_candidates = list(
+        dict.fromkeys(
+            [
+                "".join(_kw_words),  # full:   "fruitflytrap"
+                "".join(_kw_words[:2]),  # 2-word: "fruitfly"
+                _kw_words[0],  # 1-word: "fruit"
+            ]
+        )
+    )
 
-    kw_result = tag_results[0]
+    async def _kw_coro() -> tuple[str, dict]:
+        return await _try_kw_candidates(_kw_candidates)
+
+    _all_coros = [_kw_coro()] + [_tag_all_platforms(b) for b in _all_brand_list]
+    _all_gathered = await asyncio.gather(*_all_coros)
+    kw_tag, kw_result = _all_gathered[0]
+    _brand_tag_results = list(_all_gathered[1:])
+    # _try_kw_candidates / _tag_all_platforms exhausted per-platform retries via
+    # @exponential_backoff; any remaining "Error" entries are unrecoverable.
+
     brand_results = [
         {
             "brand": brand,
@@ -1222,7 +1263,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             "is_new_entrant": brand in _new_entrant_brand_set,
             **res,
         }
-        for brand, res in zip(_all_brand_list, tag_results[1:], strict=False)
+        for brand, res in zip(_all_brand_list, _brand_tag_results, strict=False)
     ]
     brand_results.sort(key=lambda x: x["psi"], reverse=True)
 
@@ -1255,12 +1296,14 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     )
 
     # ── deal intensity ────────────────────────────────────────────────────────
+    _deal_client = DealHistoryClient()
+
     async def fetch_deal_count(item):
-        return len(
-            await DealHistoryClient().get_deal_history(
-                asin=item.get("ASIN", ""), keyword=item.get("Title", ""), max_pages=1
-            )
-        )
+        asin = (item.get("ASIN") or item.get("asin") or "").strip().upper()
+        brand = (item.get("brand") or "").strip()
+        if not asin or not brand:
+            return 0
+        return len(await _deal_client.get_deals_for_asin(asin=asin, brand=brand, max_pages=1))
 
     try:
         deal_counts = await asyncio.gather(*(fetch_deal_count(item) for item in items[:10]))
@@ -1277,8 +1320,9 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         "category_social_platforms": ctx.cache.get("category_social_platforms", []),
         "category_deal_intensity": ctx.cache.get("category_deal_intensity", 0),
         "brand_social_data": ctx.cache.get("brand_social_data", []),
+        "category_kw_tag": kw_tag,
     }
-    _remaining_errors = len(_collect_failed(tag_results))
+    _remaining_errors = len(_collect_failed([kw_result] + _brand_tag_results))
     if _remaining_errors == 0:
         _l2_set(ctx, _ext, "external_intensity", kw_hash)
     else:
@@ -1708,6 +1752,58 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
 
         results = await asyncio.gather(*[fetch_snapshot(ym) for ym in snapshot_yms])
         snapshots = {ym: products for ym, products in results if products}
+
+        # Supplemental brand-fill: any Amazon live-BSR ASIN that is absent from all
+        # snapshot brand lookups gets a targeted Sellersprite query in the T-snapshot.
+        # This covers ASINs ranked outside Sellersprite's sorted top-100 cutoff but
+        # still present in their database (e.g. Amazon rank 4 but Sellersprite
+        # estimated rank > 100 due to sales-model differences).
+        _brand_covered = {
+            p["asin"].upper() for ym_data in snapshots.values() for p in ym_data if p.get("brand")
+        }
+        _bsr_asins = [
+            (itm.get("ASIN") or itm.get("asin") or "").upper()
+            for itm in items
+            if itm.get("ASIN") or itm.get("asin")
+        ]
+        _missing_brand = [a for a in _bsr_asins if a and a not in _brand_covered]
+        if _missing_brand:
+            logger.info(
+                f"[sellersprite_bsr] brand-fill: {len(_missing_brand)} BSR ASINs missing "
+                f"brand — targeted lookup in {base_ym}"
+            )
+            try:
+                _fill_result = await asyncio.to_thread(
+                    api.get_competing_lookup,
+                    market=store_id,
+                    month_name=f"bsr_sales_monthly_{base_ym}",
+                    node_id_paths=[node_id_path],
+                    size=len(_missing_brand),
+                    asins=_missing_brand,
+                )
+                _fill_slim = []
+                for _fp in _fill_result.get("items") or []:
+                    _fa = (_fp.get("asin") or _fp.get("parent") or "").upper()
+                    _fb = _fp.get("brand") or _fp.get("brand0") or _fp.get("brandName") or ""
+                    if _fa and _fb:
+                        _fill_slim.append(
+                            {
+                                "asin": _fa,
+                                "rank": _fp.get("bsrRank") or 999,
+                                "brand": _fb,
+                                "available_date_ms": _fp.get("availableDate"),
+                                "conversion_rate": _fp.get("conversionRate"),
+                                "fba": _fp.get("fba"),
+                                "seller_id": _fp.get("sellerId"),
+                                "seller_name": _fp.get("sellerName"),
+                            }
+                        )
+                if _fill_slim:
+                    snapshots.setdefault(base_ym, []).extend(_fill_slim)
+                    logger.info(f"[sellersprite_bsr] brand-fill: resolved {len(_fill_slim)} brands")
+            except Exception as _fe:
+                logger.warning(f"[sellersprite_bsr] brand-fill failed: {_fe}")
+
         ctx.cache["sellersprite_snapshots"] = snapshots
         ctx.cache["sellersprite_base_ym"] = base_ym
 
@@ -2261,18 +2357,23 @@ async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> lis
     _CONCURRENCY = 3
     _STRATA_ALLOC = {"leaders": 2, "mid_tier": 2, "new_entrant": 1}
 
-    # Sellersprite snapshot → authoritative brand byline + listing date
+    # Sellersprite snapshot → authoritative brand byline + listing date.
+    # Iterate oldest→newest so the latest snapshot wins on any conflict.
+    # Sellersprite's competing-lookup sorts by their estimated sales rank, which
+    # can differ from Amazon's live BSR rank. An ASIN with Amazon BSR rank 4 may
+    # still be outside Sellersprite's top-100 cutoff in recent months if their
+    # model underestimates it — but the T-12 snapshot often still captures it.
     ss_snapshots = ctx.cache.get("sellersprite_snapshots", {})
     _brand_lookup: dict = {}
     _asin_available_ms: dict = {}
-    if ss_snapshots:
-        _latest = ss_snapshots.get(max(ss_snapshots), [])
-        for p in _latest:
+    for _ym in sorted(ss_snapshots):
+        for p in ss_snapshots[_ym]:
             if p.get("asin"):
+                _key = p["asin"].upper()
                 if p.get("brand"):
-                    _brand_lookup[p["asin"]] = p["brand"]
+                    _brand_lookup[_key] = p["brand"]
                 if p.get("available_date_ms"):
-                    _asin_available_ms[p["asin"]] = p["available_date_ms"]
+                    _asin_available_ms[_key] = p["available_date_ms"]
 
     # "New entrant" cutoff anchored to Sellersprite base snapshot (same as elsewhere)
     base_ym = ctx.cache.get("sellersprite_base_ym", "")
@@ -2458,28 +2559,32 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     _cs_status = contamination_stats.get("status", "not_run")
     _cs_n_removed = contamination_stats.get("n_removed", 0)
 
-    # Build ASIN→brand lookup from the most recent Sellersprite snapshot.
-    # Amazon's BSR card HTML carries no brand byline, so this is the authoritative source.
+    # Build ASIN→brand lookup across all 4 Sellersprite snapshots (T, T-3, T-6, T-12).
+    # Oldest-first so the latest snapshot overwrites on conflict — most-current brand name wins.
+    # Sellersprite's estimated rank can differ from Amazon's BSR rank; an ASIN visible on
+    # Amazon's live BSR may be outside Sellersprite's top-100 in recent snapshots but still
+    # captured in T-12, which serves as a backstop for brand resolution.
     ss_snapshots = ctx.cache.get("sellersprite_snapshots", {})
     _brand_lookup: dict = {}
-    if ss_snapshots:
-        _latest = ss_snapshots.get(max(ss_snapshots), [])
-        _brand_lookup = {
-            p["asin"]: p.get("brand") for p in _latest if p.get("asin") and p.get("brand")
-        }
+    for _ym in sorted(ss_snapshots):
+        for _p in ss_snapshots[_ym]:
+            if _p.get("asin") and _p.get("brand"):
+                _brand_lookup[_p["asin"].upper()] = _p["brand"]
 
     analysis_input = [
         {
             "rank": _parse_int(item.get("Rank"), default=999),
             "price": _parse_float(item.get("Price")),
-            "sales": item.get("sales", 0),
-            "brand": _brand_lookup.get(item.get("ASIN") or item.get("asin"))
+            "sales": item.get("sales") or 0,
+            "brand": _brand_lookup.get((item.get("ASIN") or item.get("asin") or "").upper())
             or item.get("Brand")
             or item.get("brand")
             or None,
             "seller_type": item.get("seller_type", "Unknown"),
             "seller_id": item.get("seller_id"),
-            "feedback_count": item.get("feedback_count", 0),
+            "feedback_count": item.get(
+                "feedback_count"
+            ),  # None = no seller_id; 0 = confirmed new seller
             "review_count": _parse_int(item.get("Reviews")),
             "rating": _parse_float(item.get("Stars")),
             # Written reviews vs global ratings (from ReviewCountExtractor)
@@ -3312,6 +3417,12 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 "price": f"${enriched['price']:.2f}" if enriched["price"] else "N/A",
                 "rating": f"{enriched['rating']:.1f}★" if enriched["rating"] else "N/A",
                 "reviews": f"{enriched['review_count']:,}" if enriched["review_count"] else "N/A",
+                "feedback_count": enriched["feedback_count"]
+                if enriched.get("feedback_count") is not None
+                else "N/A",
+                "review_ratio": f"{enriched['review_ratio']:.2%}"
+                if enriched.get("review_ratio") is not None
+                else "N/A",
                 "units_mo": f"{enriched['sales']:,}" if enriched["sales"] else "N/A",
                 "seller_type": enriched.get("seller_type") or "Unknown",
             }
@@ -3345,6 +3456,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "integrity_ratio_cov": (
                 f"{len(ratio_eligible)}/{n_total} ({len(ratio_eligible) / n_total:.0%})"
             ),
+            "integrity_ratio_threshold": f"{_RATIO_THRESHOLD:.0%}",
             "recommended_capital": f"${_cap_total:,}",
             "capital_inventory": f"${_cap_inv:,}",
             "capital_ppc": f"${_cap_ppc:,}",

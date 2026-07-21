@@ -270,6 +270,17 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
         deals = await client.get_deal_history(asin, keyword=keyword, max_pages=max_pages)
         return [TextContent(type="text", text=json.dumps(deals, ensure_ascii=False))]
 
+    elif name == "get_deals_for_asin":
+        from src.mcp.servers.market.deals.client import DealHistoryClient
+
+        client = DealHistoryClient()
+        deals = await client.get_deals_for_asin(
+            asin=arguments["asin"],
+            brand=arguments["brand"],
+            max_pages=arguments.get("max_pages", 2),
+        )
+        return [TextContent(type="text", text=json.dumps(deals, ensure_ascii=False))]
+
     elif name == "analyze_promotions":
         from src.intelligence.processors.promo_analyzer import PromoAnalyzer
 
@@ -625,6 +636,33 @@ market_tools = [
                 },
             },
             "required": ["asin"],
+        },
+    ),
+    Tool(
+        name="get_deals_for_asin",
+        description=(
+            "ASIN-confirmed deal lookup on Slickdeals and DealNews. "
+            "Searches both sites by brand name, then follows each deal's tracking redirect "
+            "to confirm the ASIN before returning. Only returns deals that provably link to "
+            "the requested ASIN — no false positives from title-matching. "
+            "Each result includes: date, price (USD), discount_pct, title, site, deal_url, confirmed_asin. "
+            "Use this instead of get_deal_history when you need ASIN-level precision."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin": {"type": "string", "description": "Target Amazon ASIN"},
+                "brand": {
+                    "type": "string",
+                    "description": "Brand name to search by (e.g. 'Zevo', 'STEM'). Shorter is better — use the brand, not the full product title.",
+                },
+                "max_pages": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "Max search result pages to scrape per site",
+                },
+            },
+            "required": ["asin", "brand"],
         },
     ),
     Tool(
@@ -1030,6 +1068,10 @@ _MARKET_META = {
     "xiyou_check_login_status": ("DATA", "authentication status of pending QR scan"),
     "get_ad_traffic": ("DATA", "ad spend and ROAS estimates"),
     "get_deal_history": ("DATA", "list of historical deals with dates, prices, and discounts"),
+    "get_deals_for_asin": (
+        "DATA",
+        "ASIN-confirmed deal list from Slickdeals and DealNews with redirect-verified ASIN match",
+    ),
     "analyze_promotions": (
         "COMPUTE",
         "JSON containing promo frequency, all-time low, and dependency score",
