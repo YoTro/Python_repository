@@ -213,7 +213,7 @@ class CategoryMonopolyAnalyzer:
         )
         mega_seller_feedback = self.thresholds.get("mega_seller_feedback", 10000)
         large_seller_count = sum(
-            1 for p in products if p.get("feedback_count", 0) > mega_seller_feedback
+            1 for p in products if (p.get("feedback_count") or 0) > mega_seller_feedback
         )
         amz_ratio = amazon_count / len(products)
         large_ratio = large_seller_count / len(products)
@@ -297,7 +297,7 @@ class CategoryMonopolyAnalyzer:
         legacy_recs = detailed_bids.get("LEGACY_FOR_SALES", [])
         for rec in legacy_recs:
             for expr in rec.get("bidRecommendationsForTargetingExpressions", []):
-                bid = expr.get("suggestedBid", {}).get("amount", 0)
+                bid = expr.get("suggestedBid", {}).get("amount") or 0
                 kw = expr.get("targetingExpression", {}).get("value", "unknown")
                 m_type = expr.get("targetingExpression", {}).get("type", "unknown")
 

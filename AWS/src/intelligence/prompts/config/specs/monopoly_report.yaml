@@ -75,6 +75,7 @@ optional_vars:
   brand_social_data: "[]"
   concentration_data: "{}"
   critical_reviews_data: "{}"
+  integrity_ratio_threshold: "50%"
 
 output_schema: null
 
@@ -161,7 +162,7 @@ template: |
   INTEGRITY TABLE RULE: In the Data Breakdown table, the Integrity Alert block MUST occupy THREE consecutive rows (never collapse into one):
     Row 1: Metric='Integrity Alert' | Value=LOW/MEDIUM/HIGH/unknown | Definition=trigger ratio vs threshold (e.g. 'RSR 0/8, ratio 0/15, threshold >30%')
     Row 2: Metric='Integrity: Rating History Coverage' | Value='{integrity_hist_cov}' | Definition=ASINs with ≥60-day Xiyouzhaoci history; basis for Signal 1 RSR + Signal 2 rating-jump
-    Row 3: Metric='Integrity: Review Ratio Coverage' | Value='{integrity_ratio_cov}' | Definition=ASINs with written/global ratio data; basis for Signal 3
+    Row 3: Metric='Integrity: Review Ratio Coverage' | Value='{integrity_ratio_cov}' | Definition=ASINs with written/global ratio data; flags ratio > {integrity_ratio_threshold} (natural ≈ 10%); basis for Signal 3
   If either coverage is below 20%, append '(low coverage — treat as directional only)' to the Integrity Alert value cell.
 
   ### TOP ASIN EVIDENCE TABLE

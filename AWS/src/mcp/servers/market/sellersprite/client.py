@@ -182,6 +182,7 @@ class SellerspriteAPI:
         order: dict | None = None,
         symbol_flag: bool = True,
         low_price: str = "N",
+        asins: list[str] | None = None,
     ) -> dict:
         """
         Fetch BSR-ranked competitor product list for a category node (monthly snapshot).
@@ -199,6 +200,10 @@ class SellerspriteAPI:
                    Defaults to ascending BSR rank when None.
             symbol_flag: Include brand symbol filtering (default True).
             low_price: Low-price filter flag ("Y"/"N").
+            asins: Optional list of ASINs to filter results to. When non-empty
+                   the API returns data for only those ASINs (within the given
+                   category/month), bypassing the rank-based top-N cutoff. Useful
+                   for targeted brand lookups for specific ASINs.
 
         Returns:
             Parsed response dict with keys:
@@ -224,7 +229,7 @@ class SellerspriteAPI:
         payload = {
             "market": market,
             "monthName": month_name,
-            "asins": [],
+            "asins": asins or [],
             "page": page,
             "nodeIdPaths": node_id_paths,
             "symbolFlag": symbol_flag,
