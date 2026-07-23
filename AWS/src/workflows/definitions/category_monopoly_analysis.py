@@ -1642,6 +1642,8 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
             if cached.get("ss_node_id_path"):
                 ctx.cache["ss_node_id_path"] = cached["ss_node_id_path"]
                 ctx.cache["ss_market_id"] = cached.get("ss_market_id", market_id)
+            if cached.get("ss_return_rate_pct") is not None:
+                ctx.cache["ss_return_rate_pct"] = cached["ss_return_rate_pct"]
             logger.info(
                 f"[cat_monopoly] Sellersprite BSR L2 cache hit node={node_id} base_ym={base_ym}"
             )
@@ -1819,6 +1821,41 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
                 f"(n={len(_cvr_vals)})"
             )
 
+        # Fetch category return rate via SellerSprite market research.
+        # Source: Amazon Marketplace Product Guidance (surfaced by SellerSprite).
+        #
+        # Field definitions (per Amazon):
+        #   return_rate_pct     — sub-category returns ÷ total purchases over the
+        #                         past 3 months.
+        #   avg_return_rate_pct — average return rate across same-type sub-categories
+        #                         over the past 3 months.  e.g. under Shoes, 18
+        #                         sub-categories (Women's Road Running, Men's Road
+        #                         Running, …) are averaged to produce one figure.
+        #
+        # We take the median of avg_return_rate_pct across all returned items to
+        # represent the category-level return rate.  Soft-fails — a missing value
+        # does not block the workflow.
+        try:
+            _mr_res = await asyncio.to_thread(
+                api.get_market_research,
+                market_id=market_id,
+                node_id_path=node_id_path,
+                size=100,
+            )
+            _mr_rates = [
+                it["avg_return_rate_pct"]
+                for it in (_mr_res.get("items") or [])
+                if it.get("avg_return_rate_pct") is not None
+            ]
+            if _mr_rates:
+                ctx.cache["ss_return_rate_pct"] = statistics.median(_mr_rates)
+                logger.info(
+                    f"[sellersprite_bsr] category return rate: "
+                    f"{ctx.cache['ss_return_rate_pct']:.2f}% (n={len(_mr_rates)} sub-cats)"
+                )
+        except Exception as _mr_e:
+            logger.warning(f"[sellersprite_bsr] market-research return rate failed: {_mr_e}")
+
         _l2_set(
             ctx,
             {
@@ -1827,6 +1864,7 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
                 "ss_node_id_path": node_id_path,
                 "ss_market_id": market_id,
                 "ss_median_cvr": ctx.cache.get("ss_median_cvr"),
+                "ss_return_rate_pct": ctx.cache.get("ss_return_rate_pct"),
             },
             "ss_bsr",
             ss_cache_key,
@@ -2898,8 +2936,18 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
 
     _breakeven_acos = max(0.0, 1.0 - _COGS_PCT - _REFERRAL_FEE_PCT - _fba_fee_pct)
 
+    # Category return rate — used to adjust both ACOS and inventory capital below.
+    # Derived early so the ACOS block and the capital block share one value.
+    _rr_raw = ctx.cache.get("ss_return_rate_pct")
+    _return_rate = _rr_raw / 100 if _rr_raw is not None and 0 < _rr_raw < 50 else None
+
     if _median_cpc and median_price > 0 and _category_cvr > 0:
-        _estimated_acos = _median_cpc / (median_price * _category_cvr)
+        # Nominal ACOS = CPC / (price × CVR).
+        # Effective ACOS adjusts for returns: each returned unit reverses the sale
+        # revenue but the ad spend is already sunk, so effective revenue per click
+        # is price × CVR × (1 − return_rate).
+        _nominal_acos = _median_cpc / (median_price * _category_cvr)
+        _estimated_acos = _nominal_acos / (1 - _return_rate) if _return_rate else _nominal_acos
         _ad_profit_drag = (_actual_ad_ratio or 0.5) * _estimated_acos
         _ad_burden_verdict = (
             "Critical"
@@ -3414,10 +3462,20 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     _CAP_OVERHEAD = 2000  # fixed launch costs: photography, A+, listing, freight ($)
     _CAP_BUFFER = 0.20  # working capital buffer on subtotal
 
+    # Category return rate from Amazon Marketplace Product Guidance (via SellerSprite).
+    # avg_return_rate_pct = average return rate of same-type sub-categories over the
+    # past 3 months.  Already read into _rr_raw above; aliased here for the output dict.
+    _ss_return_rate_pct: float | None = _rr_raw
+
     # If bimodal, compute capital against each tier's median separately
     # so the operator can see how the budget changes by tier choice.
     _cap_price = median_price  # overall median — may be in the gap if bimodal
-    _cap_inv = int(_CAP_UNITS * _cap_price * _CAP_COGS)
+    # Gross units to ORDER: net target / (1 − return_rate).  Returns consume inventory
+    # that was bought at full COGS but cannot be resold, so the sourcing cost must
+    # scale with gross units.  PPC and referral fees are computed on net units sold
+    # (referral fee is refunded on returns; PPC spend is sunk regardless).
+    _cap_gross_units = round(_CAP_UNITS / (1 - _return_rate)) if _return_rate else _CAP_UNITS
+    _cap_inv = int(_cap_gross_units * _cap_price * _CAP_COGS)
     _cap_ppc = int(_CAP_UNITS * _cap_price * _CAP_ACOS)
     _cap_fees = int(_CAP_UNITS * _cap_price * _CAP_FEES)
     _cap_sub = _cap_inv + _cap_ppc + _cap_fees + _CAP_OVERHEAD
@@ -3596,10 +3654,14 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "capital_fees": f"${_cap_fees:,}",
             "capital_overhead": f"${_CAP_OVERHEAD:,}",
             "capital_units": str(_CAP_UNITS),
+            "capital_gross_units": str(_cap_gross_units),
             "capital_cogs_pct": f"{_CAP_COGS:.0%}",
             "capital_acos_pct": f"{_CAP_ACOS:.0%}",
             "capital_fees_pct": f"{_CAP_FEES:.0%}",
             "capital_sell_months": str(_CAP_SELL_MONTHS),
+            "return_rate_pct": (
+                f"{_ss_return_rate_pct:.1f}%" if _ss_return_rate_pct is not None else "N/A"
+            ),
             "industry_typical_cr3": f"{baseline.get('typical_cr3', 0.4) * 100}%",
             "data_confidence_r2": estimator.category_params.get(str(node_id), {}).get(
                 "r_squared", 0.95

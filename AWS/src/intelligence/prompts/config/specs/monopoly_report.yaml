@@ -76,6 +76,8 @@ optional_vars:
   concentration_data: "{}"
   critical_reviews_data: "{}"
   integrity_ratio_threshold: "50%"
+  return_rate_pct: "N/A"
+  capital_gross_units: "N/A"
 
 output_schema: null
 
@@ -104,12 +106,13 @@ template: |
 
   CAPITAL TABLE RULE: In the Data Breakdown table, Investment Capital MUST appear as FIVE consecutive rows — never collapsed into one:
     Row 1: Metric='Investment Capital (Total)' | Value='{recommended_capital}' | Definition='Subtotal × 1.20 working-capital buffer'
-    Row 2: Metric='  └ Inventory ({capital_units} units, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_units} units × {niche_median_price} × {capital_cogs_pct} COGS'
+    Row 2: If capital_gross_units == capital_units (no return rate data): Metric='  └ Inventory ({capital_units} units, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_units} units × {niche_median_price} × {capital_cogs_pct} COGS'. If capital_gross_units ≠ capital_units (return rate available): Metric='  └ Inventory ({capital_gross_units} gross units ordered to net {capital_units} sold, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_gross_units} gross units × {niche_median_price} × {capital_cogs_pct} COGS (grossed up for {return_rate_pct} return rate)'
     Row 3: Metric='  └ PPC Seed ({capital_acos_pct} ACOS on {capital_units} units, ~{capital_sell_months}mo sell-through)' | Value='{capital_ppc}' | Definition='{capital_units} units × {niche_median_price} × {capital_acos_pct} ACOS'
     Row 4: Metric='  └ Platform Fees ({capital_fees_pct} on {capital_units} units)' | Value='{capital_fees}' | Definition='{capital_units} units × {niche_median_price} × {capital_fees_pct} (referral 15% + FBA from 2026 fee schedule, Large Standard 12-16 oz at median price)'
     Row 5: Metric='  └ Fixed Overhead' | Value='{capital_overhead}' | Definition='Photography, A+ content, listing, inbound freight'
   NEVER show a single Investment Capital row without these four sub-rows.
   BIMODAL CAPITAL RULE: tier_capitals={tier_capitals}. If tier_capitals is non-empty (bimodal market detected), append a second capital table immediately after the breakdown rows under the sub-heading '### Capital by Price Tier' with columns: Tier | Tier Median | Inventory | PPC | Fees | Overhead | Total. Warn the operator: 'The base Investment Capital above uses the overall median price which falls in the gap between tiers — choose the tier you plan to enter and use the corresponding Total as your actual budget.'
+  Category Return Rate: {return_rate_pct} (source: Amazon Marketplace Product Guidance via SellerSprite — avg_return_rate_pct is the average return rate of same-type sub-categories over the past 3 months; return rate = returns ÷ total purchases in the past 3 months; e.g. under Shoes the figure is averaged across 18 sub-categories such as Women's Road Running and Men's Road Running). Add one row to the Data Breakdown table: Metric='Category Return Rate' | Value='{return_rate_pct}' | Definition='Avg return rate of same-type sub-categories, past 3 months (Amazon Marketplace Product Guidance); >5% warrants a return-buffer reserve'. If return_rate_pct is 'N/A', omit this row.
   Primary Niche: **{main_keyword}** | Related Terms: {core_keywords}
   Data Confidence (R²): **{data_confidence_r2}**
 
@@ -138,7 +141,7 @@ template: |
 
   ### STEADY-STATE AD BURDEN
   Derived from market-level data only — no owned product required.
-  Formula: Estimated ACOS = median_cpc ÷ (median_price × category_cvr). Both CPC and CVR sourced from the Amazon Ads ecosystem for internal consistency.
+  Formula: Estimated ACOS = median_cpc ÷ (median_price × category_cvr × (1 − return_rate)). When return_rate_pct is 'N/A' the (1 − return_rate) term is omitted (equals 1). Both CPC and CVR sourced from the Amazon Ads ecosystem for internal consistency. Returns reduce effective ad revenue per click because the sale is reversed after the ad spend is already sunk.
   - Category CVR: {category_cvr} (source: {category_cvr_source})
   - Median CPC: {median_cpc}
   - Estimated Steady-State ACOS: {estimated_steady_state_acos}
@@ -167,7 +170,7 @@ template: |
 
   ### TOP ASIN EVIDENCE TABLE
   {top_asin_table}
-  Render the above JSON as a markdown table with these exact columns (in this order): Rank | ASIN | Brand | Title | Price | Rating | Reviews | Feedback | Review Ratio | Units/Mo | Seller Type. Title: truncate at 40 chars with '…'. Feedback = feedback_count (number of Amazon seller-feedback entries for this ASIN's seller; 'N/A' if unavailable). Review Ratio = review_ratio rendered as a percentage (e.g. 12.34%); this is written_reviews ÷ global_ratings — a ratio far above ~10% may indicate review manipulation (cross-reference Integrity Alert). Place this table immediately after the Data Breakdown section under the heading '## Top 10 BSR Products (Evidence)'. Below the table add one line: '*Source: Amazon BSR page scrape + PastMonthSales badge. Units/Mo = Amazon-displayed past-month purchase count. Review Ratio = written reviews ÷ global ratings (natural ≈ 10%).*'
+  Render the above JSON as a markdown table with these exact columns (in this order): Rank | ASIN | Brand | Title | Price | Rating | Reviews | Feedback | Review Ratio | Units/Mo | Fulfillment. Title: truncate at 40 chars with '…'. Feedback = feedback_count (number of Amazon seller-feedback entries for this ASIN's seller; 'N/A' if unavailable). Review Ratio = review_ratio rendered as a percentage (e.g. 12.34%); this is written_reviews ÷ global_ratings — a ratio far above ~10% may indicate review manipulation (cross-reference Integrity Alert). Place this table immediately after the Data Breakdown section under the heading '## Top 10 BSR Products (Evidence)'. Below the table add one line: '*Source: Amazon BSR page scrape + PastMonthSales badge. Units/Mo = Amazon-displayed past-month purchase count. Review Ratio = written reviews ÷ global ratings (natural ≈ 10%).*'
 
   ### BRAND & SELLER CONCENTRATION
   {concentration_data}
