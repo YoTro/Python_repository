@@ -42,6 +42,9 @@ class PastMonthSalesExtractor(AmazonBaseScraper):
             host = "https://" + host
 
         results: dict[str, int | None] = {a.upper(): None for a in asins}
+        host = host.rstrip("/")
+        if not host.startswith(("http://", "https://")):
+            host = "https://" + host
 
         for i in range(0, len(asins), _BATCH_SIZE):
             chunk = [a.upper() for a in asins[i : i + _BATCH_SIZE]]

@@ -23,6 +23,9 @@ class FulfillmentExtractor(AmazonBaseScraper):
         :param host: The Amazon marketplace host (default: .com).
         :return: A dictionary containing ASIN, URL, and FulfilledBy.
         """
+        host = host.rstrip("/")
+        if not host.startswith(("http://", "https://")):
+            host = "https://" + host
         url = f"{host}/dp/{asin}"
         logger.info(f"Fetching fulfillment info for: {url}")
 

@@ -25,6 +25,9 @@ class DimensionsExtractor(AmazonBaseScraper):
         :param host: The Amazon marketplace host.
         :return: A dictionary containing ASIN, Dimensions, and Price.
         """
+        host = host.rstrip("/")
+        if not host.startswith(("http://", "https://")):
+            host = "https://" + host
         url = f"{host}/dp/{asin}"
         logger.info(f"Fetching dimensions and price for ASIN: {asin}")
 

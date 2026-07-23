@@ -23,6 +23,9 @@ class VideoExtractor(AmazonBaseScraper):
         :param host: The Amazon marketplace host.
         :return: A dictionary containing ASIN, HasVideos (bool), and VideoCount (int).
         """
+        host = host.rstrip("/")
+        if not host.startswith(("http://", "https://")):
+            host = "https://" + host
         url = f"{host}/dp/{asin}"
         logger.info(f"Checking for videos on ASIN: {asin}")
 

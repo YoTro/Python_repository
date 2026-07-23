@@ -23,6 +23,9 @@ class RanksExtractor(AmazonBaseScraper):
         :param host: The Amazon marketplace host.
         :return: A dictionary containing ASIN, Primary Rank, and Category.
         """
+        host = host.rstrip("/")
+        if not host.startswith(("http://", "https://")):
+            host = "https://" + host
         url = f"{host}/dp/{asin}"
         logger.info(f"Fetching BSR for ASIN: {asin}")
 

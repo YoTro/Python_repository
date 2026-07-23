@@ -26,6 +26,9 @@ class CartStockExtractor(AmazonBaseScraper):
         :return: A dictionary: {"Stock": int, "StockStatus": str}
         """
         logger.info(f"Starting API 999 cart method for ASIN: {asin}")
+        host = host.rstrip("/")
+        if not host.startswith(("http://", "https://")):
+            host = "https://" + host
         url = f"{host}/dp/{asin}"
 
         result = {"Stock": -1, "StockStatus": "Unknown"}

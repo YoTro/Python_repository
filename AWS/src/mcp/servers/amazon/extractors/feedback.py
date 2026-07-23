@@ -24,6 +24,8 @@ class SellerFeedbackExtractor(AmazonBaseScraper):
     async def get_seller_feedback_count(
         self, seller_id: str, host: str = "https://www.amazon.com"
     ) -> dict:
+        if host and not host.startswith(("http://", "https://")):
+            host = f"https://{host}"
         url = f"{host}/sp?seller={seller_id}"
         logger.info(f"Fetching feedback for seller: {seller_id}")
 
