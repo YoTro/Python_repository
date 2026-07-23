@@ -182,9 +182,9 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
             if _ss_item:
                 _fba = _ss_item.get("fba")
                 _ss_seller_name = _ss_item.get("seller_name") or ""
-                if _fba is True:
+                if _fba == "FBA":
                     fulfilled_by = "Amazon"
-                elif _fba is False:
+                elif _fba is not None:
                     fulfilled_by = _ss_seller_name or "3P"
                 if not seller_id:
                     seller_id = _ss_item.get("seller_id")
@@ -196,9 +196,14 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
     feedback_count = None
     if seller_id:
         s_res = await s_extractor.get_seller_feedback_count(seller_id)
-        feedback_count = s_res.get(
-            "FeedbackCount"
-        )  # None if API didn't return it; 0 = genuine new seller
+        _fc_raw = s_res.get("FeedbackCount")
+        # Extractor now returns time-windowed dict; extract lifetime count as the scalar
+        # expected by downstream (monopoly analyzer compares it to mega_seller_feedback).
+        feedback_count = (
+            (_fc_raw.get("lifetime") or {}).get("count")
+            if isinstance(_fc_raw, dict)
+            else _fc_raw  # None when page unreachable
+        )
 
     result = {
         "seller_type": fulfilled_by or "Unknown",
@@ -1733,7 +1738,7 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
                         # per-product click-to-purchase rate; used as category CVR proxy
                         "conversion_rate": p.get("conversionRate"),
                         # seller fields — used as FulfillmentExtractor fallback
-                        "fba": p.get("fba"),
+                        "fba": p.get("sellerType"),
                         "seller_id": p.get("sellerId"),
                         "seller_name": p.get("sellerName"),
                     }
@@ -2556,6 +2561,12 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         except ValueError:
             return default
 
+    def _fc_lifetime(raw) -> int | None:
+        """Normalize feedback_count: extract lifetime count from time-windowed dict or pass through."""
+        if isinstance(raw, dict):
+            return (raw.get("lifetime") or {}).get("count")
+        return raw
+
     analyzer = CategoryMonopolyAnalyzer()
     external_data = {
         "social_psi": ctx.cache.get("category_social_psi"),
@@ -2589,9 +2600,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             or None,
             "seller_type": item.get("seller_type", "Unknown"),
             "seller_id": item.get("seller_id"),
-            "feedback_count": item.get(
-                "feedback_count"
-            ),  # None = no seller_id; 0 = confirmed new seller
+            "feedback_count": _fc_lifetime(item.get("feedback_count")),
             "review_count": _parse_int(item.get("Reviews")),
             "rating": _parse_float(item.get("Stars")),
             # Written reviews vs global ratings (from ReviewCountExtractor)

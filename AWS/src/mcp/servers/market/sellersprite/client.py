@@ -277,6 +277,10 @@ class SellerspriteAPI:
                     )
                     self._safe_relogin()
                     continue
+                logger.error(
+                    "[sellersprite] competing-lookup still getting soft-401 after re-login"
+                )
+                return {"items": [], "total": 0, "page": page, "size": size}
 
             logger.error(
                 f"[sellersprite] competing-lookup data field is not a dict "
