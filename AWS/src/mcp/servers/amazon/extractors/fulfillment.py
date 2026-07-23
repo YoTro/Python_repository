@@ -36,21 +36,52 @@ class FulfillmentExtractor(AmazonBaseScraper):
 
         soup = BeautifulSoup(html, "html.parser")
         fulfilled_by = None
+        sold_by = None
 
-        # In modern Amazon DOM, "Ships from" and "Sold by" are often in a tabular buybox
-        ships_from_div = soup.find(
-            "div", class_="tabular-buybox-text", attrs={"merchant-info": True}
-        )
-        if ships_from_div:
-            text = ships_from_div.get_text(strip=True)
-            if text:
-                fulfilled_by = text
+        # New ODF (Offer Display Features) structure.
+        # FBA: fulfillerInfoFeature has a "Ships from" span (e.g. "Amazon"),
+        #      merchantInfoFeature has a separate "Sold by" seller link.
+        # FBM: fulfillerInfoFeature is empty, merchantInfoFeature shows
+        #      a combined "Shipper / Seller" label with the seller link.
+        fulfiller_div = soup.find("div", id="fulfillerInfoFeature_feature_div")
+        merchant_div = soup.find("div", id="merchantInfoFeature_feature_div")
+        if fulfiller_div is not None or merchant_div is not None:
+            ships_from = None
+            seller_name = None
+            if fulfiller_div:
+                msg = fulfiller_div.find("span", class_="offer-display-feature-text-message")
+                if msg:
+                    ships_from = msg.get_text(strip=True)
+            if merchant_div:
+                seller_link = merchant_div.find("a", id="sellerProfileTriggerId")
+                if seller_link:
+                    seller_name = seller_link.get_text(strip=True)
+                else:
+                    # Amazon-direct: no seller profile link, plain span (e.g. "Amazon.com")
+                    msg = merchant_div.find("span", class_="offer-display-feature-text-message")
+                    if msg:
+                        seller_name = msg.get_text(strip=True)
+            if ships_from:
+                fulfilled_by = ships_from  # FBA: "Amazon"
+                sold_by = seller_name
+            elif seller_name:
+                fulfilled_by = seller_name  # FBM: fulfiller == seller
+                sold_by = seller_name
 
-        # Another common modern structure
+        # Older tabular buybox structure
+        if not fulfilled_by:
+            ships_from_div = soup.find(
+                "div", class_="tabular-buybox-text", attrs={"merchant-info": True}
+            )
+            if ships_from_div:
+                text = ships_from_div.get_text(strip=True)
+                if text:
+                    fulfilled_by = text
+
+        # Seller profile link with FBA keyword check
         if not fulfilled_by:
             merchant_info = soup.find("a", id="sellerProfileTriggerId")
             if merchant_info:
-                # If there's a merchant link, but we also check if it's FBA
                 if "Fulfilled by Amazon" in html or "Ships from Amazon" in html:
                     fulfilled_by = "Amazon"
                 else:
@@ -62,9 +93,9 @@ class FulfillmentExtractor(AmazonBaseScraper):
             if match:
                 fulfilled_by = f"{match.group(1)}{match.group(2)}".strip()
 
-        # Final fallback by just looking at text
+        # Final text-scan fallback
         if not fulfilled_by:
             if "Ships from and sold by Amazon.com" in html:
                 fulfilled_by = "Amazon"
 
-        return {"ASIN": asin, "URL": url, "FulfilledBy": fulfilled_by}
+        return {"ASIN": asin, "URL": url, "FulfilledBy": fulfilled_by, "SoldBy": sold_by}

@@ -14,6 +14,7 @@ from src.intelligence.processors import ReviewSummarizer
 from src.intelligence.providers.factory import ProviderFactory
 from src.mcp.servers.amazon.ads.client import AmazonAdsClient
 from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
+from src.mcp.servers.amazon.extractors.brand import BrandExtractor
 from src.mcp.servers.amazon.extractors.bsr_category_extractor import BSRCategoryExtractor
 from src.mcp.servers.amazon.extractors.cart_stock import CartStockExtractor
 from src.mcp.servers.amazon.extractors.comments import CommentsExtractor
@@ -96,6 +97,19 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
             if isinstance(p, dict) and "asin" in p:
                 data_cache.set("amazon", p["asin"], p)
         return _json_response(products)
+
+    if name == "get_brand":
+        extractor = BrandExtractor()
+        asin = arguments["asin"].upper()
+        result = await extractor.get_brand(
+            asin,
+            host=arguments.get("host", "https://www.amazon.com"),
+        )
+        if isinstance(result, dict) and result.get("Brand"):
+            cached = data_cache.get("amazon", asin) or {}
+            cached["brand"] = result["Brand"]
+            data_cache.set("amazon", asin, cached)
+        return _json_response(result)
 
     if name == "get_product_details":
         extractor = ProductDetailsExtractor()
@@ -529,6 +543,25 @@ amazon_tools = [
         },
     ),
     Tool(
+        name="get_brand",
+        description=(
+            "Fetch the brand name for a single Amazon product. "
+            "Returns: ASIN, Brand (string or null if not found). "
+            "Tries four selectors in order: premium brand logo img, "
+            "'Visit the X Store' link (premium), 'Visit the X Store' link (legacy), "
+            "and 'Brand: X' span (legacy). "
+            "Result is merged into DataCache under brand key."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin": {"type": "string", "description": "Product ASIN"},
+                "host": _HOST_PROP,
+            },
+            "required": ["asin"],
+        },
+    ),
+    Tool(
         name="get_product_details",
         description=(
             "Fetch full product details from an Amazon listing page. "
@@ -536,7 +569,8 @@ amazon_tools = [
             "price, sales_rank (BSR), review_count, rating (out of 5), "
             "main_image_url (primary image URL), images (all gallery image URLs sorted by resolution descending), "
             "videos (MP4/HLS URLs when detectable, otherwise placeholder × video_count), "
-            "category_name, category_node_id, past_month_sales, stock_level, is_fba, "
+            "category_name, category_node_id, past_month_sales, stock_level, "
+            "is_fba (True for FBA and Amazon-direct), sold_by (seller name, e.g. 'Amazon.com' for first-party or 3rd-party seller name), "
             "has_a_plus_content (bool), aplus_images (A+ premium background image URLs). "
             "Image count = len(images); video count = len(videos). "
             "Result is written to DataCache under domain='amazon', key=ASIN."
@@ -816,7 +850,10 @@ amazon_tools = [
         name="get_fulfillment",
         description=(
             "Determine fulfillment method for a product listing. "
-            "Returns: ASIN, URL, FulfilledBy ('Amazon' for FBA, seller name for FBM). "
+            "Returns: ASIN, URL, FulfilledBy, SoldBy. "
+            "FBA: FulfilledBy='Amazon', SoldBy=3rd-party seller name. "
+            "Amazon-direct: FulfilledBy='Amazon.com', SoldBy='Amazon.com'. "
+            "FBM: FulfilledBy=seller name, SoldBy=same seller name. "
             "Result is merged into DataCache under fulfillment_type key."
         ),
         inputSchema={
@@ -1308,9 +1345,10 @@ amazon_tools = [
 _AMAZON_META = {
     "refresh_amazon_cookies": ("DATA", "confirmation of session refresh"),
     "get_amazon_bestsellers": ("DATA", "list of bestseller products with ASIN, title, rank, price"),
+    "get_brand": ("DATA", "brand name for a single ASIN"),
     "get_product_details": (
         "DATA",
-        "full product details: title, price, brand, ratings, features, images (gallery URLs + count), videos (URLs + count), A+ content flag and image URLs",
+        "full product details: title, price, brand, ratings, features, images (gallery URLs + count), videos (URLs + count), A+ content flag and image URLs, is_fba, sold_by (seller name)",
     ),
     "search_products": ("DATA", "list of products matching keyword with ASIN, title, price"),
     "search_profitability_products": (
@@ -1337,7 +1375,10 @@ _AMAZON_META = {
         "COMPUTE",
         "structured review summary: pros/cons, sentiment, buyer persona, velocity, rating distribution, competitive barrier, manipulation risk score",
     ),
-    "get_fulfillment": ("DATA", "FBA or FBM fulfillment status"),
+    "get_fulfillment": (
+        "DATA",
+        "fulfillment type and seller: FBA (FulfilledBy=Amazon + 3P SoldBy), Amazon-direct (both=Amazon.com), FBM (both=seller name)",
+    ),
     "get_seller_feedback": ("DATA", "seller feedback count"),
     "get_seller_product_count": ("DATA", "total products listed by seller"),
     "get_dimensions": ("DATA", "product dimensions and weight"),

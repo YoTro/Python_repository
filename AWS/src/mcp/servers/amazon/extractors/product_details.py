@@ -108,10 +108,39 @@ class ProductDetailsExtractor(AmazonBaseScraper):
             else:
                 product.past_month_sales = parse_integer(sales_span.get_text(strip=True))
 
-        # 6. Fulfillment
-        fba_span = soup.find("span", id="tabular-buybox-truncate-0")
-        if fba_span and "Amazon" in fba_span.get_text():
-            product.is_fba = True
+        # 6. Fulfillment — parse the ODF (Offer Display Features) block.
+        # FBA:          fulfillerInfoFeature has a span ("Amazon"), merchantInfoFeature has a seller link
+        # FBM:          fulfillerInfoFeature is empty, merchantInfoFeature has a seller link ("Shipper/Seller")
+        # Amazon-direct:fulfillerInfoFeature is empty, merchantInfoFeature has a plain span ("Amazon.com")
+        fulfiller_div = soup.find("div", id="fulfillerInfoFeature_feature_div")
+        merchant_div = soup.find("div", id="merchantInfoFeature_feature_div")
+        if fulfiller_div is not None or merchant_div is not None:
+            ships_from = None
+            seller_name = None
+            if fulfiller_div:
+                msg = fulfiller_div.find("span", class_="offer-display-feature-text-message")
+                if msg:
+                    ships_from = msg.get_text(strip=True)
+            if merchant_div:
+                seller_link = merchant_div.find("a", id="sellerProfileTriggerId")
+                if seller_link:
+                    seller_name = seller_link.get_text(strip=True)
+                else:
+                    msg = merchant_div.find("span", class_="offer-display-feature-text-message")
+                    if msg:
+                        seller_name = msg.get_text(strip=True)
+            if ships_from:
+                product.is_fba = True
+                product.sold_by = seller_name
+            elif seller_name:
+                amazon_names = {"amazon", "amazon.com"}
+                product.is_fba = seller_name.lower() in amazon_names
+                product.sold_by = seller_name
+        else:
+            # Legacy fallback
+            fba_span = soup.find("span", id="tabular-buybox-truncate-0")
+            if fba_span and "Amazon" in fba_span.get_text():
+                product.is_fba = True
 
         # 7. A+ Content
         if product.has_a_plus_content is None:

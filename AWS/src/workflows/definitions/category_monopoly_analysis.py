@@ -30,13 +30,13 @@ from src.intelligence.prompts.manager import prompt_manager
 from src.intelligence.router import TaskCategory
 from src.mcp.servers.amazon.ads.client import AmazonAdsClient
 from src.mcp.servers.amazon.extractors.bestsellers import BestSellersExtractor
+from src.mcp.servers.amazon.extractors.brand import BrandExtractor
 from src.mcp.servers.amazon.extractors.comments import CommentsExtractor
 from src.mcp.servers.amazon.extractors.feedback import SellerFeedbackExtractor
 from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
 from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
 from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
 from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
-from src.mcp.servers.amazon.extractors.search import SearchExtractor
 from src.mcp.servers.market.deals.client import DealHistoryClient
 from src.mcp.servers.market.sellersprite.client import SellerspriteAPI
 from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
@@ -854,7 +854,6 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
     cached = _l2_get(ctx, _TTL_SIGNALS, "market_signals", kw_hash)
     if cached is not None:
         ctx.cache["keyword_data"] = cached.get("keyword_data", {})
-        ctx.cache["ad_ratio"] = cached.get("ad_ratio", 0.3)
         ctx.cache["detailed_bid_analysis"] = cached.get("detailed_bid_analysis", {})
         logger.info(f"[cat_monopoly] Market signals L2 cache hit kw_hash={kw_hash}")
         return items
@@ -872,15 +871,6 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
         except Exception as e:
             logger.error(f"[fetch_market_signals] ABA fetch failed: {e}")
             ctx.cache.setdefault("keyword_data", {})
-
-    async def _fetch_ad_ratio() -> None:
-        try:
-            search_results = await SearchExtractor().search(main_keyword, page=1)
-            sponsored = sum(1 for r in search_results if getattr(r, "is_sponsored", False))
-            ctx.cache["ad_ratio"] = sponsored / (len(search_results) or 1)
-        except Exception as e:
-            logger.error(f"[fetch_market_signals] SERP ad ratio fetch failed: {e}")
-            ctx.cache.setdefault("ad_ratio", 0.3)
 
     async def _fetch_cpc_bids() -> None:
         try:
@@ -918,12 +908,11 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
             logger.error(f"[fetch_market_signals] CPC bid fetch failed: {e}")
             ctx.cache.setdefault("detailed_bid_analysis", {})
 
-    await asyncio.gather(_fetch_aba(), _fetch_ad_ratio(), _fetch_cpc_bids())
+    await asyncio.gather(_fetch_aba(), _fetch_cpc_bids())
     _l2_set(
         ctx,
         {
             "keyword_data": ctx.cache.get("keyword_data", {}),
-            "ad_ratio": ctx.cache.get("ad_ratio", 0.3),
             "detailed_bid_analysis": ctx.cache.get("detailed_bid_analysis", {}),
         },
         "market_signals",
@@ -2158,6 +2147,62 @@ def _ads_category_matches_niche(browse_category: str | None, core_keywords: list
     return bool(cat_tokens & kw_tokens)
 
 
+def _model_default_cvr(median_price: float, amazon_category: str | None = None) -> float:
+    """
+    Power-law price × category CVR estimate used when live benchmark data is unavailable.
+
+    Baseline:  CVR = 0.45 × price^(−0.477)
+    Calibrated to observed Amazon SP median ranges:
+      $10 → ~15%,  $25 → ~10%,  $50 → ~7%,  $100 → ~5%,  $200 → ~3.5%
+
+    When `amazon_category` (the flat primary-category label from
+    ProfitabilitySearchExtractor.salesRankContextName, e.g. "Electronics", "Pet Supplies")
+    is available it is used to scale the baseline via a category multiplier.
+    Without it the baseline is returned as-is — precision is not required here since
+    this is a last-resort fallback when no real benchmark CVR can be matched.
+
+    Result is clamped to [0.02, 0.25].
+    """
+    # Tokens drawn from Amazon's actual primary-category label vocabulary so they
+    # match salesRankContextName values such as "Grocery & Gourmet Food" or "Baby".
+    # Ordered highest → lowest CVR multiplier; first match wins.
+    _CATEGORY_SIGNALS: list[tuple[frozenset, float]] = [
+        (frozenset({"grocery", "gourmet", "food"}), 1.40),  # Grocery & Gourmet Food
+        (frozenset({"beauty", "personal", "care"}), 1.30),  # Beauty & Personal Care
+        (frozenset({"baby"}), 1.25),  # Baby Products
+        (frozenset({"kitchen", "dining"}), 1.20),  # Home & Kitchen / Kitchen & Dining
+        (frozenset({"home", "garden"}), 1.15),  # Home & Garden
+        (frozenset({"toys", "games"}), 1.10),  # Toys & Games
+        (frozenset({"pet"}), 1.05),  # Pet Supplies
+        (
+            frozenset({"sports", "outdoors", "health", "household"}),
+            1.00,
+        ),  # Sports & Outdoors / Health & Household
+        (frozenset({"clothing", "shoes", "jewelry", "apparel"}), 0.90),  # Clothing, Shoes & Jewelry
+        (
+            frozenset({"tools", "automotive", "industrial", "improvement"}),
+            0.85,
+        ),  # Tools & Home Improvement / Automotive
+        (
+            frozenset({"electronics", "computers", "office"}),
+            0.80,
+        ),  # Electronics / Computers / Office
+    ]
+
+    # salesRankContextName is a flat primary-category label ("Electronics", "Pet Supplies").
+    cat_tokens = frozenset((amazon_category or "").lower().split())
+    best_mult = 1.0
+    for signal_toks, mult in _CATEGORY_SIGNALS:
+        if cat_tokens & signal_toks:
+            best_mult = mult
+            break
+
+    # Power-law decay: α=0.45, β=0.477
+    price = max(median_price, 1.0)
+    base_cvr = 0.45 * (price**-0.477)
+    return max(0.02, min(0.25, base_cvr * best_mult))
+
+
 async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
     """
     Fetch category-median click-to-purchase CVR for steady-state ACOS estimation.
@@ -2237,8 +2282,47 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
             logger.info(f"[fetch_category_cvr] SellerSprite CVR={cvr:.2%} — {source}")
 
     if cvr is None:
-        cvr = 0.10
-        source = "default_0.10 (Amazon Ads category mismatch; SellerSprite unavailable)"
+        _raw_prices = [
+            float(m.group())
+            for item in items
+            if item.get("Price")
+            for m in [re.search(r"\d+(?:\.\d+)?", str(item["Price"]).replace(",", ""))]
+            if m
+        ]
+        _median_price = statistics.median(_raw_prices) if _raw_prices else 25.0
+
+        # Resolve the primary Amazon category name from a representative ASIN so
+        # _model_default_cvr can use the authoritative salesRankContextName string
+        # (e.g. "Pet Supplies > Dogs") instead of relying solely on keyword matching.
+        # One call suffices — all BSR items share the same primary category.
+        _amazon_category: str | None = None
+        _rep_asin = next(
+            (
+                (item.get("ASIN") or item.get("asin") or "").strip().upper()
+                for item in items
+                if item.get("ASIN") or item.get("asin")
+            ),
+            None,
+        )
+        if _rep_asin:
+            try:
+                _ps_products = await ProfitabilitySearchExtractor().search_products(_rep_asin)
+                _ps_match = next(
+                    (p for p in _ps_products if (p.get("asin") or "").upper() == _rep_asin),
+                    _ps_products[0] if _ps_products else None,
+                )
+                if _ps_match:
+                    _amazon_category = _ps_match.get("salesRankContextName") or None
+            except Exception as _e:
+                logger.warning(f"[fetch_category_cvr] ProfitabilitySearch for {_rep_asin}: {_e}")
+
+        cvr = _model_default_cvr(_median_price, _amazon_category)
+        source = (
+            f"model_derived_power_law (price=${_median_price:.0f}→{cvr:.2%}"
+            + (f", category='{_amazon_category}'" if _amazon_category else "")
+            + "; Amazon Ads mismatch, SellerSprite unavailable)"
+        )
+        ctx.cache["profitability_rank_category"] = _amazon_category
 
     # ── CPC P50 fallback: derive from keyword bid recommendations ────────────
     # Used when Amazon Ads benchmark was discarded (category mismatch) or failed.
@@ -2267,10 +2351,10 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
     ctx.cache["category_cvr"] = cvr
     ctx.cache["category_cvr_source"] = source
     ctx.cache["category_cpc_p50"] = cpc_p50
-    # Only cache a real CVR — never persist the 0.10 hard fallback.  A stale
-    # "default_0.10" entry would prevent ss_median_cvr from being picked up on
-    # the next run even after SellerSprite data becomes available.
-    if not source.startswith("default_0.10"):
+    # Only cache live benchmark data — never persist model-derived or hardcoded
+    # fallbacks so that real data (Amazon Ads, SellerSprite) can be picked up on
+    # the next run once it becomes available.
+    if not source.startswith(("default_0.10", "model_derived_power_law")):
         _l2_set(ctx, {"cvr": cvr, "source": source, "cpc_p50": cpc_p50}, "category_cvr", cvr_hash)
     return items
 
@@ -2589,6 +2673,38 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             if _p.get("asin") and _p.get("brand"):
                 _brand_lookup[_p["asin"].upper()] = _p["brand"]
 
+    # For ASINs that have no brand from snapshots or item fields, fetch via BrandExtractor.
+    _brand_missing = [
+        (item.get("ASIN") or item.get("asin") or "").upper()
+        for item in items
+        if (item.get("ASIN") or item.get("asin"))
+        and not _brand_lookup.get((item.get("ASIN") or item.get("asin") or "").upper())
+        and not item.get("Brand")
+        and not item.get("brand")
+    ]
+    if _brand_missing:
+        logger.info(
+            f"[run_monopoly_analysis] brand-fill via BrandExtractor: {len(_brand_missing)} ASINs"
+        )
+        _brand_extractor = BrandExtractor()
+
+        async def _fetch_brand(asin: str) -> tuple[str, str | None]:
+            try:
+                res = await _brand_extractor.get_brand(asin)
+                return asin, res.get("Brand")
+            except Exception as _e:
+                logger.warning(f"[run_monopoly_analysis] BrandExtractor({asin}): {_e}")
+                return asin, None
+
+        _brand_results = await asyncio.gather(*[_fetch_brand(a) for a in _brand_missing])
+        for _asin, _brand in _brand_results:
+            if _brand:
+                _brand_lookup[_asin] = _brand
+        logger.info(
+            f"[run_monopoly_analysis] BrandExtractor resolved "
+            f"{sum(1 for _, b in _brand_results if b)}/{len(_brand_missing)} brands"
+        )
+
     analysis_input = [
         {
             "rank": _parse_int(item.get("Rank"), default=999),
@@ -2614,7 +2730,6 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     # Combined Ad Data with Multi-Keyword CPC
     detailed_bids = ctx.cache.get("detailed_bid_analysis", {})
     ad_data = {
-        "ad_ratio": ctx.cache.get("ad_ratio", 0.3),
         "actual_bsr_ad_ratio": ctx.cache.get("actual_bsr_ad_ratio"),
         "detailed_bids": detailed_bids,
     }
@@ -2652,7 +2767,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     # Ad profit drag = actual_bsr_ad_ratio × estimated_acos
     # Both inputs (CPC and CVR) come from the Amazon Ads ecosystem so the
     # estimate is internally consistent regardless of category.
-    _category_cvr = ctx.cache.get("category_cvr") or 0.10
+    _category_cvr = ctx.cache.get("category_cvr") or _model_default_cvr(
+        median_price, ctx.cache.get("profitability_rank_category")
+    )
 
     _cpc_values: list[float] = []
     for _strategy_recs in bid_raw.values():
