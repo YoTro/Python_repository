@@ -65,6 +65,14 @@ _TTL_TRAFFIC = 21_600  # 6  h — Xiyouzhaoci batch ad-traffic ratios
 _TTL_CVR = 7 * 86_400  # 7 d  — Amazon Ads category CVR benchmark
 _TTL_CRITICAL_REVIEWS = 86_400  # 24 h — recent critical reviews per ASIN
 
+# Shared semaphores: cap concurrent amazon_scraper calls across all parallel EnrichStep slots.
+# EnrichStep runs 5 items concurrently; each fires 2 sub-requests → 10 simultaneous without limits.
+# burst:3 in settings.json means anything beyond 3 will timeout. Cap at 3 each.
+_SEM_FULFILLMENT = asyncio.Semaphore(3)
+_SEM_REVIEW_COUNT = asyncio.Semaphore(2)
+_SEM_BRAND = asyncio.Semaphore(3)
+_SEM_COMMENTS = asyncio.Semaphore(3)
+
 
 def _l2_key(ctx, *parts) -> str:
     tid = getattr(ctx, "tenant_id", None) or "default"
@@ -165,10 +173,16 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
         SellerFeedbackExtractor(),
         ReviewRatioExtractor(),
     )
-    f_res, rc_res = await asyncio.gather(
-        f_extractor.get_fulfillment_info(asin),
-        rc_extractor.get_review_count(asin),
-    )
+
+    async def _get_fulfillment():
+        async with _SEM_FULFILLMENT:
+            return await f_extractor.get_fulfillment_info(asin)
+
+    async def _get_review_count():
+        async with _SEM_REVIEW_COUNT:
+            return await rc_extractor.get_review_count(asin)
+
+    f_res, rc_res = await asyncio.gather(_get_fulfillment(), _get_review_count())
 
     seller_id = f_res.get("SellerId")
     fulfilled_by = f_res.get("FulfilledBy")
@@ -190,7 +204,7 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
                     seller_id = _ss_item.get("seller_id")
                 logger.info(
                     f"[enrich_seller_info] {asin}: SellerSprite fallback → "
-                    f"seller_type={fulfilled_by!r}, seller_id={seller_id!r}"
+                    f"FulfilledBy={fulfilled_by!r}, seller_id={seller_id!r}"
                 )
 
     feedback_count = None
@@ -2488,7 +2502,6 @@ async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> lis
     """
     _RECENCY_DAYS = 90
     _MAX_PAGES = 2
-    _CONCURRENCY = 3
     _STRATA_ALLOC = {"leaders": 2, "mid_tier": 2, "new_entrant": 1}
 
     # Sellersprite snapshot → authoritative brand byline + listing date.
@@ -2599,11 +2612,9 @@ async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> lis
         except ValueError:
             return False
 
-    sem = asyncio.Semaphore(_CONCURRENCY)
-
     async def _fetch_one(entry: dict) -> tuple[str, list]:
         asin = entry["asin"]
-        async with sem:
+        async with _SEM_COMMENTS:
             try:
                 extractor = CommentsExtractor()
                 reviews = await extractor.get_negative_reviews(asin, max_pages=_MAX_PAGES)
@@ -2727,12 +2738,13 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         _brand_extractor = BrandExtractor()
 
         async def _fetch_brand(asin: str) -> tuple[str, str | None]:
-            try:
-                res = await _brand_extractor.get_brand(asin)
-                return asin, res.get("Brand")
-            except Exception as _e:
-                logger.warning(f"[run_monopoly_analysis] BrandExtractor({asin}): {_e}")
-                return asin, None
+            async with _SEM_BRAND:
+                try:
+                    res = await _brand_extractor.get_brand(asin)
+                    return asin, res.get("Brand")
+                except Exception as _e:
+                    logger.warning(f"[run_monopoly_analysis] BrandExtractor({asin}): {_e}")
+                    return asin, None
 
         _brand_results = await asyncio.gather(*[_fetch_brand(a) for a in _brand_missing])
         for _asin, _brand in _brand_results:
@@ -3829,7 +3841,7 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
             ProcessStep(name="calculate_monopoly_score", fn=_run_monopoly_analysis),
             ProcessStep(
                 name="deliver_report",
-                batch_threshold=1,
+                # batch_threshold=1,
                 prompt_template=prompt_manager.render_spec("monopoly_report", ctx_vars),
                 compute_target=ComputeTarget.CLOUD_LLM,
             ),

@@ -69,6 +69,8 @@ required_vars:
   - fba_fee_pct
   - breakeven_acos
   - ad_burden_verdict
+  - return_rate_pct
+  - capital_gross_units
 
 optional_vars:
   core_keywords: "(none)"
@@ -76,8 +78,6 @@ optional_vars:
   concentration_data: "{}"
   critical_reviews_data: "{}"
   integrity_ratio_threshold: "50%"
-  return_rate_pct: "N/A"
-  capital_gross_units: "N/A"
 
 output_schema: null
 
@@ -262,6 +262,10 @@ template: |
   - PRICE TREND ALERT: If price_trend is 'deflating', warn that this category is in a price war — margin compression is accelerating and late entrants face structural disadvantage. If 'inflating', note that premium positioning may be viable.
   - NEW ENTRANT ALERT: If new_entrant_ratio > 40%, the category has low moat — many new products are breaking into the top-100, which means low ranking stickiness but also means a new entrant has a realistic shot. If < 15%, incumbents dominate and new entries rarely survive in the ranking.
   - INTEGRITY ALERT: If integrity_alert is 'HIGH', explicitly warn that this category has a severely compromised compliance environment — widespread fake review injection or coordinated negative review attacks are likely. New entrants should budget for additional compliance overhead, and the true review barrier is likely higher than the raw data suggests. Combine with review_disparity to assess whether high-review incumbents are defensible or artificially inflated.
+  - INTEGRITY SWOT PLACEMENT (apply whenever integrity_alert is not 'LOW'):
+    • T (Threat) — ALWAYS include: 'Coordinated negative-review attacks are an asymmetric threat to a new listing with no review buffer. A HIGH integrity environment means a competitor can sink your launch-phase ASIN before organic velocity builds. Budget for early review monitoring and appeal reserves.' Cite integrity_alert level and integrity_hist_cov / integrity_ratio_cov coverage figures.
+    • O (Opportunity) — include when review_disparity > 3x OR integrity_alert is 'HIGH': 'Incumbent review counts may be artificially inflated (integrity_alert={integrity_alert}, review_disparity={review_disparity}). A genuine-quality entrant building authentic reviews at a lower absolute count can achieve equivalent conversion — the real review floor is lower than raw numbers suggest.' NEVER write this Opportunity without citing the specific review_disparity figure and the integrity signal that supports it.
+    • If integrity_alert is 'LOW', omit both bullets from SWOT entirely — do not manufacture a risk that the data does not support.
   - NEW ENTRANT SOCIAL ALERT: Examine brand_social_data for entries where is_new_entrant is true. The 'psi' field is the maximum across all platforms; check 'platforms' for per-platform detail.
     • If any new-entrant brand has psi > 30: flag that recently-listed brands are already running active social campaigns (cite which platform(s) dominate) — external video promotion is likely a prerequisite for traction in this category, not an optional growth lever. Name each such brand and their PSI explicitly.
     • If a brand has BOTH is_top_brand AND is_new_entrant true: call this a 'breakout pattern' — a brand that entered within the last 12 months and is simultaneously dominant in BSR rank AND social. This is the highest-conviction signal that a video-first launch strategy works here; cite the brand name, PSI, and which platform(s) are strongest.
