@@ -14,7 +14,7 @@
       "tier_values": "standard | standard_peak | undiscounted | undiscounted_peak",
       "resolution_flow": "any_string → model_string_index → canonical_id → lookup key",
       "cache_note": "Server-side KV cache. Cache hits billed at input_cache_hit price; misses at input price.",
-      "deprecation_note": "deepseek-chat and deepseek-reasoner are deprecated aliases for deepseek-v4-flash (non-thinking and thinking modes). Their old independent pricing ($0.27/$2.19) is superseded.",
+      "deprecation_note": "deepseek-chat and deepseek-reasoner are deprecated as of 2026-07-24T15:59:00Z. They correspond to the non-thinking and thinking modes of deepseek-v4-flash respectively. Their old independent pricing ($0.27/$2.19) is superseded.",
       "v4_pro_discount_note": "deepseek-v4-pro is at 75% off (standard tier) until 2026-05-31T15:59:00Z. After the promotion ends, the API price is officially set to 1/4 of the original launch price (numerically identical to the promotion price). Undiscounted tier reflects this post-promotion official price.",
       "cache_hit_reduction_note": "Effective 2026-04-26T12:15Z, input_cache_hit price for all models is set to 1/10 of the pre-reduction launch cache-hit price.",
       "peak_pricing_note": "Effective 2026-07-15, peak-hour surcharge applies: all billing dimensions cost 2x the off-peak rate. Peak hours (UTC): 01:00–04:00 and 06:00–10:00 (UTC+8: 09:00–12:00 and 14:00–18:00). Use *_peak tier variants for peak-hour cost estimation."
@@ -48,13 +48,13 @@
       "canonical_id": "deepseek-v4-flash",
       "is_alias": true,
       "is_deprecated": true,
-      "deprecation_note": "Corresponds to deepseek-v4-flash non-thinking mode. Will be removed in future."
+      "deprecation_note": "Deprecated 2026-07-24T15:59:00Z. Corresponds to deepseek-v4-flash non-thinking mode."
     },
     "deepseek-reasoner": {
       "canonical_id": "deepseek-v4-flash",
       "is_alias": true,
       "is_deprecated": true,
-      "deprecation_note": "Corresponds to deepseek-v4-flash thinking mode. Will be removed in future.",
+      "deprecation_note": "Deprecated 2026-07-24T15:59:00Z. Corresponds to deepseek-v4-flash thinking mode.",
       "thinking_mode": true
     },
     "deepseek-v3": {
@@ -197,21 +197,15 @@
   },
   "model_limits": {
     "_source": "https://api-docs.deepseek.com/",
-    "_last_verified": "2026-04-28",
+    "_last_verified": "2026-07-24",
     "_default": {
       "max_output_tokens": 8192
     },
     "deepseek-v4-flash": {
-      "max_output_tokens": 8192
+      "max_output_tokens": 393216
     },
     "deepseek-v4-pro": {
-      "max_output_tokens": 8192
-    },
-    "deepseek-chat": {
-      "max_output_tokens": 8192
-    },
-    "deepseek-reasoner": {
-      "max_output_tokens": 8192
+      "max_output_tokens": 393216
     }
   }
 }
