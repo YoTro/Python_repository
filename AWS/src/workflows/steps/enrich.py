@@ -10,6 +10,7 @@ Wraps an async extractor function with:
 """
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -124,9 +125,10 @@ class EnrichStep(Step):
     @staticmethod
     def _get_item_key(item: dict) -> str:
         """Generate a stable key for caching."""
-        if "asin" in item:
-            return item["asin"]
+        asin = item.get("asin") or item.get("ASIN")
+        if asin:
+            return str(asin).strip().upper()
         if "url" in item:
             return item["url"]
-        # Fallback: hash of sorted items
-        return str(hash(tuple(sorted(item.items()))))
+        # Fallback: stable serialization that tolerates nested dict/list values.
+        return str(hash(json.dumps(item, sort_keys=True, default=str)))
