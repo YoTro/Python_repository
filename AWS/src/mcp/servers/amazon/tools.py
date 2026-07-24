@@ -869,12 +869,21 @@ amazon_tools = [
         name="get_seller_feedback",
         description=(
             "Fetch seller feedback statistics from the seller's storefront profile. "
-            "Returns feedback count and ratings breakdown for the seller."
+            "Returns feedback count and ratings breakdown for the seller. "
+            "IMPORTANT: seller_id must be the Amazon internal alphanumeric seller ID "
+            "(e.g. 'A32ED6P9WC87QG') — NOT the seller's display name or brand name. "
+            "Obtain it from get_fulfillment (field: SellerId) or get_bsr_rank."
         ),
         inputSchema={
             "type": "object",
             "properties": {
-                "seller_id": {"type": "string", "description": "Amazon seller ID"},
+                "seller_id": {
+                    "type": "string",
+                    "description": (
+                        "Amazon internal seller ID — alphanumeric, e.g. 'A32ED6P9WC87QG'. "
+                        "Never pass a brand name or display name here."
+                    ),
+                },
                 "host": _HOST_PROP,
             },
             "required": ["seller_id"],
@@ -884,14 +893,22 @@ amazon_tools = [
         name="get_seller_product_count",
         description=(
             "Get the total number of active product listings for a seller. "
-            "Returns seller_id and product_count extracted from the storefront page."
+            "Returns seller_id and product_count extracted from the storefront page. "
+            "Pass a product listing URL that contains the seller's ID in the page source "
+            "(e.g. https://www.amazon.com/dp/B0XXXXX or a storefront URL). "
+            "Do NOT construct a URL using the seller's display name — the extractor "
+            "resolves the internal seller ID from the page automatically."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "Amazon product listing URL (seller ID will be extracted)",
+                    "description": (
+                        "A product listing URL or seller storefront URL from which the "
+                        "internal seller ID will be extracted. Use the product page URL "
+                        "(https://www.amazon.com/dp/ASIN) of one of the seller's products."
+                    ),
                 },
             },
             "required": ["url"],
