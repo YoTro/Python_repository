@@ -135,8 +135,8 @@ template: |
     Row 3: 'Brand CR3 (Sales)' | brand.cr3_sales as % or '—' if null | 'Top-3 brands' share of monthly units'
     Row 4: 'Typical Industry CR3 (Benchmark)' | {industry_typical_cr3} | 'Category norm; DOJ: >40% = moderate concentration'
     Row 5: 'HHI (Brand, Position)' | brand.hhi_position to 4 dp | 'Herfindahl index: <0.10 fragmented · 0.10–0.18 moderate · >0.18 concentrated'
-    Row 6: 'Seller CR3 (Position)' | seller.cr3_position as % or 'N/A — seller IDs unavailable' | 'Top-3 sellers' share of BSR slots (one seller may own multiple brands)'
-    Row 7: 'HHI (Seller, Position)' | seller.hhi_position to 4 dp or 'N/A' | 'Seller-level Herfindahl index'
+    Row 6: 'Seller CR3 (Position)' | if seller_id_coverage_pct < 0.50: '{{seller.cr3_position as %}}* (low coverage — {{seller.n_asins_with_seller_id}}/{{n_products}} ASINs only)' else seller.cr3_position as % or 'N/A — seller IDs unavailable' | 'Top-3 sellers' share of BSR slots; * = unreliable, <50% seller ID coverage'
+    Row 7: 'HHI (Seller, Position)' | if seller_id_coverage_pct < 0.20: 'unreliable (<20% coverage)' elif seller_id_coverage_pct < 0.50: '{{seller.hhi_position to 4 dp}}* (low coverage)' else seller.hhi_position to 4 dp or 'N/A' | 'Seller-level Herfindahl index; * = treat as directional only'
   - Monopoly Score: {monopoly_score}/100 — {monopoly_status}
   - Social PSI: {social_psi} ({social_verdict}) [Category keyword, best signal across platforms — see Brand Social Signals below for brand-level breakdown]
   - Brand Social Signals: {brand_social_data}
@@ -189,6 +189,13 @@ template: |
   1. **Top Brands by Position** — inline sentence: 'Top N brands by BSR slots: Brand A (X slots, Y%), Brand B …' (list top-5 from brand.top_brands_by_position)
   2. **Top Brands by Sales** — inline sentence listing top-5 from brand.top_brands_by_sales with monthly_units and sales_share%. Omit if brand.top_brands_by_sales is empty.
   3. **Multi-Brand Sellers** — if seller.n_multi_brand_sellers > 0: render as a small table with columns: Seller ID (last 6 chars) | Brands Owned | Positions | Monthly Units | Position Share. Each row is one entry from seller.multi_brand_sellers. Add note: 'A single seller controlling multiple brands indicates seller-level monopoly stronger than brand-level metrics suggest.' If n_multi_brand_sellers == 0 and n_sellers_identified > 0: write 'No seller owns more than one brand in this BSR sample.' If n_sellers_identified == 0: write 'Seller IDs unavailable — seller-level analysis skipped.'
+  SELLER ID COVERAGE RULE (MANDATORY — evaluate before rendering any seller-level metric):
+  Check seller.seller_id_coverage_pct and seller.n_asins_with_seller_id against n_products.
+  - If seller_id_coverage_pct < 0.50: you MUST open the seller sub-section with this disclaimer block (verbatim, before any table or metric):
+    > ⚠️ **Seller ID coverage: {{seller.n_asins_with_seller_id}}/{{n_products}} ASINs ({{seller.seller_id_coverage_pct as %}})** — the remaining products returned no identifiable seller. All seller-level metrics below (CR3, HHI, multi-brand analysis) are computed only on the covered subset and will **undercount concentration** if the unknown sellers are the same entity. Treat as directional only.
+  - If seller_id_coverage_pct < 0.20: additionally write '**Seller-level HHI and CR3 are unreliable at this coverage level and should not be cited as evidence of market structure.**'
+  - If seller_id_coverage_pct >= 0.50: no disclaimer needed — render normally.
+  - NEVER omit this disclaimer when coverage is below 50%. NEVER present seller HHI or CR3 as reliable figures when coverage is below 20%.
   CONCENTRATION ALERT rule (apply in Strategic Insights section):
   - If brand.cr3_sales > 0.60 OR brand.cr3_position > 0.45: flag 'Brand Duopoly Risk — top 3 brands control >X% of [positions/sales]; new entrants face a lock-in market.' Cite CR3 and HHI.
   - If seller.n_multi_brand_sellers > 0 AND their combined position_share > 0.30: flag 'Hidden Seller Concentration — N sellers each own multiple brands, together holding X% of BSR positions. The true competitive power is more concentrated than brand-level CR3 indicates.'

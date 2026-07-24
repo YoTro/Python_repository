@@ -3586,8 +3586,11 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         key=lambda x: x["positions"],
         reverse=True,
     )
+    _n_asins_with_seller_id = sum(_seller_pos.values())
     _conc_seller = {
         "n_sellers_identified": len(_seller_pos),
+        "n_asins_with_seller_id": _n_asins_with_seller_id,
+        "seller_id_coverage_pct": round(_n_asins_with_seller_id / _N_items, 4) if _N_items else 0,
         "cr3_position": _conc_cr(_seller_pos, 3) if _seller_pos else None,
         "hhi_position": _conc_hhi(_seller_pos) if _seller_pos else None,
         "n_multi_brand_sellers": len(_multi_brand_sellers),
@@ -3775,9 +3778,15 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "collapse_rate": f"{churn.get('collapse_rate', 0):.0%}",
             # BSR listing metabolism (set-comparison across monthly snapshots)
             "bsr_churn_label": bsr_churn.get("label", "unknown"),
-            "bsr_churn_3m": f"{bsr_churn.get('churn_3m') or 0:.0%}",
-            "bsr_churn_6m": f"{bsr_churn.get('churn_6m') or 0:.0%}",
-            "bsr_churn_12m": f"{bsr_churn.get('churn_12m') or 0:.0%}",
+            "bsr_churn_3m": f"{bsr_churn['churn_3m']:.0%}"
+            if bsr_churn.get("churn_3m") is not None
+            else "N/A",
+            "bsr_churn_6m": f"{bsr_churn['churn_6m']:.0%}"
+            if bsr_churn.get("churn_6m") is not None
+            else "N/A",
+            "bsr_churn_12m": f"{bsr_churn['churn_12m']:.0%}"
+            if bsr_churn.get("churn_12m") is not None
+            else "N/A",
             "bsr_snapshots": ", ".join(bsr_churn.get("snapshots_available", [])) or "N/A",
             # Seasonality
             "seasonality_pattern": seasonality.get("pattern", "unknown"),
