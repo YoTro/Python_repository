@@ -678,6 +678,10 @@ class CategoryMonopolyAnalyzer:
             "platform_event_in_peak": False,
             "source": "keyword_weekly_trends",
             "n_data_points": 0,
+            "demand_trend": "unknown",
+            "yoy_1y_pct": None,
+            "yoy_2y_pct": None,
+            "yoy_peak_1y_pct": None,
         }
 
         try:
@@ -767,6 +771,58 @@ class CategoryMonopolyAnalyzer:
 
         platform_in_peak = bool(PLATFORM_EVENT_MONTHS & set(peak_months))
 
+        # ── Step 8: YOY demand trend ──────────────────────────────────────────
+        # Compare raw search-volume means across 52-week yearly windows to detect
+        # structural growth or decline independent of seasonal shape.
+        # Uses peak-window weeks when peak_months are detected (more sensitive
+        # for seasonal categories); falls back to full-year mean for evergreen.
+        yoy_1y_pct: float | None = None
+        yoy_2y_pct: float | None = None
+        yoy_peak_1y_pct: float | None = None
+        demand_trend = "unknown"
+
+        if n >= 104:  # need at least 2 full years
+            week_dates_list = [today - datetime.timedelta(days=(n - 1 - i) * 7) for i in range(n)]
+            peak_month_set = set(peak_months)
+
+            def _window_mean(start: int, end: int, months: set) -> float | None:
+                vols = [
+                    week_search[i]
+                    for i in range(start, end)
+                    if week_search[i] > 0 and (not months or week_dates_list[i].month in months)
+                ]
+                return statistics.mean(vols) if vols else None
+
+            y3_s, y3_e = max(0, n - 52), n
+            y2_s, y2_e = max(0, n - 104), y3_s
+            y1_s, y1_e = max(0, n - 156), y2_s
+
+            y3_annual = _window_mean(y3_s, y3_e, set())
+            y2_annual = _window_mean(y2_s, y2_e, set())
+            y1_annual = _window_mean(y1_s, y1_e, set()) if n >= 156 else None
+
+            if y3_annual and y2_annual:
+                yoy_1y_pct = round((y3_annual / y2_annual - 1) * 100, 1)
+            if y3_annual and y1_annual:
+                yoy_2y_pct = round((y3_annual / y1_annual - 1) * 100, 1)
+
+            if peak_month_set:
+                y3_peak = _window_mean(y3_s, y3_e, peak_month_set)
+                y2_peak = _window_mean(y2_s, y2_e, peak_month_set)
+                if y3_peak and y2_peak:
+                    yoy_peak_1y_pct = round((y3_peak / y2_peak - 1) * 100, 1)
+
+            _primary = yoy_peak_1y_pct if yoy_peak_1y_pct is not None else yoy_1y_pct
+            if _primary is not None:
+                if _primary <= -40:
+                    demand_trend = "collapsing"
+                elif _primary <= -15:
+                    demand_trend = "declining"
+                elif _primary >= 20:
+                    demand_trend = "growing"
+                else:
+                    demand_trend = "stable"
+
         return {
             "seasonality_score": round(seasonality_score, 2),
             "is_seasonal": seasonality_score >= 20,
@@ -777,6 +833,10 @@ class CategoryMonopolyAnalyzer:
             "platform_event_in_peak": platform_in_peak,
             "source": "keyword_weekly_trends",
             "n_data_points": len(week_search),
+            "demand_trend": demand_trend,
+            "yoy_1y_pct": yoy_1y_pct,
+            "yoy_2y_pct": yoy_2y_pct,
+            "yoy_peak_1y_pct": yoy_peak_1y_pct,
         }
 
     @staticmethod

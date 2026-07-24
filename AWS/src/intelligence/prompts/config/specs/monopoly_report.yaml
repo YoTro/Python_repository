@@ -78,6 +78,11 @@ optional_vars:
   concentration_data: "{}"
   critical_reviews_data: "{}"
   integrity_ratio_threshold: "50%"
+  demand_trend: "unknown"
+  yoy_1y_pct: "N/A"
+  yoy_2y_pct: "N/A"
+  yoy_peak_1y_pct: "N/A"
+  bsr_dataset_url: "N/A"
 
 output_schema: null
 
@@ -159,6 +164,9 @@ template: |
   - New Entrant Ratio (Sellersprite T-snapshot): {new_entrant_ratio}
   - Seasonality: {seasonality_pattern} (score: {seasonality_score}, source: {seasonality_source}, n={seasonality_n_points} data points) | Peak Months: {peak_months}
     Source legend: 'keyword_weekly_trends' = ABA weekly search-volume (direct consumer intent, independent of BSR history); 'bsr_daily_trends' = Xiyouzhaoci BSR proxy (indirect — reflects competitive rank, not raw demand). Prefer keyword source when available.
+  - Demand Trend (YOY): {demand_trend} | Annual 1Y: {yoy_1y_pct} | Annual 2Y: {yoy_2y_pct} | Peak-Window 1Y: {yoy_peak_1y_pct}
+    Only populated when seasonality_source == 'keyword_weekly_trends' (ABA 3-year weekly data). 'unknown' or 'N/A' means BSR-proxy source was used — omit this row from the Data Breakdown table in that case.
+    Peak-window 1Y compares the mean search volume in detected peak months across consecutive 52-week windows; Annual 1Y uses the full-year mean. When both are available, peak-window is the primary verdict signal. Add ONE row to the Data Breakdown table: Metric='Demand Trend (YOY)' | Value='{demand_trend} ({yoy_peak_1y_pct} peak / {yoy_1y_pct} annual, 2Y: {yoy_2y_pct})' | Definition='YOY change in ABA weekly search volume — peak-window and annual mean across 52-week windows'.
   - Integrity Alert: {integrity_alert}
     Coverage — Signal 1+2 (rating history): {integrity_hist_cov}
     Coverage — Signal 3 (written/global ratio): {integrity_ratio_cov}
@@ -171,6 +179,7 @@ template: |
   ### TOP ASIN EVIDENCE TABLE
   {top_asin_table}
   Render the above JSON as a markdown table with these exact columns (in this order): Rank | ASIN | Brand | Title | Price | Rating | Reviews | Feedback | Review Ratio | Units/Mo | Fulfillment. Title: truncate at 40 chars with '…'. Feedback = feedback_count (number of Amazon seller-feedback entries for this ASIN's seller; 'N/A' if unavailable). Review Ratio = review_ratio rendered as a percentage (e.g. 12.34%); this is written_reviews ÷ global_ratings — a ratio far above ~10% may indicate review manipulation (cross-reference Integrity Alert). Place this table immediately after the Data Breakdown section under the heading '## Top 10 BSR Products (Evidence)'. Below the table add one line: '*Source: Amazon BSR page scrape + PastMonthSales badge. Units/Mo = Amazon-displayed past-month purchase count. Review Ratio = written reviews ÷ global ratings (natural ≈ 10%).*'
+  BSR DATASET DOWNLOAD RULE: bsr_dataset_url={bsr_dataset_url}. If bsr_dataset_url is not 'N/A', append a second line immediately below the source footnote: '📥 **[Download full BSR dataset ({bsr_dataset_url})]({bsr_dataset_url})** — all enriched rows (rank, ASIN, title, brand, price, rating, reviews, monthly sales estimate, seller type, review ratio, product URL).' If bsr_dataset_url is 'N/A', omit this line entirely.
 
   ### BRAND & SELLER CONCENTRATION
   {concentration_data}
@@ -259,13 +268,39 @@ template: |
   - CHURN ALERT: If churn_pattern is 'predatory_competition' or 'lemon_market', dedicate a paragraph to survival risk and whether the category is worth entering at all.
   - BSR METABOLISM ALERT: If bsr_churn_label is 'fomo_spike_die', warn that this is a trend-driven category where products spike and die — advise on quick-in/quick-out strategy or avoidance. If 'blue_ocean', highlight that new entrants CAN sustain rankings and explain why. If 'mature_stable', note the high survivor_sales_share and advise on differentiation required to displace incumbents.
   - SEASONALITY ALERT: If seasonality_pattern is 'strong_seasonal' or 'multi_peak_seasonal', advise on launch timing relative to peak_months and warn about off-season inventory risk.
-  - PRICE TREND ALERT: If price_trend is 'deflating', warn that this category is in a price war — margin compression is accelerating and late entrants face structural disadvantage. If 'inflating', note that premium positioning may be viable.
+  - DEMAND × PRICE CROSS-ANALYSIS — place the conclusion under the sub-heading '## Risk & Opportunity Assessment' in the Strategic Insights section. Skip this entire block if demand_trend is 'unknown' (write nothing — do not speculate). Otherwise, read both axes — demand_trend ({demand_trend}) and price_trend ({price_trend}) — and apply the verdict from the matrix below. Always cite the specific YOY figures (prefer yoy_peak_1y_pct, fall back to yoy_1y_pct; also cite yoy_2y_pct to distinguish a single-year dip from a multi-year trend). State the 2-axis label first, then the actionable conclusion.
+    YOY DEPTH RULE: if yoy_2y_pct is also negative and steeper than yoy_1y_pct, call it 'accelerating decline'. If yoy_2y_pct is positive but yoy_1y_pct is negative, call it 'possible post-peak normalization — verify before committing'. Never collapse multi-year data into a single vague phrase.
+    PRICE CAUSALITY RULE: when demand is declining or collapsing AND price_trend is 'inflating', always investigate the price-elasticity link explicitly — rising prices may be the primary cause of demand erosion, not a symptom. Name this 'Price Elasticity Trap' if the data supports it.
+    VERDICT MATRIX (demand_trend × price_trend):
+    ┌─────────────┬──────────────────────────────────────────┬───────────────────────────────────────────┬──────────────────────────────────────────────┐
+    │             │ price inflating                          │ price stable                              │ price deflating                              │
+    ├─────────────┼──────────────────────────────────────────┼───────────────────────────────────────────┼──────────────────────────────────────────────┤
+    │ growing     │ ★★★ STRONG TAILWIND — volume AND ASP     │ ★★ HEALTHY GROWTH — expanding market,     │ ★ COMMODITIZING GROWTH — more buyers but      │
+    │             │ rising; pricing power confirmed; best    │ stable margins; standard entry timing.    │ price war starting; COGS discipline          │
+    │             │ entry window.                            │                                           │ critical; avoid premium positioning.         │
+    ├─────────────┼──────────────────────────────────────────┼───────────────────────────────────────────┼──────────────────────────────────────────────┤
+    │ stable      │ ★★ PREMIUMIZATION — flat volume but      │ ★ STEADY STATE — mature share-steal       │ ⚠ SILENT SQUEEZE — volume stable but          │
+    │             │ buyers accepting higher ASP; mid-to-     │ market; differentiation required to       │ margins compressing; entrants face           │
+    │             │ high-tier entry viable.                  │ displace incumbents.                      │ immediate margin pressure at launch.         │
+    ├─────────────┼──────────────────────────────────────────┼───────────────────────────────────────────┼──────────────────────────────────────────────┤
+    │ declining   │ △ PRICE ELASTICITY RISK — rising ASP     │ ⚠ STRUCTURAL DECLINE — demand falling     │ ✗ HARVEST MARKET — demand AND price          │
+    │             │ may be causing the demand drop (trap);   │ without price movement; likely category   │ falling; late-stage commodity squeeze;       │
+    │             │ volume floor falling; investigate        │ substitution or need erosion; verify      │ P1 avoid unless exceptional COGS            │
+    │             │ causality before entry.                  │ before entry.                             │ advantage.                                   │
+    ├─────────────┼──────────────────────────────────────────┼───────────────────────────────────────────┼──────────────────────────────────────────────┤
+    │ collapsing  │ ✗✗ PRICE ELASTICITY TRAP — price shock   │ ✗✗ CATEGORY IMPLOSION — demand collapsed  │ ✗✗✗ DOUBLE COLLAPSE — demand and price       │
+    │             │ destroyed buyer volume; not recoverable  │ without price movement; structural        │ both in freefall; terminal decline;          │
+    │             │ without price reset or disruptive        │ substitution or trend death; P0 avoid.   │ P0 hard avoid.                               │
+    │             │ cheaper entry; P0 structural.            │                                           │                                             │
+    └─────────────┴──────────────────────────────────────────┴───────────────────────────────────────────┴──────────────────────────────────────────────┘
+    FORMAT for the Risk & Opportunity Assessment paragraph: open with the 2-axis label in bold (e.g. **PRICE ELASTICITY TRAP**), state the YOY figures, name the root cause hypothesis in one sentence, then give the actionable conclusion (enter / enter with caution / avoid). Never use the label alone without the supporting data.
   - NEW ENTRANT ALERT: If new_entrant_ratio > 40%, the category has low moat — many new products are breaking into the top-100, which means low ranking stickiness but also means a new entrant has a realistic shot. If < 15%, incumbents dominate and new entries rarely survive in the ranking.
   - INTEGRITY ALERT: If integrity_alert is 'HIGH', explicitly warn that this category has a severely compromised compliance environment — widespread fake review injection or coordinated negative review attacks are likely. New entrants should budget for additional compliance overhead, and the true review barrier is likely higher than the raw data suggests. Combine with review_disparity to assess whether high-review incumbents are defensible or artificially inflated.
   - INTEGRITY SWOT PLACEMENT (apply whenever integrity_alert is not 'LOW'):
-    • T (Threat) — ALWAYS include: 'Coordinated negative-review attacks are an asymmetric threat to a new listing with no review buffer. A HIGH integrity environment means a competitor can sink your launch-phase ASIN before organic velocity builds. Budget for early review monitoring and appeal reserves.' Cite integrity_alert level and integrity_hist_cov / integrity_ratio_cov coverage figures.
+    • T1 (Threat — Review Attacks) — ALWAYS include when integrity_alert is MEDIUM or HIGH: 'Coordinated negative-review attacks are an asymmetric threat to a new listing with no review buffer. A HIGH integrity environment means a competitor can sink your launch-phase ASIN before organic velocity builds. Budget for early review monitoring and appeal reserves.' Cite integrity_alert level and integrity_hist_cov / integrity_ratio_cov coverage figures.
+    • T2 (Threat — Rating Inflation Trap) — apply when integrity_alert is 'MEDIUM' or 'HIGH' AND the category has inherent product-effectiveness variability. A category has inherent variability when performance is co-determined by factors the product cannot control: environmental conditions (humidity, temperature, infestation density), user behaviour (placement, dosage, frequency), or individual physiology (supplements, skincare). In such categories, genuine organic ratings cluster in the 3.7–4.2 range because a meaningful fraction of buyers experience below-expectation results through no fault of the product. When most competitors have inflated to 4.3+ via brushing (evidenced by high review_ratio and integrity_alert), an honest new entrant's authentic rating falls below the manipulated industry baseline. Amazon's ranking algorithm and search-result CTR both weight star rating directly — a genuine 3.9 is algorithmically treated as inferior to a manipulated 4.5 regardless of product quality. State this explicitly: 'The industry rating baseline in this category is artificially elevated by widespread review manipulation. A genuinely-rated product in a variable-effectiveness niche would naturally score 3.7–4.2; incumbents showing 4.4+ are almost certainly brushed. An honest new entrant will sit below this manipulated floor and face a structural conversion handicap that PPC spend cannot fully compensate. Factor this into launch expectations and review acquisition strategy.' GUARD: do NOT apply T2 to categories where uniform high ratings are plausibly genuine — commoditised products with deterministic, user-independent outcomes (cables, batteries, storage containers, measuring tools). Apply only when you can identify at least one concrete effectiveness variable that the product cannot control.
     • O (Opportunity) — include when review_disparity > 3x OR integrity_alert is 'HIGH': 'Incumbent review counts may be artificially inflated (integrity_alert={integrity_alert}, review_disparity={review_disparity}). A genuine-quality entrant building authentic reviews at a lower absolute count can achieve equivalent conversion — the real review floor is lower than raw numbers suggest.' NEVER write this Opportunity without citing the specific review_disparity figure and the integrity signal that supports it.
-    • If integrity_alert is 'LOW', omit both bullets from SWOT entirely — do not manufacture a risk that the data does not support.
+    • If integrity_alert is 'LOW', omit all bullets from SWOT entirely — do not manufacture a risk that the data does not support.
   - NEW ENTRANT SOCIAL ALERT: Examine brand_social_data for entries where is_new_entrant is true. The 'psi' field is the maximum across all platforms; check 'platforms' for per-platform detail.
     • If any new-entrant brand has psi > 30: flag that recently-listed brands are already running active social campaigns (cite which platform(s) dominate) — external video promotion is likely a prerequisite for traction in this category, not an optional growth lever. Name each such brand and their PSI explicitly.
     • If a brand has BOTH is_top_brand AND is_new_entrant true: call this a 'breakout pattern' — a brand that entered within the last 12 months and is simultaneously dominant in BSR rank AND social. This is the highest-conviction signal that a video-first launch strategy works here; cite the brand name, PSI, and which platform(s) are strongest.

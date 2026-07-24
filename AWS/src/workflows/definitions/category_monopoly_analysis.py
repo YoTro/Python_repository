@@ -9,13 +9,16 @@ and competition intensity across 7 dimensions.
 
 import asyncio
 import calendar
+import csv
 import hashlib as _hl
+import io
 import json
 import logging
 import os
 import re
 import statistics
 import time
+import uuid as _uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import Any
@@ -3631,6 +3634,87 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             }
         )
 
+    # ── Full BSR dataset export ───────────────────────────────────────────────
+    # Upload all scraped + enriched rows as a CSV so users can access the raw data.
+    bsr_dataset_url: str | None = None
+    try:
+        _store_id = ctx.config.get("store_id", "US") if hasattr(ctx, "config") else "US"
+        _amz_domain = {
+            "US": "amazon.com",
+            "UK": "amazon.co.uk",
+            "DE": "amazon.de",
+            "JP": "amazon.co.jp",
+            "FR": "amazon.fr",
+            "IT": "amazon.it",
+            "ES": "amazon.es",
+            "CA": "amazon.ca",
+        }.get(_store_id, "amazon.com")
+
+        all_bsr_rows = []
+        for _raw, _enriched in zip(items, analysis_input, strict=False):
+            _asin = (_raw.get("ASIN") or _raw.get("asin") or "").strip().upper()
+            _rr = _enriched.get("review_ratio")
+            all_bsr_rows.append(
+                {
+                    "rank": _enriched["rank"],
+                    "asin": _asin,
+                    "title": _raw.get("Title") or "",
+                    "brand": _enriched.get("brand") or _raw.get("Brand") or "",
+                    "price_usd": _enriched["price"] if _enriched["price"] else "",
+                    "rating": _enriched["rating"] if _enriched["rating"] else "",
+                    "review_count": _enriched["review_count"] if _enriched["review_count"] else "",
+                    "global_ratings": _enriched.get("global_ratings") or "",
+                    "written_reviews": _enriched.get("written_reviews") or "",
+                    "review_ratio_pct": f"{_rr:.2%}" if _rr is not None else "",
+                    "monthly_sales_est": _enriched["sales"] if _enriched["sales"] else "",
+                    "seller_type": _enriched.get("seller_type") or "",
+                    "seller_id": _enriched.get("seller_id") or "",
+                    "feedback_count": (
+                        _enriched["feedback_count"]
+                        if _enriched.get("feedback_count") is not None
+                        else ""
+                    ),
+                    "image_url": _raw.get("Image") or "",
+                    "product_url": f"https://www.{_amz_domain}/dp/{_asin}" if _asin else "",
+                }
+            )
+
+        if all_bsr_rows:
+            _buf = io.StringIO()
+            _writer = csv.DictWriter(_buf, fieldnames=list(all_bsr_rows[0].keys()))
+            _writer.writeheader()
+            _writer.writerows(all_bsr_rows)
+            _csv_bytes = _buf.getvalue().encode("utf-8-sig")
+
+            _kw_slug = re.sub(r"[^\w]", "_", ctx.cache.get("main_keyword", "bsr"), flags=re.ASCII)[
+                :30
+            ].strip("_")
+            _tz_exp = ZoneInfo(
+                ctx.config.get("timezone", "America/Los_Angeles")
+                if hasattr(ctx, "config")
+                else "America/Los_Angeles"
+            )
+            _ts = datetime.now(tz=_tz_exp).strftime("%Y%m%d_%H%M")
+            _filename = f"bsr_{_kw_slug}_{_ts}.csv"
+
+            try:
+                from src.core.storage import get_storage_backend
+
+                _storage = get_storage_backend()
+                _key = f"exports/{_uuid.uuid4().hex[:8]}_{_filename}"
+                bsr_dataset_url = _storage.upload(_key, _csv_bytes, "text/csv; charset=utf-8-sig")
+                logger.info(f"[bsr_export] Uploaded {len(all_bsr_rows)} rows → {bsr_dataset_url}")
+            except (ValueError, KeyError):
+                _report_dir = os.path.abspath("data/reports")
+                os.makedirs(_report_dir, exist_ok=True)
+                _local_path = os.path.join(_report_dir, _filename)
+                with open(_local_path, "wb") as _f:
+                    _f.write(_csv_bytes)
+                bsr_dataset_url = _local_path
+                logger.info(f"[bsr_export] Storage not configured; saved locally: {_local_path}")
+    except Exception as _exp_err:
+        logger.warning(f"[bsr_export] Failed to export full BSR dataset: {_exp_err}")
+
     return [
         {
             "analysis_result": json.dumps(result, ensure_ascii=False),
@@ -3701,8 +3785,27 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "seasonality_source": seasonality.get("source", "bsr_daily_trends"),
             "seasonality_n_points": seasonality.get("n_data_points", 0),
             "peak_months": peak_months_str + platform_warning,
+            # YOY demand trend (keyword_weekly_trends source only)
+            "demand_trend": seasonality.get("demand_trend", "unknown"),
+            "yoy_1y_pct": (
+                f"{seasonality['yoy_1y_pct']:+.1f}%"
+                if seasonality.get("yoy_1y_pct") is not None
+                else "N/A"
+            ),
+            "yoy_2y_pct": (
+                f"{seasonality['yoy_2y_pct']:+.1f}%"
+                if seasonality.get("yoy_2y_pct") is not None
+                else "N/A"
+            ),
+            "yoy_peak_1y_pct": (
+                f"{seasonality['yoy_peak_1y_pct']:+.1f}%"
+                if seasonality.get("yoy_peak_1y_pct") is not None
+                else "N/A"
+            ),
             # Top ASIN evidence table (JSON → rendered as markdown table by LLM)
             "top_asin_table": json.dumps(top_asin_rows, ensure_ascii=False),
+            # Full BSR dataset download link (all enriched rows as CSV)
+            "bsr_dataset_url": bsr_dataset_url or "N/A",
             # Price distribution (JSON → rendered as table by LLM)
             "price_distribution": json.dumps(price_dist, ensure_ascii=False),
             # Per-tier capital when bimodal (empty list if unimodal)
