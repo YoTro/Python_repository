@@ -627,6 +627,12 @@ async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
         _EXCL_MIN_COUNT = (
             2  # token must appear in ≥2 non-dominant items (blocks 1-item brand noise)
         )
+        # If a token already appears in ≥25% of dominant-cluster items it is a category
+        # feature, not an outlier signal.  Without this guard, broad-category words like
+        # "band", "battery", "black" get flagged because accessories (watch straps, spare
+        # batteries) raise the non-dominant frequency slightly above the dominant rate,
+        # then Apple Watch / Samsung items that share the same words get expelled.
+        _EXCL_MAX_DOM_FREQ = 0.25
         n_non = len(non_idx)
         if n_non >= 3:
             dom_freq: Counter = Counter(tok for i in dom_idx for tok in token_sets[i])
@@ -635,6 +641,7 @@ async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
                 tok
                 for tok, cnt in non_freq.items()
                 if cnt >= _EXCL_MIN_COUNT
+                and dom_freq.get(tok, 0) / dominant_size < _EXCL_MAX_DOM_FREQ
                 and cnt / n_non - dom_freq.get(tok, 0) / dominant_size >= _EXCL_CONTRAST
             )
             if excl_toks:
@@ -1511,7 +1518,11 @@ async def _enrich_batch_traffic_scores(items: list[dict], ctx: Any) -> list[dict
         if isinstance(resp, list) and len(resp) > 0:
             data = json.loads(resp[0].get("text", "{}"))
             if data.get("success") and data.get("data"):
-                ratios = [d.get("advertisingTrafficScoreRatio", 0.0) for d in data["data"]]
+                ratios = [
+                    v
+                    for d in data["data"]
+                    if (v := d.get("advertisingTrafficScoreRatio")) is not None
+                ]
                 if ratios:
                     avg_ratio = statistics.mean(ratios)
                     ctx.cache["actual_bsr_ad_ratio"] = avg_ratio
@@ -2186,20 +2197,95 @@ def _ads_category_matches_niche(browse_category: str | None, core_keywords: list
     """
     Return True when the Amazon Ads benchmark category is relevant to the analyzed niche.
 
-    Strategy: tokenise both sides, strip common stop-words, and check for any token
-    overlap.  A hit means the store's ad history is from the same broad category as
-    the BSR page being analyzed so the benchmark CVR is valid.
+    Pass 1 (token overlap): if any non-stop token is shared, accept immediately.
+    Pass 2 (domain exclusion): accept unless *both* sides are identified as belonging
+    to distinct, incompatible product domains.  When either side is ambiguous the
+    benchmark is kept — it is better to use a slightly off CVR than to silently fall
+    back to a crude model estimate.
 
-    When there is no overlap (e.g. browse_category="Patio, Lawn & Garden" while the
-    keywords are ["bluetooth speaker", "wireless earbuds"]), the benchmark CVR belongs
-    to a different category and must be discarded.
+    Rationale: pure token overlap is too strict.  Amazon taxonomy names use broad
+    geographic/functional terms ("Patio, Lawn & Garden") while product keywords are
+    specific ("pest control", "mosquito repellent") — no literal tokens overlap even
+    though the category is correct.  Token overlap stays as a cheap fast-accept path;
+    the domain-exclusion check handles the common mismatch cases.
     """
     if not browse_category or not core_keywords:
         return False
+
     _STOP = {"the", "a", "an", "for", "in", "of", "and", "&", "or", "to", "with", "by"}
     cat_tokens = {t for t in re.split(r"[\s,&/]+", browse_category.lower()) if t and t not in _STOP}
     kw_tokens = {t for kw in core_keywords for t in kw.lower().split() if t not in _STOP}
-    return bool(cat_tokens & kw_tokens)
+
+    # Pass 1: fast accept on direct token overlap
+    if cat_tokens & kw_tokens:
+        return True
+
+    # Pass 2: reject only when both sides are clearly from different known domains.
+    # Each frozenset identifies one product domain by its distinctive vocabulary.
+    _DOMAINS: list[frozenset[str]] = [
+        frozenset(
+            {
+                "electronics",
+                "computers",
+                "camera",
+                "phone",
+                "tv",
+                "audio",
+                "video",
+                "software",
+                "headphone",
+                "speaker",
+                "bluetooth",
+                "wireless",
+            }
+        ),
+        frozenset({"book", "books", "kindle", "magazine", "music", "movie", "dvd", "video game"}),
+        frozenset(
+            {
+                "clothing",
+                "shoes",
+                "jewelry",
+                "apparel",
+                "fashion",
+                "watch",
+                "watches",
+                "handbag",
+                "luggage",
+            }
+        ),
+        frozenset(
+            {
+                "grocery",
+                "food",
+                "gourmet",
+                "beverage",
+                "coffee",
+                "tea",
+                "snack",
+                "supplement",
+                "vitamin",
+            }
+        ),
+        frozenset({"automotive", "car", "truck", "motorcycle", "vehicle", "tire"}),
+        frozenset({"industrial", "scientific", "laboratory", "commercial"}),
+        frozenset({"baby", "infant", "toddler", "diaper", "nursery"}),
+        frozenset({"beauty", "skincare", "makeup", "cosmetic", "hair", "shampoo", "lotion"}),
+    ]
+
+    def _domain_index(tokens: set[str]) -> int | None:
+        for i, domain in enumerate(_DOMAINS):
+            if tokens & domain:
+                return i
+        return None  # unknown / multi-domain → ambiguous
+
+    cat_domain = _domain_index(cat_tokens)
+    kw_domain = _domain_index(kw_tokens)
+
+    # Discard only when both sides are identified AND they disagree.
+    if cat_domain is not None and kw_domain is not None and cat_domain != kw_domain:
+        return False
+
+    return True
 
 
 def _model_default_cvr(median_price: float, amazon_category: str | None = None) -> float:
@@ -2760,6 +2846,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
 
     analysis_input = [
         {
+            "asin": (item.get("ASIN") or item.get("asin") or "").strip().upper() or None,
             "rank": _parse_int(item.get("Rank"), default=999),
             "price": _parse_float(item.get("Price")),
             "sales": item.get("sales") or 0,

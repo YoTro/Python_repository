@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import logging
 import re
+from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
 from src.core.scraper import AmazonBaseScraper
 
 logger = logging.getLogger(__name__)
+
+
+def _seller_id_from_link(tag) -> str | None:
+    """Parse the seller query-param from a sellerProfileTriggerId anchor href."""
+    href = tag.get("href", "") if tag else ""
+    qs = parse_qs(urlparse(href).query)
+    return (qs.get("seller") or [None])[0]
 
 
 class FulfillmentExtractor(AmazonBaseScraper):
@@ -37,6 +45,7 @@ class FulfillmentExtractor(AmazonBaseScraper):
         soup = BeautifulSoup(html, "html.parser")
         fulfilled_by = None
         sold_by = None
+        seller_id = None
 
         # New ODF (Offer Display Features) structure.
         # FBA: fulfillerInfoFeature has a "Ships from" span (e.g. "Amazon"),
@@ -56,6 +65,7 @@ class FulfillmentExtractor(AmazonBaseScraper):
                 seller_link = merchant_div.find("a", id="sellerProfileTriggerId")
                 if seller_link:
                     seller_name = seller_link.get_text(strip=True)
+                    seller_id = _seller_id_from_link(seller_link)
                 else:
                     # Amazon-direct: no seller profile link, plain span (e.g. "Amazon.com")
                     msg = merchant_div.find("span", class_="offer-display-feature-text-message")
@@ -82,6 +92,8 @@ class FulfillmentExtractor(AmazonBaseScraper):
         if not fulfilled_by:
             merchant_info = soup.find("a", id="sellerProfileTriggerId")
             if merchant_info:
+                if not seller_id:
+                    seller_id = _seller_id_from_link(merchant_info)
                 if "Fulfilled by Amazon" in html or "Ships from Amazon" in html:
                     fulfilled_by = "Amazon"
                 else:
@@ -98,4 +110,10 @@ class FulfillmentExtractor(AmazonBaseScraper):
             if "Ships from and sold by Amazon.com" in html:
                 fulfilled_by = "Amazon"
 
-        return {"ASIN": asin, "URL": url, "FulfilledBy": fulfilled_by, "SoldBy": sold_by}
+        return {
+            "ASIN": asin,
+            "URL": url,
+            "FulfilledBy": fulfilled_by,
+            "SoldBy": sold_by,
+            "SellerId": seller_id,
+        }

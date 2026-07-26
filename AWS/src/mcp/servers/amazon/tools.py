@@ -279,9 +279,11 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
             asin,
             host=arguments.get("host", "https://www.amazon.com"),
         )
-        if isinstance(result, dict) and result.get("fulfillment_type"):
+        if isinstance(result, dict) and result.get("FulfilledBy"):
             cached = data_cache.get("amazon", asin) or {}
-            cached["fulfillment_type"] = result["fulfillment_type"]
+            cached["fulfillment_type"] = result["FulfilledBy"]
+            if result.get("SellerId"):
+                cached["seller_id"] = result["SellerId"]
             data_cache.set("amazon", asin, cached)
         return _json_response(result)
 
@@ -850,11 +852,13 @@ amazon_tools = [
         name="get_fulfillment",
         description=(
             "Determine fulfillment method for a product listing. "
-            "Returns: ASIN, URL, FulfilledBy, SoldBy. "
+            "Returns: ASIN, URL, FulfilledBy, SoldBy, SellerId. "
             "FBA: FulfilledBy='Amazon', SoldBy=3rd-party seller name. "
             "Amazon-direct: FulfilledBy='Amazon.com', SoldBy='Amazon.com'. "
             "FBM: FulfilledBy=seller name, SoldBy=same seller name. "
-            "Result is merged into DataCache under fulfillment_type key."
+            "SellerId is the Amazon internal alphanumeric seller ID (e.g. 'A32ED6P9WC87QG') "
+            "parsed from the seller profile link — pass it directly to get_seller_feedback. "
+            "Result is merged into DataCache under fulfillment_type and seller_id keys."
         ),
         inputSchema={
             "type": "object",
@@ -1394,7 +1398,7 @@ _AMAZON_META = {
     ),
     "get_fulfillment": (
         "DATA",
-        "fulfillment type and seller: FBA (FulfilledBy=Amazon + 3P SoldBy), Amazon-direct (both=Amazon.com), FBM (both=seller name)",
+        "fulfillment type and seller: FBA (FulfilledBy=Amazon + 3P SoldBy), Amazon-direct (both=Amazon.com), FBM (both=seller name); SellerId (alphanumeric) for get_seller_feedback",
     ),
     "get_seller_feedback": ("DATA", "seller feedback count"),
     "get_seller_product_count": ("DATA", "total products listed by seller"),

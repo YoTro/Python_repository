@@ -289,7 +289,13 @@ class CategoryMonopolyAnalyzer:
         legacy_recs = detailed_bids.get("LEGACY_FOR_SALES", [])
         for rec in legacy_recs:
             for expr in rec.get("bidRecommendationsForTargetingExpressions", []):
-                bid = expr.get("suggestedBid", {}).get("amount") or 0
+                # v5 API: bids are in bidValues[].suggestedBid (float)
+                bid_values = [
+                    float(b["suggestedBid"])
+                    for b in expr.get("bidValues", [])
+                    if b.get("suggestedBid")
+                ]
+                bid = statistics.median(bid_values) if bid_values else 0
                 kw = expr.get("targetingExpression", {}).get("value", "unknown")
                 m_type = expr.get("targetingExpression", {}).get("type", "unknown")
 

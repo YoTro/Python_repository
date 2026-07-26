@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from bs4 import BeautifulSoup
 
@@ -43,11 +44,11 @@ class SellerFeedbackExtractor(AmazonBaseScraper):
                 continue
             score_span = container.find("span", class_="ratings-reviews")
             count_span = container.find("span", class_="ratings-reviews-count")
+            _score_m = re.search(r"[\d.]+", score_span.get_text(strip=True)) if score_span else None
+            _count_m = re.search(r"[\d,]+", count_span.get_text(strip=True)) if count_span else None
             feedback_count[label] = {
-                "score": float(score_span.get_text(strip=True)) if score_span else None,
-                "count": int(count_span.get_text(strip=True).replace(",", ""))
-                if count_span
-                else None,
+                "score": float(_score_m.group()) if _score_m else None,
+                "count": int(_count_m.group().replace(",", "")) if _count_m else None,
             }
 
         if feedback_count:
