@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from mcp.types import TextContent, Tool
@@ -15,6 +16,7 @@ BASE_DIR = os.path.dirname(__file__)
 FBA_FEE_PATH = os.path.join(BASE_DIR, "fba_fee.json")
 REFERRAL_FEE_PATH = os.path.join(BASE_DIR, "referral_fee_rates.json")
 CATEGORY_METRICS_PATH = os.path.join(BASE_DIR, "us_category_metrics.json")
+AGL_RATES_PATH = os.path.join(BASE_DIR, "agl_rates.json")
 
 
 def load_json_config(path: str) -> dict[str, Any]:
@@ -30,6 +32,7 @@ def load_json_config(path: str) -> dict[str, Any]:
 FBA_CONFIG = load_json_config(FBA_FEE_PATH)
 REFERRAL_CONFIG = load_json_config(REFERRAL_FEE_PATH)
 _CATEGORY_METRICS = load_json_config(CATEGORY_METRICS_PATH).get("categories", {})
+AGL_CONFIG = load_json_config(AGL_RATES_PATH)
 
 
 def get_referral_rate(category: str, price: float) -> float:
@@ -179,6 +182,79 @@ def calculate_high_return_rate_fee(category: str, weight_lb: float, return_rate:
         return round(per_return_fee * excess_rate, 2)
 
 
+# ---------------------------------------------------------------------------
+# AGL inbound shipping helpers
+# ---------------------------------------------------------------------------
+
+
+def _in_cbm_range(cbm: float, cbm_range: str) -> bool:
+    """Parse interval notation like (0,5), [5,10), [15,+inf) and test membership."""
+    m = re.match(
+        r"([\[\(])([\d.]+|\+inf|-inf),([\d.]+|\+inf|-inf)([\]\)])",
+        cbm_range.replace(" ", ""),
+    )
+    if not m:
+        return False
+    lo_b, lo_s, hi_s, hi_b = m.groups()
+    lo = float("-inf") if "inf" in lo_s else float(lo_s)
+    hi = float("inf") if "inf" in hi_s else float(hi_s)
+    lo_ok = cbm > lo if lo_b == "(" else cbm >= lo
+    hi_ok = cbm < hi if hi_b == ")" else cbm <= hi
+    return lo_ok and hi_ok
+
+
+def _estimate_inbound_shipping_per_unit(
+    cbm_per_unit: float,
+    kg_per_unit: float,
+    units_per_shipment: int = 500,
+    lane_id: str = "CN-SZX_US-FC_LCL",
+) -> float:
+    """
+    Returns the cheapest Standard Ocean SMP per-unit inbound shipping cost.
+    Billing basis is max(cbm-rate × cbm_per_unit, kg-rate × kg_per_unit).
+    Falls back to any cheapest quote if no SMP Standard Ocean exists.
+    Returns 0.0 if the lane is inactive or has no quotes.
+    """
+    lanes = AGL_CONFIG.get("lanes", [])
+    lane = next(
+        (ln for ln in lanes if ln.get("lane_id") == lane_id and ln.get("status") == "active"),
+        None,
+    )
+    if not lane or lane.get("mode") != "LCL":
+        return 0.0
+
+    total_cbm = cbm_per_unit * units_per_shipment
+    brackets = lane.get("volume_brackets", [])
+    bracket = next(
+        (b for b in brackets if _in_cbm_range(total_cbm, b["cbm_range"])),
+        brackets[-1] if brackets else None,
+    )
+    if not bracket:
+        return 0.0
+
+    quotes = bracket.get("quotes", [])
+    if not quotes:
+        return 0.0
+
+    std_quotes = [
+        q
+        for q in quotes
+        if q.get("shipping_type") == "Standard Ocean" and q.get("container_type") == "SMP"
+    ]
+    cheapest = min(
+        std_quotes or quotes,
+        key=lambda q: q.get("price_per_cbm_usd", float("inf")),
+    )
+    cost_by_cbm = cheapest["price_per_cbm_usd"] * cbm_per_unit
+    cost_by_kg = cheapest["price_per_kg_usd"] * kg_per_unit
+    return round(max(cost_by_cbm, cost_by_kg), 4)
+
+
+# ---------------------------------------------------------------------------
+# Tool handlers
+# ---------------------------------------------------------------------------
+
+
 async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "calc_profit":
         asin = arguments.get("asin")
@@ -203,11 +279,10 @@ async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
             ]
 
         # Resolve category-level benchmarks from us_category_metrics.json
-        # Prefer top_level_node_id from cache (set by get_bsr_rank) for precise lookup
         node_id = product_data.get("top_level_node_id")
         cat_metrics = get_category_metrics(node_id=node_id, category=category)
-        category_avg_return_pct = cat_metrics.get("avg_return_rate_pct")  # e.g. 4.2
-        category_avg_stb_pm = cat_metrics.get("avg_search_to_buy_pm")  # e.g. 18.5 ‰
+        category_avg_return_pct = cat_metrics.get("avg_return_rate_pct")
+        category_avg_stb_pm = cat_metrics.get("avg_search_to_buy_pm")
 
         # Use caller-supplied return_rate; fall back to category avg, then 5%
         if "return_rate" in arguments:
@@ -226,11 +301,27 @@ async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
         admin_fee_per_return = calculate_amazon_refund_admin_fee(referral_fee)
         high_return_fee_per_unit = calculate_high_return_rate_fee(category, weight, est_return_rate)
 
+        # Inbound shipping — caller-supplied takes precedence; otherwise auto-compute from dims
+        inbound_shipping = 0.0
+        inbound_shipping_source = "none"
+        if "inbound_shipping_per_unit" in arguments:
+            inbound_shipping = float(arguments["inbound_shipping_per_unit"])
+            inbound_shipping_source = "caller_supplied"
+        elif "cbm_per_unit" in arguments and "kg_per_unit" in arguments:
+            inbound_shipping = _estimate_inbound_shipping_per_unit(
+                cbm_per_unit=float(arguments["cbm_per_unit"]),
+                kg_per_unit=float(arguments["kg_per_unit"]),
+                units_per_shipment=int(arguments.get("units_per_shipment", 500)),
+                lane_id=arguments.get("lane_id", "CN-SZX_US-FC_LCL"),
+            )
+            inbound_shipping_source = "agl_rates_estimated"
+
         total_fees = (
             referral_fee
             + fba_fee
             + (est_return_rate * admin_fee_per_return)
             + high_return_fee_per_unit
+            + inbound_shipping
         )
         net_profit = price - cost - total_fees
 
@@ -244,6 +335,8 @@ async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
                 "fba_fulfillment_fee": round(fba_fee, 2),
                 "refund_admin_fee_impact": round(est_return_rate * admin_fee_per_return, 2),
                 "high_return_rate_fee_impact": round(high_return_fee_per_unit, 2),
+                "inbound_shipping": round(inbound_shipping, 2),
+                "inbound_shipping_source": inbound_shipping_source,
             },
             "profitability": {
                 "net_profit": round(net_profit, 2),
@@ -271,6 +364,87 @@ async def handle_finance_tool(name: str, arguments: dict) -> list[TextContent]:
         fee = estimate_fba_fee_from_dims(float(weight) if weight else 1.0)
         return _json_response({"asin": asin, "fba_fee": fee})
 
+    elif name == "get_fba_inbound_shipping_cost":
+        cbm_per_unit = float(arguments.get("cbm_per_unit", 0))
+        kg_per_unit = float(arguments.get("kg_per_unit", 0))
+        units_per_shipment = int(arguments.get("units_per_shipment", 500))
+        lane_id = arguments.get("lane_id", "CN-SZX_US-FC_LCL")
+        filter_region = arguments.get("destination_region", "")
+        filter_type = arguments.get("shipping_type", "")
+
+        if cbm_per_unit <= 0 and kg_per_unit <= 0:
+            return _json_response({"error": "Provide cbm_per_unit and/or kg_per_unit."})
+
+        lanes = AGL_CONFIG.get("lanes", [])
+        lane = next(
+            (ln for ln in lanes if ln.get("lane_id") == lane_id and ln.get("status") == "active"),
+            None,
+        )
+        if not lane:
+            return _json_response({"error": f"Lane '{lane_id}' not found or not active."})
+        if lane.get("mode") != "LCL":
+            return _json_response({"error": f"Lane '{lane_id}' is not an LCL lane."})
+
+        total_cbm = cbm_per_unit * units_per_shipment
+        total_kg = kg_per_unit * units_per_shipment
+        brackets = lane.get("volume_brackets", [])
+        bracket = next(
+            (b for b in brackets if _in_cbm_range(total_cbm, b["cbm_range"])),
+            brackets[-1] if brackets else None,
+        )
+        if not bracket:
+            return _json_response({"error": "No matching volume bracket found in AGL rates."})
+
+        quotes = bracket.get("quotes", [])
+        if filter_region:
+            quotes = [
+                q
+                for q in quotes
+                if filter_region.lower() in q.get("destination_region", "").lower()
+            ] or quotes
+        if filter_type:
+            quotes = [
+                q for q in quotes if filter_type.lower() in q.get("shipping_type", "").lower()
+            ] or quotes
+
+        enriched = []
+        for q in sorted(quotes, key=lambda x: x.get("price_per_cbm_usd", float("inf"))):
+            cost_by_cbm = q["price_per_cbm_usd"] * cbm_per_unit
+            cost_by_kg = q["price_per_kg_usd"] * kg_per_unit
+            cost_per_unit = max(cost_by_cbm, cost_by_kg)
+            enriched.append(
+                {
+                    "shipping_type": q["shipping_type"],
+                    "container_type": q["container_type"],
+                    "destination_region": q["destination_region"],
+                    "price_per_cbm_usd": q["price_per_cbm_usd"],
+                    "price_per_kg_usd": q["price_per_kg_usd"],
+                    "shipping_cost_per_unit": round(cost_per_unit, 4),
+                    "price_basis": "cbm" if cost_by_cbm >= cost_by_kg else "kg",
+                    "transit_days": q.get("transit_days"),
+                }
+            )
+
+        meta = AGL_CONFIG.get("meta", {})
+        return _json_response(
+            {
+                "lane_id": lane_id,
+                "origin": lane.get("origin"),
+                "destination": lane.get("destination"),
+                "trade_term": lane.get("trade_term"),
+                "cbm_per_unit": cbm_per_unit,
+                "kg_per_unit": kg_per_unit,
+                "units_per_shipment": units_per_shipment,
+                "total_cbm": round(total_cbm, 3),
+                "total_kg": round(total_kg, 3),
+                "matched_bracket": bracket["cbm_range"],
+                "cargo_cutoff_date": bracket.get("cargo_cutoff_date"),
+                "price_includes": meta.get("price_includes", []),
+                "price_excludes": meta.get("price_excludes", []),
+                "quotes": enriched,
+            }
+        )
+
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
@@ -285,9 +459,12 @@ finance_tools = [
             "Comprehensive Amazon profit analysis. Requires get_product_details or get_bsr_rank "
             "to be called first so price, category, and top_level_node_id are in DataCache. "
             "Returns: asin, price, cost, return_rate, "
-            "fee_breakdown {referral_fee, fba_fulfillment_fee, refund_admin_fee_impact, high_return_rate_fee_impact}, "
+            "fee_breakdown {referral_fee, fba_fulfillment_fee, refund_admin_fee_impact, "
+            "high_return_rate_fee_impact, inbound_shipping, inbound_shipping_source}, "
             "profitability {net_profit, margin, roi}, "
             "category_benchmarks {matched_category, avg_return_rate_pct (%), avg_search_to_buy_pm (‰), return_rate_source}. "
+            "Inbound shipping resolves in order: inbound_shipping_per_unit (caller-supplied) → "
+            "auto-computed from cbm_per_unit + kg_per_unit via agl_rates.json → 0 (omitted). "
             "Return rate resolves in order: caller-supplied → category average (us_category_metrics.json) → 5% fallback."
         ),
         inputSchema={
@@ -296,7 +473,7 @@ finance_tools = [
                 "asin": {"type": "string", "description": "Product ASIN"},
                 "estimated_cost": {
                     "type": "number",
-                    "description": "COGS in USD (landed cost per unit)",
+                    "description": "COGS in USD (landed cost per unit, excluding inbound freight)",
                 },
                 "current_price": {
                     "type": "number",
@@ -309,6 +486,26 @@ finance_tools = [
                 "return_rate": {
                     "type": "number",
                     "description": "Estimated return rate fraction (e.g. 0.05 for 5%). Defaults to category average from us_category_metrics.json.",
+                },
+                "inbound_shipping_per_unit": {
+                    "type": "number",
+                    "description": "Pre-computed inbound freight cost per unit (USD). Use the output of get_fba_inbound_shipping_cost. Takes precedence over cbm_per_unit/kg_per_unit.",
+                },
+                "cbm_per_unit": {
+                    "type": "number",
+                    "description": "Product volume in CBM per unit. Combined with kg_per_unit to auto-compute inbound shipping via agl_rates.json when inbound_shipping_per_unit is not supplied.",
+                },
+                "kg_per_unit": {
+                    "type": "number",
+                    "description": "Product weight in KG per unit. Used together with cbm_per_unit.",
+                },
+                "units_per_shipment": {
+                    "type": "integer",
+                    "description": "Units per inbound shipment for bracket lookup (default 500).",
+                },
+                "lane_id": {
+                    "type": "string",
+                    "description": "AGL lane ID for inbound shipping lookup (default 'CN-SZX_US-FC_LCL').",
                 },
             },
             "required": ["asin", "estimated_cost"],
@@ -334,6 +531,48 @@ finance_tools = [
                     "description": "Product weight in pounds. Falls back to DataCache if omitted.",
                 },
             },
+        },
+    ),
+    Tool(
+        name="get_fba_inbound_shipping_cost",
+        description=(
+            "Look up AGL ocean freight cost per unit for FBA inbound shipments. "
+            "Selects the correct CBM bracket from agl_rates.json based on total shipment volume "
+            "(cbm_per_unit × units_per_shipment). Billing is max(price_per_cbm × cbm_per_unit, "
+            "price_per_kg × kg_per_unit). "
+            "Returns: lane metadata, matched_bracket, cargo_cutoff_date, price_includes, price_excludes, "
+            "and quotes[] sorted cheapest-first, each with shipping_cost_per_unit and price_basis. "
+            "Pass the chosen shipping_cost_per_unit into calc_profit as inbound_shipping_per_unit."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "cbm_per_unit": {
+                    "type": "number",
+                    "description": "Product volume per unit in cubic metres (CBM).",
+                },
+                "kg_per_unit": {
+                    "type": "number",
+                    "description": "Product weight per unit in kilograms.",
+                },
+                "units_per_shipment": {
+                    "type": "integer",
+                    "description": "Number of units per inbound shipment (used to determine the CBM bracket). Default 500.",
+                },
+                "lane_id": {
+                    "type": "string",
+                    "description": "AGL lane ID to query. Default 'CN-SZX_US-FC_LCL'. Active lanes: CN-SZX_US-FC_LCL.",
+                },
+                "destination_region": {
+                    "type": "string",
+                    "description": "Filter quotes by US region (e.g. 'West', 'South Central'). Optional — returns all regions if omitted.",
+                },
+                "shipping_type": {
+                    "type": "string",
+                    "description": "Filter by shipping type: 'Standard Ocean' or 'Fast Ocean'. Optional.",
+                },
+            },
+            "required": ["cbm_per_unit", "kg_per_unit"],
         },
     ),
 ]

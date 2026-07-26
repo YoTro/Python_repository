@@ -1,0 +1,503 @@
+{
+  "meta": {
+    "title": "AGL Freight Rate Schedule — Shenzhen→US FC (LCL Ocean)",
+    "provider": "AGL (Amazon Global Logistics)",
+    "currency": "USD",
+    "generated_date": "2026-07-26",
+    "price_includes": [
+      "Ocean / air freight",
+      "Origin port local charges",
+      "Export customs clearance fee (single shipment)",
+      "Import customs clearance service fee",
+      "Destination delivery fee"
+    ],
+    "price_excludes": [
+      "Origin pick-up fees",
+      "Palletization",
+      "Customs duty / tax / VAT",
+      "Origin or destination customs inspection / detention / seizure charges",
+      "Insurance fee",
+      "Fumigation fee",
+      "Warehouse value-added service fees (origin and destination)",
+      "Promotional discount rates",
+      "Any extra services",
+      "Other fees or charges assessed against the shipment"
+    ],
+    "notes": [
+      "LCL rates are billed per CBM or per KG (carrier uses whichever yields a higher charge).",
+      "pay_what_you_book: true means you are billed for the booked volume, not the actual measured volume.",
+      "cargo_cutoff_date is the latest date cargo must be ready at origin for that rate bracket.",
+      "transit_days is measured from vessel departure to FC delivery window (min/max).",
+      "SMP (Shared Multiport) = AGL consolidated LCL split across multiple Amazon FCs.",
+      "Minimal shipment = AGL single-FC LCL booking.",
+      "All dates are ISO 8601 (YYYY-MM-DD).",
+      "Rates and transit times typically increase during Q3–Q4 peak season (Jul–Dec). Refresh this file before booking.",
+      "FCL, Vietnam, and AWD lanes are placeholders — populate quotes when rate cards are obtained."
+    ]
+  },
+  "lanes": [
+    {
+      "lane_id": "CN-SZX_US-FC_LCL",
+      "status": "active",
+      "origin": "Shenzhen, China",
+      "destination": "US, FC",
+      "trade_term": "DDP",
+      "mode": "LCL",
+      "pay_what_you_book": true,
+      "max_cbm_per_shipment": 40,
+      "max_kg_per_shipment": 12500,
+      "volume_brackets": [
+        {
+          "cbm_range": "(0,5)",
+          "sample_cbm": 2,
+          "sample_kg": 630,
+          "cargo_cutoff_date": "2026-07-27",
+          "quotes": [
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "South Central, US",
+              "total_price_usd": 344.32,
+              "price_per_cbm_usd": 172.16,
+              "price_per_kg_usd": 0.5465,
+              "transit_days": { "min": 19, "max": 37 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "West, US",
+              "total_price_usd": 353.71,
+              "price_per_cbm_usd": 176.86,
+              "price_per_kg_usd": 0.5614,
+              "transit_days": { "min": 18, "max": 36 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "South East, US",
+              "total_price_usd": 383.76,
+              "price_per_cbm_usd": 191.88,
+              "price_per_kg_usd": 0.6091,
+              "transit_days": { "min": 30, "max": 48 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "SMP",
+              "destination_region": "South Central, US",
+              "total_price_usd": 398.88,
+              "price_per_cbm_usd": 199.44,
+              "price_per_kg_usd": 0.6331,
+              "transit_days": { "min": 13, "max": 23 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "North Central, US",
+              "total_price_usd": 409.69,
+              "price_per_cbm_usd": 204.85,
+              "price_per_kg_usd": 0.6503,
+              "transit_days": { "min": 19, "max": 37 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "North East, US",
+              "total_price_usd": 409.69,
+              "price_per_cbm_usd": 204.85,
+              "price_per_kg_usd": 0.6503,
+              "transit_days": { "min": 37, "max": 55 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "SMP",
+              "destination_region": "West, US",
+              "total_price_usd": 410.66,
+              "price_per_cbm_usd": 205.33,
+              "price_per_kg_usd": 0.6518,
+              "transit_days": { "min": 13, "max": 23 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "West, US",
+              "total_price_usd": 448.73,
+              "price_per_cbm_usd": 224.37,
+              "price_per_kg_usd": 0.7123,
+              "transit_days": { "min": 22, "max": 40 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "East, US",
+              "total_price_usd": 473.56,
+              "price_per_cbm_usd": 236.78,
+              "price_per_kg_usd": 0.7517,
+              "transit_days": { "min": 44, "max": 62 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "West, US",
+              "total_price_usd": 489.78,
+              "price_per_cbm_usd": 244.89,
+              "price_per_kg_usd": 0.7774,
+              "transit_days": { "min": 16, "max": 26 }
+            }
+          ]
+        },
+        {
+          "cbm_range": "[5,10)",
+          "sample_cbm": 6,
+          "sample_kg": 1890,
+          "cargo_cutoff_date": "2026-07-27",
+          "quotes": [
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "South Central, US",
+              "total_price_usd": 904.57,
+              "price_per_cbm_usd": 150.76,
+              "price_per_kg_usd": 0.4786,
+              "transit_days": { "min": 19, "max": 37 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "West, US",
+              "total_price_usd": 932.74,
+              "price_per_cbm_usd": 155.46,
+              "price_per_kg_usd": 0.4935,
+              "transit_days": { "min": 18, "max": 36 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "South East, US",
+              "total_price_usd": 1022.90,
+              "price_per_cbm_usd": 170.48,
+              "price_per_kg_usd": 0.5412,
+              "transit_days": { "min": 30, "max": 48 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "SMP",
+              "destination_region": "South Central, US",
+              "total_price_usd": 1068.26,
+              "price_per_cbm_usd": 178.04,
+              "price_per_kg_usd": 0.5652,
+              "transit_days": { "min": 17, "max": 27 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "North Central, US",
+              "total_price_usd": 1100.68,
+              "price_per_cbm_usd": 183.45,
+              "price_per_kg_usd": 0.5824,
+              "transit_days": { "min": 19, "max": 37 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "North East, US",
+              "total_price_usd": 1100.68,
+              "price_per_cbm_usd": 183.45,
+              "price_per_kg_usd": 0.5824,
+              "transit_days": { "min": 37, "max": 55 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "SMP",
+              "destination_region": "West, US",
+              "total_price_usd": 1103.59,
+              "price_per_cbm_usd": 183.93,
+              "price_per_kg_usd": 0.5839,
+              "transit_days": { "min": 13, "max": 23 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "West, US",
+              "total_price_usd": 1133.92,
+              "price_per_cbm_usd": 188.99,
+              "price_per_kg_usd": 0.6000,
+              "transit_days": { "min": 27, "max": 45 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "East, US",
+              "total_price_usd": 1208.40,
+              "price_per_cbm_usd": 201.40,
+              "price_per_kg_usd": 0.6394,
+              "transit_days": { "min": 44, "max": 62 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "West, US",
+              "total_price_usd": 1257.07,
+              "price_per_cbm_usd": 209.51,
+              "price_per_kg_usd": 0.6651,
+              "transit_days": { "min": 21, "max": 31 }
+            }
+          ]
+        },
+        {
+          "cbm_range": "[10,15)",
+          "sample_cbm": 12,
+          "sample_kg": 3780,
+          "cargo_cutoff_date": "2026-07-27",
+          "quotes": [
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "South Central, US",
+              "total_price_usd": 1744.94,
+              "price_per_cbm_usd": 145.41,
+              "price_per_kg_usd": 0.4616,
+              "transit_days": { "min": 19, "max": 37 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "West, US",
+              "total_price_usd": 1801.27,
+              "price_per_cbm_usd": 150.11,
+              "price_per_kg_usd": 0.4765,
+              "transit_days": { "min": 18, "max": 36 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "South East, US",
+              "total_price_usd": 1981.60,
+              "price_per_cbm_usd": 165.13,
+              "price_per_kg_usd": 0.5242,
+              "transit_days": { "min": 30, "max": 48 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "SMP",
+              "destination_region": "South Central, US",
+              "total_price_usd": 2072.32,
+              "price_per_cbm_usd": 172.69,
+              "price_per_kg_usd": 0.5482,
+              "transit_days": { "min": 17, "max": 27 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "North Central, US",
+              "total_price_usd": 2137.16,
+              "price_per_cbm_usd": 178.10,
+              "price_per_kg_usd": 0.5654,
+              "transit_days": { "min": 19, "max": 37 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "North East, US",
+              "total_price_usd": 2137.16,
+              "price_per_cbm_usd": 178.10,
+              "price_per_kg_usd": 0.5654,
+              "transit_days": { "min": 37, "max": 55 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "SMP",
+              "destination_region": "West, US",
+              "total_price_usd": 2142.97,
+              "price_per_cbm_usd": 178.58,
+              "price_per_kg_usd": 0.5669,
+              "transit_days": { "min": 13, "max": 23 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "West, US",
+              "total_price_usd": 2161.71,
+              "price_per_cbm_usd": 180.14,
+              "price_per_kg_usd": 0.5719,
+              "transit_days": { "min": 22, "max": 40 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "East, US",
+              "total_price_usd": 2310.67,
+              "price_per_cbm_usd": 192.56,
+              "price_per_kg_usd": 0.6113,
+              "transit_days": { "min": 44, "max": 62 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "West, US",
+              "total_price_usd": 2407.99,
+              "price_per_cbm_usd": 200.67,
+              "price_per_kg_usd": 0.6370,
+              "transit_days": { "min": 21, "max": 31 }
+            }
+          ]
+        },
+        {
+          "cbm_range": "[15,+inf)",
+          "sample_cbm": 24,
+          "sample_kg": 7560,
+          "cargo_cutoff_date": "2026-07-27",
+          "quotes": [
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "South Central, US",
+              "total_price_usd": 3425.70,
+              "price_per_cbm_usd": 142.74,
+              "price_per_kg_usd": 0.4531,
+              "transit_days": { "min": 19, "max": 37 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "West, US",
+              "total_price_usd": 3538.36,
+              "price_per_cbm_usd": 147.43,
+              "price_per_kg_usd": 0.4680,
+              "transit_days": { "min": 18, "max": 36 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "South East, US",
+              "total_price_usd": 3899.01,
+              "price_per_cbm_usd": 162.46,
+              "price_per_kg_usd": 0.5157,
+              "transit_days": { "min": 30, "max": 48 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "SMP",
+              "destination_region": "South Central, US",
+              "total_price_usd": 4080.45,
+              "price_per_cbm_usd": 170.02,
+              "price_per_kg_usd": 0.5397,
+              "transit_days": { "min": 17, "max": 27 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "North Central, US",
+              "total_price_usd": 4210.13,
+              "price_per_cbm_usd": 175.42,
+              "price_per_kg_usd": 0.5569,
+              "transit_days": { "min": 19, "max": 37 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "SMP",
+              "destination_region": "North East, US",
+              "total_price_usd": 4210.13,
+              "price_per_cbm_usd": 175.42,
+              "price_per_kg_usd": 0.5569,
+              "transit_days": { "min": 37, "max": 55 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "West, US",
+              "total_price_usd": 4217.28,
+              "price_per_cbm_usd": 175.72,
+              "price_per_kg_usd": 0.5578,
+              "transit_days": { "min": 22, "max": 40 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "SMP",
+              "destination_region": "West, US",
+              "total_price_usd": 4221.75,
+              "price_per_cbm_usd": 175.91,
+              "price_per_kg_usd": 0.5584,
+              "transit_days": { "min": 13, "max": 23 }
+            },
+            {
+              "shipping_type": "Standard Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "East, US",
+              "total_price_usd": 4515.21,
+              "price_per_cbm_usd": 188.13,
+              "price_per_kg_usd": 0.5972,
+              "transit_days": { "min": 44, "max": 62 }
+            },
+            {
+              "shipping_type": "Fast Ocean",
+              "container_type": "Minimal shipment",
+              "destination_region": "West, US",
+              "total_price_usd": 4709.86,
+              "price_per_cbm_usd": 196.24,
+              "price_per_kg_usd": 0.6230,
+              "transit_days": { "min": 21, "max": 31 }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "lane_id": "CN-SZX_US-FC_FCL",
+      "status": "placeholder",
+      "origin": "Shenzhen, China",
+      "destination": "US, FC",
+      "trade_term": "DDP",
+      "mode": "FCL",
+      "container_specs": [
+        {
+          "container_type": "20' Standard Dry",
+          "min_cbm": 1,
+          "max_cbm": 28,
+          "max_kg": 17000,
+          "cargo_cutoff_date": null,
+          "quotes": []
+        },
+        {
+          "container_type": "40' Standard Dry",
+          "min_cbm": 1,
+          "max_cbm": 55,
+          "max_kg": 20000,
+          "cargo_cutoff_date": null,
+          "quotes": []
+        },
+        {
+          "container_type": "40' High Cube",
+          "min_cbm": 1,
+          "max_cbm": 68,
+          "max_kg": 20000,
+          "cargo_cutoff_date": null,
+          "quotes": []
+        }
+      ]
+    },
+    {
+      "lane_id": "VN_US-FC_LCL",
+      "status": "placeholder",
+      "origin": "Vietnam",
+      "destination": "US, FC",
+      "trade_term": "DDP",
+      "mode": "LCL",
+      "pay_what_you_book": true,
+      "max_cbm_per_shipment": 40,
+      "max_kg_per_shipment": 12500,
+      "volume_brackets": []
+    },
+    {
+      "lane_id": "CN-SZX_US-AWD_LCL",
+      "status": "placeholder",
+      "origin": "Shenzhen, China",
+      "destination": "US, AWD",
+      "trade_term": "DDP",
+      "mode": "LCL",
+      "pay_what_you_book": true,
+      "max_cbm_per_shipment": 40,
+      "max_kg_per_shipment": 12500,
+      "volume_brackets": []
+    }
+  ]
+}
