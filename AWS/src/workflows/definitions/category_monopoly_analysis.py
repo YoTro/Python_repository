@@ -947,6 +947,20 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
 
 _SOCIAL_PLATFORMS = ["tiktok", "youtube"]
 _SOCIAL_MAX_RETRIES = 2
+# Bump when scraping parameters change (video count, window days, brand caps) so that
+# stale cache entries built under old settings are never reused.
+_SOCIAL_CACHE_V = "v2"
+
+# Video count per hashtag per platform fetch.
+# TikTok: 50 gives ≥3 months of data for a brand posting 3-4x/week, enough to surface
+# KOLs who post infrequently. YouTube: 30 covers a similar depth.
+_SOCIAL_VIDEO_COUNT_TIKTOK = 50
+_SOCIAL_VIDEO_COUNT_YOUTUBE = 30
+
+# KOL detection looks back 90 days — KOL campaigns span months, not weeks.
+# Category keyword PSI uses 30 days (freshness signal); brand PSI uses 90 days.
+_SOCIAL_BRAND_WINDOW_DAYS = 90
+_SOCIAL_KW_WINDOW_DAYS = 30
 
 
 async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
@@ -956,8 +970,8 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     Platforms searched: TikTok, YouTube Shorts (concurrently per hashtag).
     Hashtags searched:
       1. Category keyword hashtag  (e.g. #gnattrapsforhouseindoor)
-      2. Top-3 brand hashtags by BSR frequency (e.g. #ZEVO, #Catchmaster)
-      3. New-entrant brand hashtags (products listed in last 12 months, up to 5)
+      2. Top-5 brand hashtags by BSR frequency (e.g. #ZEVO, #Catchmaster)
+      3. New-entrant brand hashtags (products listed in last 12 months, up to 8)
     Brand data requires fetch_sellersprite_bsr to have run first (previous step).
     """
     main_keyword = ctx.cache.get("main_keyword")
@@ -965,8 +979,8 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         return items
 
     # ── brand sets from Sellersprite snapshot ────────────────────────────────
-    _MAX_TOP_BRANDS = 3
-    _MAX_NEW_ENTRANT_BRANDS = 5
+    _MAX_TOP_BRANDS = 5
+    _MAX_NEW_ENTRANT_BRANDS = 8
     ss_snapshots = ctx.cache.get("sellersprite_snapshots") or {}
     _top_brand_set: set[str] = set()
     _new_entrant_brand_set: set[str] = set()
@@ -1009,7 +1023,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     )
 
     kw_hash = _hl.md5(
-        (main_keyword + "|" + ",".join(sorted(_all_brand_list))).encode()
+        (_SOCIAL_CACHE_V + main_keyword + "|" + ",".join(sorted(_all_brand_list))).encode()
     ).hexdigest()[:12]
 
     # ── helpers (defined before cache check so partial-retry can reuse them) ──
@@ -1017,10 +1031,17 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     @exponential_backoff(
         max_retries=_SOCIAL_MAX_RETRIES, base_delay=1.0, retry_on_exceptions=(Exception,)
     )
-    async def _platform_psi(tag: str, platform: str) -> dict:
+    async def _platform_psi(
+        tag: str, platform: str, window_days: int = _SOCIAL_KW_WINDOW_DAYS
+    ) -> dict:
         """Fetch PSI for one hashtag on one platform. Non-retryable soft failures
         (no tag, unsupported platform) return a result dict; retryable network/API
-        errors are raised so the decorator can back off and retry."""
+        errors are raised so the decorator can back off and retry.
+
+        window_days controls the PSI scoring window and KOL/KOC matrix lookback.
+        Use _SOCIAL_KW_WINDOW_DAYS (30d) for category keyword freshness signals;
+        use _SOCIAL_BRAND_WINDOW_DAYS (90d) for brand-level KOL campaign detection.
+        """
         clean = re.sub(r"[^a-zA-Z0-9]", "", tag)
         result_base = {
             "platform": platform,
@@ -1037,7 +1058,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             if not tag_info.get("id"):
                 return {**result_base, "verdict": "No Tag Found"}
             videos = await asyncio.to_thread(
-                client.get_hashtag_videos, tag_info["id"], clean, count=20
+                client.get_hashtag_videos, tag_info["id"], clean, count=_SOCIAL_VIDEO_COUNT_TIKTOK
             )
             # TikTok's challenge page aggregates partial/superset/fuzzy tags server-side,
             # so raw results include videos for #BAIM, #BAIMNOCMSJF, #BGAIMSNOCM when
@@ -1051,19 +1072,21 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             if not videos:
                 return {**result_base, "verdict": "No Exact Tag Match"}
             analysis = SocialViralityProcessor().calculate_promotion_strength(
-                videos, tag_metadata=tag_info, platform="tiktok"
+                videos, tag_metadata=tag_info, platform="tiktok", window_days=window_days
             )
         elif platform == "youtube":
             client = YouTubeClient()
             tag_info = await asyncio.to_thread(client.get_hashtag_info, clean)
             if not tag_info.get("video_count"):
                 return {**result_base, "verdict": "No Tag Found"}
-            videos = await asyncio.to_thread(client.get_hashtag_videos, clean, count=20)
+            videos = await asyncio.to_thread(
+                client.get_hashtag_videos, clean, count=_SOCIAL_VIDEO_COUNT_YOUTUBE
+            )
             # get_hashtag_videos returns raw ytInitialData videoRenderer dicts;
             # "youtube_hashtag" is the correct normalizer (not "youtube_shorts" which
             # expects YouTube Data API v3 statistics/snippet fields).
             analysis = SocialViralityProcessor().calculate_promotion_strength(
-                videos, tag_metadata=tag_info, platform="youtube_hashtag"
+                videos, tag_metadata=tag_info, platform="youtube_hashtag", window_days=window_days
             )
         else:
             return {**result_base, "verdict": "Unsupported"}
@@ -1079,13 +1102,13 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             "unique_creators": _kol_koc.get("unique_creators_total", 0),
         }
 
-    async def _tag_all_platforms(tag: str) -> dict:
+    async def _tag_all_platforms(tag: str, window_days: int = _SOCIAL_KW_WINDOW_DAYS) -> dict:
         """Search one hashtag across all platforms concurrently.
         Each platform call retries internally via @exponential_backoff; only if
         retries are exhausted does gather capture the exception here."""
         clean = re.sub(r"[^a-zA-Z0-9]", "", tag)
         raw = await asyncio.gather(
-            *[_platform_psi(tag, p) for p in _SOCIAL_PLATFORMS],
+            *[_platform_psi(tag, p, window_days=window_days) for p in _SOCIAL_PLATFORMS],
             return_exceptions=True,
         )
         platform_results = []
@@ -1117,7 +1140,9 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             "platforms": platform_results,
         }
 
-    async def _try_kw_candidates(candidates: list[str]) -> tuple[str, dict]:
+    async def _try_kw_candidates(
+        candidates: list[str], window_days: int = _SOCIAL_KW_WINDOW_DAYS
+    ) -> tuple[str, dict]:
         """Try keyword hashtag candidates in order; return (winning_tag, result).
 
         Stops at the first candidate that any platform actually finds (verdict is
@@ -1127,7 +1152,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         """
         last_tag, last_result = candidates[-1], {}
         for candidate in candidates:
-            result = await _tag_all_platforms(candidate)
+            result = await _tag_all_platforms(candidate, window_days=window_days)
             last_tag, last_result = candidate, result
             if any(
                 p.get("verdict") not in ("No Tag Found", "Error")
@@ -1265,9 +1290,11 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     )
 
     async def _kw_coro() -> tuple[str, dict]:
-        return await _try_kw_candidates(_kw_candidates)
+        return await _try_kw_candidates(_kw_candidates, window_days=_SOCIAL_KW_WINDOW_DAYS)
 
-    _all_coros = [_kw_coro()] + [_tag_all_platforms(b) for b in _all_brand_list]
+    _all_coros = [_kw_coro()] + [
+        _tag_all_platforms(b, window_days=_SOCIAL_BRAND_WINDOW_DAYS) for b in _all_brand_list
+    ]
     _all_gathered = await asyncio.gather(*_all_coros)
     kw_tag, kw_result = _all_gathered[0]
     _brand_tag_results = list(_all_gathered[1:])
@@ -2312,13 +2339,11 @@ def _model_default_cvr(median_price: float, amazon_category: str | None = None) 
         (frozenset({"beauty", "personal", "care"}), 1.30),  # Beauty & Personal Care
         (frozenset({"baby"}), 1.25),  # Baby Products
         (frozenset({"kitchen", "dining"}), 1.20),  # Home & Kitchen / Kitchen & Dining
-        (frozenset({"home", "garden"}), 1.15),  # Home & Garden
+        (frozenset({"home", "garden"}), 1.35),  # Home & Garden
         (frozenset({"toys", "games"}), 1.10),  # Toys & Games
         (frozenset({"pet"}), 1.05),  # Pet Supplies
-        (
-            frozenset({"sports", "outdoors", "health", "household"}),
-            1.00,
-        ),  # Sports & Outdoors / Health & Household
+        (frozenset({"health", "household"}), 1.70),  # Health & Household
+        (frozenset({"sports", "outdoors"}), 1.00),  # Sports & Outdoors
         (frozenset({"clothing", "shoes", "jewelry", "apparel"}), 0.90),  # Clothing, Shoes & Jewelry
         (
             frozenset({"tools", "automotive", "industrial", "improvement"}),
