@@ -87,6 +87,7 @@ optional_vars:
   yoy_2y_pct: "N/A"
   yoy_peak_1y_pct: "N/A"
   bsr_dataset_url: "N/A"
+  keyword_click_concentration: "[]"
 
 output_schema: null
 
@@ -133,6 +134,13 @@ template: |
   UNIT/REVENUE RULE: '{niche_monthly_units}' is a unit COUNT — NEVER prefix it with $. '{niche_monthly_gmv}' is revenue — always use the $ prefix. In the Data Breakdown table, report BOTH as separate rows: 'Total Est. Monthly Unit Sales' (integer, e.g. 40,694 units) and 'Est. Niche Monthly GMV' (dollar figure, e.g. $702,400). NEVER merge them into a single 'Total Est. Monthly Sales $...' row.
   - Keyword Bid Recommendations: {bid_insight}
     Structure: {{LEGACY_FOR_SALES: [...], AUTO_FOR_SALES: [...]}}. Each entry has targetingExpression (keyword + matchType) and suggestedBid (startBid / endBid). Render as a separate markdown table (NOT inside the Data Breakdown table) with header `| Keyword | Match Type | Manual CPC (LEGACY) | Auto CPC (AUTO) |` and separator `| :--- | :--- | :--- | :--- |`. One row per keyword; merge LEGACY and AUTO bids for the same keyword onto one row. LEGACY = flat manual bid. AUTO = Amazon dynamic estimate (usually higher). A large LEGACY→AUTO gap signals the platform rates this keyword as highly contested.
+  - Keyword Click Concentration: {keyword_click_concentration}
+    JSON array of {{keyword, top3_click_share, concentration, top_asin_brand, top_asin_click_share, phrase_cpc, exact_cpc, exact_phrase_gap}}. If non-empty, render as a compact table immediately after the Keyword Bid Recommendations table, under the sub-heading '### Keyword Click Concentration', with header `| Keyword | Top-3 Click Share | Concentration | #1 Brand | Brand Click Share | PHRASE CPC | EXACT CPC | EXACT/PHRASE Gap |` and separator `| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |`. Interpretation rules (apply in Strategic Insights — NEVER skip these when data is present):
+    • concentration='fragmented' (top-3 < 30% clicks): no incumbent lock-in on this keyword — flag as a low-resistance entry angle where a new listing can gain organic click share without displacing an entrenched brand.
+    • concentration='concentrated' (top-3 > 50% clicks): incumbent lock-in — a new entrant must outbid or out-convert the dominant brand to appear meaningfully; flag as high barrier.
+    • exact_phrase_gap > +30%: EXACT match commands a significant premium; flag as 'PHRASE-first strategy recommended — test keyword fit at lower CPC before committing to EXACT.'
+    • If top_asin_brand for a keyword matches a brand already flagged as dominant in Brand & Seller Concentration, cite the cross-signal: 'Brand X controls both BSR position share and click share on [keyword] — a dual moat.'
+    If keyword_click_concentration is '[]' or empty, omit this block entirely.
   - Review Disparity: {review_disparity}
   - Market Concentration: from concentration_data. Render as SEVEN consecutive rows in the Data Breakdown table (in this order):
     Row 1: 'Brand CR3 (Position)' | brand.cr3_position as % | 'Top-3 brands' share of BSR rank slots'
@@ -162,6 +170,7 @@ template: |
 
   ### MARKET HEALTH SIGNALS
   - Price Trend: {price_trend}
+    If price_trend contains ' | BSR composition: ', split on that separator. The part before is the per-ASIN repricing direction — use it for the Demand × Price verdict matrix. The part after is the BSR composition shift (cross-snapshot median trend): cite it under '## Risk & Opportunity Assessment' as a forward-looking signal — if 'lower-price products gaining BSR share', flag impending margin compression from commoditization even when the per-ASIN direction reads 'stable'.
   - Rating Churn Pattern: {churn_pattern} (score: {churn_score})
   - Low-Review BSR Share: {new_product_ratio} (snapshot — % of current BSR products with < 50 reviews; high value = BSR positions not yet defended by social proof, low entry stickiness) | Rating Collapse Rate: {collapse_rate} (% of Xiyouzhaoci-tracked products where first-half peak rating dropped > 0.3★ vs second-half average)
   - BSR Listing Metabolism: **{bsr_churn_label}** | Snapshots: {bsr_snapshots}

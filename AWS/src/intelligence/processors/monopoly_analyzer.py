@@ -26,6 +26,7 @@ class CategoryMonopolyAnalyzer:
         self,
         products: list[dict[str, Any]],
         keyword_data: dict[str, Any] | None = None,
+        keyword_data_all: list[dict[str, Any]] | None = None,
         ad_data: dict[str, Any] | None = None,
         external_data: dict[str, Any] | None = None,
         historical_data: dict[str, list[dict[str, Any]]] | None = None,
@@ -55,7 +56,7 @@ class CategoryMonopolyAnalyzer:
         seller_score = self._analyze_seller_background(sorted_products)
         review_score = self._analyze_review_barrier(sorted_products)
         price_score = self._analyze_price_convergence(sorted_products)
-        keyword_score = self._analyze_keyword_monopoly(keyword_data)
+        keyword_score = self._analyze_keyword_monopoly(keyword_data, keyword_data_all)
         ad_score = self._analyze_ad_competition(ad_data)
         social_score, deal_score = self._analyze_external_intensity(external_data)
         churn_result = self._analyze_market_churn(sorted_products, historical_data)
@@ -243,11 +244,30 @@ class CategoryMonopolyAnalyzer:
             return 100
         return max(0, 100 - (cv / 0.6 * 100))
 
-    def _analyze_keyword_monopoly(self, keyword_data: dict[str, Any] | None) -> float:
-        if not keyword_data or "top_asins" not in keyword_data:
+    def _analyze_keyword_monopoly(
+        self,
+        keyword_data: dict[str, Any] | None,
+        keyword_data_all: list[dict[str, Any]] | None = None,
+    ) -> float:
+        all_terms = keyword_data_all or ([keyword_data] if keyword_data else [])
+        if not all_terms:
             return 50
-        top3_shares = sum(item.get("clickShare", 0) for item in keyword_data["top_asins"][:3])
-        return min(100, (top3_shares / 0.50) * 100)
+        scores = [
+            min(
+                100,
+                (
+                    sum(
+                        t.get("clickShare", 0)
+                        for t in (term.get("topAsins") or term.get("top_asins") or [])[:3]
+                    )
+                    / 0.50
+                )
+                * 100,
+            )
+            for term in all_terms
+            if term and (term.get("topAsins") or term.get("top_asins"))
+        ]
+        return statistics.mean(scores) if scores else 50
 
     def _analyze_ad_competition(self, ad_data: dict[str, Any] | None) -> float:
         if not ad_data:

@@ -872,12 +872,13 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
             ctx.cache["detailed_bid_analysis"]
     """
     core_keywords = ctx.cache.get("core_keywords", ["unknown niche"])
-    main_keyword = core_keywords[0]
+    core_keywords[0]
     kw_hash = _hl.md5(",".join(sorted(core_keywords)).encode()).hexdigest()[:12]
 
     cached = _l2_get(ctx, _TTL_SIGNALS, "market_signals", kw_hash)
     if cached is not None:
         ctx.cache["keyword_data"] = cached.get("keyword_data", {})
+        ctx.cache["keyword_data_all"] = cached.get("keyword_data_all", [])
         ctx.cache["detailed_bid_analysis"] = cached.get("detailed_bid_analysis", {})
         logger.info(f"[cat_monopoly] Market signals L2 cache hit kw_hash={kw_hash}")
         return items
@@ -887,14 +888,15 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
         tenant_id = ctx.config.get("tenant_id", "default") if hasattr(ctx, "config") else "default"
         try:
             aba_res = await asyncio.to_thread(
-                XiyouZhaociAPI(tenant_id=tenant_id).get_aba_top_asins, country, [main_keyword]
+                XiyouZhaociAPI(tenant_id=tenant_id).get_aba_top_asins, country, core_keywords
             )
-            ctx.cache["keyword_data"] = (
-                aba_res["searchTerms"][0] if aba_res and aba_res.get("searchTerms") else {}
-            )
+            search_terms = aba_res.get("searchTerms") or [] if aba_res else []
+            ctx.cache["keyword_data"] = search_terms[0] if search_terms else {}
+            ctx.cache["keyword_data_all"] = search_terms
         except Exception as e:
             logger.error(f"[fetch_market_signals] ABA fetch failed: {e}")
             ctx.cache.setdefault("keyword_data", {})
+            ctx.cache.setdefault("keyword_data_all", [])
 
     async def _fetch_cpc_bids() -> None:
         try:
@@ -937,6 +939,7 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
         ctx,
         {
             "keyword_data": ctx.cache.get("keyword_data", {}),
+            "keyword_data_all": ctx.cache.get("keyword_data_all", []),
             "detailed_bid_analysis": ctx.cache.get("detailed_bid_analysis", {}),
         },
         "market_signals",
@@ -1787,6 +1790,8 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
                         "fba": p.get("sellerType"),
                         "seller_id": p.get("sellerId"),
                         "seller_name": p.get("sellerName"),
+                        # snapshot-time price — used for cross-snapshot distribution shift
+                        "price": p.get("price"),
                     }
                     for i, p in enumerate(raw_items)
                     if p.get("asin") or p.get("parent")
@@ -2902,6 +2907,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     result = analyzer.analyze(
         analysis_input,
         keyword_data=ctx.cache.get("keyword_data"),
+        keyword_data_all=ctx.cache.get("keyword_data_all"),
         ad_data=ad_data,
         external_data=external_data,
         historical_data=ctx.cache.get("historical_data"),
@@ -2921,6 +2927,84 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         for strategy_recs in bid_raw.values()
         for rec in strategy_recs
     )
+
+    # ── Keyword click concentration: per-keyword ABA click share + CPC gap ───
+    # Surfaces which brands own click share on each core keyword and whether
+    # PHRASE match offers a cheaper entry angle than EXACT (EXACT/PHRASE gap).
+    _kw_all = ctx.cache.get("keyword_data_all") or []
+    _asin_brand = {p["asin"].upper(): (p["brand"] or "") for p in analysis_input if p.get("asin")}
+
+    def _parse_share(raw: Any) -> float:
+        if raw is None:
+            return 0.0
+        try:
+            value = float(str(raw).strip().rstrip("%"))
+        except (TypeError, ValueError):
+            return 0.0
+        if value > 1:
+            value /= 100
+        return max(0.0, min(value, 1.0))
+
+    def _parse_bid(raw: Any) -> float | None:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _aba_top_asins(term: dict[str, Any]) -> list[dict[str, Any]]:
+        top_asins = term.get("topAsins") or term.get("top_asins") or []
+        if isinstance(top_asins, dict):
+            top_asins = top_asins.get("list") or []
+        return top_asins if isinstance(top_asins, list) else []
+
+    # Per-keyword LEGACY CPC by match type: {keyword_lower: {PHRASE: float, EXACT: float}}
+    _cpc_by_kw: dict[str, dict[str, float]] = {}
+    for _rec in detailed_bids.get("LEGACY_FOR_SALES", []):
+        for _expr in _rec.get("bidRecommendationsForTargetingExpressions", []):
+            _te = _expr.get("targetingExpression") or {}
+            _kw = (_te.get("value") or "").strip().lower()
+            _mt = (_te.get("type") or "").strip().upper()
+            _bv = [
+                bid
+                for b in _expr.get("bidValues", [])
+                if (bid := _parse_bid(b.get("suggestedBid"))) is not None
+            ]
+            if _kw and _bv and _mt in ("PHRASE", "EXACT"):
+                _cpc_by_kw.setdefault(_kw, {})[_mt] = statistics.median(_bv)
+
+    keyword_click_concentration = []
+    for _term in _kw_all:
+        _kw_text = (_term.get("searchTerm") or "").strip().lower()
+        _top_asins = _aba_top_asins(_term)
+        _top3_share = sum(_parse_share(t.get("clickShare")) for t in _top_asins[:3])
+        _top1 = _top_asins[0] if _top_asins else {}
+        _top1_asin = (_top1.get("asin") or "").upper()
+        _top1_share = _parse_share(_top1.get("clickShare"))
+        _top1_brand = _asin_brand.get(_top1_asin, "") or _top1_asin or "unknown"
+        _concentration = (
+            "concentrated"
+            if _top3_share > 0.50
+            else "moderate"
+            if _top3_share > 0.30
+            else "fragmented"
+        )
+        _cpcs = _cpc_by_kw.get(_kw_text, {})
+        _phrase_cpc = _cpcs.get("PHRASE")
+        _exact_cpc = _cpcs.get("EXACT")
+        _gap_pct = (_exact_cpc - _phrase_cpc) / _phrase_cpc if _phrase_cpc and _exact_cpc else None
+        keyword_click_concentration.append(
+            {
+                "keyword": _kw_text,
+                "top3_click_share": f"{_top3_share:.0%}",
+                "concentration": _concentration,
+                "top_asin_brand": _top1_brand,
+                "top_asin_click_share": f"{_top1_share:.0%}",
+                "phrase_cpc": f"${_phrase_cpc:.2f}" if _phrase_cpc else "N/A",
+                "exact_cpc": f"${_exact_cpc:.2f}" if _exact_cpc else "N/A",
+                "exact_phrase_gap": f"{_gap_pct:+.0%}" if _gap_pct is not None else "N/A",
+            }
+        )
 
     prices = [p["price"] for p in analysis_input if p["price"] > 0]
     median_price = statistics.median(prices) if prices else 25.0
@@ -3379,6 +3463,42 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     # "new" = product went live within 12 months before the snapshot month (base_ym).
     base_ym = ctx.cache.get("sellersprite_base_ym", "")
     snapshots = ctx.cache.get("sellersprite_snapshots") or {}
+
+    # ── BSR composition shift: cross-snapshot price distribution trend ────────
+    # Compares snapshot-level price medians across T-12 → T to detect whether
+    # lower-priced products are gaining BSR rank slots — a signal the per-ASIN
+    # price_trend cannot capture because it only sees repricing of currently-tracked
+    # ASINs, not the entrant-vs-dropout dynamics that drive composition change.
+    _snap_medians: list[tuple[str, float]] = []
+    for _ym in sorted(snapshots):
+        _snap_prices: list[float] = []
+        for _p in snapshots[_ym]:
+            try:
+                _v = float(_p["price"]) if _p.get("price") is not None else 0.0
+            except (TypeError, ValueError):
+                _v = 0.0
+            if _v > 0:
+                _snap_prices.append(_v)
+        if len(_snap_prices) >= 5:
+            _snap_medians.append((_ym, statistics.median(_snap_prices)))
+
+    if len(_snap_medians) >= 2:
+        _oldest_ym, _oldest_med = _snap_medians[0]
+        _newest_ym, _newest_med = _snap_medians[-1]
+        _comp_pct = (_newest_med - _oldest_med) / _oldest_med
+        _comp_label = (
+            "lower-price products gaining BSR share"
+            if _comp_pct < -0.05
+            else "higher-price products gaining BSR share"
+            if _comp_pct > 0.05
+            else "distribution stable across snapshots"
+        )
+        price_trend_str += (
+            f" | BSR composition: snapshot median"
+            f" ${_oldest_med:.2f} ({_oldest_ym}) → ${_newest_med:.2f} ({_newest_ym})"
+            f" ({_comp_pct:+.1%}, n={len(_snap_medians)} snapshots) — {_comp_label}"
+        )
+
     t_snapshot = snapshots.get(base_ym) or (snapshots.get(max(snapshots)) if snapshots else [])
     if t_snapshot:
         # Cutoff = first day of (base_ym − 12 months), converted to ms-since-epoch.
@@ -3974,6 +4094,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "bid_insight": json.dumps(bid_raw, ensure_ascii=False)
             if bid_entry_count
             else "N/A (no CPC data fetched)",
+            "keyword_click_concentration": json.dumps(
+                keyword_click_concentration, ensure_ascii=False
+            ),
             "data_quality": data_quality_str,
             "review_disparity": (
                 f"{review_disparity_val}x"
