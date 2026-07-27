@@ -257,6 +257,15 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
         )
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
+    elif name == "sellersprite_review_trends":
+        api = _get_sellersprite_api(tenant_id)
+        result = await asyncio.to_thread(
+            api.get_review_trends,
+            asin=arguments["asin"],
+            market_id=arguments.get("market_id", 1),
+        )
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
     elif name == "get_ad_traffic":
         return [TextContent(type="text", text=json.dumps({"ad_spend": 5000, "roas": 2.1}))]
 
@@ -589,6 +598,30 @@ market_tools = [
                 },
             },
             "required": ["node_id_path"],
+        },
+    ),
+    Tool(
+        name="sellersprite_review_trends",
+        description=(
+            "[Sellersprite/卖家精灵] Fetch full review and sales time-series for a single ASIN "
+            "from its listing date to today. "
+            "Returns parallel monthly arrays (daltaMonth labels): "
+            "dalta (monthly new-review growth), reviews (cumulative review count, -1=unknown), "
+            "rate (monthly reviews-to-orders ratio), units (monthly estimated sale units); "
+            "and parallel daily arrays (dates labels): rating (daily avg rating, -1.0=unknown). "
+            "Use to assess review velocity, conversion rate trend, and long-term sales trajectory."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin": {"type": "string", "description": "Amazon ASIN, e.g. 'B07T869RNY'"},
+                "market_id": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Numeric market ID (1=US, 6=DE, 8=JP, …)",
+                },
+            },
+            "required": ["asin"],
         },
     ),
     Tool(
@@ -1063,6 +1096,10 @@ _MARKET_META = {
     "sellersprite_market_research": (
         "DATA",
         "subcategory list with return_rate_pct (%), avg_return_rate_pct (%), and search_to_buy_ratio_pm (‰)",
+    ),
+    "sellersprite_review_trends": (
+        "DATA",
+        "monthly review growth, cumulative reviews, reviews-to-orders rate, estimated units, and daily rating series for an ASIN",
     ),
     "xiyou_get_login_qr": ("DATA", "URL for WeChat login QR code"),
     "xiyou_check_login_status": ("DATA", "authentication status of pending QR scan"),

@@ -137,6 +137,50 @@ class SellerspriteAPI:
             "sellersprite still rate limited after 3 retries", retry_after_seconds=120
         )
 
+    def _fetch_json(self, method: str, url: str, label: str, **kwargs) -> dict | None:
+        """
+        One-stop JSON request with up to 2 attempts and soft-401 handling.
+
+        Encapsulates the shared retry skeleton used by all JSON endpoints:
+          1. acquire rate-limit token via _request
+          2. assert HTTP success
+          3. parse + validate JSON body is a dict
+          4. detect soft-401 (data field is a "/user/login" redirect string)
+             → re-login once and retry
+          5. return the full body dict, or None on any failure
+
+        ``label`` appears in log messages to identify the calling endpoint.
+        Callers extract ``body.get("data")`` and any other fields they need.
+        ``get_market_research`` is intentionally excluded — it returns HTML and
+        uses a boarding-redirect pattern that differs from this flow.
+        """
+        for attempt in range(2):
+            res = self._request(method, url, **kwargs)
+
+            if not res.ok:
+                logger.error(f"[sellersprite] {label} failed {res.status_code}: {res.text}")
+                return None
+
+            body = res.json()
+            if not isinstance(body, dict):
+                logger.error(
+                    f"[sellersprite] {label} unexpected body type={type(body).__name__}: {body!r:.200}"
+                )
+                return None
+
+            data = body.get("data")
+            if isinstance(data, str) and "/user/login" in data:
+                if attempt == 0:
+                    logger.warning(f"[sellersprite] {label} soft-401 — re-logging in and retrying")
+                    self._safe_relogin()
+                    continue
+                logger.error(f"[sellersprite] {label} still getting soft-401 after re-login")
+                return None
+
+            return body
+
+        return None
+
     def get_keepa_data(self, asin: str) -> dict:
         """
         Fetch Keepa ranking data for an ASIN.
@@ -243,52 +287,24 @@ class SellerspriteAPI:
             f"nodes={node_id_paths} page={page}"
         )
 
-        for attempt in range(2):
-            res = self._request("POST", url, json=payload, headers=headers)
+        body = self._fetch_json("POST", url, "competing-lookup", json=payload, headers=headers)
+        if body is None:
+            return {"items": [], "total": 0, "page": page, "size": size}
 
-            if not res.ok:
-                logger.error(
-                    f"[sellersprite] competing-lookup failed {res.status_code}: {res.text}"
-                )
-                return {"items": [], "total": 0, "page": page, "size": size}
-
-            body = res.json()
-            if not isinstance(body, dict):
-                logger.error(
-                    f"[sellersprite] competing-lookup unexpected body type={type(body).__name__}: {body!r:.200}"
-                )
-                return {"items": [], "total": 0, "page": page, "size": size}
-
-            data = body.get("data") or {}
-            if isinstance(data, dict):
-                return {
-                    "items": data.get("items") or [],
-                    "total": data.get("total") or 0,
-                    "page": data.get("page") or page,
-                    "size": data.get("size") or size,
-                }
-
-            # Soft-401: server returned 200 but data is a login redirect URL
-            if isinstance(data, str) and "/user/login" in data:
-                if attempt == 0:
-                    logger.warning(
-                        "[sellersprite] competing-lookup soft-401 (login redirect) — "
-                        "re-logging in and retrying"
-                    )
-                    self._safe_relogin()
-                    continue
-                logger.error(
-                    "[sellersprite] competing-lookup still getting soft-401 after re-login"
-                )
-                return {"items": [], "total": 0, "page": page, "size": size}
-
+        data = body.get("data") or {}
+        if not isinstance(data, dict):
             logger.error(
                 f"[sellersprite] competing-lookup data field is not a dict "
                 f"(type={type(data).__name__}): {data!r:.200}"
             )
             return {"items": [], "total": 0, "page": page, "size": size}
 
-        return {"items": [], "total": 0, "page": page, "size": size}
+        return {
+            "items": data.get("items") or [],
+            "total": data.get("total") or 0,
+            "page": data.get("page") or page,
+            "size": data.get("size") or size,
+        }
 
     def resolve_node_path(
         self,
@@ -332,40 +348,16 @@ class SellerspriteAPI:
             f"[sellersprite] resolve-node marketId={market_id} nodeLabelPath={query!r} table={table}"
         )
 
-        for attempt in range(2):
-            res = self._request("GET", url, params=params, headers=headers)
+        body = self._fetch_json("GET", url, "resolve-node", params=params, headers=headers)
+        if body is None:
+            return []
 
-            if not res.ok:
-                logger.error(f"[sellersprite] resolve-node failed {res.status_code}: {res.text}")
-                return []
-
-            body = res.json()
-            if not isinstance(body, dict):
-                logger.error(
-                    f"[sellersprite] resolve-node unexpected body type={type(body).__name__}: {body!r:.200}"
-                )
-                return []
-
-            # Soft-401: data field contains login redirect URL
-            data_field = body.get("data")
-            if isinstance(data_field, str) and "/user/login" in data_field:
-                if attempt == 0:
-                    logger.warning(
-                        "[sellersprite] resolve-node soft-401 — re-logging in and retrying"
-                    )
-                    self._safe_relogin()
-                    continue
-                logger.error("[sellersprite] resolve-node still getting soft-401 after re-login")
-                return []
-
-            items = body.get("items") or []
-            if not items:
-                logger.warning(
-                    f"[sellersprite] resolve_node_path: no match for query={query!r} in table={table}"
-                )
-            return items
-
-        return []
+        items = body.get("items") or []
+        if not items:
+            logger.warning(
+                f"[sellersprite] resolve_node_path: no match for query={query!r} in table={table}"
+            )
+        return items
 
     def get_category_nodes(
         self,
@@ -408,35 +400,62 @@ class SellerspriteAPI:
             f"[sellersprite] category-nodes marketId={market_id} table={table} "
             f"nodeIdPath={node_id_path}"
         )
-        for attempt in range(2):
-            res = self._request("GET", url, params=params, headers=headers)
+        body = self._fetch_json("GET", url, "category-nodes", params=params, headers=headers)
+        if body is None:
+            return []
 
-            if not res.ok:
-                logger.error(f"[sellersprite] category-nodes failed {res.status_code}: {res.text}")
-                return []
+        return body.get("items") or body.get("data") or []
 
-            body = res.json()
-            if not isinstance(body, dict):
-                logger.error(
-                    f"[sellersprite] category-nodes unexpected body type={type(body).__name__}: {body!r:.200}"
-                )
-                return []
+    def get_review_trends(self, asin: str, market_id: int = 1) -> dict:
+        """
+        Fetch review and sales trend time-series for a single ASIN.
 
-            # Soft-401: data field contains login redirect URL
-            data_field = body.get("data")
-            if isinstance(data_field, str) and "/user/login" in data_field:
-                if attempt == 0:
-                    logger.warning(
-                        "[sellersprite] category-nodes soft-401 — re-logging in and retrying"
-                    )
-                    self._safe_relogin()
-                    continue
-                logger.error("[sellersprite] category-nodes still getting soft-401 after re-login")
-                return []
+        POST /v3/api/trends/reviews/{market_id}/{asin}
 
-            return body.get("items") or data_field or []
+        Returns parallel arrays from the product's first listing date to now:
+          - dalta (list):       monthly review count growth (None = unknown)
+          - daltaMonth (list):  month labels for dalta/reviews/rate/units (e.g. "202506")
+          - reviews (list):     cumulative review count per month (-1 = unknown)
+          - rate (list):        monthly reviews-to-orders ratio (None = unknown)
+          - rating (list):      daily average rating (-1.0 = unknown); indexed by dates
+          - dates (list):       daily date strings (YYYY-MM-DD); index for rating/units
+          - units (list):       daily estimated sale units (None = unknown)
+          - range (dict):       e.g. {"half": 50.0}
 
-        return []
+        Args:
+            asin:      Target ASIN, e.g. "B07T869RNY".
+            market_id: Numeric marketplace identifier (default 1 = US).
+
+        Returns:
+            Parsed data dict with the keys above, or an empty dict on failure.
+        """
+        url = f"https://www.sellersprite.com/v3/api/trends/reviews/{market_id}/{asin}"
+        headers = {
+            "Host": "www.sellersprite.com",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json;charset=UTF-8",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/146.0.0.0 Safari/537.36"
+            ),
+        }
+
+        logger.info(f"[sellersprite] review-trends asin={asin} marketId={market_id}")
+
+        body = self._fetch_json("POST", url, "review-trends", json={}, headers=headers)
+        if body is None:
+            return {}
+
+        data = body.get("data")
+        if not isinstance(data, dict):
+            logger.error(
+                f"[sellersprite] review-trends data is not a dict "
+                f"(type={type(data).__name__}): {data!r:.200}"
+            )
+            return {}
+
+        return data
 
     def get_market_research(
         self,
