@@ -91,14 +91,10 @@ class CategoryMonopolyAnalyzer:
             "dimension_details": details,
             "summary_metrics": {
                 "cr3": sales_scores.get("cr3"),
-                "price_cv": sales_scores.get("price_cv"),
-                "avg_rating": sales_scores.get("avg_rating"),
             },
             "niche_benchmarks": {
-                "median_price": statistics.median(
-                    [p.get("price", 0) for p in products if p.get("price", 0) > 0]
-                )
-                if products
+                "median_price": statistics.median(_prices)
+                if (_prices := [p.get("price", 0) for p in products if p.get("price", 0) > 0])
                 else 0,
                 "avg_reviews_top10": int(
                     statistics.mean([p.get("review_count", 0) for p in sorted_products[:10]])
@@ -204,7 +200,7 @@ class CategoryMonopolyAnalyzer:
         if not brands:
             return 50
         counts = {b: brands.count(b) for b in set(brands)}
-        brand_ratio = len(counts) / len(products)
+        brand_ratio = len(counts) / len(brands)
         return max(0, 100 - (brand_ratio * 150))
 
     def _analyze_seller_background(self, products: list[dict[str, Any]]) -> float:
@@ -415,20 +411,24 @@ class CategoryMonopolyAnalyzer:
             elif abs(gap - 12) <= 1:
                 churn_12m = rate
 
-        # Use best available values for labelling
-        c12 = churn_12m if churn_12m is not None else (churn_6m or 0.0)
-        c3 = churn_3m or 0.0
-
-        if c3 > 0.40 and c12 > 0.65:
-            label = "fomo_spike_die"
-        elif c12 > 0.55:
-            label = "high_churn"
-        elif c12 < 0.30:
-            label = "mature_stable"
-        elif 0.30 <= c12 <= 0.55 and c3 < 0.25:
-            label = "blue_ocean"
+        # Require at least one longer-horizon rate (6m or 12m) to label.
+        # Without it c12 would default to 0.0, triggering a false "mature_stable"
+        # even when only a single snapshot exists and no comparison is possible.
+        if churn_12m is None and churn_6m is None:
+            label = "unknown"
         else:
-            label = "moderate_competitive"
+            c12 = churn_12m if churn_12m is not None else churn_6m  # type: ignore[assignment]
+            c3 = churn_3m or 0.0
+            if c3 > 0.40 and c12 > 0.65:
+                label = "fomo_spike_die"
+            elif c12 > 0.55:
+                label = "high_churn"
+            elif c12 < 0.30:
+                label = "mature_stable"
+            elif 0.30 <= c12 <= 0.55 and c3 < 0.25:
+                label = "blue_ocean"
+            else:
+                label = "moderate_competitive"
 
         return {
             "churn_3m": round(churn_3m, 3) if churn_3m is not None else None,
