@@ -220,7 +220,8 @@ template: |
   {price_distribution}
   Render this JSON under the heading '## Price Distribution' immediately after the Top 10 BSR Products section. Always include:
     1. A one-row percentile summary table: Min | P10 | P25 | Median | Mean | P75 | P90 | Max
-    2. A bucket frequency table: Price Range | # Products | Share
+    2. A bucket frequency table: Price Range | # Products | Share | Sales Volume Share
+       Sales Volume Share = bucket.sales_pct (monthly units sold in this price band ÷ total monthly units across all priced products). If sales_pct is 'N/A' for all buckets, omit the column and add a footnote: '† Sales volume data unavailable for this BSR sample.'
   COVERAGE RULE: if 'n' < 'total_bsr', you MUST add a footnote line immediately below the bucket table: '† Price coverage: {n}/{total_bsr} BSR products had a valid price; # Products and Share are out of priced products only.'
   Never cite a bucket Share% as a fraction of total BSR products when coverage is partial.
   BIMODAL RULE: if 'is_bimodal' is true, the overall median is NOT representative — it falls in the gap between two clusters. You MUST:

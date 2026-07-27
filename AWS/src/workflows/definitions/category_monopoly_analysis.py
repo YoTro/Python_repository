@@ -2964,7 +2964,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         for _expr in _rec.get("bidRecommendationsForTargetingExpressions", []):
             _te = _expr.get("targetingExpression") or {}
             _kw = (_te.get("value") or "").strip().lower()
-            _mt = (_te.get("type") or "").strip().upper()
+            _raw_mt = (_te.get("type") or "").strip().upper()
+            # API echoes long-form types (KEYWORD_PHRASE_MATCH, KEYWORD_EXACT_MATCH) — normalize
+            _mt = "PHRASE" if "PHRASE" in _raw_mt else "EXACT" if "EXACT" in _raw_mt else _raw_mt
             _bv = [
                 bid
                 for b in _expr.get("bidValues", [])
@@ -2981,7 +2983,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         _top1 = _top_asins[0] if _top_asins else {}
         _top1_asin = (_top1.get("asin") or "").upper()
         _top1_share = _parse_share(_top1.get("clickShare"))
-        _top1_brand = _asin_brand.get(_top1_asin, "") or _top1_asin or "unknown"
+        _top1_brand = _asin_brand.get(_top1_asin, "") or "unknown"
         _concentration = (
             "concentrated"
             if _top3_share > 0.50
@@ -3325,6 +3327,10 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
 
     # ── price distribution ────────────────────────────────────────────────────
     valid_prices = sorted(p["price"] for p in analysis_input if p["price"] > 0)
+    _price_sales_pairs = [
+        (p["price"], p.get("sales") or 0) for p in analysis_input if p["price"] > 0
+    ]
+    _total_bucket_sales = sum(s for _, s in _price_sales_pairs)
     if valid_prices:
 
         def _pct_val(lst, pct):
@@ -3360,6 +3366,8 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             lo_b, hi_b = b, b + _step
             cnt = sum(1 for p in valid_prices if lo_b <= p < hi_b)
             pct = cnt / len(valid_prices) * 100
+            b_sales = sum(s for pr, s in _price_sales_pairs if lo_b <= pr < hi_b)
+            sales_pct = f"{b_sales / _total_bucket_sales:.0%}" if _total_bucket_sales else "N/A"
             buckets.append(
                 {
                     "range": f"${lo_b:.0f}–${hi_b:.0f}",
@@ -3367,6 +3375,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                     "hi": hi_b,
                     "count": cnt,
                     "pct": f"{pct:.0f}%",
+                    "sales_pct": sales_pct,
                 }
             )
             b += _step
