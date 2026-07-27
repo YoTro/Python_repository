@@ -67,10 +67,14 @@ required_vars:
   - estimated_steady_state_acos
   - ad_profit_drag
   - fba_fee_pct
+  - fba_fee_source
+  - inbound_fee_pct
+  - inbound_freight_detail
   - breakeven_acos
   - ad_burden_verdict
   - return_rate_pct
   - capital_gross_units
+  - capital_inbound
 
 optional_vars:
   core_keywords: "(none)"
@@ -113,10 +117,11 @@ template: |
     Row 1: Metric='Investment Capital (Total)' | Value='{recommended_capital}' | Definition='Subtotal × 1.20 working-capital buffer'
     Row 2: If capital_gross_units == capital_units (no return rate data): Metric='  └ Inventory ({capital_units} units, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_units} units × {niche_median_price} × {capital_cogs_pct} COGS'. If capital_gross_units ≠ capital_units (return rate available): Metric='  └ Inventory ({capital_gross_units} gross units ordered to net {capital_units} sold, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_gross_units} gross units × {niche_median_price} × {capital_cogs_pct} COGS (grossed up for {return_rate_pct} return rate)'
     Row 3: Metric='  └ PPC Seed ({capital_acos_pct} ACOS on {capital_units} units, ~{capital_sell_months}mo sell-through)' | Value='{capital_ppc}' | Definition='{capital_units} units × {niche_median_price} × {capital_acos_pct} ACOS'
-    Row 4: Metric='  └ Platform Fees ({capital_fees_pct} on {capital_units} units)' | Value='{capital_fees}' | Definition='{capital_units} units × {niche_median_price} × {capital_fees_pct} (referral 15% + FBA from 2026 fee schedule, Large Standard 12-16 oz at median price)'
-    Row 5: Metric='  └ Fixed Overhead' | Value='{capital_overhead}' | Definition='Photography, A+ content, listing, inbound freight'
-  NEVER show a single Investment Capital row without these four sub-rows.
-  BIMODAL CAPITAL RULE: tier_capitals={tier_capitals}. If tier_capitals is non-empty (bimodal market detected), append a second capital table immediately after the breakdown rows under the sub-heading '### Capital by Price Tier' with columns: Tier | Tier Median | Inventory | PPC | Fees | Overhead | Total. Warn the operator: 'The base Investment Capital above uses the overall median price which falls in the gap between tiers — choose the tier you plan to enter and use the corresponding Total as your actual budget.'
+    Row 4: Metric='  └ Platform Fees ({capital_fees_pct} on {capital_units} units)' | Value='{capital_fees}' | Definition='{capital_units} units × {niche_median_price} × {capital_fees_pct} (referral 15% + FBA — {fba_fee_source})'
+    Row 5: Metric='  └ FBA Inbound Freight ({inbound_fee_pct} of median price, {capital_units} units)' | Value='{capital_inbound}' | Definition='AGL SZX→US FC, {inbound_freight_detail}; {capital_units} units × {niche_median_price} × {inbound_fee_pct}'
+    Row 6: Metric='  └ Fixed Overhead' | Value='{capital_overhead}' | Definition='Photography, A+ content, listing'
+  NEVER show a single Investment Capital row without these five sub-rows.
+  BIMODAL CAPITAL RULE: tier_capitals={tier_capitals}. If tier_capitals is non-empty (bimodal market detected), append a second capital table immediately after the breakdown rows under the sub-heading '### Capital by Price Tier' with columns: Tier | Tier Median | Inventory | PPC | Fees | FBA Inbound | Overhead | Total. Warn the operator: 'The base Investment Capital above uses the overall median price which falls in the gap between tiers — choose the tier you plan to enter and use the corresponding Total as your actual budget.'
   Category Return Rate: {return_rate_pct} (source: Amazon Marketplace Product Guidance via SellerSprite — avg_return_rate_pct is the average return rate of same-type sub-categories over the past 3 months; return rate = returns ÷ total purchases in the past 3 months; e.g. under Shoes the figure is averaged across 18 sub-categories such as Women's Road Running and Men's Road Running). Add one row to the Data Breakdown table: Metric='Category Return Rate' | Value='{return_rate_pct}' | Definition='Avg return rate of same-type sub-categories, past 3 months (Amazon Marketplace Product Guidance); >5% warrants a return-buffer reserve'. If return_rate_pct is 'N/A', omit this row.
   Primary Niche: **{main_keyword}** | Related Terms: {core_keywords}
   Data Confidence (R²): **{data_confidence_r2}**
@@ -142,7 +147,7 @@ template: |
   - Brand Social Signals: {brand_social_data}
     JSON array of multi-platform social results for top BSR brands and new-entrant brands (listed within past 12 months). Each entry: {{brand, is_top_brand, is_new_entrant, psi (max across platforms), verdict (from best platform), video_count (total), n_kol (KOL count — macro/mega tier creators, ≥500K followers, summed across platforms), n_koc (KOC/micro-influencer count — nano/micro tier, <100K followers, summed across platforms), unique_creators (all unique creator accounts across platforms; YouTube creators counted but not tiered — follower data unavailable on hashtag pages), platforms: [{{name, hashtag, psi, verdict, video_count, n_kol, n_koc, unique_creators}}, ...]}}. Render as a compact markdown table under the heading '## Brand Social Signals' (immediately after the Data Breakdown table, before Strategic Insights) with columns: Brand | Best PSI | Verdict | TikTok PSI | YouTube PSI | Total Videos | KOLs | KOCs | Category. In the 'Category' column write: 'Top Brand' if is_top_brand only, 'New Entrant' if is_new_entrant only, 'Top + New' if both, or '—' if neither. For TikTok PSI and YouTube PSI, look up psi from the platforms array by name; write '—' if the platform has psi=0 or verdict='No Tag Found'. KOLs = n_kol (macro+mega influencers, typically paid engagements); KOCs = n_koc (nano+micro creators, typically organic or lower-cost seeding). Sort by Best PSI descending. If brand_social_data is '[]' or empty, write one line: 'No brand social data available.'
     KOL/KOC INVESTMENT ALERT rule (apply in Strategic Insights): A brand with n_kol ≥ 3 (across platforms) is running a structured paid influencer campaign — this requires substantial capital (macro/mega fees range from $500–$50,000+ per post) and represents a meaningful off-platform moat. A brand with n_kol=0 but n_koc ≥ 5 is doing lower-cost seeding (nano/micro creators). If the category leader has n_kol ≥ 3 but new entrants have n_kol=0, flag the asymmetry: 'Incumbent brands are investing in paid KOL campaigns; new entrants without equivalent budget face an off-platform spend gap in addition to PPC costs.'
-  - Deal Intensity: {deal_intensity}/10
+  - Off-Site Deal Intensity (Slickdeals, DealNews, etc. — excludes Amazon on-site deals): {deal_intensity}/10
 
   ### STEADY-STATE AD BURDEN
   Derived from market-level data only — no owned product required.
@@ -150,7 +155,7 @@ template: |
   - Category CVR: {category_cvr} (source: {category_cvr_source})
   - Median CPC: {median_cpc}
   - Estimated Steady-State ACOS: {estimated_steady_state_acos}
-  - Breakeven ACOS: {breakeven_acos} (= 1 − 30% COGS − 15% referral − {fba_fee_pct} FBA [Large Standard 12-16 oz at median price, 2026 schedule])
+  - Breakeven ACOS: {breakeven_acos} (= 1 − 30% COGS − 15% referral − {fba_fee_pct} FBA [{fba_fee_source}] − {inbound_fee_pct} FBA inbound freight [AGL SZX→US FC, {inbound_freight_detail}])
   - Ad Profit Drag: {ad_profit_drag} (= BSR ad traffic ratio × estimated ACOS; fraction of revenue consumed by ads at steady state)
   - Ad Burden Verdict: **{ad_burden_verdict}**
   In the Data Breakdown table, render these as six consecutive rows under the group heading 'Steady-State Ad Burden'. NEVER omit category_cvr or the breakeven ACOS formula components — they are the basis for the verdict.
@@ -235,7 +240,7 @@ template: |
   - 'review_floor_top20': the actual minimum reviews held by any BSR top-20 product. Use this as the specific target: 'You need X reviews to reach BSR #N, not X,000+.' NEVER write a generic review barrier without citing this number.
   - 'price_gap_band' + 'price_gap_count': if present, name this specific band as the underserved price point. Write: 'Only N products occupy the $X–$Y range — this is the whitespace entry point.'
   - 'least_crowded_sub_niche': if present, name this sub-niche explicitly as the recommended entry angle. Write: 'The [name] sub-segment has only N products in the top-50 — lowest competition density in this BSR.' Do NOT recommend sub-niches that are not in this data.
-  - 'weakest_rank_slot': if present, cite the specific rank, ASIN, and review count: 'BSR #[rank] is held with only [reviews] reviews — a directly achievable displacement target.'
+  - 'weakest_rank_slot': if present, cite the specific rank and review count: 'BSR #[rank] is held with only [reviews] reviews — a directly achievable displacement target.' Do NOT cite an ASIN — the data does not provide one for this signal.
   - 'compliance_accessible_angle': if present, include this as a P0 item. A new entrant avoiding FIFRA registration is a structural cost advantage, not a nice-to-have.
   - 'recent_breakthrough_examples': if present, name 1–2 product titles as proof that new entrants CAN break into this BSR within the last 12 months.
   FORBIDDEN in the Actionable section: 'superior efficacy', 'compelling brand story', 'clear value proposition', 'eco-friendly formulation' (unless eco-friendly is in opportunity_signals), 'unique application method' — these are filler. Every P0/P1 item MUST contain at least one specific number or named sub-niche from the data above.
@@ -273,7 +278,7 @@ template: |
   - ANALYZE BID BARRIERS: Compare the suggested CPC to the median price. If CPC > 10% of median price, highlight extreme capital risk.
   - Identify which specific keywords are 'High Barrier' and if PHRASE/EXACT gaps offer opportunities.
   - CHURN ALERT: If churn_pattern is 'predatory_competition' or 'lemon_market', dedicate a paragraph to survival risk and whether the category is worth entering at all.
-  - BSR METABOLISM ALERT: If bsr_churn_label is 'fomo_spike_die', warn that this is a trend-driven category where products spike and die — advise on quick-in/quick-out strategy or avoidance. If 'blue_ocean', highlight that new entrants CAN sustain rankings and explain why. If 'mature_stable', note the high survivor_sales_share and advise on differentiation required to displace incumbents.
+  - BSR METABOLISM ALERT: If bsr_churn_label is 'fomo_spike_die', warn that this is a trend-driven category where products spike and die — advise on quick-in/quick-out strategy or avoidance. If 'blue_ocean', highlight that new entrants CAN sustain rankings and explain why. If 'mature_stable', cite the low churn rates (bsr_churn_3m / bsr_churn_6m / bsr_churn_12m from the Data Breakdown table) as evidence that incumbents are deeply entrenched, and advise on the differentiation required to displace them.
   - SEASONALITY ALERT: If seasonality_pattern is 'strong_seasonal' or 'multi_peak_seasonal', advise on launch timing relative to peak_months and warn about off-season inventory risk.
   - DEMAND × PRICE CROSS-ANALYSIS — place the conclusion under the sub-heading '## Risk & Opportunity Assessment' in the Strategic Insights section. Skip this entire block if demand_trend is 'unknown' (write nothing — do not speculate). Otherwise, read both axes — demand_trend ({demand_trend}) and price_trend ({price_trend}) — and apply the verdict from the matrix below. Always cite the specific YOY figures (prefer yoy_peak_1y_pct, fall back to yoy_1y_pct; also cite yoy_2y_pct to distinguish a single-year dip from a multi-year trend). State the 2-axis label first, then the actionable conclusion.
     YOY DEPTH RULE: if yoy_2y_pct is also negative and steeper than yoy_1y_pct, call it 'accelerating decline'. If yoy_2y_pct is positive but yoy_1y_pct is negative, call it 'possible post-peak normalization — verify before committing'. Never collapse multi-year data into a single vague phrase.
@@ -316,7 +321,7 @@ template: |
     NEVER skip this alert if brand_social_data is non-empty. Combine with social_psi (category keyword signal) to distinguish between category-level buzz and brand-specific campaigns.
   - PORTER'S FIVE FORCES — DIRECTION RULE (CRITICAL): In Porter's Five Forces, the 'Threat' rating refers to how easy it is for a new player or substitute to enter and succeed — NOT how hard the barriers are. The direction is always the INVERSE of barrier height. MANDATORY mappings from this report's data:
     • Threat of New Entrants: LOW when new_entrant_ratio < 15% OR avg_reviews_top10 > 5,000 OR review_disparity > 5x — high barriers mean low threat. HIGH only when new_entrant_ratio > 40% AND review barrier is low.
-    • Bargaining Power of Buyers: HIGH when deal_intensity > 7 OR price compression is severe (many sellers forced to discount). LOW when buyers have few alternatives.
+    • Bargaining Power of Buyers: HIGH when deal_intensity > 7 (off-site deal frequency on Slickdeals, DealNews, etc.) OR price compression is severe (many sellers forced to discount). LOW when buyers have few alternatives.
     • Threat of Substitutes: HIGH when related keywords dominate search volume; LOW when the product category is specific and has no close alternatives.
     • Rivalry: HIGH when CR3 < 30% (fragmented competition, many rivals) OR churn is high. LOW when a few brands dominate and competition is stable.
     • Supplier Power: LOW for commodity inputs (most physical goods); HIGH only when key raw materials are scarce or proprietary.

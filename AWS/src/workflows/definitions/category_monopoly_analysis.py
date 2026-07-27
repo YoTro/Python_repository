@@ -2939,6 +2939,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     _REFERRAL_FEE_PCT = 0.15
     _COGS_PCT = 0.30
     _fba_fee_pct = 0.18  # fallback: Large Standard 12-16 oz at $25 ≈ $4.76/25
+    _fba_fee_source = "2026 fee schedule estimate, Large Standard 12-16 oz"
 
     # Pick the BSR product with price closest to median_price as the representative ASIN.
     _rep_item = (
@@ -2976,6 +2977,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             if _total and _total > 0:
                 _fba_fee_pct = _total / median_price
                 _api_fee_resolved = True
+                _fba_fee_source = (
+                    f"Amazon Revenue Calculator (live API, ASIN {_rep_asin} @ ${median_price:.2f})"
+                )
                 logger.info(
                     f"[monopoly] FBA fee from API: ${_total:.2f} ({_fba_fee_pct:.1%}) "
                     f"for ASIN {_rep_asin} @ ${median_price:.2f}"
@@ -3033,10 +3037,135 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 )
                 _fba_fee_usd = float(_rep_tier["price_brackets"][_bracket]) * _fuel_mult
                 _fba_fee_pct = _fba_fee_usd / median_price
+                _fba_fee_source = f"2026 fee schedule, {_rep_tier.get('size_tier', 'Standard')} {_rep_tier.get('weight_range', '')}".strip()
         except Exception:
             pass  # use fallback 0.18
 
-    _breakeven_acos = max(0.0, 1.0 - _COGS_PCT - _REFERRAL_FEE_PCT - _fba_fee_pct)
+    # ── FBA Inbound Shipping (AGL Standard Ocean LCL, 5-FC split) ────────────
+    # Amazon splits inbound across 5 FCs: 3 East (60%), 1 Midwest (20%), 1 West (20%).
+    # Default: Shenzhen → US FC, Standard Ocean SMP, cheapest bracket per region.
+    # Product dimensions are estimated from median price when not directly available.
+    _inbound_fee_pct = 0.0
+    _inbound_fee_usd = 0.0
+    _inbound_freight_detail = "N/A"
+    try:
+        _agl_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "../../mcp/servers/finance/agl_rates.json",
+        )
+        with open(_agl_path) as _agl_f:
+            _agl_data = json.load(_agl_f)
+        _agl_lane = next(
+            (
+                ln
+                for ln in _agl_data.get("lanes", [])
+                if ln.get("lane_id") == "CN-SZX_US-FC_LCL" and ln.get("status") == "active"
+            ),
+            None,
+        )
+        if _agl_lane and median_price > 0:
+            # Price → estimated per-unit dimensions (CBM, KG) for standard consumer goods
+            _PRICE_TO_DIM: list[tuple[float, float, float]] = [
+                (15.0, 0.002, 0.20),
+                (30.0, 0.004, 0.40),
+                (55.0, 0.008, 0.60),
+                (90.0, 0.014, 1.00),
+                (float("inf"), 0.020, 1.50),
+            ]
+            _cbm_per_unit, _kg_per_unit = 0.008, 0.60
+            for _max_p, _cbm_u, _kg_u in _PRICE_TO_DIM:
+                if median_price < _max_p:
+                    _cbm_per_unit, _kg_per_unit = _cbm_u, _kg_u
+                    break
+
+            _agl_ship_units = 500  # representative batch size for bracket matching
+            _total_cbm_ship = _cbm_per_unit * _agl_ship_units
+
+            def _cbm_in_range(cbm: float, cbm_range: str) -> bool:
+                m = re.match(
+                    r"([\[\(])([\d.]+|\+inf|-inf),([\d.]+|\+inf|-inf)([\]\)])",
+                    cbm_range.replace(" ", ""),
+                )
+                if not m:
+                    return False
+                lo_b, lo_s, hi_s, hi_b = m.groups()
+                lo = float("-inf") if "inf" in lo_s else float(lo_s)
+                hi = float("inf") if "inf" in hi_s else float(hi_s)
+                lo_ok = cbm > lo if lo_b == "(" else cbm >= lo
+                hi_ok = cbm < hi if hi_b == ")" else cbm <= hi
+                return lo_ok and hi_ok
+
+            _agl_brackets = _agl_lane.get("volume_brackets", [])
+            _agl_bracket = next(
+                (b for b in _agl_brackets if _cbm_in_range(_total_cbm_ship, b["cbm_range"])),
+                _agl_brackets[-1] if _agl_brackets else None,
+            )
+            if _agl_bracket:
+                _std_smp = [
+                    q
+                    for q in _agl_bracket.get("quotes", [])
+                    if q.get("shipping_type") == "Standard Ocean"
+                    and q.get("container_type") == "SMP"
+                ]
+                # 3 East FCs → North East, 1 Midwest FC → South Central, 1 West FC → West
+                _FC_REGION_WEIGHTS = [
+                    ("North East, US", 0.60),
+                    ("South Central, US", 0.20),
+                    ("West, US", 0.20),
+                ]
+                _w_cost = 0.0
+                _sel_quotes: list = []
+                for _fc_region, _fc_w in _FC_REGION_WEIGHTS:
+                    _rq = [q for q in _std_smp if q.get("destination_region") == _fc_region]
+                    _cq = (
+                        min(_rq, key=lambda q: q.get("price_per_cbm_usd", float("inf")))
+                        if _rq
+                        else (
+                            min(
+                                _std_smp,
+                                key=lambda q: q.get("price_per_cbm_usd", float("inf")),
+                            )
+                            if _std_smp
+                            else None
+                        )
+                    )
+                    if _cq:
+                        _sel_quotes.append(_cq)
+                        _w_cost += _fc_w * max(
+                            _cq["price_per_cbm_usd"] * _cbm_per_unit,
+                            _cq["price_per_kg_usd"] * _kg_per_unit,
+                        )
+                if _w_cost > 0 and _sel_quotes:
+                    _inbound_fee_usd = round(_w_cost, 4)
+                    _inbound_fee_pct = _inbound_fee_usd / median_price
+                    _iq_mode = _agl_lane.get("mode", "LCL")
+                    _iq_term = _agl_lane.get("trade_term", "DDP")
+                    _iq_shipping = _sel_quotes[0].get("shipping_type", "Standard Ocean")
+                    _iq_container = _sel_quotes[0].get("container_type", "SMP")
+                    _td_mins = [
+                        q["transit_days"]["min"]
+                        for q in _sel_quotes
+                        if isinstance(q.get("transit_days"), dict)
+                    ]
+                    _td_maxs = [
+                        q["transit_days"]["max"]
+                        for q in _sel_quotes
+                        if isinstance(q.get("transit_days"), dict)
+                    ]
+                    _iq_transit = (
+                        f"{min(_td_mins)}–{max(_td_maxs)} days"
+                        if _td_mins and _td_maxs
+                        else "transit N/A"
+                    )
+                    _inbound_freight_detail = (
+                        f"{_iq_mode} ({_iq_container}), {_iq_shipping}, {_iq_transit}, {_iq_term}"
+                    )
+    except Exception:
+        pass  # use default 0.0
+
+    _breakeven_acos = max(
+        0.0, 1.0 - _COGS_PCT - _REFERRAL_FEE_PCT - _fba_fee_pct - _inbound_fee_pct
+    )
 
     # Category return rate — used to adjust both ACOS and inventory capital below.
     # Derived early so the ACOS block and the capital block share one value.
@@ -3561,7 +3690,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     _CAP_ACOS = 0.30  # target ACOS during the ranking phase
     _CAP_FEES = _REFERRAL_FEE_PCT + _fba_fee_pct  # referral 15% + FBA from 2026 fee schedule
     _CAP_SELL_MONTHS = 3  # expected months to sell through the first batch (display only)
-    _CAP_OVERHEAD = 2000  # fixed launch costs: photography, A+, listing, freight ($)
+    _CAP_OVERHEAD = 2000  # fixed launch costs: photography, A+, listing ($)
     _CAP_BUFFER = 0.20  # working capital buffer on subtotal
 
     # Category return rate from Amazon Marketplace Product Guidance (via SellerSprite).
@@ -3580,7 +3709,8 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     _cap_inv = int(_cap_gross_units * _cap_price * _CAP_COGS)
     _cap_ppc = int(_CAP_UNITS * _cap_price * _CAP_ACOS)
     _cap_fees = int(_CAP_UNITS * _cap_price * _CAP_FEES)
-    _cap_sub = _cap_inv + _cap_ppc + _cap_fees + _CAP_OVERHEAD
+    _cap_inbound = int(_CAP_UNITS * _inbound_fee_usd)
+    _cap_sub = _cap_inv + _cap_ppc + _cap_fees + _cap_inbound + _CAP_OVERHEAD
     _cap_total = int(_cap_sub * (1 + _CAP_BUFFER))
 
     # Per-tier capital estimates when bimodal
@@ -3595,7 +3725,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             t_inv = int(_CAP_UNITS * t_med * _CAP_COGS)
             t_ppc = int(_CAP_UNITS * t_med * _CAP_ACOS)
             t_fees = int(_CAP_UNITS * t_med * _CAP_FEES)
-            t_sub = t_inv + t_ppc + t_fees + _CAP_OVERHEAD
+            t_sub = t_inv + t_ppc + t_fees + _cap_inbound + _CAP_OVERHEAD
             _tier_capitals.append(
                 {
                     "tier": tier["label"],
@@ -3603,6 +3733,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                     "inventory": f"${t_inv:,}",
                     "ppc": f"${t_ppc:,}",
                     "fees": f"${t_fees:,}",
+                    "inbound": f"${_cap_inbound:,}",
                     "overhead": f"${_CAP_OVERHEAD:,}",
                     "total": f"${int(t_sub * (1 + _CAP_BUFFER)):,}",
                 }
@@ -3838,6 +3969,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "capital_inventory": f"${_cap_inv:,}",
             "capital_ppc": f"${_cap_ppc:,}",
             "capital_fees": f"${_cap_fees:,}",
+            "capital_inbound": f"${_cap_inbound:,}",
             "capital_overhead": f"${_CAP_OVERHEAD:,}",
             "capital_units": str(_CAP_UNITS),
             "capital_gross_units": str(_cap_gross_units),
@@ -3903,7 +4035,11 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             # Full BSR dataset download link (all enriched rows as CSV)
             "bsr_dataset_url": bsr_dataset_url or "N/A",
             # Price distribution (JSON → rendered as table by LLM)
+            # n and total_bsr are also promoted to top-level vars so the template
+            # coverage footnote rule can reference them via {n}/{total_bsr} directly.
             "price_distribution": json.dumps(price_dist, ensure_ascii=False),
+            "n": str(price_dist.get("n", 0)),
+            "total_bsr": str(price_dist.get("total_bsr", 0)),
             # Per-tier capital when bimodal (empty list if unimodal)
             "tier_capitals": json.dumps(_tier_capitals, ensure_ascii=False),
             # Compliance / regulatory / hazmat risk (heuristic scan of titles + keywords)
@@ -3920,6 +4056,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "estimated_steady_state_acos": f"{_estimated_acos:.0%}" if _estimated_acos else "N/A",
             "ad_profit_drag": f"{_ad_profit_drag:.0%}" if _ad_profit_drag else "N/A",
             "fba_fee_pct": f"{_fba_fee_pct:.1%}",
+            "fba_fee_source": _fba_fee_source,
+            "inbound_fee_pct": f"{_inbound_fee_pct:.1%}",
+            "inbound_freight_detail": _inbound_freight_detail,
             "breakeven_acos": f"{_breakeven_acos:.0%}",
             "ad_burden_verdict": _ad_burden_verdict,
             # Brand & seller concentration (position share, sales share, CR3/CR5, HHI)
