@@ -422,18 +422,18 @@ async def _fetch_core_keywords(items: list[dict], ctx: Any) -> list[dict]:
         "i cannot",
         "i can't",
     )
-    core_keywords = candidates[:3]
+    core_keywords = candidates[:8]
     try:
         if ctx.router and candidates:
             source_label = (
                 "cross-ASIN traffic data" if intersection_candidates else "BSR title frequency"
             )
-            candidate_str = ", ".join(candidates[:12])
+            candidate_str = ", ".join(candidates[:20])
             prompt = (
                 "You are classifying an Amazon BSR niche. "
                 f"The following search terms are grounded in {source_label} across the top BSR products: "
                 f"[{candidate_str}]. "
-                "From these candidates ONLY, pick the TOP 3 that best represent the core buyer "
+                "From these candidates ONLY, pick 5 to 8 that best represent the core buyer "
                 "search intent for this niche — terms a buyer would type when category-shopping, "
                 "before deciding on a specific type, brand, or variant.\n"
                 "A term is SUB-NICHE SPECIFIC (exclude it) if it:\n"
@@ -447,7 +447,7 @@ async def _fetch_core_keywords(items: list[dict], ctx: Any) -> list[dict]:
                 "(e.g. 'Victor', 'v11', '2 pack', '12 count')\n"
                 "A term is CATEGORY-LEVEL (prefer it) if a buyer using it would consider "
                 "ALL or most of the top BSR products relevant results.\n"
-                "Return a comma-separated list of exactly 3 terms — no explanation, no numbering."
+                "Return a comma-separated list of 5 to 8 terms — no explanation, no numbering."
             )
             res = await ctx.router.route_and_execute(prompt, category=TaskCategory.SIMPLE_CLEANING)
             raw_text = res.text.strip().replace('"', "").replace("'", "").lower()
@@ -468,11 +468,11 @@ async def _fetch_core_keywords(items: list[dict], ctx: Any) -> list[dict]:
                 and not _brand_model_re.match(k)
             ]
             if len(llm_valid) >= 2:
-                core_keywords = llm_valid[:3]
+                core_keywords = llm_valid[:8]
             else:
                 logger.warning(
                     f"[fetch_core_keywords] LLM output not in candidates "
-                    f"(got {llm_valid!r}); using top candidates {candidates[:3]}"
+                    f"(got {llm_valid!r}); using top candidates {candidates[:8]}"
                 )
     except Exception as e:
         logger.warning(f"[fetch_core_keywords] LLM refinement failed: {e}; using top candidates")
