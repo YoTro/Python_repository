@@ -1068,6 +1068,33 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         dict.fromkeys(sorted(_top_brand_set) + sorted(_new_entrant_brand_set - _top_brand_set))
     )
 
+    # Guarantee coverage for the weakest-rank-slot brand (BSR rank 10–50, fewest reviews) —
+    # it is the primary displacement target in the report and may fall outside the top-5
+    # and new-entrant sets. Must be appended before kw_hash is computed so the cache key
+    # reflects the actual fetch scope.
+    _wrs_brand: str | None = None
+    _wrs_reviews = float("inf")
+    for _wrs_item in items:
+        _wrs_rank_m = re.search(
+            r"\d+", str(_wrs_item.get("Rank") or _wrs_item.get("rank") or "").replace(",", "")
+        )
+        _wrs_rev_m = re.search(
+            r"\d+", str(_wrs_item.get("Reviews") or _wrs_item.get("reviews") or "").replace(",", "")
+        )
+        if not (_wrs_rank_m and _wrs_rev_m):
+            continue
+        _wrs_rank_val, _wrs_rev_val = int(_wrs_rank_m.group()), int(_wrs_rev_m.group())
+        if 10 <= _wrs_rank_val <= 50 and _wrs_rev_val < _wrs_reviews:
+            _b = (_wrs_item.get("Brand") or _wrs_item.get("brand") or "").strip()
+            if _b:
+                _wrs_reviews, _wrs_brand = _wrs_rev_val, _b
+    if _wrs_brand and _wrs_brand not in _all_brand_list:
+        _all_brand_list.append(_wrs_brand)
+        logger.info(
+            f"[external_intensity] Appended weakest-rank-slot brand '{_wrs_brand}' "
+            f"({int(_wrs_reviews)} reviews, rank 10–50) to social fetch"
+        )
+
     kw_hash = _hl.md5(
         (_SOCIAL_CACHE_V + main_keyword + "|" + ",".join(sorted(_all_brand_list))).encode()
     ).hexdigest()[:12]
@@ -3936,11 +3963,53 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             ],
             key=lambda x: x["reviews"],
         )
+
+        # Category-level rating benchmarks — computed once, used by weakest_rank_slot
+        # to assess rating integrity relative to this BSR's own distribution rather
+        # than against hard-coded absolute thresholds.
+        _top10_ratings = [p["rating"] for p in analysis_input[:10] if (p.get("rating") or 0) > 0]
+        _top10_avg_rating = round(statistics.mean(_top10_ratings), 2) if _top10_ratings else None
+
         if ranked_by_reviews:
             weakest = ranked_by_reviews[0]
+            _wrs_idx = next(
+                (i for i, p in enumerate(analysis_input) if p.get("rank") == weakest["rank"]),
+                None,
+            )
+            _wrs_full = analysis_input[_wrs_idx] if _wrs_idx is not None else None
+            _wrs_brand_name = _wrs_full.get("brand") if _wrs_full else None
+            _wrs_price = _wrs_full.get("price") if _wrs_full else None
+            _wrs_rating = _wrs_full.get("rating") if _wrs_full else None
+            _wrs_review_ratio = _wrs_full.get("review_ratio") if _wrs_full else None
+            _wrs_title = (items[_wrs_idx].get("Title") or "")[:70] if _wrs_idx is not None else None
+            # Delta vs top-10 average: positive = outperforms incumbents on rating
+            # despite far fewer reviews, which is the manipulation signal — not the
+            # absolute value, since category baselines vary widely.
+            _wrs_rating_delta = (
+                round(_wrs_rating - _top10_avg_rating, 2)
+                if _wrs_rating and _top10_avg_rating
+                else None
+            )
+            # Per-ASIN estimated ACOS: use target price, not niche median, since ad
+            # economics differ at a lower/higher price point than the category average.
+            _wrs_est_acos: str | None = None
+            if _wrs_price and _median_cpc and _category_cvr:
+                _wrs_nom = _median_cpc / (_wrs_price * _category_cvr)
+                _wrs_raw = _wrs_nom / (1 - _return_rate) if _return_rate else _wrs_nom
+                _wrs_est_acos = f"{_wrs_raw:.0%}"
             opportunity_signals["weakest_rank_slot"] = {
                 "rank": weakest["rank"],
                 "reviews": weakest["reviews"],
+                "brand": _wrs_brand_name,
+                "title": _wrs_title,
+                "price": round(_wrs_price, 2) if _wrs_price else None,
+                "rating": round(_wrs_rating, 1) if _wrs_rating else None,
+                "top10_avg_rating": _top10_avg_rating,
+                "rating_delta_vs_top10": _wrs_rating_delta,
+                "review_ratio": (
+                    round(_wrs_review_ratio, 4) if _wrs_review_ratio is not None else None
+                ),
+                "estimated_acos": _wrs_est_acos or "N/A",
                 "implication": (
                     f"BSR #{weakest['rank']} held with only {weakest['reviews']:,} reviews — "
                     f"lowest in the rank-10–50 band, suggesting a beachhead entry point"
