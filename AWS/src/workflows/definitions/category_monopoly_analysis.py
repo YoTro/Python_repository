@@ -952,7 +952,7 @@ _SOCIAL_PLATFORMS = ["tiktok", "youtube"]
 _SOCIAL_MAX_RETRIES = 2
 # Bump when scraping parameters change (video count, window days, brand caps) so that
 # stale cache entries built under old settings are never reused.
-_SOCIAL_CACHE_V = "v2"
+_SOCIAL_CACHE_V = "v3"
 
 # Video count per hashtag per platform fetch.
 # TikTok: 50 gives ≥3 months of data for a brand posting 3-4x/week, enough to surface
@@ -1158,7 +1158,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             result = await _tag_all_platforms(candidate, window_days=window_days)
             last_tag, last_result = candidate, result
             if any(
-                p.get("verdict") not in ("No Tag Found", "Error")
+                p.get("verdict") not in ("No Tag Found", "No Exact Tag Match", "Error")
                 for p in result.get("platforms", [])
             ):
                 break
@@ -1255,10 +1255,31 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             for e, tr in zip(_c_brands_raw, _c_all[1:], strict=False)
         ]
         _upd_brand_data.sort(key=lambda x: x["psi"], reverse=True)
+        _rt_kw_psi = _c_all[0]["psi"]
+        _rt_kw_verdict = _c_all[0]["verdict"]
+        _rt_top_brand_entries = sorted(
+            [
+                (r["psi"], r["brand"], r["verdict"])
+                for r in _upd_brand_data
+                if r.get("is_top_brand") and r["psi"] > 0
+            ],
+            reverse=True,
+        )
+        _rt_best_bp = _rt_top_brand_entries[0][0] if _rt_top_brand_entries else 0.0
+        if _rt_best_bp > _rt_kw_psi:
+            _rt_eff_psi = _rt_best_bp
+            _rt_eff_verdict = (
+                f"{_rt_top_brand_entries[0][2]} (via #{_rt_top_brand_entries[0][1]} brand tag)"
+            )
+        else:
+            _rt_eff_psi = _rt_kw_psi
+            _rt_eff_verdict = _rt_kw_verdict
         _upd_cached = {
             **cached,
-            "category_social_psi": _c_all[0]["psi"],
-            "category_social_verdict": _c_all[0]["verdict"],
+            "category_social_psi": _rt_eff_psi,
+            "category_social_verdict": _rt_eff_verdict,
+            "category_kw_psi": _rt_kw_psi,
+            "category_kw_verdict": _rt_kw_verdict,
             "category_social_platforms": _c_all[0]["platforms"],
             "brand_social_data": _upd_brand_data,
         }
@@ -1315,10 +1336,35 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     ]
     brand_results.sort(key=lambda x: x["psi"], reverse=True)
 
+    # Effective category PSI: max across keyword hashtag and top-brand hashtags.
+    # Amazon multi-word search terms rarely exist as TikTok/YouTube tags, so the
+    # keyword PSI is often 0 even when the category has strong social activity.
+    # Brand hashtags are a more reliable proxy for the creator ecosystem around a niche.
+    _kw_psi = kw_result["psi"]
+    _kw_verdict = kw_result["verdict"]
+    _top_brand_psi_entries = sorted(
+        [
+            (r["psi"], r["brand"], r["verdict"])
+            for r in brand_results
+            if r.get("is_top_brand") and r["psi"] > 0
+        ],
+        reverse=True,
+    )
+    _best_brand_psi = _top_brand_psi_entries[0][0] if _top_brand_psi_entries else 0.0
+    if _best_brand_psi > _kw_psi:
+        _eff_psi = _best_brand_psi
+        _eff_verdict = (
+            f"{_top_brand_psi_entries[0][2]} (via #{_top_brand_psi_entries[0][1]} brand tag)"
+        )
+    else:
+        _eff_psi = _kw_psi
+        _eff_verdict = _kw_verdict
     ctx.cache.update(
         {
-            "category_social_psi": kw_result["psi"],
-            "category_social_verdict": kw_result["verdict"],
+            "category_social_psi": _eff_psi,
+            "category_social_verdict": _eff_verdict,
+            "category_kw_psi": _kw_psi,
+            "category_kw_verdict": _kw_verdict,
             "category_social_platforms": kw_result["platforms"],
             "brand_social_data": brand_results,
         }
@@ -1365,6 +1411,8 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     _ext = {
         "category_social_psi": ctx.cache.get("category_social_psi", 0),
         "category_social_verdict": ctx.cache.get("category_social_verdict", "Unknown"),
+        "category_kw_psi": ctx.cache.get("category_kw_psi", 0),
+        "category_kw_verdict": ctx.cache.get("category_kw_verdict", "Unknown"),
         "category_social_platforms": ctx.cache.get("category_social_platforms", []),
         "category_deal_intensity": ctx.cache.get("category_deal_intensity", 0),
         "brand_social_data": ctx.cache.get("brand_social_data", []),
@@ -3008,6 +3056,35 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             }
         )
 
+    # ── Cross-keyword brand search monopoly ───────────────────────────────────
+    # Count how many keywords each brand leads the #1 click-share ASIN.
+    # A brand leading ≥50% of core keywords controls search-traffic distribution
+    # across the niche — a PPC-layer moat independent of BSR position share.
+    _brand_kw_lead: Counter = Counter()
+    for _entry in keyword_click_concentration:
+        _b = _entry.get("top_asin_brand") or ""
+        if _b and _b != "unknown":
+            _brand_kw_lead[_b] += 1
+    _n_kw_total = len(keyword_click_concentration)
+    brand_search_monopoly: list[dict] = []
+    for _b, _led in _brand_kw_lead.most_common(3):
+        _share = _led / _n_kw_total if _n_kw_total else 0
+        brand_search_monopoly.append(
+            {
+                "brand": _b,
+                "keywords_led": _led,
+                "n_keywords": _n_kw_total,
+                "keyword_lead_share": round(_share, 3),
+                "verdict": (
+                    "monopoly" if _share >= 0.50 else "dominant" if _share >= 0.30 else "notable"
+                ),
+            }
+        )
+    logger.info(
+        f"[brand_search_monopoly] n_kw={_n_kw_total}, "
+        f"top={brand_search_monopoly[0] if brand_search_monopoly else None}"
+    )
+
     prices = [p["price"] for p in analysis_input if p["price"] > 0]
     median_price = statistics.median(prices) if prices else 25.0
     total_monthly_units = result.get("niche_benchmarks", {}).get("total_estimated_monthly_units", 0)
@@ -3645,6 +3722,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     # ── Opportunity signals ──────────────────────────────────────────────────
     # Concrete, number-backed anchors for the LLM's opportunity section.
     # All derived from already-computed data — no extra API calls.
+    # _asin_sub_niche is populated inside the sub-niche clustering block below
+    # and consumed later by dominant_brand_portfolio.
+    _asin_sub_niche: dict[str, str] = {}
     opportunity_signals: dict = {}
     try:
         # 1. Review floor to crack BSR top-20
@@ -3706,6 +3786,21 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                                 "name": smallest.replace("_", " "),
                                 "count": sub_counts[smallest],
                             }
+                        # Build ASIN → sub_niche reverse index for portfolio tagging
+                        for _sn_name, _sn_indices in _sub_map.items():
+                            if not isinstance(_sn_indices, list):
+                                continue
+                            _human_name = _sn_name.replace("_", " ")
+                            for _sn_idx in _sn_indices:
+                                _sn_item_idx = int(_sn_idx) - 1  # 1-based → 0-based
+                                if 0 <= _sn_item_idx < len(items):
+                                    _sn_asin = (
+                                        items[_sn_item_idx].get("ASIN")
+                                        or items[_sn_item_idx].get("asin")
+                                        or ""
+                                    ).upper()
+                                    if _sn_asin:
+                                        _asin_sub_niche[_sn_asin] = _human_name
             except Exception as _sub_err:
                 logger.warning(f"[sub_niche_fragmentation] LLM clustering failed: {_sub_err}")
 
@@ -3975,6 +4070,42 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         "seller": _conc_seller,
     }
 
+    # ── Dominant brand portfolio ──────────────────────────────────────────────
+    # Triggered when the #1 brand holds ≥15% sales-share OR ≥20% BSR position-share
+    # and has ≥2 distinct ASINs visible in the BSR sample.
+    dominant_brand_portfolio: list[dict] = []
+    _dom_brand: str | None = None
+    if _total_brand_sales > 0 and _brand_sales_cnt:
+        _top_sales_brand, _top_sales_cnt = _brand_sales_cnt.most_common(1)[0]
+        if _top_sales_cnt / _total_brand_sales >= 0.15:
+            _dom_brand = _top_sales_brand
+    if _dom_brand is None and _brand_pos:
+        _top_pos_brand, _top_pos_cnt = _brand_pos.most_common(1)[0]
+        if _top_pos_cnt / _N_items >= 0.20:
+            _dom_brand = _top_pos_brand
+    if _dom_brand:
+        _portfolio_items = sorted(
+            [p for p in analysis_input if (p.get("brand") or "Unknown") == _dom_brand],
+            key=lambda x: x.get("sales") or 0,
+            reverse=True,
+        )
+        if len(_portfolio_items) >= 2:
+            dominant_brand_portfolio = [
+                {
+                    "asin": p["asin"] or "N/A",
+                    "price": f"${p['price']:.2f}" if p.get("price") else "N/A",
+                    "reviews": p.get("review_count"),
+                    "rating": p.get("rating"),
+                    "monthly_units": p.get("sales") or 0,
+                    "sub_niche_tag": _asin_sub_niche.get(p["asin"] or ""),
+                }
+                for p in _portfolio_items
+            ]
+    logger.info(
+        f"[dominant_brand_portfolio] brand={_dom_brand!r}, "
+        f"portfolio_size={len(dominant_brand_portfolio)}"
+    )
+
     # ── Top ASIN evidence table (top 10 by BSR rank) ──────────────────────────
     # analysis_input[i] corresponds to items[i] (same index).
     # Sort by rank using the original index so both arrays stay aligned.
@@ -4106,6 +4237,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "keyword_click_concentration": json.dumps(
                 keyword_click_concentration, ensure_ascii=False
             ),
+            "brand_search_monopoly": json.dumps(brand_search_monopoly, ensure_ascii=False),
             "data_quality": data_quality_str,
             "review_disparity": (
                 f"{review_disparity_val}x"
@@ -4220,6 +4352,8 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "ad_burden_verdict": _ad_burden_verdict,
             # Brand & seller concentration (position share, sales share, CR3/CR5, HHI)
             "concentration_data": json.dumps(concentration_data, ensure_ascii=False),
+            # Dominant brand portfolio (≥2 ASINs, ≥15% sales-share or ≥20% position-share)
+            "dominant_brand_portfolio": json.dumps(dominant_brand_portfolio, ensure_ascii=False),
             # Recent critical reviews for top brands (≤90 days — fixable deficiency signals)
             "critical_reviews_data": json.dumps(
                 ctx.cache.get("critical_reviews_data", {}), ensure_ascii=False
