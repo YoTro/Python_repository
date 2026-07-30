@@ -108,7 +108,10 @@ class FulfillmentExtractor(AmazonBaseScraper):
         # Final text-scan fallback
         if not fulfilled_by:
             if "Ships from and sold by Amazon.com" in html:
-                fulfilled_by = "Amazon"
+                # Amazon-direct: both ships and sells — distinct from FBA's "Amazon"
+                # (3rd-party seller, Amazon-fulfilled), which uses the plain "Amazon" string.
+                fulfilled_by = "Amazon.com"
+                sold_by = "Amazon.com"
 
         return {
             "ASIN": asin,
