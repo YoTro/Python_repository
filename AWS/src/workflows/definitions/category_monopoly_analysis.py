@@ -234,6 +234,50 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
     return result
 
 
+def _classify_fulfillment(seller_type: str | None) -> str:
+    """
+    Bucket the raw scraped `seller_type` string into FBA / FBM / AMZ / Unknown.
+
+    FulfillmentExtractor only reports the "ships from" text, not the separate
+    "sold by" seller — so the two Amazon-fulfilled cases collapse to distinct
+    literal strings rather than an explicit flag: the ships-from ODF span reads
+    exactly "Amazon" when a 3rd-party seller uses Fulfilled-by-Amazon (FBA),
+    while Amazon-as-seller-and-shipper reads "Amazon.com" (merchant span, no
+    separate ships-from). Anything else is a merchant name (FBM).
+    """
+    if not seller_type or seller_type in ("Unknown", "3P"):
+        return "Unknown"
+    normalized = seller_type.strip().lower()
+    if normalized == "amazon":
+        return "FBA"
+    if "amazon.com" in normalized:
+        return "AMZ"
+    return "FBM"
+
+
+def _classify_social_momentum(monthly_distribution: list[dict[str, Any]]) -> str:
+    """
+    Classify video-posting momentum from SocialViralityProcessor's 12-month
+    monthly_distribution by comparing the most recent 3 months' video count to
+    the prior 3 months. Cheap categorical trend label — avoids passing the full
+    12-point array into the prompt just to have the LLM eyeball a trend.
+    """
+    counts = [m.get("video_count", 0) for m in monthly_distribution]
+    if len(counts) < 6:
+        return "insufficient_data"
+    recent, prior = sum(counts[-3:]), sum(counts[-6:-3])
+    if recent == 0 and prior == 0:
+        return "no_activity"
+    if prior == 0:
+        return "accelerating"
+    ratio = recent / prior
+    if ratio >= 1.3:
+        return "accelerating"
+    if ratio <= 0.7:
+        return "fading"
+    return "stable"
+
+
 def _ngram_candidates(titles: list, min_doc_freq: int = 3, top_n: int = 15) -> list:
     """
     Return unigrams and bigrams ranked by document frequency (# titles containing them).
@@ -872,7 +916,6 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
             ctx.cache["detailed_bid_analysis"]
     """
     core_keywords = ctx.cache.get("core_keywords", ["unknown niche"])
-    core_keywords[0]
     kw_hash = _hl.md5(",".join(sorted(core_keywords)).encode()).hexdigest()[:12]
 
     cached = _l2_get(ctx, _TTL_SIGNALS, "market_signals", kw_hash)
@@ -1054,6 +1097,15 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             "n_kol": 0,
             "n_koc": 0,
             "unique_creators": 0,
+            "promo_tag_ratio": 0,
+            "native_ad_ratio": 0,
+            "engagement_rate": 0,
+            "organic_multiplier": 0,
+            "hhi_concentration": 0,
+            "recent_videos_ratio": 0,
+            "avg_views_per_video": 0,
+            "amazon_mentions_ratio": 0,
+            "trend": "no_data",
         }
         if platform == "tiktok":
             client = TikTokClient()
@@ -1094,6 +1146,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         else:
             return {**result_base, "verdict": "Unsupported"}
         _kol_koc = analysis.get("kol_koc_matrix", {})
+        _n_videos = len(videos) or 1
         return {
             "platform": platform,
             "hashtag": f"#{clean}",
@@ -1103,6 +1156,28 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             "n_kol": _kol_koc.get("n_kol_unique", 0),
             "n_koc": _kol_koc.get("n_koc_unique", 0),
             "unique_creators": _kol_koc.get("unique_creators_total", 0),
+            # Paid-vs-organic split: promo_tag_ratio catches native ad flags + #ad-style
+            # hashtags; native_ad_ratio isolates the subset caught by the platform's own
+            # ad field (more authoritative, since it doesn't rely on caption text).
+            "promo_tag_ratio": analysis.get("promo_tag_ratio", 0),
+            "native_ad_ratio": analysis.get("native_ad_ratio", 0),
+            # Engagement quality: raw rate + views/follower ratio (virality independent
+            # of follower count — a creator can have few followers but go viral).
+            "engagement_rate": analysis.get("engagement_rate", 0),
+            "organic_multiplier": analysis.get("organic_multiplier", 0),
+            # Creator concentration: high HHI means a few creators drive most views —
+            # fragile buzz that can vanish if those creators stop posting.
+            "hhi_concentration": analysis.get("hhi_concentration", 0),
+            # Momentum: recent_videos_ratio is the raw 30-day recency rate (also a PSI
+            # input); trend is a cheap categorical label derived from the 12-month
+            # monthly_distribution so the LLM doesn't need to reason over a raw array.
+            "recent_videos_ratio": analysis.get("recent_videos_ratio", 0),
+            "trend": _classify_social_momentum(analysis.get("monthly_distribution", [])),
+            "avg_views_per_video": analysis.get("avg_views_per_video", 0),
+            # Caption-based buy-intent proxy (no comment API involved — comment_analysis
+            # is always "Not Analyzed" in this pipeline since comments are never fetched
+            # here, so it's deliberately omitted rather than exposing a dead field).
+            "amazon_mentions_ratio": round(analysis.get("amazon_mentions", 0) / _n_videos, 4),
         }
 
     async def _tag_all_platforms(tag: str, window_days: int = _SOCIAL_KW_WINDOW_DAYS) -> dict:
@@ -1128,6 +1203,15 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
                         "n_kol": 0,
                         "n_koc": 0,
                         "unique_creators": 0,
+                        "promo_tag_ratio": 0,
+                        "native_ad_ratio": 0,
+                        "engagement_rate": 0,
+                        "organic_multiplier": 0,
+                        "hhi_concentration": 0,
+                        "recent_videos_ratio": 0,
+                        "avg_views_per_video": 0,
+                        "amazon_mentions_ratio": 0,
+                        "trend": "no_data",
                     }
                 )
             else:
@@ -2963,19 +3047,6 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         keyword_weekly_trends=ctx.cache.get("keyword_weekly_trends"),
     )
 
-    # Pass raw bid recommendations directly — no pre-formatting.
-    # The LLM receives the full API payload for both strategies and renders it.
-    bid_raw = {
-        "LEGACY_FOR_SALES": detailed_bids.get("LEGACY_FOR_SALES", []),
-        "AUTO_FOR_SALES": detailed_bids.get("AUTO_FOR_SALES", []),
-    }
-    # Count total keyword-level entries for data-quality tracking
-    bid_entry_count = sum(
-        len(rec.get("bidRecommendationsForTargetingExpressions", []))
-        for strategy_recs in bid_raw.values()
-        for rec in strategy_recs
-    )
-
     # ── Keyword click concentration: per-keyword ABA click share + CPC gap ───
     # Surfaces which brands own click share on each core keyword and whether
     # PHRASE match offers a cheaper entry angle than EXACT (EXACT/PHRASE gap).
@@ -3006,6 +3077,56 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             top_asins = top_asins.get("list") or []
         return top_asins if isinstance(top_asins, list) else []
 
+    # Single-word keywords are noisy by default (often naive title n-gram fallback
+    # tokens like "spray"/"trap" with no real buyer-search backing) but ABA can
+    # legitimately return real single-word terms too (brand names, one-word
+    # product categories — "ipad", "toothpaste"). Rather than excluding single-word
+    # terms outright, trust them only when ABA itself shows meaningful click-share
+    # data for that exact term. Multi-word terms are never subject to this check —
+    # only single-word terms are gated. Fully-generic single-word fallback (no ABA
+    # signal required) is reserved for the Social PSI hashtag lookup, which already
+    # handles it separately via main_keyword.split() in _fetch_external_intensity.
+    _single_word_has_signal: dict[str, bool] = {}
+    for _term in _kw_all:
+        _kwt = (_term.get("searchTerm") or "").strip().lower()
+        if _kwt and len(_kwt.split()) == 1:
+            _tas = _aba_top_asins(_term)
+            _single_word_has_signal[_kwt] = bool(_tas) and any(
+                _parse_share(t.get("clickShare")) > 0 for t in _tas[:3]
+            )
+
+    def _kw_is_trusted(kw_text: str) -> bool:
+        words = (kw_text or "").strip().lower().split()
+        if len(words) != 1:
+            return True
+        return _single_word_has_signal.get(words[0], False)
+
+    # Pass raw bid recommendations directly — no pre-formatting beyond dropping
+    # untrusted single-word entries (see _kw_is_trusted above).
+    # The LLM receives the full API payload for both strategies and renders it.
+    def _filter_bid_strategy(strategy_recs: list[dict]) -> list[dict]:
+        filtered = []
+        for rec in strategy_recs:
+            exprs = [
+                expr
+                for expr in rec.get("bidRecommendationsForTargetingExpressions", [])
+                if _kw_is_trusted((expr.get("targetingExpression") or {}).get("value"))
+            ]
+            if exprs:
+                filtered.append({**rec, "bidRecommendationsForTargetingExpressions": exprs})
+        return filtered
+
+    bid_raw = {
+        "LEGACY_FOR_SALES": _filter_bid_strategy(detailed_bids.get("LEGACY_FOR_SALES", [])),
+        "AUTO_FOR_SALES": _filter_bid_strategy(detailed_bids.get("AUTO_FOR_SALES", [])),
+    }
+    # Count total keyword-level entries for data-quality tracking
+    bid_entry_count = sum(
+        len(rec.get("bidRecommendationsForTargetingExpressions", []))
+        for strategy_recs in bid_raw.values()
+        for rec in strategy_recs
+    )
+
     # Per-keyword LEGACY CPC by match type: {keyword_lower: {PHRASE: float, EXACT: float}}
     _cpc_by_kw: dict[str, dict[str, float]] = {}
     for _rec in detailed_bids.get("LEGACY_FOR_SALES", []):
@@ -3026,6 +3147,8 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     keyword_click_concentration = []
     for _term in _kw_all:
         _kw_text = (_term.get("searchTerm") or "").strip().lower()
+        if not _kw_is_trusted(_kw_text):
+            continue
         _top_asins = _aba_top_asins(_term)
         _top3_share = sum(_parse_share(t.get("clickShare")) for t in _top_asins[:3])
         _top1 = _top_asins[0] if _top_asins else {}
@@ -4070,6 +4193,25 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         "seller": _conc_seller,
     }
 
+    # ── Fulfillment distribution (FBA / FBM / AMZ) ─────────────────────────────
+    _fulfillment_counts: Counter = Counter(
+        _classify_fulfillment(_ai.get("seller_type")) for _ai in analysis_input
+    )
+    _n_classified = _N_items - _fulfillment_counts.get("Unknown", 0)
+    fulfillment_distribution = {
+        "n_products": _N_items,
+        "n_classified": _n_classified,
+        "coverage_pct": round(_n_classified / _N_items, 4) if _N_items else 0,
+        "breakdown": [
+            {
+                "type": _t,
+                "count": _c,
+                "pct": round(_c / _N_items, 4) if _N_items else 0,
+            }
+            for _t, _c in sorted(_fulfillment_counts.items(), key=lambda kv: kv[1], reverse=True)
+        ],
+    }
+
     # ── Dominant brand portfolio ──────────────────────────────────────────────
     # Triggered when the #1 brand holds ≥15% sales-share OR ≥20% BSR position-share
     # and has ≥2 distinct ASINs visible in the BSR sample.
@@ -4352,6 +4494,8 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "ad_burden_verdict": _ad_burden_verdict,
             # Brand & seller concentration (position share, sales share, CR3/CR5, HHI)
             "concentration_data": json.dumps(concentration_data, ensure_ascii=False),
+            # Fulfillment mix across the BSR sample (FBA / FBM / AMZ / Unknown)
+            "fulfillment_distribution": json.dumps(fulfillment_distribution, ensure_ascii=False),
             # Dominant brand portfolio (≥2 ASINs, ≥15% sales-share or ≥20% position-share)
             "dominant_brand_portfolio": json.dumps(dominant_brand_portfolio, ensure_ascii=False),
             # Recent critical reviews for top brands (≤90 days — fixable deficiency signals)
