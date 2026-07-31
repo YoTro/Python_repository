@@ -53,10 +53,10 @@ class ToolRegistry:
     def _validate_arguments(self, name: str, arguments: dict) -> dict:
         """Strip unknown arguments and log a warning. Returns cleaned args."""
         tool = self._tools.get(name)
-        if not tool or not tool.inputSchema:
+        if not tool or not tool.input_schema:
             return arguments
 
-        schema_props = tool.inputSchema.get("properties", {})
+        schema_props = tool.input_schema.get("properties", {})
         allowed_keys = set(schema_props.keys())
 
         unknown = set(arguments.keys()) - allowed_keys
@@ -78,7 +78,7 @@ class ToolRegistry:
                     "function": {
                         "name": tool.name,
                         "description": (tool.description or "")[:1024],
-                        "parameters": tool.inputSchema or {"type": "object", "properties": {}},
+                        "parameters": tool.input_schema or {"type": "object", "properties": {}},
                     },
                 }
             )

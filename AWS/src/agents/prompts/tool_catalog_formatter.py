@@ -36,8 +36,8 @@ def format_tool_catalog(registry: ToolRegistry) -> str:
         meta = registry.get_tool_meta(tool.name) or ToolMeta()
         cat = meta.category if meta.category in buckets else "DATA"
 
-        props = tool.inputSchema.get("properties", {}) if tool.inputSchema else {}
-        required = set(tool.inputSchema.get("required", [])) if tool.inputSchema else set()
+        props = tool.input_schema.get("properties", {}) if tool.input_schema else {}
+        required = set(tool.input_schema.get("required", [])) if tool.input_schema else set()
 
         # Build compact param summary
         param_parts = []

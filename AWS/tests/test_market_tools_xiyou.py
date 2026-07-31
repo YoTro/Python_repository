@@ -15,7 +15,7 @@ async def test_xiyou_get_traffic_scores_tool_registration():
     tool = next((t for t in market_tools if t.name == "xiyou_get_traffic_scores"), None)
     assert tool is not None
     assert tool.description.startswith("[Xiyouzhaoci]")
-    assert "asins" in tool.inputSchema["properties"]
+    assert "asins" in tool.input_schema["properties"]
 
 
 @pytest.mark.asyncio
