@@ -3171,6 +3171,44 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             if _kw and _bv and _mt in ("PHRASE", "EXACT"):
                 _cpc_by_kw.setdefault(_kw, {})[_mt] = statistics.median(_bv)
 
+    # Brand-fill for ABA top-click-share ASINs: these can reference products
+    # outside the BSR `items` list (e.g. ranked below the snapshot window), so
+    # the `items`-scoped BrandExtractor fill above never resolved them — without
+    # this, every keyword whose #1-click ASIN falls outside `items` reports
+    # "unknown" regardless of how well-resolved the BSR brands are.
+    _kw_top1_missing = {
+        _a
+        for _term in _kw_all
+        if _kw_is_trusted((_term.get("searchTerm") or "").strip().lower())
+        and (_tas := _aba_top_asins(_term))
+        and (_a := (_tas[0].get("asin") or "").upper())
+        and _a not in _asin_brand
+    }
+    if _kw_top1_missing:
+        logger.info(
+            f"[keyword_click_concentration] brand-fill via BrandExtractor: "
+            f"{len(_kw_top1_missing)} ASINs"
+        )
+        _kw_brand_extractor = BrandExtractor()
+
+        async def _fetch_kw_brand(asin: str) -> tuple[str, str | None]:
+            async with _SEM_BRAND:
+                try:
+                    res = await _kw_brand_extractor.get_brand(asin)
+                    return asin, res.get("Brand")
+                except Exception as _e:
+                    logger.warning(f"[keyword_click_concentration] BrandExtractor({asin}): {_e}")
+                    return asin, None
+
+        _kw_brand_results = await asyncio.gather(*[_fetch_kw_brand(a) for a in _kw_top1_missing])
+        for _asin, _brand in _kw_brand_results:
+            if _brand:
+                _asin_brand[_asin] = _brand
+        logger.info(
+            f"[keyword_click_concentration] BrandExtractor resolved "
+            f"{sum(1 for _, b in _kw_brand_results if b)}/{len(_kw_top1_missing)} brands"
+        )
+
     keyword_click_concentration = []
     for _term in _kw_all:
         _kw_text = (_term.get("searchTerm") or "").strip().lower()
@@ -3942,7 +3980,10 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                                 continue
                             _human_name = _sn_name.replace("_", " ")
                             for _sn_idx in _sn_indices:
-                                _sn_item_idx = int(_sn_idx) - 1  # 1-based → 0-based
+                                try:
+                                    _sn_item_idx = int(_sn_idx) - 1  # 1-based → 0-based
+                                except (TypeError, ValueError):
+                                    continue
                                 if 0 <= _sn_item_idx < len(items):
                                     _sn_asin = (
                                         items[_sn_item_idx].get("ASIN")
