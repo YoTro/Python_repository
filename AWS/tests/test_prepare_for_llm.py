@@ -28,6 +28,7 @@ from src.workflows.definitions.ad_diagnosis import _prepare_for_llm, _trim_keywo
 class _MockCtx:
     def __init__(self):
         self.config = _Cfg({"days": 30})
+        self.cache = {}
 
 
 class _Cfg:

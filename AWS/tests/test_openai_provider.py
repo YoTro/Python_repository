@@ -100,7 +100,11 @@ async def test_uses_max_completion_tokens_and_omits_temperature(provider):
 
 
 @pytest.mark.asyncio
-async def test_temperature_forwarded_when_given_and_internal_keys_stripped(provider):
+async def test_internal_keys_stripped_and_temperature_blocked_for_reasoning_model(
+    provider, monkeypatch
+):
+    # provider uses gpt-5.5 which is a reasoning model → temperature must NOT be forwarded
+    # (only default=1 accepted; sending any other value causes a 400).
     await provider.generate_text(
         "hi",
         temperature=0.7,
@@ -110,9 +114,28 @@ async def test_temperature_forwarded_when_given_and_internal_keys_stripped(provi
     )
 
     kwargs = provider._client.chat.completions.create.call_args.kwargs
-    assert kwargs["temperature"] == 0.7
+    # Internal tracking keys must be stripped before reaching the SDK.
     for internal in ("session_id", "tenant_id", "cache_system_prompt"):
         assert internal not in kwargs
+    # Reasoning model: temperature is silently dropped to avoid a 400.
+    assert "temperature" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_temperature_forwarded_for_non_reasoning_model(monkeypatch):
+    """Temperature IS forwarded when the model is not an o-series / gpt-5+ reasoning model."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("MAX_LLM_OUTPUT_TOKENS", raising=False)
+
+    p = OpenAIProvider(model_name="gpt-4o")
+    p._client.chat.completions.create = AsyncMock(return_value=_fake_completion())
+    p._resolved_model = "gpt-4o"  # skip the live /models check in _active_model()
+
+    await p.generate_text("hi", temperature=0.7)
+
+    kwargs = p._client.chat.completions.create.call_args.kwargs
+    assert kwargs["temperature"] == 0.7
 
 
 @pytest.mark.asyncio
