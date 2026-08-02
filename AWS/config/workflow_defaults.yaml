@@ -86,26 +86,35 @@ ad_diagnosis:
   tiktok_window_days: 30        # lookback window for videos and comments
 
 category_monopoly_analysis:
-  # Weights for the 9 dimensions (sum should be 1.0)
+  # Weights for the 16 dimensions (sum = 1.0), sorted descending by weight
   weights:
-    sales_curve_top3: 0.15      # CR3: Percentage of sales held by top 3 products
-    sales_survival_space: 0.10  # Market share of products ranked 20-50
+    sales_curve_top3: 0.16      # CR3: Percentage of sales held by top 3 products
+    review_curve: 0.10          # Review disparity and rating barrier (reduced: consequence of dominance, not its cause)
     brand_concentration: 0.10   # Frequency of the same brand in Top 100
-    seller_background: 0.10     # Ratio of Amazon Retail vs 3P sellers
-    review_curve: 0.15          # Review disparity and rating barrier
-    keyword_traffic: 0.15       # Click share concentration for main keywords (ABA)
-    price_compression: 0.05     # Price band convergence (CV)
-    ad_traffic_ratio: 0.10      # Percentage of sponsored products
-    social_promotion_intensity: 0.05 # Virality score from TikTok
-    deal_promotion_intensity: 0.05   # Frequency of deals on sites like Slickdeals
+    keyword_traffic: 0.10       # Click share concentration for main keywords (ABA)
+    ad_traffic_ratio: 0.10      # Percentage of sponsored products + CPC bid barrier
+    brand_search_monopoly: 0.08 # Fraction of core keywords led by the #1 click-share brand (search lock-in is a first-order barrier)
+    ad_burden: 0.06             # Estimated ACOS vs breakeven — structural profitability barrier
+    bsr_metabolism: 0.05        # BSR churn label × new_entrant_ratio — rank durability barrier
+    review_integrity: 0.05      # Written/global review ratio — manipulation moat signal
+    seller_background: 0.05     # Ratio of AMZ/FBA sellers vs mega-sellers
+    sales_survival_space: 0.04  # Market share of products ranked 20-50 (trimmed — partial overlap with CR3)
+    seller_concentration: 0.04  # Seller CR3 position — hidden multi-brand monopoly
+    social_promotion_intensity: 0.03 # Virality score from TikTok/YouTube (opportunity signal, not structural barrier)
+    price_compression: 0.02     # Price band convergence (CV)
+    demand_trajectory: 0.01     # YOY demand trend — declining markets entrench incumbents
+    deal_promotion_intensity: 0.01   # Frequency of deals on sites like Slickdeals
 
   # Thresholds and markers
   thresholds:
-    high_monopoly_score: 75     # Red Ocean: Entry not recommended
-    opportunity_score: 40       # Blue Ocean: Significant opportunity
+    high_monopoly_score: 60     # Red Ocean: Entry not recommended (was 75)
+    high_competition_score: 55  # Medium-High: Hard entry, requires differentiation + capital
+    opportunity_score: 35       # Blue Ocean: Clear opportunity (was 40)
     price_cv_compression: 0.15  # CV < 15% indicates intense price war
     ad_ratio_danger_zone: 0.40  # Ad traffic > 40% indicates high acquisition cost
     cr3_monopoly_limit: 0.60    # Top 3 > 60% share indicates duopoly/oligopoly
     review_disparity_threshold: 5.0 # Top 10 has 5x more reviews than bottom 50
     rating_hard_barrier: 4.5    # Top 10 average rating > 4.5 means no differentiation space
     mega_seller_feedback: 10000 # Feedback count that classifies a seller as an industry giant
+    seller_cr3_limit: 0.40      # Top-3 sellers > 40% BSR slots = seller-level concentration
+    review_ratio_ceiling: 0.15  # Written/global ratio > 15% = review manipulation signal

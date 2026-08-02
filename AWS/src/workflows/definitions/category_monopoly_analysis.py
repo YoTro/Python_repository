@@ -66,15 +66,24 @@ _TTL_KEYWORDS = 21_600  # 6  h — LLM keyword extraction from BSR titles
 _TTL_EXTERNAL = 43_200  # 12 h — TikTok PSI + deal intensity
 _TTL_TRAFFIC = 21_600  # 6  h — Xiyouzhaoci batch ad-traffic ratios
 _TTL_CVR = 7 * 86_400  # 7 d  — Amazon Ads category CVR benchmark
+
+# Structured source-type tokens for category CVR.  Stored in the L2 payload so callers
+# can branch on source without parsing the human-readable description string.
+_CVR_SRC_ADS = "amazon_ads_validated"  # Ads crossProgramBenchmarks, category matched
+_CVR_SRC_SS = "sellersprite_snapshot"  # SellerSprite median conversionRate
+_CVR_SRC_POWER_LAW = "power_law"  # price-based model_default_cvr()
+_CVR_SRC_DEFAULT = "default_0.10"  # hard-coded fallback (should rarely appear)
 _TTL_CRITICAL_REVIEWS = 86_400  # 24 h — recent critical reviews per ASIN
 
 # Shared semaphores: cap concurrent amazon_scraper calls across all parallel EnrichStep slots.
 # EnrichStep runs 5 items concurrently; each fires 2 sub-requests → 10 simultaneous without limits.
 # burst:3 in settings.json means anything beyond 3 will timeout. Cap at 3 each.
+# Note: created lazily per-loop (via _get_shared_sems) to avoid "bound to different loop"
+# errors in Python 3.10–3.11 when asyncio.run() is called multiple times (e.g. in tests).
 _SEM_FULFILLMENT = asyncio.Semaphore(3)
 _SEM_REVIEW_COUNT = asyncio.Semaphore(2)
-_SEM_BRAND = asyncio.Semaphore(3)
 _SEM_COMMENTS = asyncio.Semaphore(3)
+# _SEM_BRAND is created inside _run_monopoly_analysis (only used there) to stay loop-safe.
 
 
 def _l2_key(ctx, *parts) -> str:
@@ -2546,51 +2555,70 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
     Default:   0.10  (conservative Amazon SP category average)
 
     Stores:
-      ctx.cache["category_cvr"]         float
-      ctx.cache["category_cvr_source"]  str
+      ctx.cache["category_cvr"]             float
+      ctx.cache["category_cvr_source"]      str   (human-readable)
+      ctx.cache["category_cvr_source_type"] str   (_CVR_SRC_* constant)
+      ctx.cache["category_cpc_p50"]         float | None  (Ads benchmark CPC only;
+                                            None when Ads was not used — callers then
+                                            derive CPC from detailed_bid_analysis)
+
+    L2 cache key: md5(ss_node_id_path) — category identity, not store identity.
+    Skipped when ss_node_id_path is empty (unsafe: unrelated categories could share
+    the same blank key).  bid-rec CPC is never persisted here because it is
+    keyword-specific and would become stale on re-runs with different keywords.
     """
     store_id = ctx.config.get("store_id", "US") if hasattr(ctx, "config") else "US"
-    # Include the SellerSprite node_id_path in the cache key so different categories
-    # served by the same store_id get independent CVR values.
     ss_node = ctx.cache.get("ss_node_id_path") or ""
-    cvr_hash = _hl.md5(f"{store_id}:{ss_node}".encode()).hexdigest()[:12]
-
-    cached = _l2_get(ctx, _TTL_CVR, "category_cvr", cvr_hash)
-    if cached is not None:
-        ctx.cache["category_cvr"] = cached["cvr"]
-        ctx.cache["category_cvr_source"] = cached["source"]
-        ctx.cache["category_cpc_p50"] = cached.get("cpc_p50")
-        logger.info(
-            f"[cat_monopoly] Category CVR L2 cache hit store={store_id} node={ss_node[:20]}"
-        )
-        return items
-
     core_keywords: list[str] = ctx.cache.get("core_keywords") or []
+    keywords_hash = _hl.md5(":".join(sorted(core_keywords)).encode()).hexdigest()[:8]
+
+    # Cache key is category-scoped (ss_node_id_path only; store_id omitted because
+    # category consistency — not store identity — is what validates the entry).
+    # Skip L2 entirely when ss_node is empty to avoid cross-category key collisions.
+    cvr_hash: str | None = _hl.md5(ss_node.encode()).hexdigest()[:12] if ss_node else None
+
+    if cvr_hash is not None:
+        cached = _l2_get(ctx, _TTL_CVR, "category_cvr", cvr_hash)
+        if cached is not None:
+            ctx.cache["category_cvr"] = cached["cvr"]
+            ctx.cache["category_cvr_source_type"] = cached["source_type"]
+            ctx.cache["category_cvr_source"] = cached["source"]
+            ctx.cache["category_cpc_p50"] = cached.get("ads_cpc_p50")  # None if Ads wasn't used
+            logger.info(
+                f"[cat_monopoly] Category CVR L2 hit node={ss_node[:20]} "
+                f"source_type={cached['source_type']} "
+                f"cached_kw_hash={cached.get('keywords_hash', '?')} current={keywords_hash}"
+            )
+            return items
+
     cvr: float | None = None
-    cpc_p50: float | None = None
+    ads_cpc_p50: float | None = None  # only set when source is Amazon Ads
+    source_type = _CVR_SRC_DEFAULT
     source = "default_0.10"
+    browse_category: str | None = None
 
     # ── Primary: Amazon Ads benchmark ────────────────────────────────────────
     try:
-        result = await AmazonAdsClient(store_id=store_id).get_category_cvr_benchmark(
+        ads_result = await AmazonAdsClient(store_id=store_id).get_category_cvr_benchmark(
             days=30, time_unit="MONTHLY"
         )
-        browse_category = result.get("browse_category")
-        median_cvr = result.get("category_median_cvr")
-        raw_cpc_p50 = result.get("cpc_p50")
+        browse_category = ads_result.get("browse_category")
+        median_cvr = ads_result.get("category_median_cvr")
+        raw_cpc_p50 = ads_result.get("cpc_p50")
 
         if median_cvr and 0 < median_cvr < 1:
             if _ads_category_matches_niche(browse_category, core_keywords):
                 cvr = median_cvr
-                cpc_p50 = raw_cpc_p50  # only trust CPC from a matching category
+                ads_cpc_p50 = raw_cpc_p50  # only trust CPC when category matched
+                source_type = _CVR_SRC_ADS
                 source = (
                     f"amazon_ads_benchmark newToBrandPurchaseRateP50"
                     f" (category={browse_category!r}"
-                    f", peers={result.get('peer_set_size', 'N/A')})"
+                    f", peers={ads_result.get('peer_set_size', 'N/A')})"
                 )
                 logger.info(
                     f"[fetch_category_cvr] Amazon Ads CVR={cvr:.2%}, "
-                    f"cpcP50={'$' + f'{cpc_p50:.2f}' if cpc_p50 else 'N/A'} — {source}"
+                    f"cpcP50={'$' + f'{ads_cpc_p50:.2f}' if ads_cpc_p50 else 'N/A'} — {source}"
                 )
             else:
                 logger.warning(
@@ -2601,16 +2629,18 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
     except Exception as e:
         logger.warning(f"[fetch_category_cvr] Amazon Ads benchmark failed: {e}")
 
-    # ── Fallback: SellerSprite median conversionRate from BSR snapshot ──────────
+    # ── Fallback: SellerSprite median conversionRate from BSR snapshot ───────
     # conversionRate is already fetched per-product during _fetch_sellersprite_bsr
     # (stored as ss_median_cvr); no extra API call needed.
     if cvr is None:
         ss_cvr = ctx.cache.get("ss_median_cvr")
         if ss_cvr and 0 < ss_cvr < 1:
             cvr = ss_cvr
+            source_type = _CVR_SRC_SS
             source = f"sellersprite_bsr_snapshot median conversionRate ({cvr:.2%})"
             logger.info(f"[fetch_category_cvr] SellerSprite CVR={cvr:.2%} — {source}")
 
+    # ── Last resort: price-based power-law model ─────────────────────────────
     if cvr is None:
         _raw_prices = [
             float(m.group())
@@ -2647,6 +2677,7 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
                 logger.warning(f"[fetch_category_cvr] ProfitabilitySearch for {_rep_asin}: {_e}")
 
         cvr = _model_default_cvr(_median_price, _amazon_category)
+        source_type = _CVR_SRC_POWER_LAW
         source = (
             f"model_derived_power_law (price=${_median_price:.0f}→{cvr:.2%}"
             + (f", category='{_amazon_category}'" if _amazon_category else "")
@@ -2654,38 +2685,31 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
         )
         ctx.cache["profitability_rank_category"] = _amazon_category
 
-    # ── CPC P50 fallback: derive from keyword bid recommendations ────────────
-    # Used when Amazon Ads benchmark was discarded (category mismatch) or failed.
-    # Bid recommendations are fetched in _fetch_market_signals for the actual niche
-    # keywords, so they are always category-correct regardless of the store's ad account.
-    if cpc_p50 is None:
-        _bid_data = ctx.cache.get("detailed_bid_analysis", {})
-        _bid_cpc_values: list[float] = []
-        for _strategy_recs in _bid_data.values():
-            for _rec in _strategy_recs:
-                for _expr in _rec.get("bidRecommendationsForTargetingExpressions", []):
-                    _bids = [
-                        float(b["suggestedBid"])
-                        for b in _expr.get("bidValues", [])
-                        if b.get("suggestedBid")
-                    ]
-                    if _bids:
-                        _bid_cpc_values.append(statistics.median(_bids))
-        if _bid_cpc_values:
-            cpc_p50 = statistics.median(_bid_cpc_values)
-            logger.info(
-                f"[fetch_category_cvr] CPC P50 from bid recommendations: "
-                f"${cpc_p50:.2f} (n={len(_bid_cpc_values)})"
-            )
-
+    # CPC P50: only the Ads-benchmark value is category-level and cacheable.
+    # Bid-recommendation CPC is keyword-specific and must NOT be stored in the
+    # category CVR cache — it is derived fresh each run from detailed_bid_analysis
+    # (already in ctx.cache) so callers that need it see the current keyword set.
     ctx.cache["category_cvr"] = cvr
+    ctx.cache["category_cvr_source_type"] = source_type
     ctx.cache["category_cvr_source"] = source
-    ctx.cache["category_cpc_p50"] = cpc_p50
-    # Only cache live benchmark data — never persist model-derived or hardcoded
-    # fallbacks so that real data (Amazon Ads, SellerSprite) can be picked up on
-    # the next run once it becomes available.
-    if not source.startswith(("default_0.10", "model_derived_power_law")):
-        _l2_set(ctx, {"cvr": cvr, "source": source, "cpc_p50": cpc_p50}, "category_cvr", cvr_hash)
+    ctx.cache["category_cpc_p50"] = ads_cpc_p50  # None when Ads was not used
+
+    # Persist only when we have a safe category-scoped key and a validated source.
+    # power_law and default_0.10 are not persisted so real data can replace them.
+    if cvr_hash is not None and source_type in (_CVR_SRC_ADS, _CVR_SRC_SS):
+        _l2_set(
+            ctx,
+            {
+                "cvr": cvr,
+                "source_type": source_type,
+                "source": source,
+                "ads_cpc_p50": ads_cpc_p50,  # category-level; None for non-Ads sources
+                "browse_category": browse_category,
+                "keywords_hash": keywords_hash,  # audit: which keywords validated the match
+            },
+            "category_cvr",
+            cvr_hash,
+        )
     return items
 
 
@@ -2942,8 +2966,71 @@ async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> lis
     return items
 
 
+def _calc_new_entrant_ratio(
+    snapshots: dict[str, list[dict]],
+    base_ym: str,
+    dominant_brands: set[str] | None = None,
+) -> tuple[float | None, str]:
+    """
+    Fraction of current Top-100 ASINs listed within the past 12 months.
+
+    When dominant_brands is provided, returns the *competitive* ratio — computed
+    only over non-dominant-brand ASINs — so that incumbent annual model refreshes
+    (e.g. Apple releasing a 2026 MacBook Air) do not inflate the new-entrant signal.
+    The raw ratio is preserved in the display string for transparency.
+
+    Returns (ratio_float | None, display_str).  ratio_float is None when there is
+    no T-snapshot (bsr_metabolism treats None as neutral 50.0 rather than zero).
+
+    Anchors the 12-month cutoff to base_ym (not wall-clock now) so the window does
+    not drift when base_ym is T-2 months behind the current date.
+    """
+    t_snap = snapshots.get(base_ym) or (snapshots.get(max(snapshots)) if snapshots else [])
+    if not t_snap:
+        return None, "unknown (no T-snapshot)"
+    if base_ym and len(base_ym) == 6:
+        _by, _bm = int(base_ym[:4]), int(base_ym[4:])
+        _total = _by * 12 + (_bm - 1) - 12
+        _cy, _cm = _total // 12, _total % 12 + 1
+        cutoff_ms = calendar.timegm((_cy, _cm, 1, 0, 0, 0)) * 1000
+    else:
+        cutoff_ms = int((time.time() - 365 * 86400) * 1000)
+    dated = [p for p in t_snap if p.get("available_date_ms")]
+    new_ents_all = [p for p in dated if p["available_date_ms"] >= cutoff_ms]
+    raw_ratio = len(new_ents_all) / len(t_snap)
+
+    if dominant_brands:
+        challenger_dated = [p for p in dated if (p.get("brand") or "") not in dominant_brands]
+        if not challenger_dated:
+            # Every dated ASIN belongs to a dominant brand — fall back to raw ratio.
+            display = (
+                f"{raw_ratio:.0%} raw ({len(new_ents_all)}/{len(t_snap)} ASINs new; "
+                f"all dated ASINs are dominant-brand — competitive filter not applied)"
+            )
+            return raw_ratio or None, display
+        new_ents_challenger = [p for p in challenger_dated if p["available_date_ms"] >= cutoff_ms]
+        competitive_ratio = len(new_ents_challenger) / len(challenger_dated)
+        excl_count = len(dated) - len(challenger_dated)
+        dom_list = ", ".join(sorted(dominant_brands))
+        display = (
+            f"{competitive_ratio:.0%} competitive / {raw_ratio:.0%} raw — "
+            f"{len(new_ents_challenger)}/{len(challenger_dated)} challenger ASINs "
+            f"listed in last 12 months"
+            f" ({excl_count} dominant-brand ASINs excluded; "
+            f"dominant brand = individual sales share ≥ 20%: {dom_list})"
+        )
+        return competitive_ratio, display
+
+    ratio = len(new_ents_all) / len(t_snap)
+    display = f"{ratio:.0%} ({len(new_ents_all)}/{len(t_snap)} ASINs listed in last 12 months)"
+    return ratio, display
+
+
 async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     """Calculates scores and generates flattened niche benchmarks."""
+    # Local semaphore: limits concurrent BrandExtractor calls within this invocation.
+    # Must be local (not module-level) to stay bound to the current event loop.
+    _sem_brand = asyncio.Semaphore(3)
 
     def _parse_float(raw, default: float = 0.0) -> float:
         """Extract the first decimal number from a US-locale price/rating string.
@@ -3016,7 +3103,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         _brand_extractor = BrandExtractor()
 
         async def _fetch_brand(asin: str) -> tuple[str, str | None]:
-            async with _SEM_BRAND:
+            async with _sem_brand:
                 try:
                     res = await _brand_extractor.get_brand(asin)
                     return asin, res.get("Brand")
@@ -3063,6 +3150,130 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         "detailed_bids": detailed_bids,
     }
 
+    # Pre-compute acos_data for the monopoly scorer using the same deterministic
+    # fallback paths as the downstream report section. This keeps the ad_burden
+    # dimension score consistent with the final report's ad burden verdict.
+    # Remaining gap vs. downstream: (a) live FBA API call is async and runs after
+    # analyze() — JSON fee schedule used here instead; (b) AGL inbound (~1-3% of
+    # price) excluded to avoid duplicating the range-matching helper.
+    _pre_prices = [
+        _parse_float(i.get("price")) for i in analysis_input if _parse_float(i.get("price"))
+    ]
+    _pre_median_price = statistics.median(_pre_prices) if _pre_prices else 0.0
+    _pre_cvr = ctx.cache.get("category_cvr") or 0.10
+
+    # CPC: bid-rec median from detailed_bids (already cached, no keyword-trust filtering
+    # needed for scoring). Falls back to category_cpc_p50 benchmark when unavailable.
+    _pre_cpc_vals: list[float] = []
+    for _s_recs in (detailed_bids or {}).values():
+        if isinstance(_s_recs, list):
+            for _rec in _s_recs:
+                for _expr in _rec.get("bidRecommendationsForTargetingExpressions", []):
+                    _bs = [
+                        float(b["suggestedBid"])
+                        for b in _expr.get("bidValues", [])
+                        if b.get("suggestedBid")
+                    ]
+                    if _bs:
+                        _pre_cpc_vals.append(statistics.median(_bs))
+    _pre_cpc = (
+        statistics.median(_pre_cpc_vals) if _pre_cpc_vals else ctx.cache.get("category_cpc_p50")
+    )
+
+    # Nominal ACOS adjusted for category return rate. ss_return_rate_pct is cached
+    # by _fetch_sellersprite_market_data, which runs before this point.
+    _pre_nominal_acos: float | None = (
+        _pre_cpc / (_pre_median_price * _pre_cvr)
+        if (_pre_cpc and _pre_median_price > 0 and _pre_cvr > 0)
+        else None
+    )
+    _pre_rr = ctx.cache.get("ss_return_rate_pct")
+    _pre_return_rate: float | None = (
+        _pre_rr / 100 if _pre_rr is not None and 0 < _pre_rr < 50 else None
+    )
+    _pre_est_acos: float | None = (
+        _pre_nominal_acos / (1 - _pre_return_rate)
+        if (_pre_nominal_acos is not None and _pre_return_rate)
+        else _pre_nominal_acos
+    )
+
+    # Breakeven ACOS: FBA fee from local 2026 fee schedule (live API updates downstream).
+    _pre_fba_pct = 0.18  # default: Large Standard 12-16 oz at ~$25
+    try:
+        _pre_fba_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "../../mcp/servers/finance/fba_fee.json",
+        )
+        with open(_pre_fba_path) as _pff:
+            _pre_fba_data = json.load(_pff)
+        _pre_fuel = 1 + _pre_fba_data["meta"]["fuel_surcharge"]["rate_pct"] / 100
+        _pre_comp = [
+            p for p in _pre_prices if _pre_median_price * 0.65 <= p <= _pre_median_price * 1.35
+        ]
+        _pre_ref = statistics.median(_pre_comp) if _pre_comp else _pre_median_price
+        _PRICE_TO_TIER_PRE: list[tuple[float, str, str]] = [
+            (10, "Small Standard", "8+ to 10"),
+            (18, "Small Standard", "14+ to 16"),
+            (30, "Large Standard", "8+ to 12"),
+            (50, "Large Standard", "12+ to 16"),
+            (75, "Large Standard", "1+ to 1.25 lb"),
+            (float("inf"), "Large Standard", "1.75+ to 2 lb"),
+        ]
+        for _pmax, _psize, _pwt in _PRICE_TO_TIER_PRE:
+            if _pre_ref < _pmax:
+                _ptier = next(
+                    (
+                        t
+                        for t in _pre_fba_data["fba_fulfillment_fees"]["standard_non_apparel"][
+                            "tiers"
+                        ]
+                        if t.get("size_tier") == _psize
+                        and _pwt in (t.get("weight_range") or "")
+                        and isinstance(t.get("price_brackets", {}).get("10_to_50"), (int, float))
+                    ),
+                    None,
+                )
+                if _ptier and _pre_median_price > 0:
+                    _pbkt = (
+                        "under_10"
+                        if _pre_median_price < 10
+                        else ("over_50" if _pre_median_price > 50 else "10_to_50")
+                    )
+                    _pre_fba_pct = (
+                        float(_ptier["price_brackets"][_pbkt]) * _pre_fuel / _pre_median_price
+                    )
+                break
+    except Exception:
+        pass  # keep default 0.18
+
+    acos_data = {
+        "estimated_acos": _pre_est_acos,
+        "breakeven_acos": max(0.0, 1.0 - 0.30 - 0.15 - _pre_fba_pct),
+    }
+
+    # new_entrant_ratio: computed once; float drives the bsr_metabolism score,
+    # display string goes into the report prompt. snapshots/base_ym are also
+    # referenced by the BSR composition shift section below.
+    snapshots = ctx.cache.get("sellersprite_snapshots") or {}
+    base_ym = ctx.cache.get("sellersprite_base_ym", "")
+    # Dominant brands: exclude from new-entrant count so that annual model refreshes
+    # by incumbents (e.g. Apple releasing a 2026 MacBook) don't inflate the ratio.
+    _brand_sales_pre: Counter = Counter()
+    for _p in analysis_input:
+        _brand_sales_pre[_p.get("brand") or "Unknown"] += _p.get("sales") or 0
+    _total_sales_pre = sum(_brand_sales_pre.values())
+    _dominant_brands_pre: set[str] = (
+        {_br for _br, _sl in _brand_sales_pre.items() if _sl / _total_sales_pre >= 0.20}
+        if _total_sales_pre > 0
+        else set()
+    )
+    new_entrant_ratio_val, new_entrant_str = _calc_new_entrant_ratio(
+        snapshots, base_ym, dominant_brands=_dominant_brands_pre
+    )
+
+    # brand_search_data: pass None so the analyzer records a neutral 50.0 placeholder.
+    # After the full brand_search_monopoly (trusted-keyword filter + BrandExtractor fill)
+    # is computed below, the result is retroactively corrected so score and report agree.
     result = analyzer.analyze(
         analysis_input,
         keyword_data=ctx.cache.get("keyword_data"),
@@ -3072,6 +3283,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         historical_data=ctx.cache.get("historical_data"),
         bsr_snapshots=ctx.cache.get("sellersprite_snapshots"),
         keyword_weekly_trends=ctx.cache.get("keyword_weekly_trends"),
+        acos_data=acos_data,
+        new_entrant_ratio=new_entrant_ratio_val,
+        brand_search_data=None,
     )
 
     # ── Keyword click concentration: per-keyword ABA click share + CPC gap ───
@@ -3192,7 +3406,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         _kw_brand_extractor = BrandExtractor()
 
         async def _fetch_kw_brand(asin: str) -> tuple[str, str | None]:
-            async with _SEM_BRAND:
+            async with _sem_brand:
                 try:
                     res = await _kw_brand_extractor.get_brand(asin)
                     return asin, res.get("Brand")
@@ -3272,6 +3486,29 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         f"[brand_search_monopoly] n_kw={_n_kw_total}, "
         f"top={brand_search_monopoly[0] if brand_search_monopoly else None}"
     )
+
+    # Retroactively correct the brand_search_monopoly score now that the full computation
+    # (trusted-keyword filter + BrandExtractor fill) is available. The analyzer received
+    # brand_search_data=None (neutral 50.0 placeholder). Only correct when keyword_data_all
+    # was actually fetched: pass the real list (possibly empty → score 0.0) so the score
+    # reflects the genuine data. Leave the neutral 50.0 in place when keyword data was not
+    # fetched, because _kw_all coerces None→[] and can't distinguish the two cases.
+    if ctx.cache.get("keyword_data_all") is not None:
+        _bsm_full_score = analyzer._analyze_brand_search_monopoly(brand_search_monopoly)
+        _bsm_weight = analyzer.weights.get("brand_search_monopoly", 0.0)
+        _bsm_dim = result["dimension_details"].setdefault("brand_search_monopoly", {})
+        _bsm_delta = round(_bsm_full_score * _bsm_weight, 2) - _bsm_dim.get(
+            "weighted_contribution", 0.0
+        )
+        _bsm_dim["raw_score"] = round(_bsm_full_score, 2)
+        _bsm_dim["weighted_contribution"] = round(_bsm_full_score * _bsm_weight, 2)
+        result["overall_score"] = round(result["overall_score"] + _bsm_delta, 2)
+        result["status"] = analyzer._interpret_score(
+            result["overall_score"],
+            result.get("market_churn"),
+            result.get("seasonality"),
+            result.get("bsr_churn"),
+        )
 
     prices = [p["price"] for p in analysis_input if p["price"] > 0]
     median_price = statistics.median(prices) if prices else 25.0
@@ -3732,13 +3969,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     else:
         price_trend_str = "unknown (insufficient price history)"
 
-    # ── New entrant ratio: % of T-snapshot ASINs listed within last 12 months ─
-    # availableDate from Sellersprite is ms-since-epoch (e.g. 1686873600000).
-    # "new" = product went live within 12 months before the snapshot month (base_ym).
-    base_ym = ctx.cache.get("sellersprite_base_ym", "")
-    snapshots = ctx.cache.get("sellersprite_snapshots") or {}
-
     # ── BSR composition shift: cross-snapshot price distribution trend ────────
+    # snapshots/base_ym were set before analyzer.analyze(); new_entrant_ratio_val
+    # and new_entrant_str were produced by _calc_new_entrant_ratio() at that point.
     # Compares snapshot-level price medians across T-12 → T to detect whether
     # lower-priced products are gaining BSR rank slots — a signal the per-ASIN
     # price_trend cannot capture because it only sees repricing of currently-tracked
@@ -3772,26 +4005,6 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             f" ${_oldest_med:.2f} ({_oldest_ym}) → ${_newest_med:.2f} ({_newest_ym})"
             f" ({_comp_pct:+.1%}, n={len(_snap_medians)} snapshots) — {_comp_label}"
         )
-
-    t_snapshot = snapshots.get(base_ym) or (snapshots.get(max(snapshots)) if snapshots else [])
-    if t_snapshot:
-        # Cutoff = first day of (base_ym − 12 months), converted to ms-since-epoch.
-        # Must anchor to base_ym, NOT to now — base_ym is T-2 months, so using now
-        # would shift the window 2 months forward and under-count new entrants.
-        if base_ym and len(base_ym) == 6:
-            _by, _bm = int(base_ym[:4]), int(base_ym[4:])
-            _total = _by * 12 + (_bm - 1) - 12
-            _cy, _cm = _total // 12, _total % 12 + 1
-            cutoff_ms = calendar.timegm((_cy, _cm, 1, 0, 0, 0)) * 1000
-        else:
-            cutoff_ms = (time.time() - 365 * 86400) * 1000  # fallback when base_ym missing
-        dated = [p for p in t_snapshot if p.get("available_date_ms")]
-        new_entrants = [p for p in dated if p["available_date_ms"] >= cutoff_ms]
-        new_entrant_ratio_val = len(new_entrants) / len(t_snapshot) if t_snapshot else 0.0
-        new_entrant_str = f"{new_entrant_ratio_val:.0%} ({len(new_entrants)}/{len(t_snapshot)} ASINs listed in last 12 months)"
-    else:
-        new_entrant_ratio_val = 0.0
-        new_entrant_str = "unknown (no T-snapshot)"
 
     # ── Integrity Alert: category-level review manipulation risk ─────────
     # Signal 1 — RSR (Review-to-Sales Ratio): adapted from ReviewSummarizer.
@@ -4071,12 +4284,20 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 )
 
         # 6. New entrant proof points from Sellersprite snapshot
-        ss_new_asins = []
-        if t_snapshot and "cutoff_ms" in dir():
+        ss_new_asins: list[str] = []
+        _t_snap = snapshots.get(base_ym) or (snapshots.get(max(snapshots)) if snapshots else [])
+        if _t_snap:
+            if base_ym and len(base_ym) == 6:
+                _by_n, _bm_n = int(base_ym[:4]), int(base_ym[4:])
+                _tot_n = _by_n * 12 + (_bm_n - 1) - 12
+                _cy_n, _cm_n = _tot_n // 12, _tot_n % 12 + 1
+                _cutoff_n = calendar.timegm((_cy_n, _cm_n, 1, 0, 0, 0)) * 1000
+            else:
+                _cutoff_n = int((time.time() - 365 * 86400) * 1000)
             ss_new_asins = [
                 p["asin"]
-                for p in t_snapshot
-                if p.get("available_date_ms") and p["available_date_ms"] >= cutoff_ms  # type: ignore[name-defined]
+                for p in _t_snap
+                if p.get("available_date_ms") and p["available_date_ms"] >= _cutoff_n
             ]
         if ss_new_asins:
             # Cross-reference with raw BSR items to get titles

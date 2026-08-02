@@ -4,6 +4,7 @@ import datetime
 import logging
 import math
 import statistics
+from collections import Counter
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,9 @@ class CategoryMonopolyAnalyzer:
         historical_data: dict[str, list[dict[str, Any]]] | None = None,
         bsr_snapshots: dict[str, list[dict[str, Any]]] | None = None,
         keyword_weekly_trends: dict[str, Any] | None = None,
+        acos_data: dict[str, Any] | None = None,
+        new_entrant_ratio: float | None = None,
+        brand_search_data: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """
         Main analysis entry point.
@@ -41,10 +45,20 @@ class CategoryMonopolyAnalyzer:
                                               "stars": float, "ratings": int, "bsr": int}
         :param bsr_snapshots: Dict[YYYYMM, List[{"asin", "rank", "brand"}]] — 4 monthly BSR
                               snapshots (T, T-3, T-6, T-12) from sellersprite_competing_lookup.
-                              Used to calculate true list churn ratevia ASIN set comparison.
+                              Used to calculate true list churn rate via ASIN set comparison.
         :param keyword_weekly_trends: Raw response from XiyouZhaociAPI.get_search_term_trends().
                                       When provided, keyword-based seasonality replaces the
                                       BSR-proxy method (more direct demand signal).
+        :param acos_data: {"estimated_acos": float, "breakeven_acos": float} — pre-computed
+                          from cached CVR/CPC. Drives the ad_burden dimension.
+        :param new_entrant_ratio: Fraction of current Top-100 ASINs listed in the past 12 months.
+                                  Pre-computed from sellersprite snapshots before analyze() is called.
+                                  Drives the bsr_metabolism dimension alongside bsr_churn_result.
+        :param brand_search_data: Simplified brand keyword-leadership list pre-computed from
+                                  keyword_data_all + analysis_input brand lookup. Each entry:
+                                  {"brand", "keywords_led", "n_keywords", "keyword_lead_share"}.
+                                  None = keyword data was not fetched (neutral score).
+                                  [] = fetched but no brand leads any keyword (fragmented).
         """
         if not products:
             return {"error": "No product data provided for analysis."}
@@ -68,6 +82,13 @@ class CategoryMonopolyAnalyzer:
             seasonality_result = self._analyze_seasonality(historical_data)
         bsr_churn_result = self._analyze_bsr_churn(bsr_snapshots or {})
 
+        review_integrity_score = self._analyze_review_integrity(sorted_products)
+        seller_conc_score = self._analyze_seller_concentration(sorted_products)
+        ad_burden_score = self._analyze_ad_burden(acos_data)
+        demand_score = self._analyze_demand_trajectory(seasonality_result)
+        metabolism_score = self._analyze_bsr_metabolism(bsr_churn_result, new_entrant_ratio)
+        brand_search_score = self._analyze_brand_search_monopoly(brand_search_data)
+
         metrics = {
             "sales_curve_top3": sales_scores["top3_concentration"],
             "sales_survival_space": sales_scores["survival_space"],
@@ -79,6 +100,12 @@ class CategoryMonopolyAnalyzer:
             "ad_traffic_ratio": ad_score,
             "social_promotion_intensity": social_score,
             "deal_promotion_intensity": deal_score,
+            "review_integrity": review_integrity_score,
+            "seller_concentration": seller_conc_score,
+            "ad_burden": ad_burden_score,
+            "demand_trajectory": demand_score,
+            "bsr_metabolism": metabolism_score,
+            "brand_search_monopoly": brand_search_score,
         }
 
         total_score, details = self._calculate_weighted_score(metrics)
@@ -170,12 +197,14 @@ class CategoryMonopolyAnalyzer:
             if pattern == "rating_attack":
                 return "Rating Attack Market (Review Manipulation)"
 
-        if score >= self.thresholds.get("high_monopoly_score", 75):
+        if score >= self.thresholds.get("high_monopoly_score", 70):
             base = "High Monopoly (Red Ocean)"
-        elif score <= self.thresholds.get("opportunity_score", 40):
-            base = "Low Monopoly (Blue Ocean/Opportunity)"
+        elif score >= self.thresholds.get("high_competition_score", 55):
+            base = "Medium-High Competition (Hard Entry)"
+        elif score >= self.thresholds.get("opportunity_score", 35):
+            base = "Medium Competition (Addressable)"
         else:
-            base = "Medium Competition"
+            base = "Low Competition (Blue Ocean)"
 
         if seasonality_result and seasonality_result.get("is_seasonal"):
             return f"{base} + Seasonal ({seasonality_result.get('pattern', '')})"
@@ -345,6 +374,160 @@ class CategoryMonopolyAnalyzer:
         deal_intensity = external_data.get("deal_intensity", 0)
         deal_score = min(100, deal_intensity * 10)
         return social_score, deal_score
+
+    def _analyze_review_integrity(self, products: list[dict[str, Any]]) -> float:
+        """
+        Review manipulation moat: incumbents who boosted review counts via brushing
+        (written/global ratio far above ~10% natural rate) create a barrier that a
+        genuine-quality entrant cannot match through authentic reviews alone.
+
+        Uses review_ratio (written_reviews / global_ratings) from the top-10 BSR products.
+        Ceiling threshold: 15% (review_ratio_ceiling in config) — above this the moat is
+        likely artificial. Returns neutral 50 when data is unavailable.
+        """
+        eligible = [p for p in products[:10] if p.get("review_ratio") is not None]
+        if not eligible:
+            return 50.0
+        avg_ratio = statistics.mean(p["review_ratio"] for p in eligible)
+        ceiling = self.thresholds.get("review_ratio_ceiling", 0.15)
+        return min(100.0, (avg_ratio / ceiling) * 100)
+
+    def _analyze_seller_concentration(self, products: list[dict[str, Any]]) -> float:
+        """
+        Seller-level CR3 (top-3 sellers' share of BSR position slots). A seller running
+        multiple brands can appear fragmented at brand level while being highly concentrated
+        at seller level. Returns neutral 50 when seller_id coverage is below 30% — too
+        sparse to compute a reliable CR3.
+        """
+        sellers = [p.get("seller_id") for p in products if p.get("seller_id")]
+        coverage = len(sellers) / max(len(products), 1)
+        if coverage < 0.30:
+            return 50.0
+        counter: Counter = Counter(sellers)
+        total = sum(counter.values())
+        cr3 = sum(v for _, v in counter.most_common(3)) / total
+        limit = self.thresholds.get("seller_cr3_limit", 0.40)
+        return min(100.0, (cr3 / limit) * 100)
+
+    def _analyze_ad_burden(self, acos_data: dict[str, Any] | None) -> float:
+        """
+        Structural ad-profitability barrier: estimated ACOS / breakeven ACOS.
+        Ratio ≥ 1.0 means ads consume all margin — a capital barrier on top of the
+        bid-cost barrier already captured in ad_traffic_ratio. Returns neutral 50
+        when CPC or CVR data is unavailable.
+        """
+        if not acos_data:
+            return 50.0
+        estimated = acos_data.get("estimated_acos")
+        breakeven = acos_data.get("breakeven_acos")
+        if not estimated or not breakeven or breakeven <= 0:
+            return 50.0
+        return min(100.0, (estimated / breakeven) * 100)
+
+    def _analyze_demand_trajectory(self, seasonality_result: dict[str, Any]) -> float:
+        """
+        YOY demand trend from ABA weekly search volume (keyword_weekly_trends source only).
+        A growing market lowers entry difficulty — room for new players and incumbents are
+        less defensive. A declining market raises it — incumbents fight harder for shrinking
+        share, and capital ROI is at risk. Returns neutral 50 when keyword trends data is
+        unavailable or covers fewer than 2 full years (required for reliable YOY comparison).
+
+        Score formula: 50 − yoy_pct × 0.5
+          yoy = +40% → score 30  (strong growth = lower barrier)
+          yoy =   0% → score 50  (stable)
+          yoy = −40% → score 70  (declining = incumbents entrench)
+          yoy = −80% → score 90  (collapsing)
+        """
+        if not seasonality_result or seasonality_result.get("source") != "keyword_weekly_trends":
+            return 50.0
+        yoy = seasonality_result.get("yoy_peak_1y_pct") or seasonality_result.get("yoy_1y_pct")
+        if yoy is None:
+            return 50.0
+        return max(0.0, min(100.0, 50.0 - yoy * 0.5))
+
+    def _analyze_bsr_metabolism(
+        self,
+        bsr_churn_result: dict[str, Any],
+        new_entrant_ratio: float | None,
+    ) -> float:
+        """
+        BSR listing metabolism: how hostile is rank turnover to building a durable position?
+
+        Uses the churn label (the qualitative synthesis of 3m/6m/12m rates already computed by
+        _analyze_bsr_churn) as the primary anchor, then shifts ±20/15 points based on
+        new_entrant_ratio — the fraction of current Top-100 ASINs listed in the past 12 months.
+
+        High score (>70): hard to sustain — either incumbents are entrenched (mature_stable)
+                          or the market is too volatile to hold rank (fomo_spike_die).
+        Low score (<30):  positions are open AND new entrants can hold them (blue_ocean).
+
+        Label anchors:
+          fomo_spike_die     → 88  (spike-and-die: enter easily, cannot sustain)
+          mature_stable      → 82  (incumbent lock-in: hard to displace; refined by c12)
+          high_churn         → 55  (significant rotation but some sustainability possible)
+          moderate_competitive → 45 (normal market)
+          blue_ocean         → 20  (positions open and durable; refined by c12)
+          unknown            → 50  (no snapshot data)
+
+        new_entrant_ratio adjustment (±15/20 pts):
+          high ratio (>20%): recent products ARE breaking in → barrier lower
+          low ratio (<20%):  only veterans survive → barrier higher
+        """
+        if not bsr_churn_result or not bsr_churn_result.get("snapshots_available"):
+            return 50.0
+
+        label = bsr_churn_result.get("label", "unknown")
+        c12 = bsr_churn_result.get("churn_12m") or bsr_churn_result.get("churn_6m")
+
+        label_base: dict[str, float] = {
+            "fomo_spike_die": 88.0,
+            "mature_stable": 82.0,
+            "high_churn": 55.0,
+            "moderate_competitive": 45.0,
+            "blue_ocean": 20.0,
+            "unknown": 50.0,
+        }
+        base = label_base.get(label, 50.0)
+
+        # Within mature_stable and blue_ocean, c12 refines the within-label score
+        if label == "mature_stable" and c12 is not None:
+            base = 90.0 - (c12 / 0.30) * 15.0  # c12=0 → 90, c12=0.30 → 75
+        elif label == "blue_ocean" and c12 is not None:
+            base = 18.0 + ((c12 - 0.30) / 0.25) * 12.0  # c12=0.30 → 18, c12=0.55 → 30
+
+        # new_entrant_ratio: 20% is neutral; above = more open (discount); below = more locked (add)
+        if new_entrant_ratio is not None:
+            adj = -(new_entrant_ratio - 0.20) * 50.0
+            base += max(-20.0, min(15.0, adj))
+
+        return max(0.0, min(100.0, base))
+
+    def _analyze_brand_search_monopoly(
+        self,
+        brand_search_data: list[dict[str, Any]] | None,
+    ) -> float:
+        """
+        Search-traffic moat from ABA keyword click-share leadership.
+
+        The top brand's keyword_lead_share (fraction of core keywords where that brand
+        holds the #1-click-share ASIN) approximates the PPC moat independently of BSR
+        concentration. A brand leading ≥50% of keywords holds a search monopoly;
+        challengers must outbid them on every core term just to appear.
+
+        Scoring:
+          keyword_lead_share ≥ 0.50  → score 100 (search monopoly)
+          keyword_lead_share = 0.25  → score 50
+          keyword_lead_share = 0.00  → score 0  (fully fragmented)
+
+        Returns 50.0 (neutral) when keyword data was not fetched.
+        Returns 0.0 when data was fetched but no brand leads any keyword.
+        """
+        if brand_search_data is None:
+            return 50.0
+        if not brand_search_data:
+            return 0.0
+        top_share = brand_search_data[0].get("keyword_lead_share", 0.0)
+        return min(100.0, (top_share / 0.50) * 100.0)
 
     def _analyze_bsr_churn(
         self,
