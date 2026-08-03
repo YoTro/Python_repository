@@ -13,7 +13,7 @@ Covers:
 """
 
 import statistics
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -141,7 +141,12 @@ _MOCK_ANALYZE_RESULT = {
 
 @pytest.fixture(autouse=True)
 def _patch_analyzer_and_estimator():
-    """Stub out CategoryMonopolyAnalyzer and SalesEstimator for all tests."""
+    """Stub out CategoryMonopolyAnalyzer, SalesEstimator, and ProfitabilitySearchExtractor
+    for all tests. ProfitabilitySearchExtractor is patched to simulate the live fee/category
+    API being unavailable (get_fees -> {}, search_products -> []) so every test deterministically
+    exercises the local fee-schedule / flat-rate fallback paths, instead of depending on
+    whatever a real network call to Amazon's endpoints happens to return.
+    """
     mock_estimator = MagicMock()
     mock_estimator.category_params = {}
 
@@ -152,8 +157,13 @@ def _patch_analyzer_and_estimator():
             "src.workflows.definitions.category_monopoly_analysis.SalesEstimator",
             return_value=mock_estimator,
         ):
-            mock_cls.return_value.analyze.return_value = _MOCK_ANALYZE_RESULT
-            yield
+            with patch(
+                "src.workflows.definitions.category_monopoly_analysis.ProfitabilitySearchExtractor"
+            ) as mock_ps_cls:
+                mock_ps_cls.return_value.get_fees = AsyncMock(return_value={})
+                mock_ps_cls.return_value.search_products = AsyncMock(return_value=[])
+                mock_cls.return_value.analyze.return_value = _MOCK_ANALYZE_RESULT
+                yield
 
 
 # ── helpers to call _run_monopoly_analysis synchronously ─────────────────────
