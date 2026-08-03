@@ -40,6 +40,7 @@ from src.mcp.servers.amazon.extractors.fulfillment import FulfillmentExtractor
 from src.mcp.servers.amazon.extractors.past_month_sales import PastMonthSalesExtractor
 from src.mcp.servers.amazon.extractors.profitability_search import ProfitabilitySearchExtractor
 from src.mcp.servers.amazon.extractors.review_count import ReviewRatioExtractor
+from src.mcp.servers.finance.tools import get_referral_rate
 from src.mcp.servers.market.deals.client import DealHistoryClient
 from src.mcp.servers.market.sellersprite.client import SellerspriteAPI
 from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
@@ -3549,10 +3550,11 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     # the actual product weight/size class in this category.
     # Fallback: select the appropriate weight tier from the local 2026 fee schedule
     # using a price→weight heuristic on comparable-price BSR products.
-    _REFERRAL_FEE_PCT = 0.15
     _COGS_PCT = 0.30
     _fba_fee_pct = 0.18  # fallback: Large Standard 12-16 oz at $25 ≈ $4.76/25
     _fba_fee_source = "2026 fee schedule estimate, Large Standard 12-16 oz"
+    _REFERRAL_FEE_PCT = 0.15  # fallback: "Everything Else" catch-all rate
+    _referral_fee_source = "2026 schedule, 'Everything Else' catch-all (category unresolved)"
 
     # Pick the BSR product with price closest to median_price as the representative ASIN.
     _rep_item = (
@@ -3569,39 +3571,79 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         else None
     )
 
-    # --- Primary: live API ---
-    _api_fee_resolved = False
+    # --- Primary: live API (Amazon Revenue Calculator getfees) ---
+    # Real response shape: {"programFeeResultMap": {"Core#0": {"otherFeeInfoMap": {
+    #   "FulfillmentFee": {"total": {"amount": N}, ...}, "ReferralFee": {"total": {"amount": N}, ...}, ...
+    # }}}}. One call yields both the FBA fulfillment fee AND the referral fee for
+    # this specific ASIN/category/price — more accurate than either static schedule
+    # below, since referral rates vary 5%-45% by category (referral_fee_rates.json).
+    _api_fba_resolved = False
+    _api_referral_resolved = False
     if _rep_asin and median_price > 0:
         try:
             _fee_data = await ProfitabilitySearchExtractor().get_fees(_rep_asin, median_price)
-            # Response shape: {"programResults": {"Core#0": {"fees": [...], "totalFee": N}}}
-            _prog = (_fee_data.get("programResults") or {}).get("Core#0") or {}
-            _total: float | None = _prog.get("totalFee")
-            if _total is None:
-                # Sum individual fee components that represent fulfillment charges.
-                _total = (
-                    sum(
-                        float(f.get("amount") or f.get("feeAmount", {}).get("amount") or 0)
-                        for f in (_prog.get("fees") or [])
-                        if "fulfillment" in (f.get("type") or f.get("feeType") or "").lower()
-                    )
-                    or None
-                )
-            if _total and _total > 0:
-                _fba_fee_pct = _total / median_price
-                _api_fee_resolved = True
+            _fee_map = ((_fee_data.get("programFeeResultMap") or {}).get("Core#0") or {}).get(
+                "otherFeeInfoMap"
+            ) or {}
+
+            def _fee_amount(fee_name: str) -> float | None:
+                entry = _fee_map.get(fee_name) or {}
+                amt = (entry.get("total") or {}).get("amount")
+                if amt is None:
+                    amt = (entry.get("feeAmount") or {}).get("amount")
+                return float(amt) if amt is not None else None
+
+            _fulfillment_amt = _fee_amount("FulfillmentFee")
+            if _fulfillment_amt and _fulfillment_amt > 0:
+                _fba_fee_pct = _fulfillment_amt / median_price
+                _api_fba_resolved = True
                 _fba_fee_source = (
                     f"Amazon Revenue Calculator (live API, ASIN {_rep_asin} @ ${median_price:.2f})"
                 )
                 logger.info(
-                    f"[monopoly] FBA fee from API: ${_total:.2f} ({_fba_fee_pct:.1%}) "
+                    f"[monopoly] FBA fee from API: ${_fulfillment_amt:.2f} ({_fba_fee_pct:.1%}) "
                     f"for ASIN {_rep_asin} @ ${median_price:.2f}"
                 )
-        except Exception:
-            pass  # fall through to local JSON lookup
 
-    # --- Fallback: local 2026 fee schedule with price→weight heuristic ---
-    if not _api_fee_resolved:
+            _referral_amt = _fee_amount("ReferralFee")
+            if _referral_amt and _referral_amt > 0:
+                _REFERRAL_FEE_PCT = _referral_amt / median_price
+                _api_referral_resolved = True
+                _referral_fee_source = (
+                    f"Amazon Revenue Calculator (live API, ASIN {_rep_asin} @ ${median_price:.2f})"
+                )
+                logger.info(
+                    f"[monopoly] Referral fee from API: ${_referral_amt:.2f} "
+                    f"({_REFERRAL_FEE_PCT:.1%}) for ASIN {_rep_asin} @ ${median_price:.2f}"
+                )
+        except Exception as _e:
+            logger.warning(f"[monopoly] Live fee API failed for {_rep_asin}: {_e}")
+
+    # --- Fallback: category-specific rate from the 2026 referral fee schedule ---
+    if not _api_referral_resolved:
+        _rep_category_label: str | None = ctx.cache.get("profitability_rank_category")
+        if not _rep_category_label and _rep_asin:
+            try:
+                _ps_products = await ProfitabilitySearchExtractor().search_products(_rep_asin)
+                _ps_match = next(
+                    (p for p in _ps_products if (p.get("asin") or "").upper() == _rep_asin),
+                    _ps_products[0] if _ps_products else None,
+                )
+                if _ps_match:
+                    _rep_category_label = _ps_match.get("salesRankContextName") or None
+                    if _rep_category_label:
+                        ctx.cache["profitability_rank_category"] = _rep_category_label
+            except Exception as _e:
+                logger.warning(f"[monopoly] Category resolution for referral fee failed: {_e}")
+        if _rep_category_label:
+            try:
+                _REFERRAL_FEE_PCT = get_referral_rate(_rep_category_label, median_price)
+                _referral_fee_source = f"2026 category schedule, '{_rep_category_label}'"
+            except Exception as _e:
+                logger.warning(f"[monopoly] Referral rate lookup failed: {_e}")
+
+    # --- Fallback: local 2026 FBA fee schedule with price→weight heuristic ---
+    if not _api_fba_resolved:
         try:
             _fba_path = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
@@ -3792,7 +3834,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         # is price × CVR × (1 − return_rate).
         _nominal_acos = _median_cpc / (median_price * _category_cvr)
         _estimated_acos = _nominal_acos / (1 - _return_rate) if _return_rate else _nominal_acos
-        _ad_profit_drag = (_actual_ad_ratio or 0.5) * _estimated_acos
+        _ad_profit_drag = (
+            _actual_ad_ratio if _actual_ad_ratio is not None else 0.5
+        ) * _estimated_acos
         _ad_burden_verdict = (
             "Critical"
             if _estimated_acos >= _breakeven_acos * 1.5
@@ -4391,7 +4435,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     _CAP_UNITS = 1000  # first-batch order quantity (units)
     _CAP_COGS = 0.30  # COGS as fraction of retail price (China-manufactured)
     _CAP_ACOS = 0.30  # target ACOS during the ranking phase
-    _CAP_FEES = _REFERRAL_FEE_PCT + _fba_fee_pct  # referral 15% + FBA from 2026 fee schedule
+    _CAP_FEES = (
+        _REFERRAL_FEE_PCT + _fba_fee_pct
+    )  # category-specific referral + FBA from 2026 fee schedule
     _CAP_SELL_MONTHS = 3  # expected months to sell through the first batch (display only)
     _CAP_OVERHEAD = 2000  # fixed launch costs: photography, A+, listing ($)
     _CAP_BUFFER = 0.20  # working capital buffer on subtotal
@@ -4816,7 +4862,14 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "category_cvr_source": ctx.cache.get("category_cvr_source", "N/A"),
             "median_cpc": f"${_median_cpc:.2f}" if _median_cpc else "N/A",
             "estimated_steady_state_acos": f"{_estimated_acos:.0%}" if _estimated_acos else "N/A",
+            "ad_traffic_ratio": (
+                f"{_actual_ad_ratio:.0%}"
+                if _actual_ad_ratio is not None
+                else "50% (default — traffic-score data unavailable)"
+            ),
             "ad_profit_drag": f"{_ad_profit_drag:.0%}" if _ad_profit_drag else "N/A",
+            "referral_fee_pct": f"{_REFERRAL_FEE_PCT:.0%}",
+            "referral_fee_source": _referral_fee_source,
             "fba_fee_pct": f"{_fba_fee_pct:.1%}",
             "fba_fee_source": _fba_fee_source,
             "inbound_fee_pct": f"{_inbound_fee_pct:.1%}",

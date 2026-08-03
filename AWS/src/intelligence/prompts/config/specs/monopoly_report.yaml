@@ -65,7 +65,10 @@ required_vars:
   - category_cvr_source
   - median_cpc
   - estimated_steady_state_acos
+  - ad_traffic_ratio
   - ad_profit_drag
+  - referral_fee_pct
+  - referral_fee_source
   - fba_fee_pct
   - fba_fee_source
   - inbound_fee_pct
@@ -111,7 +114,7 @@ template: |
     Group 0  — Monopoly Score
     Group 1  — Market Scope: Median Price · Total Est. Monthly Unit Sales · Est. Niche Monthly GMV · Category Return Rate
     Group 2  — Investment Capital: Investment Capital (Total) + Inventory + PPC Seed + Platform Fees + FBA Inbound Freight + Fixed Overhead
-    Group 3  — Ad Economics: Category CVR · Median CPC · Estimated Steady-State ACOS · Breakeven ACOS · Ad Profit Drag · Ad Burden Verdict
+    Group 3  — Ad Economics: Category CVR · Median CPC · Estimated Steady-State ACOS · Breakeven ACOS · Ad Traffic Ratio · Ad Profit Drag · Ad Burden Verdict
     Group 4  — Market Health: Price Trend · BSR Composition Shift · Rating Churn Pattern · Low-Review BSR Share · Rating Collapse Rate
     Group 5  — BSR Metabolism: BSR Listing Metabolism · 3-Month Churn · 6-Month Churn · 12-Month Churn · New Entrant Ratio
     Group 6  — Demand / Seasonality: Seasonality · Demand Trend (YOY) (omit Demand Trend row if demand_trend is 'unknown')
@@ -135,7 +138,7 @@ template: |
     Row 1: Metric='Investment Capital (Total)' | Value='{recommended_capital}' | Definition='Subtotal × 1.20 working-capital buffer'
     Row 2: If capital_gross_units == capital_units (no return rate data): Metric='  └ Inventory ({capital_units} units, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_units} units × {niche_median_price} × {capital_cogs_pct} COGS'. If capital_gross_units ≠ capital_units (return rate available): Metric='  └ Inventory ({capital_gross_units} gross units ordered to net {capital_units} sold, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_gross_units} gross units × {niche_median_price} × {capital_cogs_pct} COGS (grossed up for {return_rate_pct} return rate)'
     Row 3: Metric='  └ PPC Seed ({capital_acos_pct} ACOS on {capital_units} units, ~{capital_sell_months}mo sell-through)' | Value='{capital_ppc}' | Definition='{capital_units} units × {niche_median_price} × {capital_acos_pct} ACOS'
-    Row 4: Metric='  └ Platform Fees ({capital_fees_pct} on {capital_units} units)' | Value='{capital_fees}' | Definition='{capital_units} units × {niche_median_price} × {capital_fees_pct} (referral 15% + FBA — {fba_fee_source})'
+    Row 4: Metric='  └ Platform Fees ({capital_fees_pct} on {capital_units} units)' | Value='{capital_fees}' | Definition='{capital_units} units × {niche_median_price} × {capital_fees_pct} (referral {referral_fee_pct} [{referral_fee_source}] + FBA — {fba_fee_source})'
     Row 5: Metric='  └ FBA Inbound Freight ({inbound_fee_pct} of median price, {capital_units} units)' | Value='{capital_inbound}' | Definition='AGL SZX→US FC, {inbound_freight_detail}; {capital_units} units × {niche_median_price} × {inbound_fee_pct}'
     Row 6: Metric='  └ Fixed Overhead' | Value='{capital_overhead}' | Definition='Photography, A+ content, listing'
   NEVER show a single Investment Capital row without these five sub-rows.
@@ -202,10 +205,12 @@ template: |
   - Category CVR: {category_cvr} (source: {category_cvr_source})
   - Median CPC: {median_cpc}
   - Estimated Steady-State ACOS: {estimated_steady_state_acos}
-  - Breakeven ACOS: {breakeven_acos} (= 1 − 30% COGS − 15% referral − {fba_fee_pct} FBA [{fba_fee_source}] − {inbound_fee_pct} FBA inbound freight [AGL SZX→US FC, {inbound_freight_detail}])
-  - Ad Profit Drag: {ad_profit_drag} (= BSR ad traffic ratio × estimated ACOS; fraction of revenue consumed by ads at steady state)
+  - Breakeven ACOS: {breakeven_acos} (= 1 − 30% COGS − {referral_fee_pct} referral [{referral_fee_source}] − {fba_fee_pct} FBA [{fba_fee_source}] − {inbound_fee_pct} FBA inbound freight [AGL SZX→US FC, {inbound_freight_detail}])
+  - Ad Traffic Ratio: {ad_traffic_ratio} (source: xiyou_get_traffic_scores average across top-20 BSR ASINs — estimated share of orders/traffic attributable to ads vs. organic, at the CATEGORY level, not any single ASIN)
+  - Ad Profit Drag: {ad_profit_drag} (= ad_traffic_ratio × estimated ACOS; fraction of TOTAL revenue — ad + organic blended — consumed by ad spend at steady state)
   - Ad Burden Verdict: **{ad_burden_verdict}**
-  In the Data Breakdown table, render these as six consecutive rows under the group heading 'Steady-State Ad Burden'. NEVER omit category_cvr or the breakeven ACOS formula components — they are the basis for the verdict.
+  In the Data Breakdown table, render these as seven consecutive rows under the group heading 'Steady-State Ad Burden'. NEVER omit category_cvr or the breakeven ACOS formula components — they are the basis for the verdict. If ad_traffic_ratio's value starts with '50% (default', append the mandatory caveat '(limited data — traffic-score API unavailable, 50% is an assumed placeholder, not observed)' to both the Ad Traffic Ratio row's Value cell and the Ad Profit Drag row's Value cell, and do NOT cite either figure as a precise benchmark in Strategic Insights — treat ad_burden_verdict as directional only in that case.
+  ORGANIC SUBSIDY NOTE (apply in Strategic Insights when discussing ad burden): ad_profit_drag is a BLENDED figure — it already accounts for the fact that only ad_traffic_ratio's share of orders carries the ACOS cost, while the remaining (1 − ad_traffic_ratio) share of orders is organic and carries no ad cost. A high estimated_steady_state_acos does not by itself mean the category is unprofitable to enter if ad_traffic_ratio is low — organic orders can subsidize unprofitable ad orders. Conversely, a moderate ACOS combined with a high ad_traffic_ratio (most orders are ad-driven) means there is little organic volume left to absorb the drag, and the blended economics move closer to the raw ACOS figure. Always read ad_traffic_ratio and estimated_steady_state_acos together, not estimated_steady_state_acos alone, when assessing whether the category is structurally profitable.
 
   ### MARKET HEALTH SIGNALS
   - Price Trend: {price_trend}

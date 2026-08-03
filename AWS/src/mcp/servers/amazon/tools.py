@@ -142,6 +142,12 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
                     data_cache.set("amazon", p["asin"].upper(), p)
         return _json_response(results)
 
+    if name == "get_amazon_fees":
+        extractor = ProfitabilitySearchExtractor()
+        asin = arguments["asin"].upper()
+        result = await extractor.get_fees(asin, float(arguments["price"]))
+        return _json_response(result)
+
     if name == "get_bsr_rank":
         extractor = RanksExtractor()
         asin = arguments["asin"].upper()
@@ -625,6 +631,31 @@ amazon_tools = [
                 },
             },
             "required": ["keyword"],
+        },
+    ),
+    Tool(
+        name="get_amazon_fees",
+        description=(
+            "Fetch FBA fulfillment fee and referral (commission) fee for a product via "
+            "Amazon's public Revenue Calculator API, at a given selling price. "
+            "Returns the raw API payload; the fee amounts live at "
+            "data.programFeeResultMap['Core#0'].otherFeeInfoMap['FulfillmentFee'].total.amount "
+            "and .otherFeeInfoMap['ReferralFee'].total.amount (also .otherFeeInfoMap contains "
+            "other per-program charges such as storage and closing fees). "
+            "MFN#1 in programFeeResultMap holds the merchant-fulfilled (non-FBA) equivalents. "
+            "Referral fee rate is category-specific (5%-45%); FBA fee reflects this ASIN's actual "
+            "weight/size tier — both are more accurate than static fee-schedule estimates."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "asin": {"type": "string", "description": "Product ASIN"},
+                "price": {
+                    "type": "number",
+                    "description": "Selling price (USD) to calculate fees against",
+                },
+            },
+            "required": ["asin", "price"],
         },
     ),
     Tool(
@@ -1375,6 +1406,10 @@ _AMAZON_META = {
     "search_profitability_products": (
         "DATA",
         "list of products with rich metadata: ASIN, title, brand, dimensions, weight, price",
+    ),
+    "get_amazon_fees": (
+        "DATA",
+        "FBA fulfillment fee and referral fee for an ASIN at a given price (Revenue Calculator API)",
     ),
     "get_bsr_rank": ("DATA", "BSR rank, category rankings and NodeIdPath"),
     "get_batch_past_month_sales": (
