@@ -1711,22 +1711,28 @@ async def _enrich_batch_traffic_scores(items: list[dict], ctx: Any) -> list[dict
 
     try:
         country = ctx.config.get("store_id", "US") if hasattr(ctx, "config") else "US"
+        # call_tool_json() already unwraps and JSON-decodes the tool's response —
+        # it returns the parsed payload directly (a dict here), not a list of
+        # raw content items requiring a second .get("text") + json.loads().
         resp = await ctx.mcp.call_tool_json(
             "xiyou_get_traffic_scores", {"asins": top_asins, "country": country}
         )
-        if isinstance(resp, list) and len(resp) > 0:
-            data = json.loads(resp[0].get("text", "{}"))
-            if data.get("success") and data.get("data"):
-                ratios = [
-                    v
-                    for d in data["data"]
-                    if (v := d.get("advertisingTrafficScoreRatio")) is not None
-                ]
-                if ratios:
-                    avg_ratio = statistics.mean(ratios)
-                    ctx.cache["actual_bsr_ad_ratio"] = avg_ratio
-                    _l2_set(ctx, {"actual_bsr_ad_ratio": avg_ratio}, "traffic_scores", asins_hash)
-                    logger.info(f"Calculated average BSR ad dependency: {avg_ratio:.2%}")
+        entities = resp.get("entities") or [] if isinstance(resp, dict) else []
+
+        ratios = []
+        for d in entities:
+            v = d.get("advertisingTrafficScoreRatio")
+            if v is None:
+                continue
+            try:
+                ratios.append(float(v))
+            except (TypeError, ValueError):
+                continue
+        if ratios:
+            avg_ratio = statistics.mean(ratios)
+            ctx.cache["actual_bsr_ad_ratio"] = avg_ratio
+            _l2_set(ctx, {"actual_bsr_ad_ratio": avg_ratio}, "traffic_scores", asins_hash)
+            logger.info(f"Calculated average BSR ad dependency: {avg_ratio:.2%}")
     except Exception as e:
         logger.error(f"Failed to fetch batch traffic scores: {e}")
     return items

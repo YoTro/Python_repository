@@ -469,8 +469,9 @@ async def _enrich_ad_metrics_xiyou(item: dict, ctx: WorkflowContext) -> dict:
         return cached
 
     try:
-        import json
-
+        # call_tool_json() already unwraps and JSON-decodes the tool's response —
+        # it returns the parsed payload directly (a dict here), not a list of
+        # raw content items requiring a second .get("text") + json.loads().
         resp = await ctx.mcp.call_tool_json(
             "xiyou_get_traffic_scores",
             {
@@ -478,15 +479,22 @@ async def _enrich_ad_metrics_xiyou(item: dict, ctx: WorkflowContext) -> dict:
                 "country": ctx.config.get("store_id", "US"),
             },
         )
-        if isinstance(resp, list) and len(resp) > 0:
-            data = json.loads(resp[0].get("text", "{}"))
-            if data.get("success") and data.get("data"):
-                result = {
-                    "ad_traffic_ratio": data["data"][0].get("advertisingTrafficScoreRatio", 0.0),
-                    "traffic_growth_7d": data["data"][0].get("totalTrafficScoreGrowthRate", 0.0),
-                }
-                _l2_set(ctx, result, "ad_traffic", asin)
-                return result
+        entities = resp.get("entities") or [] if isinstance(resp, dict) else []
+        if entities:
+            entry = next((e for e in entities if e.get("asin") == asin), entities[0])
+
+            def _to_float(v, default=0.0):
+                try:
+                    return float(v) if v is not None else default
+                except (TypeError, ValueError):
+                    return default
+
+            result = {
+                "ad_traffic_ratio": _to_float(entry.get("advertisingTrafficScoreRatio")),
+                "traffic_growth_7d": _to_float(entry.get("totalTrafficScoreGrowthRate")),
+            }
+            _l2_set(ctx, result, "ad_traffic", asin)
+            return result
     except Exception as e:
         logger.error(f"Failed to fetch Xiyou traffic scores for {asin}: {e}")
     return {}

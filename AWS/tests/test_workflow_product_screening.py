@@ -109,21 +109,16 @@ async def test_product_screening_full_funnel(mock_config, mock_mcp):
                 }
             ]
         elif tool_name == "xiyou_get_traffic_scores":
-            return [
-                {
-                    "text": json.dumps(
-                        {
-                            "success": True,
-                            "data": [
-                                {
-                                    "advertisingTrafficScoreRatio": 0.20,
-                                    "totalTrafficScoreGrowthRate": 0.05,
-                                }
-                            ],
-                        }
-                    )
-                }
-            ]
+            # call_tool_json() returns the decoded payload directly, not a list
+            # of raw content items — see the matching fix in product_screening.py.
+            return {
+                "entities": [
+                    {
+                        "advertisingTrafficScoreRatio": "0.20",
+                        "totalTrafficScoreGrowthRate": "0.05",
+                    }
+                ],
+            }
         return []
 
     mock_mcp.call_tool_json.side_effect = side_effect_mcp
