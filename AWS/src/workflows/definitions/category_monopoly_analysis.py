@@ -4087,6 +4087,22 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     flagged_jump = 0
     integrity_total = 0
     total_bsr = len(items)
+    # Review-to-sales rate: same Signal 1 RSR value (monthly new reviews / monthly
+    # sales), kept per-ASIN so the category can report a typical level (median)
+    # rather than only a flagged/not-flagged count. Natural rate is ~1-5%.
+    rsr_values: list[float] = []
+    # Review-to-sales growth rate: RSR recomputed separately on the first half vs.
+    # second half of each ASIN's history window (monthly_sales held constant, since
+    # only a single current estimate is available) — a rising rate signals
+    # accelerating review injection rather than a steady natural pace.
+    rsr_growth_values: list[float] = []
+    # Per-ASIN peak-window RSR: a category-level median (above) hides an ASIN that
+    # is quiet most of the time but spiked for a few months (the manipulation
+    # pattern). Sliding a 30-day window across each ASIN's own history and keeping
+    # the max — instead of one whole-period average — surfaces that spike directly;
+    # consumed by top_asin_table (per-ASIN evidence), not the Data Breakdown table.
+    _RSR_WINDOW_DAYS = 30
+    asin_review_spike: dict[str, dict[str, Any]] = {}
 
     for asin, records in historical_data.items():
         pts = sorted(
@@ -4104,8 +4120,35 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             review_delta = pts[-1][2] - pts[0][2]
             months_spanned = max(len(pts) / 30, 1)
             rsr = (review_delta / months_spanned) / monthly_sales
+            rsr_values.append(rsr)
             if rsr > _RSR_THRESHOLD:
                 flagged_rsr += 1
+
+            mid = len(pts) // 2
+            first_half, second_half = pts[: mid + 1], pts[mid:]
+            if len(first_half) >= 2 and len(second_half) >= 2:
+                first_months = max(len(first_half) / 30, 1)
+                second_months = max(len(second_half) / 30, 1)
+                first_rsr = ((first_half[-1][2] - first_half[0][2]) / first_months) / monthly_sales
+                second_rsr = (
+                    (second_half[-1][2] - second_half[0][2]) / second_months
+                ) / monthly_sales
+                if first_rsr > 0:
+                    rsr_growth_values.append((second_rsr - first_rsr) / first_rsr)
+
+            window_rsrs = [
+                ((pts[i][2] - pts[i - _RSR_WINDOW_DAYS][2]) / monthly_sales, pts[i][0])
+                for i in range(_RSR_WINDOW_DAYS, len(pts))
+            ]
+            if window_rsrs:
+                peak_rsr, peak_date = max(window_rsrs, key=lambda w: w[0])
+                baseline_rsr = statistics.median(w[0] for w in window_rsrs)
+                asin_review_spike[asin.upper()] = {
+                    "peak_rsr": peak_rsr,
+                    "peak_month": peak_date[:7],
+                    "baseline_rsr": baseline_rsr,
+                    "spike_multiple": (peak_rsr / baseline_rsr) if baseline_rsr > 0 else None,
+                }
 
         # Signal 2: rating jump — data source: Xiyouzhaoci daily_trends stars field
         stars_series = [s for _, s, _ in pts if s]
@@ -4113,6 +4156,32 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             if stars_series[i] - stars_series[i - _JUMP_WINDOW] > _JUMP_STARS:
                 flagged_jump += 1
                 break
+
+    # Review-to-sales rate/growth: median across eligible ASINs, category-level
+    # complements to the per-ASIN Signal 1 flag above.
+    if rsr_values:
+        review_to_sales_rate_str = (
+            f"{statistics.median(rsr_values):.1%} (median, {len(rsr_values)}/{total_bsr} ASINs; "
+            f"natural range ~1-5%)"
+        )
+    else:
+        review_to_sales_rate_str = "N/A (no ASINs with both ≥60-day history and a sales estimate)"
+
+    if rsr_growth_values:
+        _growth_median = statistics.median(rsr_growth_values)
+        _growth_label = (
+            "accelerating"
+            if _growth_median > 0.20
+            else "decelerating"
+            if _growth_median < -0.20
+            else "stable"
+        )
+        review_to_sales_growth_str = (
+            f"{_growth_median:+.0%} ({_growth_label}, {len(rsr_growth_values)}/{total_bsr} ASINs; "
+            f"second-half vs. first-half of history window)"
+        )
+    else:
+        review_to_sales_growth_str = "N/A (insufficient history to split into two windows)"
 
     # Signal 3: written/global ratio — data source: ReviewCountExtractor (BSR page scrape)
     ratio_eligible = [p for p in analysis_input if p.get("review_ratio") is not None]
@@ -4645,6 +4714,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         enriched = analysis_input[i]
         title_raw = raw.get("Title") or ""
         title = title_raw[:40].rstrip() + ("…" if len(title_raw) > 40 else "")
+        _spike = asin_review_spike.get((raw.get("ASIN") or raw.get("asin") or "").upper())
         top_asin_rows.append(
             {
                 "rank": enriched["rank"],
@@ -4660,6 +4730,14 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 "review_ratio": f"{enriched['review_ratio']:.2%}"
                 if enriched.get("review_ratio") is not None
                 else "N/A",
+                "review_to_sales_rate": (
+                    f"{_spike['peak_rsr']:.1%} peak ({_spike['peak_month']})" if _spike else "N/A"
+                ),
+                "review_to_sales_growth": (
+                    f"{_spike['spike_multiple']:.1f}x baseline"
+                    if _spike and _spike.get("spike_multiple") is not None
+                    else "N/A"
+                ),
                 "units_mo": f"{enriched['sales']:,}" if enriched["sales"] else "N/A",
                 "seller_type": enriched.get("seller_type") or "Unknown",
             }
@@ -4779,6 +4857,8 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 f"{len(ratio_eligible)}/{n_total} ({len(ratio_eligible) / n_total:.0%})"
             ),
             "integrity_ratio_threshold": f"{_RATIO_THRESHOLD:.0%}",
+            "review_to_sales_rate": review_to_sales_rate_str,
+            "review_to_sales_growth_rate": review_to_sales_growth_str,
             "recommended_capital": f"${_cap_total:,}",
             "capital_inventory": f"${_cap_inv:,}",
             "capital_ppc": f"${_cap_ppc:,}",
