@@ -64,7 +64,8 @@ _TTL_SIGNALS = 3_600  # 1  h — ABA + SERP + CPC market signals
 _TTL_TIMESERIES = 86_400  # 24 h — 12-month historical trends + keyword weekly
 _TTL_SS_BSR = 86_400  # 24 h — Sellersprite monthly snapshots
 _TTL_KEYWORDS = 21_600  # 6  h — LLM keyword extraction from BSR titles
-_TTL_EXTERNAL = 43_200  # 12 h — TikTok PSI + deal intensity
+_TTL_EXTERNAL = 43_200  # 12 h — TikTok/YouTube social PSI
+_TTL_DEAL = 21_600  # 6  h — off-site deal promotion intensity (rotates faster than social PSI)
 _TTL_TRAFFIC = 21_600  # 6  h — Xiyouzhaoci batch ad-traffic ratios
 _TTL_CVR = 7 * 86_400  # 7 d  — Amazon Ads category CVR benchmark
 
@@ -1004,8 +1005,25 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
 _SOCIAL_PLATFORMS = ["tiktok", "youtube"]
 _SOCIAL_MAX_RETRIES = 2
 # Bump when scraping parameters change (video count, window days, brand caps) so that
-# stale cache entries built under old settings are never reused.
-_SOCIAL_CACHE_V = "v3"
+# stale cache entries built under old settings are never reused. Also bumped to v4 to
+# evict legacy "external_intensity" blobs that carried a category_deal_intensity field
+# computed under the pre-fix brand-key bug — deal intensity is no longer part of this
+# cache entry at all (see _DEAL_CACHE_V below), but old blobs under kw_hash still had it.
+_SOCIAL_CACHE_V = "v4"
+
+# Deal intensity has its own cache, independent of social PSI: different inputs (top-10
+# ASIN/brand pairs vs. keyword+brand hashtags), different failure modes, and deal
+# promotions rotate faster than social sentiment (see _TTL_DEAL). Bump when deal-lookup
+# params change (max_pages, ASIN/brand key resolution) to evict stale entries. Bumped to
+# v2: pre-v2 brand resolution read item.get("Brand"), which raw BSR items never carry
+# (see _brand_lookup below) — every run with an empty ASIN/brand pair list collided on
+# the same deal_hash (md5 of an empty joined string is constant regardless of keyword),
+# so a single false "0 deals" result was silently reused across every category analysis.
+_DEAL_CACHE_V = "v2"
+
+# Must match DealHistoryClient.get_deals_for_asin's own default so a standalone
+# call and the workflow's cached fetch_deal_count search the same depth.
+_DEAL_MAX_PAGES = 2
 
 # Video count per hashtag per platform fetch.
 # TikTok: 50 gives ≥3 months of data for a brand posting 3-4x/week, enough to surface
@@ -1040,10 +1058,18 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     ss_snapshots = ctx.cache.get("sellersprite_snapshots") or {}
     _top_brand_set: set[str] = set()
     _new_entrant_brand_set: set[str] = set()
+    # ASIN → brand lookup: raw BSR item dicts never carry a real brand (Amazon's BSR
+    # card HTML doesn't expose it — see BestSellersExtractor), so every per-item brand
+    # lookup below (weakest-rank-slot brand, deal-intensity ASIN/brand pairs) must
+    # resolve through the Sellersprite snapshot instead of item.get("Brand").
+    _brand_lookup: dict[str, str] = {}
 
     if ss_snapshots:
         base_ym = ctx.cache.get("sellersprite_base_ym", "")
         _latest_snap = ss_snapshots.get(max(ss_snapshots), [])
+        _brand_lookup = {
+            p["asin"].upper(): p["brand"] for p in _latest_snap if p.get("asin") and p.get("brand")
+        }
 
         # Top brands by product count in BSR
         _brand_counts: Counter = Counter(p["brand"] for p in _latest_snap if p.get("brand"))
@@ -1095,7 +1121,11 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             continue
         _wrs_rank_val, _wrs_rev_val = int(_wrs_rank_m.group()), int(_wrs_rev_m.group())
         if 10 <= _wrs_rank_val <= 50 and _wrs_rev_val < _wrs_reviews:
-            _b = (_wrs_item.get("Brand") or _wrs_item.get("brand") or "").strip()
+            _wrs_asin = (_wrs_item.get("ASIN") or _wrs_item.get("asin") or "").strip().upper()
+            _b = (
+                _brand_lookup.get(_wrs_asin)
+                or (_wrs_item.get("Brand") or _wrs_item.get("brand") or "").strip()
+            )
             if _b:
                 _wrs_reviews, _wrs_brand = _wrs_rev_val, _b
     if _wrs_brand and _wrs_brand not in _all_brand_list:
@@ -1108,6 +1138,72 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     kw_hash = _hl.md5(
         (_SOCIAL_CACHE_V + main_keyword + "|" + ",".join(sorted(_all_brand_list))).encode()
     ).hexdigest()[:12]
+
+    # ── deal intensity (independent cache: own inputs, TTL, and failure mode) ──
+    # Computed unconditionally, ahead of the social PSI cache logic below, so a social
+    # cache hit/miss can never skip or clobber the deal intensity for this run — the two
+    # signals used to share one "external_intensity" cache entry, which meant a social
+    # cache hit would return stale (or, under a since-fixed brand-key bug, always-zero)
+    # deal intensity without ever recomputing it.
+    _deal_asin_brand_pairs = sorted(
+        {
+            (asin, brand)
+            for item in items[:10]
+            if (asin := (item.get("ASIN") or item.get("asin") or "").strip().upper())
+            and (
+                brand := _brand_lookup.get(asin)
+                or (item.get("Brand") or item.get("brand") or "").strip()
+            )
+        }
+    )
+    _deal_hash = _hl.md5(
+        (
+            _DEAL_CACHE_V
+            + "|"
+            + str(_DEAL_MAX_PAGES)
+            + "|"
+            + ",".join(f"{a}:{b}" for a, b in _deal_asin_brand_pairs)
+        ).encode()
+    ).hexdigest()[:12]
+
+    _cached_deal_intensity = _l2_get(ctx, _TTL_DEAL, "deal_intensity", _deal_hash)
+    if _cached_deal_intensity is not None:
+        ctx.cache["category_deal_intensity"] = _cached_deal_intensity
+        logger.info(
+            f"[external_intensity] Deal intensity L2 cache hit deal_hash={_deal_hash} "
+            f"value={_cached_deal_intensity}"
+        )
+    else:
+        _deal_client = DealHistoryClient()
+
+        async def fetch_deal_count(asin: str, brand: str) -> int:
+            count = len(
+                await _deal_client.get_deals_for_asin(
+                    asin=asin, brand=brand, max_pages=_DEAL_MAX_PAGES
+                )
+            )
+            logger.info(
+                f"[external_intensity] deal_count ASIN={asin} brand={brand!r}: {count} deals"
+            )
+            return count
+
+        try:
+            deal_counts = await asyncio.gather(
+                *(fetch_deal_count(asin, brand) for asin, brand in _deal_asin_brand_pairs)
+            )
+            total_deals = sum(deal_counts)
+            _deal_intensity = (
+                9 if total_deals > 5 else 6 if total_deals > 2 else 3 if total_deals > 0 else 0
+            )
+            ctx.cache["category_deal_intensity"] = _deal_intensity
+            _l2_set(ctx, _deal_intensity, "deal_intensity", _deal_hash)
+            logger.info(
+                f"[external_intensity] deal_count total={total_deals} "
+                f"across {len(_deal_asin_brand_pairs)} ASINs"
+            )
+        except Exception as e:
+            logger.error(f"[external_intensity] Deal intensity: {e}")
+            ctx.cache["category_deal_intensity"] = ctx.cache.get("category_deal_intensity", 0)
 
     # ── helpers (defined before cache check so partial-retry can reuse them) ──
 
@@ -1510,32 +1606,14 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         + (f" | {_brand_summary}" if _brand_summary else "")
     )
 
-    # ── deal intensity ────────────────────────────────────────────────────────
-    _deal_client = DealHistoryClient()
-
-    async def fetch_deal_count(item):
-        asin = (item.get("ASIN") or item.get("asin") or "").strip().upper()
-        brand = (item.get("brand") or "").strip()
-        if not asin or not brand:
-            return 0
-        return len(await _deal_client.get_deals_for_asin(asin=asin, brand=brand, max_pages=1))
-
-    try:
-        deal_counts = await asyncio.gather(*(fetch_deal_count(item) for item in items[:10]))
-        total_deals = sum(deal_counts)
-        ctx.cache["category_deal_intensity"] = (
-            9 if total_deals > 5 else 6 if total_deals > 2 else 3 if total_deals > 0 else 0
-        )
-    except Exception as e:
-        logger.error(f"[external_intensity] Deal intensity: {e}")
-
+    # Deal intensity was already fetched/cached independently above; not part of this
+    # (social-only) cache entry — see the "deal intensity" block before the L2 cache check.
     _ext = {
         "category_social_psi": ctx.cache.get("category_social_psi", 0),
         "category_social_verdict": ctx.cache.get("category_social_verdict", "Unknown"),
         "category_kw_psi": ctx.cache.get("category_kw_psi", 0),
         "category_kw_verdict": ctx.cache.get("category_kw_verdict", "Unknown"),
         "category_social_platforms": ctx.cache.get("category_social_platforms", []),
-        "category_deal_intensity": ctx.cache.get("category_deal_intensity", 0),
         "brand_social_data": ctx.cache.get("brand_social_data", []),
         "category_kw_tag": kw_tag,
     }
@@ -1549,7 +1627,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         )
     logger.info(
         f"External intensity: Social PSI={_ext['category_social_psi']}, "
-        f"Deal Intensity={_ext['category_deal_intensity']}, "
+        f"Deal Intensity={ctx.cache.get('category_deal_intensity', 0)}, "
         f"Brands searched: {len(_ext['brand_social_data'])}"
     )
     return items
