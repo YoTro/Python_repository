@@ -562,21 +562,17 @@ async def _calculate_profit_mcp(items: list, ctx: WorkflowContext) -> list:
                     "calc_profit", {"asin": asin, "estimated_cost": cost}
                 )
 
-                if isinstance(resp, list) and len(resp) > 0:
-                    import json
-
-                    profit_data = json.loads(resp[0].get("text", "{}"))
-                    if profit_data.get("profitability"):
-                        p = profit_data["profitability"]
-                        item["profit"] = p.get("net_profit")
-                        item["profit_margin"] = p.get("margin")
-                        item["roi"] = p.get("roi")
-                        item["fees"] = profit_data.get("fees")
-                        # cost_ratio is only meaningful when COGS is real; when
-                        # estimated it equals cogs_default_pct by construction
-                        # and would trivially pass any cost_ratio filter.
-                        if price and cost and cost_confidence == "actual":
-                            item["cost_ratio"] = round(cost / price, 4)
+                if isinstance(resp, dict) and resp.get("profitability"):
+                    p = resp["profitability"]
+                    item["profit"] = p.get("net_profit")
+                    item["profit_margin"] = p.get("margin")
+                    item["roi"] = p.get("roi")
+                    item["fees"] = resp.get("fees")
+                    # cost_ratio is only meaningful when COGS is real; when
+                    # estimated it equals cogs_default_pct by construction
+                    # and would trivially pass any cost_ratio filter.
+                    if price and cost and cost_confidence == "actual":
+                        item["cost_ratio"] = round(cost / price, 4)
             except Exception as e:
                 logger.error(f"Failed to calculate profit via MCP for {asin}: {e}")
 
