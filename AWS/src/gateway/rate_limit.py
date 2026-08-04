@@ -290,8 +290,6 @@ class RateLimiter:
                 if not wait_sec or time.monotonic() + wait_sec > deadline:
                     return False
                 time.sleep(min(wait_sec, 0.5))
-            # unreachable
-            return False
 
         if bucket is None:
             return True
@@ -348,8 +346,6 @@ class RateLimiter:
                 if not wait_sec or time.monotonic() + wait_sec > deadline:
                     return False
                 await asyncio.sleep(min(wait_sec, 0.5))
-            # unreachable
-            return False
 
         if bucket is None:
             return True

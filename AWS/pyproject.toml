@@ -60,6 +60,7 @@ dev = [
     "pre-commit>=3.7",
     "ruff>=0.11",
     "bandit[toml]>=1.8",
+    "vulture>=2.11",
     # Type stubs for runtime dependencies
     "boto3-stubs[s3]",
     "types-redis",
@@ -177,3 +178,12 @@ skips = [
     #       No user passwords or sensitive data are hashed with MD5 in this codebase.
     "B324",
 ]
+
+# ── vulture (dead code detection) ──────────────────────────────────────────────
+[tool.vulture]
+paths = ["src", "scripts/vulture_whitelist.py"]
+min_confidence = 80
+exclude = ["venv311", "models", "data"]
+# Handlers registered via @XRegistry.register("name") are invoked dynamically
+# through the registry, not by direct name reference — vulture can't see that.
+ignore_decorators = ["*.register"]

@@ -170,3 +170,27 @@ jobs:
         # Flags: -ll (medium+ severity), -ii (medium+ confidence), -c (pyproject.toml config).
         # Skips: B305 (ECB — Lingxing API), B324 (MD5 — cache keys / protocol signatures).
         run: bandit -r src/ -ll -ii -c pyproject.toml
+
+  dead-code:
+    name: Dead Code (vulture)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: vulture — unused functions, classes, and variables
+        # min_confidence=80 and ignore_decorators=["*.register"] (see pyproject.toml)
+        # keep registry-dispatched workflow/interaction handlers from false-flagging.
+        # False positives (e.g. fields read only via getattr/string dispatch) go in
+        # scripts/vulture_whitelist.py rather than raising min_confidence globally.
+        run: vulture
