@@ -283,12 +283,12 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
         from src.mcp.servers.market.deals.client import DealHistoryClient
 
         client = DealHistoryClient()
-        deals = await client.get_deals_for_asin(
-            asin=arguments["asin"],
+        matched = await client.get_deals_for_asins(
+            asins=set(arguments["asins"]),
             brand=arguments["brand"],
             max_pages=arguments.get("max_pages", 2),
         )
-        return [TextContent(type="text", text=json.dumps(deals, ensure_ascii=False))]
+        return [TextContent(type="text", text=json.dumps(matched, ensure_ascii=False))]
 
     elif name == "analyze_promotions":
         from src.intelligence.processors.promo_analyzer import PromoAnalyzer
@@ -675,16 +675,24 @@ market_tools = [
         name="get_deals_for_asin",
         description=(
             "ASIN-confirmed deal lookup on Slickdeals and DealNews. "
-            "Searches both sites by brand name, then follows each deal's tracking redirect "
-            "to confirm the ASIN before returning. Only returns deals that provably link to "
-            "the requested ASIN — no false positives from title-matching. "
-            "Each result includes: date, price (USD), discount_pct, title, site, deal_url, confirmed_asin. "
+            "Searches both sites once by brand name, then follows each deal's tracking redirect "
+            "to confirm which ASIN it links to. Only returns deals that provably link to one of "
+            "the requested ASINs — no false positives from title-matching. "
+            "Pass every ASIN of the same brand in one call (``asins``) — the brand search and "
+            "redirect resolution happen once and are shared across all of them, so batching "
+            "multiple ASINs from the same brand is far cheaper than calling this once per ASIN. "
+            "Returns an object keyed by each requested ASIN, mapping to its list of confirmed "
+            "deals (each with date, price (USD), discount_pct, title, site, deal_url, confirmed_asin). "
             "Use this instead of get_deal_history when you need ASIN-level precision."
         ),
         inputSchema={
             "type": "object",
             "properties": {
-                "asin": {"type": "string", "description": "Target Amazon ASIN"},
+                "asins": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Target Amazon ASINs, all of the same brand (e.g. every top-BSR ASIN belonging to 'Zevo').",
+                },
                 "brand": {
                     "type": "string",
                     "description": "Brand name to search by (e.g. 'Zevo', 'STEM'). Shorter is better — use the brand, not the full product title.",
@@ -695,7 +703,7 @@ market_tools = [
                     "description": "Max search result pages to scrape per site",
                 },
             },
-            "required": ["asin", "brand"],
+            "required": ["asins", "brand"],
         },
     ),
     Tool(
@@ -1107,7 +1115,7 @@ _MARKET_META = {
     "get_deal_history": ("DATA", "list of historical deals with dates, prices, and discounts"),
     "get_deals_for_asin": (
         "DATA",
-        "ASIN-confirmed deal list from Slickdeals and DealNews with redirect-verified ASIN match",
+        "object keyed by each requested ASIN mapping to its redirect-verified deal list from Slickdeals and DealNews",
     ),
     "analyze_promotions": (
         "COMPUTE",

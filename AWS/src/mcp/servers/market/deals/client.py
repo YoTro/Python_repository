@@ -294,14 +294,18 @@ class DealHistoryClient:
 
         return None
 
-    async def get_deals_for_asin(
-        self, asin: str, brand: str, max_pages: int = 2
-    ) -> list[dict[str, Any]]:
+    async def get_deals_for_asins(
+        self, asins: set[str], brand: str, max_pages: int = 2
+    ) -> dict[str, list[dict[str, Any]]]:
         """
-        2-phase ASIN-confirmed deal lookup across Slickdeals and DealNews.
+        2-phase ASIN-confirmed deal lookup across Slickdeals and DealNews, shared across
+        every ASIN of one brand — a single brand search + candidate resolution pass whose
+        results are then bucketed per target ASIN, instead of repeating both phases once
+        per ASIN (the brand search and per-candidate redirect resolution are identical
+        regardless of which of the brand's ASINs is being confirmed).
 
         Phase 1: search both sites by brand in parallel → candidate deals with click URLs.
-        Phase 2: resolve each candidate's click URL in parallel → filter to ASIN matches.
+        Phase 2: resolve each candidate's click URL in parallel → bucket by resolved ASIN.
           - Slickdeals: click URL is on the deal detail page (one extra fetch per candidate)
           - DealNews:   click URL (lw/click) is already on the search result card
         """
@@ -310,9 +314,10 @@ class DealHistoryClient:
             self._fetch_dealnews(brand, max_pages),
         )
         candidates = sd_candidates + dn_candidates
+        matched: dict[str, list[dict[str, Any]]] = {asin: [] for asin in asins}
         if not candidates:
-            logger.info(f"[get_deals_for_asin] No candidates for brand={brand!r}")
-            return []
+            logger.info(f"[get_deals_for_asins] No candidates for brand={brand!r}")
+            return matched
 
         sem = asyncio.Semaphore(5)
 
@@ -329,20 +334,28 @@ class DealHistoryClient:
 
         results = await asyncio.gather(*(resolve(d) for d in candidates), return_exceptions=True)
 
-        matched = []
         for r in results:
             if isinstance(r, Exception):
                 continue
             deal, resolved_asin = r
-            if resolved_asin == asin:
-                matched.append({**deal, "confirmed_asin": asin})
+            if resolved_asin in matched:
+                matched[resolved_asin].append({**deal, "confirmed_asin": resolved_asin})
 
         logger.info(
-            f"[get_deals_for_asin] ASIN={asin} brand={brand!r}: "
-            f"{len(matched)}/{len(candidates)} confirmed "
+            f"[get_deals_for_asins] brand={brand!r} targets={sorted(asins)}: "
+            f"{sum(len(v) for v in matched.values())}/{len(candidates)} confirmed "
             f"(SD={len(sd_candidates)} DN={len(dn_candidates)})"
         )
         return matched
+
+    async def get_deals_for_asin(
+        self, asin: str, brand: str, max_pages: int = 2
+    ) -> list[dict[str, Any]]:
+        """
+        Single-ASIN convenience wrapper around get_deals_for_asins.
+        """
+        matched = await self.get_deals_for_asins({asin}, brand, max_pages)
+        return matched[asin]
 
     def _parse_dealnews(self, html: str) -> list[dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")

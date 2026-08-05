@@ -1176,20 +1176,27 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     else:
         _deal_client = DealHistoryClient()
 
-        async def fetch_deal_count(asin: str, brand: str) -> int:
-            count = len(
-                await _deal_client.get_deals_for_asin(
-                    asin=asin, brand=brand, max_pages=_DEAL_MAX_PAGES
-                )
+        # Group by brand: several of the top-10 ASINs often share a brand, and a brand
+        # search + candidate resolution pass is identical regardless of which of the
+        # brand's ASINs is being confirmed, so search each brand only once.
+        _brand_to_asins: dict[str, set[str]] = {}
+        for _pair_asin, _pair_brand in _deal_asin_brand_pairs:
+            _brand_to_asins.setdefault(_pair_brand, set()).add(_pair_asin)
+
+        async def fetch_brand_deal_count(brand: str, asins: set[str]) -> int:
+            matched = await _deal_client.get_deals_for_asins(
+                asins=asins, brand=brand, max_pages=_DEAL_MAX_PAGES
             )
+            count = sum(len(v) for v in matched.values())
             logger.info(
-                f"[external_intensity] deal_count ASIN={asin} brand={brand!r}: {count} deals"
+                f"[external_intensity] deal_count brand={brand!r} asins={sorted(asins)}: "
+                f"{count} deals"
             )
             return count
 
         try:
             deal_counts = await asyncio.gather(
-                *(fetch_deal_count(asin, brand) for asin, brand in _deal_asin_brand_pairs)
+                *(fetch_brand_deal_count(brand, asins) for brand, asins in _brand_to_asins.items())
             )
             total_deals = sum(deal_counts)
             _deal_intensity = (
@@ -1199,7 +1206,8 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             _l2_set(ctx, _deal_intensity, "deal_intensity", _deal_hash)
             logger.info(
                 f"[external_intensity] deal_count total={total_deals} "
-                f"across {len(_deal_asin_brand_pairs)} ASINs"
+                f"across {len(_deal_asin_brand_pairs)} ASINs "
+                f"({len(_brand_to_asins)} brand searches)"
             )
         except Exception as e:
             logger.error(f"[external_intensity] Deal intensity: {e}")
