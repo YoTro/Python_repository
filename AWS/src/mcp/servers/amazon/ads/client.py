@@ -216,6 +216,21 @@ class AmazonAdsClient:
     ) -> dict[str, Any]:
         """
         Fetch bid recommendations (Asynchronous).
+
+        Returns the raw v5 payload: {"bidRecommendations": [...]}. Each entry is a
+        theme-grouped recommendation set (theme e.g. "CONVERSION_OPPORTUNITIES",
+        "PRIME_DAY") containing, per targetingExpression.type (CLOSE_MATCH,
+        LOOSE_MATCH, SUBSTITUTES, COMPLEMENTS, ...):
+          - bidRecommendationsForTargetingExpressions: bidValues (list of
+            {suggestedBid}, typically [lower, suggested, upper]) plus
+            suggestedBidImpactMetrics ({estimatedImpressionLower, estimatedImpressionUpper}).
+          - bidAnalysesForTargetingExpressions: only populated when
+            include_analysis=True. bidAnalyses is a map keyed by placement ("ALL"
+            plus PLACEMENT_TOP, PLACEMENT_PRODUCT_PAGE, PLACEMENT_REST_OF_SEARCH),
+            each a list of candidate bids: {bid, type, impactMetrics:
+            {estimatedImpressionAvg, estimatedImpressionLower, estimatedImpressionUpper}}.
+            type is SUGGESTED_LOWER/SUGGESTED/SUGGESTED_UPPER for the three headline
+            bids, or ALTERNATIVE for other points on the same impression curve.
         """
         endpoint = f"{self.base_url}/sp/targets/bid/recommendations"
         v5_media_type = "application/vnd.spthemebasedbidrecommendation.v5+json"

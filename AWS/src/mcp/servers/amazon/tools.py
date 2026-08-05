@@ -1027,7 +1027,23 @@ amazon_tools = [
     ),
     Tool(
         name="get_amazon_keyword_bid_recommendations",
-        description="Get suggested bid and bidding ranges for a keyword from Amazon Advertising API (SP v5.0).",
+        description=(
+            "Get suggested bid and bidding ranges for a keyword from Amazon Advertising API (SP v5.0). "
+            "Returns bidRecommendations: a list of theme-grouped recommendation sets "
+            "(theme e.g. 'CONVERSION_OPPORTUNITIES', 'PRIME_DAY'), each with: "
+            "bidRecommendationsForTargetingExpressions — per targetingExpression.type "
+            "(e.g. CLOSE_MATCH, LOOSE_MATCH, SUBSTITUTES, COMPLEMENTS), a simple summary of "
+            "bidValues (list of {suggestedBid}, typically [lower, suggested, upper]) and "
+            "suggestedBidImpactMetrics ({estimatedImpressionLower, estimatedImpressionUpper}); "
+            "bidAnalysesForTargetingExpressions — per targetingExpression.type, a detailed "
+            "bidAnalyses map keyed by placement ('ALL' plus PLACEMENT_TOP, PLACEMENT_PRODUCT_PAGE, "
+            "PLACEMENT_REST_OF_SEARCH when include_analysis=True), each a list of candidate bids: "
+            "{bid, type, impactMetrics: {estimatedImpressionAvg, estimatedImpressionLower, "
+            "estimatedImpressionUpper}}, where type is one of SUGGESTED_LOWER/SUGGESTED/"
+            "SUGGESTED_UPPER (the three headline bids) or ALTERNATIVE (other bid points on the "
+            "same impression curve). bidAnalyses* fields are only populated when "
+            "include_analysis=True; otherwise expect bidRecommendationsForTargetingExpressions only."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
