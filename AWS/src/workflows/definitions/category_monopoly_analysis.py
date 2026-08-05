@@ -4214,16 +4214,23 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 if first_rsr > 0:
                     rsr_growth_values.append((second_rsr - first_rsr) / first_rsr)
 
+            _latest_day = pts[-1][0][:10]  # latest scraped day may still be partial
             window_rsrs = [
-                ((pts[i][2] - pts[i - _RSR_WINDOW_DAYS][2]) / monthly_sales, pts[i][0])
+                (
+                    (pts[i][2] - pts[i - _RSR_WINDOW_DAYS][2]) / monthly_sales,
+                    pts[i][0],
+                    pts[i - _RSR_WINDOW_DAYS][0],
+                )
                 for i in range(_RSR_WINDOW_DAYS, len(pts))
+                if pts[i][0][:10]
+                < _latest_day  # exclude only windows ending on the partial latest day
             ]
             if window_rsrs:
-                peak_rsr, peak_date = max(window_rsrs, key=lambda w: w[0])
+                peak_rsr, peak_end_date, peak_start_date = max(window_rsrs, key=lambda w: w[0])
                 baseline_rsr = statistics.median(w[0] for w in window_rsrs)
                 asin_review_spike[asin.upper()] = {
                     "peak_rsr": peak_rsr,
-                    "peak_month": peak_date[:7],
+                    "peak_date_range": f"{peak_start_date[:10]} → {peak_end_date[:10]}",
                     "baseline_rsr": baseline_rsr,
                     "spike_multiple": (peak_rsr / baseline_rsr) if baseline_rsr > 0 else None,
                 }
@@ -4809,7 +4816,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 if enriched.get("review_ratio") is not None
                 else "N/A",
                 "review_to_sales_rate": (
-                    f"{_spike['peak_rsr']:.1%} peak ({_spike['peak_month']})" if _spike else "N/A"
+                    f"{_spike['peak_rsr']:.1%} peak ({_spike['peak_date_range']})"
+                    if _spike
+                    else "N/A"
                 ),
                 "review_to_sales_growth": (
                     f"{_spike['spike_multiple']:.1f}x baseline"
