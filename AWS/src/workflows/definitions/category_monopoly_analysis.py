@@ -14,6 +14,7 @@ import hashlib as _hl
 import io
 import json
 import logging
+import math
 import os
 import re
 import statistics
@@ -23,6 +24,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from dateutil import parser as _dateutil_parser
 
 from src.core.data_cache import data_cache as _data_cache
 from src.core.utils.decorators import exponential_backoff
@@ -1019,9 +1022,12 @@ _SOCIAL_CACHE_V = "v4"
 # (see _brand_lookup below) — every run with an empty ASIN/brand pair list collided on
 # the same deal_hash (md5 of an empty joined string is constant regardless of keyword),
 # so a single false "0 deals" result was silently reused across every category analysis.
-_DEAL_CACHE_V = "v2"
+# v3: cached value's shape changed from a bare int to {deal_intensity, deal_discount_data}
+# (discount depth + frequency, not just count) — bump so old bare-int blobs are never
+# read back as the new dict shape.
+_DEAL_CACHE_V = "v3"
 
-# Must match DealHistoryClient.get_deals_for_asin's own default so a standalone
+# Must match DealHistoryClient.get_deals_for_asins's own default so a standalone
 # call and the workflow's cached fetch_deal_count search the same depth.
 _DEAL_MAX_PAGES = 2
 
@@ -1166,12 +1172,13 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         ).encode()
     ).hexdigest()[:12]
 
-    _cached_deal_intensity = _l2_get(ctx, _TTL_DEAL, "deal_intensity", _deal_hash)
-    if _cached_deal_intensity is not None:
-        ctx.cache["category_deal_intensity"] = _cached_deal_intensity
+    _cached_deal = _l2_get(ctx, _TTL_DEAL, "deal_intensity", _deal_hash)
+    if _cached_deal is not None:
+        ctx.cache["category_deal_intensity"] = _cached_deal["deal_intensity"]
+        ctx.cache["category_deal_discount_data"] = _cached_deal["deal_discount_data"]
         logger.info(
             f"[external_intensity] Deal intensity L2 cache hit deal_hash={_deal_hash} "
-            f"value={_cached_deal_intensity}"
+            f"value={_cached_deal['deal_intensity']}"
         )
     else:
         _deal_client = DealHistoryClient()
@@ -1183,35 +1190,95 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         for _pair_asin, _pair_brand in _deal_asin_brand_pairs:
             _brand_to_asins.setdefault(_pair_brand, set()).add(_pair_asin)
 
-        async def fetch_brand_deal_count(brand: str, asins: set[str]) -> int:
+        async def fetch_brand_deals(brand: str, asins: set[str]) -> list[dict]:
             matched = await _deal_client.get_deals_for_asins(
                 asins=asins, brand=brand, max_pages=_DEAL_MAX_PAGES
             )
-            count = sum(len(v) for v in matched.values())
+            deals = [d for _v in matched.values() for d in _v]
             logger.info(
                 f"[external_intensity] deal_count brand={brand!r} asins={sorted(asins)}: "
-                f"{count} deals"
+                f"{len(deals)} deals"
             )
-            return count
+            return deals
 
         try:
-            deal_counts = await asyncio.gather(
-                *(fetch_brand_deal_count(brand, asins) for brand, asins in _brand_to_asins.items())
+            deal_lists = await asyncio.gather(
+                *(fetch_brand_deals(brand, asins) for brand, asins in _brand_to_asins.items())
             )
-            total_deals = sum(deal_counts)
+            all_deals = [d for _lst in deal_lists for d in _lst]
+            total_deals = len(all_deals)
             _deal_intensity = (
                 9 if total_deals > 5 else 6 if total_deals > 2 else 3 if total_deals > 0 else 0
             )
+
+            # Discount depth: how deep are these deals, not just how many there are.
+            _discounts = [
+                float(d["discount_pct"])
+                for d in all_deals
+                if isinstance(d.get("discount_pct"), int | float) and d["discount_pct"] > 0
+            ]
+            _avg_discount_pct = round(statistics.mean(_discounts), 1) if _discounts else None
+            _discount_buckets: Counter = Counter()
+            for _pct in _discounts:
+                _bucket = (
+                    "shallow_lt15"
+                    if _pct < 15
+                    else "moderate_15_30"
+                    if _pct < 30
+                    else "deep_30plus"
+                )
+                _discount_buckets[_bucket] += 1
+
+            # Frequency: deals per month over the observed date span of the confirmed
+            # deals — tells you how often this category goes on sale, not just how many
+            # sales happened to land in this one pull.
+            _deal_dates: list[datetime] = []
+            for d in all_deals:
+                _raw_date = d.get("date")
+                if not _raw_date:
+                    continue
+                try:
+                    # fuzzy=False: both sites emit a bare date string (ISO timestamp or
+                    # "Month D, YYYY"), never prose — fuzzy matching would otherwise
+                    # misparse an unrelated numeric string (e.g. a price) as a fake date.
+                    _dt = _dateutil_parser.parse(str(_raw_date), fuzzy=False)
+                    _deal_dates.append(_dt.replace(tzinfo=None))
+                except (ValueError, OverflowError, TypeError):
+                    continue
+            _deal_frequency_per_month: float | None = None
+            if len(_deal_dates) >= 2:
+                _span_days = (max(_deal_dates) - min(_deal_dates)).days
+                if _span_days > 0:
+                    _deal_frequency_per_month = round(total_deals / (_span_days / 30.4), 1)
+
+            _deal_discount_data = {
+                "avg_discount_pct": _avg_discount_pct,
+                "discount_buckets": dict(_discount_buckets),
+                "n_deals_with_discount": len(_discounts),
+                "deal_frequency_per_month": _deal_frequency_per_month,
+                "n_deals_with_date": len(_deal_dates),
+            }
+
             ctx.cache["category_deal_intensity"] = _deal_intensity
-            _l2_set(ctx, _deal_intensity, "deal_intensity", _deal_hash)
+            ctx.cache["category_deal_discount_data"] = _deal_discount_data
+            _l2_set(
+                ctx,
+                {"deal_intensity": _deal_intensity, "deal_discount_data": _deal_discount_data},
+                "deal_intensity",
+                _deal_hash,
+            )
             logger.info(
                 f"[external_intensity] deal_count total={total_deals} "
+                f"avg_discount={_avg_discount_pct} freq/mo={_deal_frequency_per_month} "
                 f"across {len(_deal_asin_brand_pairs)} ASINs "
                 f"({len(_brand_to_asins)} brand searches)"
             )
         except Exception as e:
             logger.error(f"[external_intensity] Deal intensity: {e}")
             ctx.cache["category_deal_intensity"] = ctx.cache.get("category_deal_intensity", 0)
+            ctx.cache["category_deal_discount_data"] = ctx.cache.get(
+                "category_deal_discount_data", {}
+            )
 
     # ── helpers (defined before cache check so partial-retry can reuse them) ──
 
@@ -1776,22 +1843,44 @@ async def _fetch_historical_trends(items: list[dict], ctx: Any) -> list[dict]:
 
 
 async def _enrich_batch_traffic_scores(items: list[dict], ctx: Any) -> list[dict]:
-    """Fetches batch traffic scores for Top 20 ASINs to calculate average ad dependency."""
+    """
+    Fetches batch traffic scores for Top 20 ASINs and derives three ad-dependency signals:
+      - actual_bsr_ad_ratio: mean ad_traffic_ratio across the set (steady-state ad burden input)
+      - ad_ratio_stdev: population stdev — high spread means the category is split between
+        ad-reliant and organically-driven sellers rather than uniformly ad-dependent
+      - ad_ratio_rank_correlation: Pearson r between BSR rank and ad_traffic_ratio. Positive
+        (better rank ↔ lower ad reliance) signals an organic moat at the top; near-zero/negative
+        signals rank is bought, i.e. the category is winnable by outspending on ads.
+    Also caches ad_ratio_by_asin so the dominant-brand-portfolio step downstream can check
+    whether ad dependency is consistent across one brand's own ASINs (brand-moat signal).
+    """
     if not items or not ctx.mcp:
         return items
 
+    _top_items = [item for item in items[:20] if (item.get("ASIN") or item.get("asin"))]
     top_asins = sorted(
-        (item.get("ASIN") or item.get("asin") or "").strip().upper()
-        for item in items[:20]
-        if (item.get("ASIN") or item.get("asin"))
+        {(item.get("ASIN") or item.get("asin")).strip().upper() for item in _top_items}
     )
     if not top_asins:
         return items
+
+    # BSR rank per ASIN, from the same Top-20 slice used to build top_asins. Falls back to
+    # ordinal position when the Rank field is missing/unparseable.
+    _rank_by_asin: dict[str, int] = {}
+    for _pos, item in enumerate(_top_items, start=1):
+        _asin = (item.get("ASIN") or item.get("asin")).strip().upper()
+        _rank_m = re.search(
+            r"\d+", str(item.get("Rank") or item.get("rank") or "").replace(",", "")
+        )
+        _rank_by_asin.setdefault(_asin, int(_rank_m.group()) if _rank_m else _pos)
 
     asins_hash = _hl.md5(",".join(top_asins).encode()).hexdigest()[:12]
     cached = _l2_get(ctx, _TTL_TRAFFIC, "traffic_scores", asins_hash)
     if cached is not None:
         ctx.cache["actual_bsr_ad_ratio"] = cached["actual_bsr_ad_ratio"]
+        ctx.cache["ad_ratio_stdev"] = cached.get("ad_ratio_stdev")
+        ctx.cache["ad_ratio_rank_correlation"] = cached.get("ad_ratio_rank_correlation")
+        ctx.cache["ad_ratio_by_asin"] = cached.get("ad_ratio_by_asin") or {}
         logger.info(f"[cat_monopoly] Traffic scores L2 cache hit asins_hash={asins_hash}")
         return items
 
@@ -1805,20 +1894,54 @@ async def _enrich_batch_traffic_scores(items: list[dict], ctx: Any) -> list[dict
         )
         entities = resp.get("entities") or [] if isinstance(resp, dict) else []
 
-        ratios = []
+        ratio_by_asin: dict[str, float] = {}
         for d in entities:
+            _asin = (d.get("asin") or "").strip().upper()
             v = d.get("advertisingTrafficScoreRatio")
-            if v is None:
+            if not _asin or v is None:
                 continue
             try:
-                ratios.append(float(v))
+                ratio_by_asin[_asin] = float(v)
             except (TypeError, ValueError):
                 continue
-        if ratios:
+
+        if ratio_by_asin:
+            ratios = list(ratio_by_asin.values())
             avg_ratio = statistics.mean(ratios)
+            stdev_ratio = statistics.pstdev(ratios) if len(ratios) > 1 else 0.0
+
+            # Need a handful of points for the correlation to mean anything — below that,
+            # noise dominates and we'd rather report "insufficient data" than a spurious ±1.
+            rank_corr: float | None = None
+            _paired = [
+                (_rank_by_asin[a], r) for a, r in ratio_by_asin.items() if a in _rank_by_asin
+            ]
+            if len(_paired) >= 5:
+                _ranks, _rs = zip(*_paired, strict=False)
+                try:
+                    rank_corr = statistics.correlation(_ranks, _rs)
+                except statistics.StatisticsError:
+                    rank_corr = None
+
             ctx.cache["actual_bsr_ad_ratio"] = avg_ratio
-            _l2_set(ctx, {"actual_bsr_ad_ratio": avg_ratio}, "traffic_scores", asins_hash)
-            logger.info(f"Calculated average BSR ad dependency: {avg_ratio:.2%}")
+            ctx.cache["ad_ratio_stdev"] = stdev_ratio
+            ctx.cache["ad_ratio_rank_correlation"] = rank_corr
+            ctx.cache["ad_ratio_by_asin"] = ratio_by_asin
+            _l2_set(
+                ctx,
+                {
+                    "actual_bsr_ad_ratio": avg_ratio,
+                    "ad_ratio_stdev": stdev_ratio,
+                    "ad_ratio_rank_correlation": rank_corr,
+                    "ad_ratio_by_asin": ratio_by_asin,
+                },
+                "traffic_scores",
+                asins_hash,
+            )
+            logger.info(
+                f"[cat_monopoly] ad_traffic_ratio mean={avg_ratio:.2%} stdev={stdev_ratio:.2%} "
+                f"rank_corr={rank_corr if rank_corr is not None else 'N/A (n<5)'} (n={len(ratios)})"
+            )
     except Exception as e:
         logger.error(f"Failed to fetch batch traffic scores: {e}")
     return items
@@ -3942,6 +4065,31 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         _estimated_acos = _ad_profit_drag = None
         _ad_burden_verdict = "unknown"
 
+    # ── Ad-dependency dispersion & rank correlation (from Top-20 traffic scores) ──
+    # stdev: is the category uniformly ad-reliant, or split between ad-driven and
+    # organically-driven sellers? rank_correlation: does earning a better BSR rank
+    # track with LOWER ad reliance (organic moat) or is rank simply bought/defended
+    # with ad spend (winnable by outspending, or leaders defend rank with ads)?
+    _ad_ratio_stdev: float | None = ctx.cache.get("ad_ratio_stdev")
+    _ad_ratio_rank_corr: float | None = ctx.cache.get("ad_ratio_rank_correlation")
+
+    _ad_dispersion_verdict = (
+        "Bifurcated — organic and ad-reliant sellers coexist"
+        if _ad_ratio_stdev is not None and _ad_ratio_stdev >= 0.20
+        else "Uniform ad reliance across sellers"
+        if _ad_ratio_stdev is not None
+        else "unknown"
+    )
+    _ad_rank_corr_verdict = (
+        "Organic moat — better rank tracks with lower ad reliance"
+        if _ad_ratio_rank_corr is not None and _ad_ratio_rank_corr >= 0.25
+        else "Ad-defended — better rank tracks with higher ad reliance"
+        if _ad_ratio_rank_corr is not None and _ad_ratio_rank_corr <= -0.25
+        else "Mixed — no clear rank/ad-reliance pattern"
+        if _ad_ratio_rank_corr is not None
+        else "unknown"
+    )
+
     estimator = SalesEstimator()
     node_id = ctx.config.get("category_node_id")
     baseline = estimator.category_params.get(str(node_id), {}).get("market_logic", {})
@@ -4770,6 +4918,8 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         _top_pos_brand, _top_pos_cnt = _brand_pos.most_common(1)[0]
         if _top_pos_cnt / _N_items >= 0.20:
             _dom_brand = _top_pos_brand
+    _ad_ratio_by_asin: dict[str, float] = ctx.cache.get("ad_ratio_by_asin") or {}
+    _dom_brand_ad_consistency = "insufficient data"
     if _dom_brand:
         _portfolio_items = sorted(
             [p for p in analysis_input if (p.get("brand") or "Unknown") == _dom_brand],
@@ -4785,12 +4935,33 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                     "rating": p.get("rating"),
                     "monthly_units": p.get("sales") or 0,
                     "sub_niche_tag": _asin_sub_niche.get(p["asin"] or ""),
+                    "ad_traffic_ratio": (
+                        f"{_ad_ratio_by_asin[p['asin']]:.0%}"
+                        if p.get("asin") in _ad_ratio_by_asin
+                        else "N/A"
+                    ),
                 }
                 for p in _portfolio_items
             ]
+            # Brand-moat signal: does this brand hold its portfolio's ASINs at a consistently
+            # low (or consistently high) ad reliance, or does it vary per-ASIN? Low variance
+            # across the brand's own ASINs (regardless of level) means the brand's traffic mix
+            # is a deliberate, repeatable playbook rather than one lucky/unlucky listing.
+            _dom_brand_ad_ratios = [
+                _ad_ratio_by_asin[p["asin"]]
+                for p in _portfolio_items
+                if p.get("asin") in _ad_ratio_by_asin
+            ]
+            if len(_dom_brand_ad_ratios) >= 2:
+                _dom_brand_ad_consistency = (
+                    "Consistent (repeatable traffic playbook across the brand's ASINs)"
+                    if statistics.pstdev(_dom_brand_ad_ratios) < 0.10
+                    else "Inconsistent (ad reliance varies per ASIN — no clear brand playbook)"
+                )
     logger.info(
         f"[dominant_brand_portfolio] brand={_dom_brand!r}, "
-        f"portfolio_size={len(dominant_brand_portfolio)}"
+        f"portfolio_size={len(dominant_brand_portfolio)}, "
+        f"ad_consistency={_dom_brand_ad_consistency!r}"
     )
 
     # ── Top ASIN evidence table (top 10 by BSR rank) ──────────────────────────
@@ -4919,6 +5090,24 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     except Exception as _exp_err:
         logger.warning(f"[bsr_export] Failed to export full BSR dataset: {_exp_err}")
 
+    # Deal discount depth: avg discount % and cadence, not just how many deals were found.
+    _deal_discount_data = ctx.cache.get("category_deal_discount_data") or {}
+    _deal_avg_discount_pct = _deal_discount_data.get("avg_discount_pct")
+    _deal_frequency_per_month = _deal_discount_data.get("deal_frequency_per_month")
+    _deal_buckets = _deal_discount_data.get("discount_buckets") or {}
+    _deal_discount_distribution = (
+        ", ".join(
+            f"{_label}: {_deal_buckets.get(_key, 0)}"
+            for _key, _label in (
+                ("shallow_lt15", "Shallow (<15%)"),
+                ("moderate_15_30", "Moderate (15-30%)"),
+                ("deep_30plus", "Deep (30%+)"),
+            )
+            if _deal_buckets.get(_key, 0) > 0
+        )
+        or "N/A"
+    )
+
     return [
         {
             "analysis_result": json.dumps(result, ensure_ascii=False),
@@ -4976,6 +5165,15 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "social_psi": ctx.cache.get("category_social_psi", "N/A"),
             "social_verdict": ctx.cache.get("category_social_verdict", "N/A"),
             "deal_intensity": ctx.cache.get("category_deal_intensity", "N/A"),
+            "deal_avg_discount_pct": (
+                f"{_deal_avg_discount_pct:.1f}%" if _deal_avg_discount_pct is not None else "N/A"
+            ),
+            "deal_discount_distribution": _deal_discount_distribution,
+            "deal_frequency_per_month": (
+                f"{_deal_frequency_per_month:.1f}/mo"
+                if _deal_frequency_per_month is not None
+                else "N/A"
+            ),
             "brand_social_data": json.dumps(
                 ctx.cache.get("brand_social_data", []), ensure_ascii=False
             ),
@@ -4999,6 +5197,15 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             # Seasonality
             "seasonality_pattern": seasonality.get("pattern", "unknown"),
             "seasonality_score": seasonality.get("seasonality_score", "N/A"),
+            # seasonality_score is a 0-100 rescaling of monthly_amplitude (log-space peak/trough
+            # swing: score = min(100, amplitude / 1.386 * 100), so a score of 100 means amplitude
+            # ≥ 1.386, i.e. a ≥4x swing — see _analyze_seasonality in monopoly_analyzer.py).
+            # Surfaced as a fold-change so the LLM cites the real-world swing, not just the score.
+            "seasonality_amplitude_fold": (
+                f"{math.exp(seasonality['monthly_amplitude']):.1f}x"
+                if seasonality.get("monthly_amplitude") is not None
+                else "N/A"
+            ),
             "seasonality_source": seasonality.get("source", "bsr_daily_trends"),
             "seasonality_n_points": seasonality.get("n_data_points", 0),
             "peak_months": peak_months_str + platform_warning,
@@ -5048,6 +5255,16 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 if _actual_ad_ratio is not None
                 else "50% (default — traffic-score data unavailable)"
             ),
+            # Dispersion of ad reliance across the Top-20 (stdev) and whether a better
+            # BSR rank tracks with lower ad reliance (Pearson r, rank vs ad_traffic_ratio)
+            "ad_traffic_ratio_stdev": (
+                f"{_ad_ratio_stdev:.0%}" if _ad_ratio_stdev is not None else "N/A"
+            ),
+            "ad_traffic_dispersion_verdict": _ad_dispersion_verdict,
+            "ad_traffic_rank_correlation": (
+                f"{_ad_ratio_rank_corr:+.2f}" if _ad_ratio_rank_corr is not None else "N/A"
+            ),
+            "ad_traffic_rank_verdict": _ad_rank_corr_verdict,
             "ad_profit_drag": f"{_ad_profit_drag:.0%}" if _ad_profit_drag else "N/A",
             "referral_fee_pct": f"{_REFERRAL_FEE_PCT:.0%}",
             "referral_fee_source": _referral_fee_source,
@@ -5061,8 +5278,12 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "concentration_data": json.dumps(concentration_data, ensure_ascii=False),
             # Fulfillment mix across the BSR sample (FBA / FBM / AMZ / Unknown)
             "fulfillment_distribution": json.dumps(fulfillment_distribution, ensure_ascii=False),
-            # Dominant brand portfolio (≥2 ASINs, ≥15% sales-share or ≥20% position-share)
+            # Dominant brand portfolio (≥2 ASINs, ≥15% sales-share or ≥20% position-share).
+            # Each item carries ad_traffic_ratio; dominant_brand_ad_consistency flags whether
+            # the brand holds that ratio steady across its own ASINs (repeatable playbook, a
+            # brand-moat signal) or not.
             "dominant_brand_portfolio": json.dumps(dominant_brand_portfolio, ensure_ascii=False),
+            "dominant_brand_ad_consistency": _dom_brand_ad_consistency,
             # Recent critical reviews for top brands (≤90 days — fixable deficiency signals)
             "critical_reviews_data": json.dumps(
                 ctx.cache.get("critical_reviews_data", {}), ensure_ascii=False

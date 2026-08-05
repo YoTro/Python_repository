@@ -33,6 +33,9 @@ required_vars:
   - social_psi
   - social_verdict
   - deal_intensity
+  - deal_avg_discount_pct
+  - deal_discount_distribution
+  - deal_frequency_per_month
   - price_trend
   - churn_pattern
   - churn_score
@@ -46,6 +49,7 @@ required_vars:
   - new_entrant_ratio
   - seasonality_pattern
   - seasonality_score
+  - seasonality_amplitude_fold
   - seasonality_source
   - seasonality_n_points
   - peak_months
@@ -68,6 +72,10 @@ required_vars:
   - median_cpc
   - estimated_steady_state_acos
   - ad_traffic_ratio
+  - ad_traffic_ratio_stdev
+  - ad_traffic_dispersion_verdict
+  - ad_traffic_rank_correlation
+  - ad_traffic_rank_verdict
   - ad_profit_drag
   - referral_fee_pct
   - referral_fee_source
@@ -95,6 +103,7 @@ optional_vars:
   bsr_dataset_url: "N/A"
   keyword_click_concentration: "[]"
   dominant_brand_portfolio: "[]"
+  dominant_brand_ad_consistency: "insufficient data"
   brand_search_monopoly: "[]"
 
 output_schema: null
@@ -199,7 +208,12 @@ template: |
     • FRAGILE VIRALITY ALERT: if the category leader's hhi_concentration > 0.25, flag: 'A small number of creators drive most of {{brand}}'s video views (creator concentration {{hhi_concentration}}) — this channel is fragile; if those creators stop posting, visibility could collapse quickly. Contrast with a broad-based creator base, which is structurally more durable.'
     • MOMENTUM ALERT: if any top brand's trend is 'fading', flag: '{{brand}}'s social presence is losing momentum (posting volume down vs. the prior 3-month period) — a declining channel, not a stable benchmark.' If any new-entrant brand's trend is 'accelerating', flag this as the highest-conviction signal in the data that a video-first entry strategy is gaining real traction right now: name the brand and cite its engagement_rate alongside the momentum label.
     • ORGANIC-VS-PAID CROSS-CHECK: if a brand's psi is high (>50) but promo_tag_ratio is also high (>0.30) AND hhi_concentration is high (>0.25), combine all three into one sentence: this is a paid campaign concentrated in a handful of creators, not evidence of organic category-level demand — do not cite this brand's PSI alone as proof the niche has social pull.
-  - Off-Site Deal Intensity: {deal_intensity}/10. Render ONE row in the Data Breakdown table (Group 10 — Final Scores): Metric='Off-Site Deal Intensity' | Value='{deal_intensity}/10' | Definition='Frequency of off-site deals on Slickdeals, DealNews, etc. (excludes Amazon on-site); 0–10; >7 = high buyer price-switch pressure'.
+  - Off-Site Deal Intensity: {deal_intensity}/10. Render as the FIRST of four consecutive rows in the Data Breakdown table (Group 10 — Final Scores): Metric='Off-Site Deal Intensity' | Value='{deal_intensity}/10' | Definition='Frequency of off-site deals on Slickdeals, DealNews, etc. (excludes Amazon on-site); 0–10; >7 = high buyer price-switch pressure'.
+  - Off-Site Deal Avg. Discount Depth: {deal_avg_discount_pct}. Row 2: Metric='Deal Avg. Discount Depth' | Value='{deal_avg_discount_pct}' | Definition='Mean discount % across confirmed off-site deals — how deep the typical deal cuts, independent of how often deals occur'.
+  - Off-Site Deal Discount Distribution: {deal_discount_distribution}. Row 3: Metric='Deal Discount Distribution' | Value='{deal_discount_distribution}' | Definition='Count of confirmed deals by depth bucket (Shallow <15% / Moderate 15-30% / Deep 30%+) — a uniform bucket means one typical promo depth; a spread across buckets means price behavior varies by seller or season'.
+  - Off-Site Deal Frequency: {deal_frequency_per_month}. Row 4: Metric='Deal Frequency' | Value='{deal_frequency_per_month}' | Definition='Confirmed deals per month, from the observed date span of matched deals — cadence of price-switch opportunity, distinct from the raw deal count deal_intensity is scored on'.
+  If deal_avg_discount_pct, deal_discount_distribution, or deal_frequency_per_month is 'N/A', write 'N/A — insufficient discount/date data on matched deals' as that row's Value and do not cite it as a finding elsewhere in the report.
+  DEAL DEPTH NOTE (apply in Strategic Insights / Bargaining Power of Buyers when discussing deal_intensity, only if deal_avg_discount_pct is not 'N/A'): read discount depth alongside intensity, not intensity alone. High deal_intensity with SHALLOW avg discount (<15%) means frequent but token promotions — limited buyer price-switch pressure despite the high count. High deal_intensity with DEEP avg discount (30%+) means frequent AND steep promotions — strong buyer price-switch pressure, and any entrant's steady-state pricing should assume periodic deep discounting is normal in this category, not exceptional. Low deal_intensity with a high deal_frequency_per_month (many small deals bunched close together) can indicate a single aggressive seller running a promo cadence rather than category-wide price competition — do not generalize from one to the other.
 
   ### STEADY-STATE AD BURDEN
   Derived from market-level data only — no owned product required.
@@ -209,9 +223,12 @@ template: |
   - Estimated Steady-State ACOS: {estimated_steady_state_acos}
   - Breakeven ACOS: {breakeven_acos} (= 1 − 30% COGS − {referral_fee_pct} referral [{referral_fee_source}] − {fba_fee_pct} FBA [{fba_fee_source}] − {inbound_fee_pct} FBA inbound freight [AGL SZX→US FC, {inbound_freight_detail}])
   - Ad Traffic Ratio: {ad_traffic_ratio} (source: xiyou_get_traffic_scores average across top-20 BSR ASINs — estimated share of orders/traffic attributable to ads vs. organic, at the CATEGORY level, not any single ASIN)
+  - Ad Traffic Ratio Dispersion: {ad_traffic_ratio_stdev} stdev across the same top-20 ASINs — **{ad_traffic_dispersion_verdict}**
+  - Ad Traffic Ratio vs. BSR Rank: r = {ad_traffic_rank_correlation} — **{ad_traffic_rank_verdict}**
   - Ad Profit Drag: {ad_profit_drag} (= ad_traffic_ratio × estimated ACOS; fraction of TOTAL revenue — ad + organic blended — consumed by ad spend at steady state)
   - Ad Burden Verdict: **{ad_burden_verdict}**
-  In the Data Breakdown table, render these as seven consecutive rows under the group heading 'Steady-State Ad Burden'. NEVER omit category_cvr or the breakeven ACOS formula components — they are the basis for the verdict. If ad_traffic_ratio's value starts with '50% (default', append the mandatory caveat '(limited data — traffic-score API unavailable, 50% is an assumed placeholder, not observed)' to both the Ad Traffic Ratio row's Value cell and the Ad Profit Drag row's Value cell, and do NOT cite either figure as a precise benchmark in Strategic Insights — treat ad_burden_verdict as directional only in that case.
+  In the Data Breakdown table, render these as nine consecutive rows under the group heading 'Steady-State Ad Burden'. NEVER omit category_cvr or the breakeven ACOS formula components — they are the basis for the verdict. If ad_traffic_ratio's value starts with '50% (default', append the mandatory caveat '(limited data — traffic-score API unavailable, 50% is an assumed placeholder, not observed)' to both the Ad Traffic Ratio row's Value cell and the Ad Profit Drag row's Value cell, and do NOT cite either figure as a precise benchmark in Strategic Insights — treat ad_burden_verdict as directional only in that case. The same caveat applies to the Dispersion and vs. BSR Rank rows whenever their verdict is 'unknown' (fewer than 5 ASINs returned a usable ratio) — cite them as 'insufficient data', not as a finding.
+  DISPERSION & RANK-CORRELATION NOTE (apply in Strategic Insights when discussing ad burden, only if both verdicts are not 'unknown'): read dispersion and rank-correlation together, not the category-average ad_traffic_ratio alone, before concluding whether the category is winnable by outspending on ads. 'Bifurcated' dispersion means the category-average ad_traffic_ratio masks a split — some sellers are organically driven and others are ad-reliant — so a single blended figure understates the range a new entrant could land in. 'Organic moat' rank-correlation means the best-ranked ASINs earn their position with LESS ad reliance, not more — a new entrant should not assume outbidding on ads alone will reach the top ranks; some organic differentiation (reviews, listing quality, brand) is required. 'Ad-defended' rank-correlation means the opposite: top-ranked ASINs are MORE ad-reliant, i.e. incumbents are actively spending to defend their position — a new entrant should expect sustained, not one-time, ad spend to unseat them. 'Mixed' means no clear pattern — treat rank position as uninformative about ad strategy.
   ORGANIC SUBSIDY NOTE (apply in Strategic Insights when discussing ad burden): ad_profit_drag is a BLENDED figure — it already accounts for the fact that only ad_traffic_ratio's share of orders carries the ACOS cost, while the remaining (1 − ad_traffic_ratio) share of orders is organic and carries no ad cost. A high estimated_steady_state_acos does not by itself mean the category is unprofitable to enter if ad_traffic_ratio is low — organic orders can subsidize unprofitable ad orders. Conversely, a moderate ACOS combined with a high ad_traffic_ratio (most orders are ad-driven) means there is little organic volume left to absorb the drag, and the blended economics move closer to the raw ACOS figure. Always read ad_traffic_ratio and estimated_steady_state_acos together, not estimated_steady_state_acos alone, when assessing whether the category is structurally profitable.
 
   ### MARKET HEALTH SIGNALS
@@ -222,8 +239,9 @@ template: |
   - BSR Listing Metabolism: **{bsr_churn_label}** | Snapshots: {bsr_snapshots}
     - 3-Month Churn: {bsr_churn_3m} | 6-Month Churn: {bsr_churn_6m} | 12-Month Churn: {bsr_churn_12m}
   - New Entrant Ratio (Sellersprite T-snapshot): {new_entrant_ratio}
-  - Seasonality: {seasonality_pattern} (score: {seasonality_score}, source: {seasonality_source}, n={seasonality_n_points} data points) | Peak Months: {peak_months}
+  - Seasonality: {seasonality_pattern} (score: {seasonality_score}, peak/trough swing: {seasonality_amplitude_fold}, source: {seasonality_source}, n={seasonality_n_points} data points) | Peak Months: {peak_months}
     Source legend: 'keyword_weekly_trends' = ABA weekly search-volume (direct consumer intent, independent of BSR history); 'bsr_daily_trends' = Xiyouzhaoci BSR proxy (indirect — reflects competitive rank, not raw demand). Prefer keyword source when available.
+    SEASONALITY_SCORE MEANING (apply whenever citing seasonality_score): it is NOT an intuitive 0-100 magnitude — it is a linear rescaling of the peak/trough swing (seasonality_amplitude_fold), where a ≥4x swing between peak and trough months maps to 100 and no swing maps to 0. ALWAYS cite seasonality_amplitude_fold (e.g. 'a 2.3x swing between peak and off-season months') alongside the raw score wherever seasonality_score appears — the score alone tells the reader nothing about actual inventory/demand magnitude. If seasonality_amplitude_fold is 'N/A', do not cite seasonality_score as a precise figure; treat the pattern label as directional only.
   - Demand Trend (YOY): {demand_trend} | Annual 1Y: {yoy_1y_pct} | Annual 2Y: {yoy_2y_pct} | Peak-Window 1Y: {yoy_peak_1y_pct}
     Only populated when seasonality_source == 'keyword_weekly_trends' (ABA 3-year weekly data). 'unknown' or 'N/A' means BSR-proxy source was used — omit this row from the Data Breakdown table in that case.
     Peak-window 1Y compares the mean search volume in detected peak months across consecutive 52-week windows; Annual 1Y uses the full-year mean. When both are available, peak-window is the primary verdict signal. Add ONE row to the Data Breakdown table: Metric='Demand Trend (YOY)' | Value='{demand_trend} ({yoy_peak_1y_pct} peak / {yoy_1y_pct} annual, 2Y: {yoy_2y_pct})' | Definition='YOY change in ABA weekly search volume — peak-window and annual mean across 52-week windows'.
@@ -295,7 +313,7 @@ template: |
   1. Open with one sentence naming the brand, its share type and percentage, and how many distinct products are visible in the BSR sample (e.g. '{{Brand}} holds {{share}}% of [monthly units / BSR positions] across {{n}} distinct products in the BSR top-{{sample_n}} sample.').
   2. DATA COVERAGE GUARD (mandatory — place immediately below the opening sentence):
      > ⚠️ Portfolio analysis is limited to the BSR top-{{sample_n}} sample — {{brand}} may have additional products outside this window.
-  3. Render a per-ASIN table with columns: ASIN | Price | Reviews | Rating | Units/Mo | Sub-niche | Top Complaint. Source fields from each entry in dominant_brand_portfolio: asin, price, reviews, rating, monthly_units, sub_niche_tag. Write '—' if sub_niche_tag is null or absent. Sort rows by monthly_units descending.
+  3. Render a per-ASIN table with columns: ASIN | Price | Reviews | Rating | Units/Mo | Sub-niche | Ad Traffic | Top Complaint. Source fields from each entry in dominant_brand_portfolio: asin, price, reviews, rating, monthly_units, sub_niche_tag, ad_traffic_ratio. Write '—' if sub_niche_tag or ad_traffic_ratio is null, absent, or 'N/A'. Sort rows by monthly_units descending.
      TOP COMPLAINT column: for each ASIN, look it up in critical_reviews_data. If review entries exist for that ASIN, synthesize the single most-mentioned complaint theme in ≤8 words (e.g. 'leaks after first use', 'stops working after 2 weeks'). Write '—' if the ASIN has no entries in critical_reviews_data. NEVER invent complaints not present in the review text.
      CROSS-PORTFOLIO PATTERN RULE (apply immediately below the table, one sentence): if ≥2 ASINs in the table share the same Top Complaint theme, write 'Shared weakness across portfolio: [theme] — structural category problem, not brand-specific; any entrant must solve this to sustain ratings.' If all non-'—' complaints are distinct, write 'Distinct per-SKU weaknesses — targeted flanking viable: attack [lowest-review ASIN] on [its specific complaint] without triggering a brand-wide response.'
   4. PORTFOLIO STRUCTURE VERDICT (bold, one line, mandatory — place immediately below the table). Apply the first matching rule:
@@ -303,6 +321,7 @@ template: |
      - **Segmented Ladder** — ≥ 3 ASINs whose price points form intentional tiers (consecutive tier gap ≥ 20% of the overall niche median price).
      - **Balanced Portfolio** — 3+ ASINs, no single ASIN > 50% of the brand's visible slots or units.
      - **Emerging Portfolio** — exactly 2 ASINs; insufficient data to classify structure.
+     Immediately below the structure verdict, if dominant_brand_ad_consistency is not 'insufficient data', add one line: '**Traffic Playbook:** {dominant_brand_ad_consistency}' — 'Consistent' across the brand's own ASINs (see the Ad Traffic column above) reinforces the structure verdict as a deliberate strategy rather than per-SKU luck; 'Inconsistent' means at least one ASIN in the portfolio is carrying a materially different ad-reliance profile, worth flagging as the flank most exposed if that ASIN's ad spend lapses.
   5. FLANK VULNERABILITY (one line — place below the verdict): identify the brand's product with the lowest review count and write: 'Weakest flank: {{ASIN}} ({{reviews}} reviews, {{price}}) — lowest review barrier in the visible portfolio.' Then note any price band the brand does NOT occupy relative to price_distribution (e.g. 'No product in the $X–$Y range — aligns with the whitespace identified in Price Distribution').
 
   ### WEAKEST RANK SLOT ASSESSMENT
@@ -313,7 +332,7 @@ template: |
   Open the section with one context line (not a table row): 'Target: **[weakest_rank_slot.title]** (BSR #[rank] · [reviews] reviews · [brand] · [price] · [rating]★)'
   Render a table with header `| Dimension | Signal | Assessment |` and separator `| :--- | :--- | :--- |`. Exactly seven rows in this order:
   Row 1 — Pricing Position: Signal = 'weakest_rank_slot.price vs. {niche_median_price} median'. Assessment: if weakest_rank_slot.price < niche_median_price × 0.90 → 'Undercuts median by [X]% — price discount partially substitutes for review social proof'; if within ±10% → 'At median — no pricing edge'; if > niche_median_price × 1.10 → 'Premium (+[X]% above median) — ranking driven by non-price factors'.
-  Row 2 — Brand Moat: Signal = weakest_rank_slot.brand. Assessment: check brand_search_monopoly and dominant_brand_portfolio by matching this brand name. Write 'Brand Search Monopoly — leads [N/N] keywords ([X%])' if brand appears in brand_search_monopoly with verdict='monopoly' or 'dominant'; 'In Dominant Portfolio — [N] visible ASINs, [structure verdict]' if brand appears in dominant_brand_portfolio; 'No detected brand moat' if neither. If both apply, cite both.
+  Row 2 — Brand Moat: Signal = weakest_rank_slot.brand. Assessment: check brand_search_monopoly and dominant_brand_portfolio by matching this brand name. Write 'Brand Search Monopoly — leads [N/N] keywords ([X%])' if brand appears in brand_search_monopoly with verdict='monopoly' or 'dominant'; 'In Dominant Portfolio — [N] visible ASINs, [structure verdict]' if brand appears in dominant_brand_portfolio; 'No detected brand moat' if neither. If both apply, cite both. If the brand appears in dominant_brand_portfolio and dominant_brand_ad_consistency is not 'insufficient data', append ' — traffic playbook: [dominant_brand_ad_consistency, shortened to Consistent/Inconsistent]'.
   Row 3 — Ad Dependency: breakeven_acos is anchored to niche_median_price (fba_fee_pct and inbound_fee_pct are flat per-unit dollar fees expressed as a % of niche_median_price, so they don't hold at a different price) while weakest_rank_slot.estimated_acos is computed at the target ASIN's own price — do NOT compare them unmodified whenever that price diverges from niche_median_price by more than ~10%. In that case first compute breakeven_acos_target = 1 − capital_cogs_pct − referral_fee_pct − (fba_fee_pct + inbound_fee_pct) × (niche_median_price ÷ weakest_rank_slot.price), and use breakeven_acos_target (not breakeven_acos) as the comparison benchmark below; when the price is within ~10% of the median, breakeven_acos is close enough to use directly. Signal = 'weakest_rank_slot.estimated_acos ACOS vs [benchmark used] breakeven ({ad_burden_verdict})' — name whichever benchmark was actually used. Assessment: 'Structurally ad-supported — rank likely requires continuous PPC to sustain velocity' if estimated_acos ≥ benchmark; 'Moderate ad reliance — organic velocity may partially sustain rank' if estimated_acos ≥ benchmark × 0.70; 'Low ad dependency — rank likely self-sustaining organically' if estimated_acos < benchmark × 0.70.
   Row 4 — Social Promotion: Signal = PSI from brand_social_data for weakest_rank_slot.brand. The Python pipeline guarantees this brand is present in brand_social_data — write 'PSI [X] via [platform]'. Assessment: 'Active social campaign (PSI [X] via [platform])' if psi > 30; 'Minimal social presence (PSI [X])' if 0 < psi ≤ 30; 'No detected social activity' if psi = 0.
   Row 5 — Review Quality Risk: Signal = presence of any ASIN belonging to weakest_rank_slot.brand in critical_reviews_data. Assessment: if entries exist, cite the top complaint theme in ≤8 words prefixed with 'FIXABLE:' or 'STRUCTURAL:', and add '⚠️ Category-wide' if the theme spans ≥2 strata. Write 'No recent critical reviews for this brand' if absent.

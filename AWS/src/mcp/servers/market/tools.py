@@ -279,7 +279,7 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
         deals = await client.get_deal_history(asin, keyword=keyword, max_pages=max_pages)
         return [TextContent(type="text", text=json.dumps(deals, ensure_ascii=False))]
 
-    elif name == "get_deals_for_asin":
+    elif name == "get_deals_for_asins":
         from src.mcp.servers.market.deals.client import DealHistoryClient
 
         client = DealHistoryClient()
@@ -672,7 +672,7 @@ market_tools = [
         },
     ),
     Tool(
-        name="get_deals_for_asin",
+        name="get_deals_for_asins",
         description=(
             "ASIN-confirmed deal lookup on Slickdeals and DealNews. "
             "Searches both sites once by brand name, then follows each deal's tracking redirect "
@@ -1113,7 +1113,7 @@ _MARKET_META = {
     "xiyou_check_login_status": ("DATA", "authentication status of pending QR scan"),
     "get_ad_traffic": ("DATA", "ad spend and ROAS estimates"),
     "get_deal_history": ("DATA", "list of historical deals with dates, prices, and discounts"),
-    "get_deals_for_asin": (
+    "get_deals_for_asins": (
         "DATA",
         "object keyed by each requested ASIN mapping to its redirect-verified deal list from Slickdeals and DealNews",
     ),
