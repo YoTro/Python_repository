@@ -90,6 +90,49 @@ _TTL_CRITICAL_REVIEWS = 86_400  # 24 h — recent critical reviews per ASIN
 # look like N unrelated unidentified sellers instead of one seller spanning N brands.
 _AMAZON_DIRECT_SELLER_ID = "AMAZON_DIRECT"
 
+# Stop-word list shared by _ngram_candidates and _filter_category_coherence — keeps
+# generic tokens (set, pack, kit, oz…) out of both keyword extraction and cross-title
+# similarity, so the two stay aligned by construction rather than by copy-paste.
+_STOP_WORDS = {
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "for",
+    "of",
+    "in",
+    "with",
+    "to",
+    "from",
+    "by",
+    "is",
+    "are",
+    "was",
+    "be",
+    "as",
+    "on",
+    "at",
+    "up",
+    "it",
+    "its",
+    "this",
+    "that",
+    "all",
+    "new",
+    "set",
+    "pack",
+    "pcs",
+    "piece",
+    "pieces",
+    "count",
+    "ct",
+    "oz",
+    "lb",
+    "ft",
+    "inch",
+}
+
 # Shared semaphores: cap concurrent amazon_scraper calls across all parallel EnrichStep slots.
 # EnrichStep runs 5 items concurrently; each fires 2 sub-requests → 10 simultaneous without limits.
 # burst:3 in settings.json means anything beyond 3 will timeout. Cap at 3 each.
@@ -99,6 +142,64 @@ _SEM_FULFILLMENT = asyncio.Semaphore(3)
 _SEM_REVIEW_COUNT = asyncio.Semaphore(2)
 _SEM_COMMENTS = asyncio.Semaphore(3)
 # _SEM_BRAND is created inside _run_monopoly_analysis (only used there) to stay loop-safe.
+
+
+def _parse_int(raw, default: int = 0) -> int:
+    """Extract the first integer from a messy string (handles commas, suffixes, parens)."""
+    m = re.search(r"\d+", str(raw or "").replace(",", ""))
+    if not m:
+        return default
+    try:
+        return int(m.group())
+    except ValueError:
+        return default
+
+
+def _new_entrant_cutoff_ms(base_ym: str) -> int:
+    """Timestamp (ms) marking the start of the 12-month "new entrant" window.
+
+    Anchored to base_ym (Sellersprite's T-2-month base snapshot) rather than
+    wall-clock now, so the window doesn't drift when base_ym trails behind the
+    current date. Falls back to a rolling 365-day window when base_ym is absent
+    or malformed.
+    """
+    if base_ym and len(base_ym) == 6:
+        by, bm = int(base_ym[:4]), int(base_ym[4:])
+        total = by * 12 + (bm - 1) - 12
+        cy, cm = total // 12, total % 12 + 1
+        return calendar.timegm((cy, cm, 1, 0, 0, 0)) * 1000
+    return int((time.time() - 365 * 86400) * 1000)
+
+
+async def _fill_missing_brands(
+    missing_asins, target: dict, sem: asyncio.Semaphore, log_prefix: str
+) -> None:
+    """Resolve brands for ASINs via BrandExtractor and merge results into target.
+
+    `sem` is passed in (rather than module-level) because the caller's semaphore
+    must stay bound to the current event loop — see _SEM_BRAND note above.
+    """
+    if not missing_asins:
+        return
+    logger.info(f"[{log_prefix}] brand-fill via BrandExtractor: {len(missing_asins)} ASINs")
+    extractor = BrandExtractor()
+
+    async def _fetch(asin: str) -> tuple[str, str | None]:
+        async with sem:
+            try:
+                res = await extractor.get_brand(asin)
+                return asin, res.get("Brand")
+            except Exception as e:
+                logger.warning(f"[{log_prefix}] BrandExtractor({asin}): {e}")
+                return asin, None
+
+    results = await asyncio.gather(*[_fetch(a) for a in missing_asins])
+    resolved = 0
+    for asin, brand in results:
+        if brand:
+            target[asin] = brand
+            resolved += 1
+    logger.info(f"[{log_prefix}] BrandExtractor resolved {resolved}/{len(missing_asins)} brands")
 
 
 def _l2_key(ctx, *parts) -> str:
@@ -315,49 +416,12 @@ def _ngram_candidates(titles: list, min_doc_freq: int = 3, top_n: int = 15) -> l
     Used to anchor LLM keyword extraction to terms actually present in the data,
     preventing hallucination and ensuring stability across runs.
     """
-    _STOP = {
-        "the",
-        "a",
-        "an",
-        "and",
-        "or",
-        "for",
-        "of",
-        "in",
-        "with",
-        "to",
-        "from",
-        "by",
-        "is",
-        "are",
-        "was",
-        "be",
-        "as",
-        "on",
-        "at",
-        "up",
-        "it",
-        "its",
-        "this",
-        "that",
-        "all",
-        "new",
-        "set",
-        "pack",
-        "pcs",
-        "piece",
-        "pieces",
-        "count",
-        "ct",
-        "oz",
-        "lb",
-        "ft",
-        "inch",
-    }
     doc_counts: Counter = Counter()
     for title in titles:
         tokens = [
-            t for t in re.findall(r"[a-z0-9]+", title.lower()) if t not in _STOP and len(t) > 1
+            t
+            for t in re.findall(r"[a-z0-9]+", title.lower())
+            if t not in _STOP_WORDS and len(t) > 1
         ]
         seen_in_doc: set = set()
         for n in (1, 2):
@@ -592,47 +656,6 @@ async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
     _DBSCAN_EPS = 0.75  # Jaccard distance ceiling for two titles to be neighbours
     _DBSCAN_MIN_SAMPLES = 3  # minimum neighbourhood density to form a cluster core
     _AMBIGUOUS_RATIO = 0.40  # second cluster ≥ 40% of dominant → ambiguous, escalate
-    # Stop-word list aligned with _ngram_candidates — prevents generic tokens
-    # (set, pack, kit, oz…) from creating false cross-category similarity
-    _STOP = {
-        "the",
-        "a",
-        "an",
-        "and",
-        "or",
-        "for",
-        "of",
-        "in",
-        "with",
-        "to",
-        "from",
-        "by",
-        "is",
-        "are",
-        "was",
-        "be",
-        "as",
-        "on",
-        "at",
-        "up",
-        "it",
-        "its",
-        "this",
-        "that",
-        "all",
-        "new",
-        "set",
-        "pack",
-        "pcs",
-        "piece",
-        "pieces",
-        "count",
-        "ct",
-        "oz",
-        "lb",
-        "ft",
-        "inch",
-    }
 
     if not items:
         return items
@@ -646,7 +669,7 @@ async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
         return frozenset(
             _stem(t)
             for t in re.findall(r"[a-z0-9]+", title.lower())
-            if t not in _STOP and len(t) > 1 and not t.isdigit()
+            if t not in _STOP_WORDS and len(t) > 1 and not t.isdigit()
         )
 
     def _jaccard_dist(a: frozenset, b: frozenset) -> float:
@@ -747,7 +770,9 @@ async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
         # even though it is in the default hint set).
         core_kw_text = " ".join(ctx.cache.get("core_keywords") or []).lower()
         core_kw_toks = frozenset(
-            _stem(t) for t in re.findall(r"[a-z]+", core_kw_text) if len(t) > 2 and t not in _STOP
+            _stem(t)
+            for t in re.findall(r"[a-z]+", core_kw_text)
+            if len(t) > 2 and t not in _STOP_WORDS
         )
         _DEFAULT_HINTS: frozenset = frozenset(
             {
@@ -1099,13 +1124,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
 
         # New-entrant brands: products listed within the last 12 months
         # Anchor cutoff to base_ym (T-2 months) to match _run_monopoly_analysis logic
-        if base_ym and len(base_ym) == 6:
-            _by, _bm = int(base_ym[:4]), int(base_ym[4:])
-            _total = _by * 12 + (_bm - 1) - 12
-            _cy, _cm = _total // 12, _total % 12 + 1
-            _cutoff_ms = calendar.timegm((_cy, _cm, 1, 0, 0, 0)) * 1000
-        else:
-            _cutoff_ms = (time.time() - 365 * 86400) * 1000
+        _cutoff_ms = _new_entrant_cutoff_ms(base_ym)
 
         _new_entrant_products = [
             p
@@ -3070,17 +3089,7 @@ async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> lis
 
     # "New entrant" cutoff anchored to Sellersprite base snapshot (same as elsewhere)
     base_ym = ctx.cache.get("sellersprite_base_ym", "")
-    if base_ym and len(base_ym) == 6:
-        _by, _bm = int(base_ym[:4]), int(base_ym[4:])
-        _total = _by * 12 + (_bm - 1) - 12
-        _cy, _cm = _total // 12, _total % 12 + 1
-        new_entrant_cutoff_ms = calendar.timegm((_cy, _cm, 1, 0, 0, 0)) * 1000
-    else:
-        new_entrant_cutoff_ms = (time.time() - 365 * 86400) * 1000
-
-    def _parse_rank(raw) -> int:
-        m = re.search(r"\d+", str(raw or "9999").replace(",", ""))
-        return int(m.group()) if m else 9999
+    new_entrant_cutoff_ms = _new_entrant_cutoff_ms(base_ym)
 
     # Build candidate list with rank, brand, and new-entrant flag
     candidates: list[dict] = []
@@ -3091,7 +3100,7 @@ async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> lis
         brand = _brand_lookup.get(asin) or item.get("Brand") or item.get("brand") or "Unknown"
         if brand == "Unknown":
             continue
-        rank = _parse_rank(item.get("Rank"))
+        rank = _parse_int(item.get("Rank"), default=9999)
         avail_ms = _asin_available_ms.get(asin)
         is_new = avail_ms is not None and avail_ms >= new_entrant_cutoff_ms
         candidates.append({"asin": asin, "brand": brand, "rank": rank, "is_new": is_new})
@@ -3232,13 +3241,7 @@ def _calc_new_entrant_ratio(
     t_snap = snapshots.get(base_ym) or (snapshots.get(max(snapshots)) if snapshots else [])
     if not t_snap:
         return None, "unknown (no T-snapshot)"
-    if base_ym and len(base_ym) == 6:
-        _by, _bm = int(base_ym[:4]), int(base_ym[4:])
-        _total = _by * 12 + (_bm - 1) - 12
-        _cy, _cm = _total // 12, _total % 12 + 1
-        cutoff_ms = calendar.timegm((_cy, _cm, 1, 0, 0, 0)) * 1000
-    else:
-        cutoff_ms = int((time.time() - 365 * 86400) * 1000)
+    cutoff_ms = _new_entrant_cutoff_ms(base_ym)
     dated = [p for p in t_snap if p.get("available_date_ms")]
     new_ents_all = [p for p in dated if p["available_date_ms"] >= cutoff_ms]
     raw_ratio = len(new_ents_all) / len(t_snap)
@@ -3293,16 +3296,6 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         except ValueError:
             return default
 
-    def _parse_int(raw, default: int = 0) -> int:
-        """Extract the first integer from a messy string (handles commas, suffixes, parens)."""
-        m = re.search(r"\d+", str(raw or "").replace(",", ""))
-        if not m:
-            return default
-        try:
-            return int(m.group())
-        except ValueError:
-            return default
-
     def _fc_lifetime(raw) -> int | None:
         """Normalize feedback_count: extract lifetime count from time-windowed dict or pass through."""
         if isinstance(raw, dict):
@@ -3340,29 +3333,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         and not item.get("Brand")
         and not item.get("brand")
     ]
-    if _brand_missing:
-        logger.info(
-            f"[run_monopoly_analysis] brand-fill via BrandExtractor: {len(_brand_missing)} ASINs"
-        )
-        _brand_extractor = BrandExtractor()
-
-        async def _fetch_brand(asin: str) -> tuple[str, str | None]:
-            async with _sem_brand:
-                try:
-                    res = await _brand_extractor.get_brand(asin)
-                    return asin, res.get("Brand")
-                except Exception as _e:
-                    logger.warning(f"[run_monopoly_analysis] BrandExtractor({asin}): {_e}")
-                    return asin, None
-
-        _brand_results = await asyncio.gather(*[_fetch_brand(a) for a in _brand_missing])
-        for _asin, _brand in _brand_results:
-            if _brand:
-                _brand_lookup[_asin] = _brand
-        logger.info(
-            f"[run_monopoly_analysis] BrandExtractor resolved "
-            f"{sum(1 for _, b in _brand_results if b)}/{len(_brand_missing)} brands"
-        )
+    await _fill_missing_brands(_brand_missing, _brand_lookup, _sem_brand, "run_monopoly_analysis")
 
     analysis_input = [
         {
@@ -3642,30 +3613,9 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         and (_a := (_tas[0].get("asin") or "").upper())
         and _a not in _asin_brand
     }
-    if _kw_top1_missing:
-        logger.info(
-            f"[keyword_click_concentration] brand-fill via BrandExtractor: "
-            f"{len(_kw_top1_missing)} ASINs"
-        )
-        _kw_brand_extractor = BrandExtractor()
-
-        async def _fetch_kw_brand(asin: str) -> tuple[str, str | None]:
-            async with _sem_brand:
-                try:
-                    res = await _kw_brand_extractor.get_brand(asin)
-                    return asin, res.get("Brand")
-                except Exception as _e:
-                    logger.warning(f"[keyword_click_concentration] BrandExtractor({asin}): {_e}")
-                    return asin, None
-
-        _kw_brand_results = await asyncio.gather(*[_fetch_kw_brand(a) for a in _kw_top1_missing])
-        for _asin, _brand in _kw_brand_results:
-            if _brand:
-                _asin_brand[_asin] = _brand
-        logger.info(
-            f"[keyword_click_concentration] BrandExtractor resolved "
-            f"{sum(1 for _, b in _kw_brand_results if b)}/{len(_kw_top1_missing)} brands"
-        )
+    await _fill_missing_brands(
+        _kw_top1_missing, _asin_brand, _sem_brand, "keyword_click_concentration"
+    )
 
     keyword_click_concentration = []
     for _term in _kw_all:
@@ -4675,13 +4625,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         ss_new_asins: list[str] = []
         _t_snap = snapshots.get(base_ym) or (snapshots.get(max(snapshots)) if snapshots else [])
         if _t_snap:
-            if base_ym and len(base_ym) == 6:
-                _by_n, _bm_n = int(base_ym[:4]), int(base_ym[4:])
-                _tot_n = _by_n * 12 + (_bm_n - 1) - 12
-                _cy_n, _cm_n = _tot_n // 12, _tot_n % 12 + 1
-                _cutoff_n = calendar.timegm((_cy_n, _cm_n, 1, 0, 0, 0)) * 1000
-            else:
-                _cutoff_n = int((time.time() - 365 * 86400) * 1000)
+            _cutoff_n = _new_entrant_cutoff_ms(base_ym)
             ss_new_asins = [
                 p["asin"]
                 for p in _t_snap
