@@ -631,7 +631,7 @@ class XiyouZhaociAPI:
         """
         Fetch keywords that drive traffic to an ASIN, with topAsins per keyword.
 
-        Uses the synchronous /v3/asins/research/list endpoint (not the async
+        Uses the synchronous /v4/asins/research/list endpoint (not the async
         /resource export variant) — returns JSON directly, no polling needed.
 
         Each record in ``list`` contains:
@@ -643,7 +643,7 @@ class XiyouZhaociAPI:
             start_date / end_date: YYYY-MM-DD boundaries for the cycleFilter
                                    (monthly cycle, typically last 30 days).
         """
-        url = f"{self.base_url}/v3/asins/research/list"
+        url = f"{self.base_url}/v4/asins/research/list"
 
         # Use daily cycle to allow precise date ranges without automatic month alignment
         start_cycle = {"startDate": start_date, "endDate": start_date}
@@ -651,22 +651,20 @@ class XiyouZhaociAPI:
 
         payload = {
             "resource": {"country": country, "asin": asin},
-            "biz": {
-                "asin": asin,
-                "country": country,
-                "page": page,
-                "pageSize": page_size,
-                "query": "",
-                "orders": [{"field": "follow", "order": "desc"}],
-                "filters": [{"field": "asinResearchType", "filter": ["all"]}],
-                "rangeFilters": [],
-                "cycleFilter": {
-                    "cycle": "daily",
-                    "period": "",
-                    "startCycle": start_cycle,
-                    "endCycle": end_cycle,
-                },
+            "asin": asin,
+            "country": country,
+            "page": page,
+            "pageSize": page_size,
+            "orders": [{"field": "follow", "order": "desc"}],
+            "filters": [{"field": "asinResearchType", "filter": ["all"]}],
+            "cycleFilter": {
+                "cycle": "daily",
+                "period": "",
+                "startCycle": start_cycle,
+                "endCycle": end_cycle,
             },
+            "query": "",
+            "rangeFilters": [],
         }
 
         headers = self.common_headers.copy()
