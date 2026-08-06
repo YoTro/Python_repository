@@ -80,6 +80,16 @@ _CVR_SRC_POWER_LAW = "power_law"  # price-based model_default_cvr()
 _CVR_SRC_DEFAULT = "default_0.10"  # hard-coded fallback (should rarely appear)
 _TTL_CRITICAL_REVIEWS = 86_400  # 24 h — recent critical reviews per ASIN
 
+# Synthetic grouping key for Amazon.com direct sales (seller_type "AMZ"). Amazon-as-seller
+# listings have no separate "sold by" merchant link, so FulfillmentExtractor never captures
+# a scrapable SellerId for them, and the SellerSprite fallback's seller_id field is empty
+# too — real per-ASIN seller_id is genuinely unavailable, not just unfetched. Without this,
+# every AMZ-sold ASIN has seller_id=None and is silently dropped from seller-level
+# concentration (multi-brand-seller detection, Seller CR3/HHI): Amazon selling multiple of
+# its own brands (Amazon Basics, Amazon Commercial, Amazon Essentials) in one niche would
+# look like N unrelated unidentified sellers instead of one seller spanning N brands.
+_AMAZON_DIRECT_SELLER_ID = "AMAZON_DIRECT"
+
 # Shared semaphores: cap concurrent amazon_scraper calls across all parallel EnrichStep slots.
 # EnrichStep runs 5 items concurrently; each fires 2 sub-requests → 10 simultaneous without limits.
 # burst:3 in settings.json means anything beyond 3 will timeout. Cap at 3 each.
@@ -235,6 +245,12 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
             if isinstance(_fc_raw, dict)
             else _fc_raw  # None when page unreachable
         )
+
+    # Assign the synthetic Amazon-direct seller ID only after the feedback-count lookup
+    # above, so it's never sent to SellerFeedbackExtractor as if it were a real seller ID —
+    # it exists purely to group AMZ-sold ASINs together for seller-concentration math.
+    if not seller_id and _classify_fulfillment(fulfilled_by) == "AMZ":
+        seller_id = _AMAZON_DIRECT_SELLER_ID
 
     result = {
         "seller_type": fulfilled_by or "Unknown",
@@ -1162,123 +1178,135 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
             )
         }
     )
-    _deal_hash = _hl.md5(
-        (
-            _DEAL_CACHE_V
-            + "|"
-            + str(_DEAL_MAX_PAGES)
-            + "|"
-            + ",".join(f"{a}:{b}" for a, b in _deal_asin_brand_pairs)
-        ).encode()
-    ).hexdigest()[:12]
-
-    _cached_deal = _l2_get(ctx, _TTL_DEAL, "deal_intensity", _deal_hash)
-    if _cached_deal is not None:
-        ctx.cache["category_deal_intensity"] = _cached_deal["deal_intensity"]
-        ctx.cache["category_deal_discount_data"] = _cached_deal["deal_discount_data"]
-        logger.info(
-            f"[external_intensity] Deal intensity L2 cache hit deal_hash={_deal_hash} "
-            f"value={_cached_deal['deal_intensity']}"
-        )
+    if not _deal_asin_brand_pairs:
+        # No resolvable ASIN/brand pairs (brand parsing failed for every top-10 item) —
+        # the fetch below would run with zero brands and deterministically yield 0, so
+        # skip the L2 cache round-trip entirely rather than keying it off a fixed hash
+        # (md5 of an empty joined string) that every such category would collide on.
+        logger.info("[external_intensity] No resolvable ASIN/brand pairs; deal intensity=0")
+        ctx.cache["category_deal_intensity"] = 0
+        ctx.cache["category_deal_discount_data"] = {}
     else:
-        _deal_client = DealHistoryClient()
+        _deal_hash = _hl.md5(
+            (
+                _DEAL_CACHE_V
+                + "|"
+                + str(_DEAL_MAX_PAGES)
+                + "|"
+                + ",".join(f"{a}:{b}" for a, b in _deal_asin_brand_pairs)
+            ).encode()
+        ).hexdigest()[:12]
 
-        # Group by brand: several of the top-10 ASINs often share a brand, and a brand
-        # search + candidate resolution pass is identical regardless of which of the
-        # brand's ASINs is being confirmed, so search each brand only once.
-        _brand_to_asins: dict[str, set[str]] = {}
-        for _pair_asin, _pair_brand in _deal_asin_brand_pairs:
-            _brand_to_asins.setdefault(_pair_brand, set()).add(_pair_asin)
-
-        async def fetch_brand_deals(brand: str, asins: set[str]) -> list[dict]:
-            matched = await _deal_client.get_deals_for_asins(
-                asins=asins, brand=brand, max_pages=_DEAL_MAX_PAGES
-            )
-            deals = [d for _v in matched.values() for d in _v]
+        _cached_deal = _l2_get(ctx, _TTL_DEAL, "deal_intensity", _deal_hash)
+        if _cached_deal is not None:
+            ctx.cache["category_deal_intensity"] = _cached_deal["deal_intensity"]
+            ctx.cache["category_deal_discount_data"] = _cached_deal["deal_discount_data"]
             logger.info(
-                f"[external_intensity] deal_count brand={brand!r} asins={sorted(asins)}: "
-                f"{len(deals)} deals"
+                f"[external_intensity] Deal intensity L2 cache hit deal_hash={_deal_hash} "
+                f"value={_cached_deal['deal_intensity']}"
             )
-            return deals
+        else:
+            _deal_client = DealHistoryClient()
 
-        try:
-            deal_lists = await asyncio.gather(
-                *(fetch_brand_deals(brand, asins) for brand, asins in _brand_to_asins.items())
-            )
-            all_deals = [d for _lst in deal_lists for d in _lst]
-            total_deals = len(all_deals)
-            _deal_intensity = (
-                9 if total_deals > 5 else 6 if total_deals > 2 else 3 if total_deals > 0 else 0
-            )
+            # Group by brand: several of the top-10 ASINs often share a brand, and a brand
+            # search + candidate resolution pass is identical regardless of which of the
+            # brand's ASINs is being confirmed, so search each brand only once.
+            _brand_to_asins: dict[str, set[str]] = {}
+            for _pair_asin, _pair_brand in _deal_asin_brand_pairs:
+                _brand_to_asins.setdefault(_pair_brand, set()).add(_pair_asin)
 
-            # Discount depth: how deep are these deals, not just how many there are.
-            _discounts = [
-                float(d["discount_pct"])
-                for d in all_deals
-                if isinstance(d.get("discount_pct"), int | float) and d["discount_pct"] > 0
-            ]
-            _avg_discount_pct = round(statistics.mean(_discounts), 1) if _discounts else None
-            _discount_buckets: Counter = Counter()
-            for _pct in _discounts:
-                _bucket = (
-                    "shallow_lt15"
-                    if _pct < 15
-                    else "moderate_15_30"
-                    if _pct < 30
-                    else "deep_30plus"
+            async def fetch_brand_deals(brand: str, asins: set[str]) -> list[dict]:
+                matched = await _deal_client.get_deals_for_asins(
+                    asins=asins, brand=brand, max_pages=_DEAL_MAX_PAGES
                 )
-                _discount_buckets[_bucket] += 1
+                deals = [d for _v in matched.values() for d in _v]
+                logger.info(
+                    f"[external_intensity] deal_count brand={brand!r} asins={sorted(asins)}: "
+                    f"{len(deals)} deals"
+                )
+                return deals
 
-            # Frequency: deals per month over the observed date span of the confirmed
-            # deals — tells you how often this category goes on sale, not just how many
-            # sales happened to land in this one pull.
-            _deal_dates: list[datetime] = []
-            for d in all_deals:
-                _raw_date = d.get("date")
-                if not _raw_date:
-                    continue
-                try:
-                    # fuzzy=False: both sites emit a bare date string (ISO timestamp or
-                    # "Month D, YYYY"), never prose — fuzzy matching would otherwise
-                    # misparse an unrelated numeric string (e.g. a price) as a fake date.
-                    _dt = _dateutil_parser.parse(str(_raw_date), fuzzy=False)
-                    _deal_dates.append(_dt.replace(tzinfo=None))
-                except (ValueError, OverflowError, TypeError):
-                    continue
-            _deal_frequency_per_month: float | None = None
-            if len(_deal_dates) >= 2:
-                _span_days = (max(_deal_dates) - min(_deal_dates)).days
-                if _span_days > 0:
-                    _deal_frequency_per_month = round(total_deals / (_span_days / 30.4), 1)
+            try:
+                deal_lists = await asyncio.gather(
+                    *(fetch_brand_deals(brand, asins) for brand, asins in _brand_to_asins.items())
+                )
+                all_deals = [d for _lst in deal_lists for d in _lst]
+                total_deals = len(all_deals)
+                _deal_intensity = (
+                    9 if total_deals > 5 else 6 if total_deals > 2 else 3 if total_deals > 0 else 0
+                )
 
-            _deal_discount_data = {
-                "avg_discount_pct": _avg_discount_pct,
-                "discount_buckets": dict(_discount_buckets),
-                "n_deals_with_discount": len(_discounts),
-                "deal_frequency_per_month": _deal_frequency_per_month,
-                "n_deals_with_date": len(_deal_dates),
-            }
+                # Discount depth: how deep are these deals, not just how many there are.
+                _discounts = [
+                    float(d["discount_pct"])
+                    for d in all_deals
+                    if isinstance(d.get("discount_pct"), int | float) and d["discount_pct"] > 0
+                ]
+                _avg_discount_pct = round(statistics.mean(_discounts), 1) if _discounts else None
+                _discount_buckets: Counter = Counter()
+                for _pct in _discounts:
+                    _bucket = (
+                        "shallow_lt15"
+                        if _pct < 15
+                        else "moderate_15_30"
+                        if _pct < 30
+                        else "deep_30plus"
+                    )
+                    _discount_buckets[_bucket] += 1
 
-            ctx.cache["category_deal_intensity"] = _deal_intensity
-            ctx.cache["category_deal_discount_data"] = _deal_discount_data
-            _l2_set(
-                ctx,
-                {"deal_intensity": _deal_intensity, "deal_discount_data": _deal_discount_data},
-                "deal_intensity",
-                _deal_hash,
-            )
-            logger.info(
-                f"[external_intensity] deal_count total={total_deals} "
-                f"avg_discount={_avg_discount_pct} freq/mo={_deal_frequency_per_month} "
-                f"across {len(_deal_asin_brand_pairs)} ASINs "
-                f"({len(_brand_to_asins)} brand searches)"
-            )
-        except Exception as e:
-            logger.error(f"[external_intensity] Deal intensity: {e}")
-            ctx.cache["category_deal_intensity"] = ctx.cache.get("category_deal_intensity", 0)
-            ctx.cache["category_deal_discount_data"] = ctx.cache.get(
-                "category_deal_discount_data", {}
-            )
+                # Frequency: deals per month over the observed date span of the confirmed
+                # deals — tells you how often this category goes on sale, not just how many
+                # sales happened to land in this one pull.
+                _deal_dates: list[datetime] = []
+                for d in all_deals:
+                    _raw_date = d.get("date")
+                    if not _raw_date:
+                        continue
+                    try:
+                        # fuzzy=False: both sites emit a bare date string (ISO timestamp or
+                        # "Month D, YYYY"), never prose — fuzzy matching would otherwise
+                        # misparse an unrelated numeric string (e.g. a price) as a fake date.
+                        _dt = _dateutil_parser.parse(str(_raw_date), fuzzy=False)
+                        _deal_dates.append(_dt.replace(tzinfo=None))
+                    except (ValueError, OverflowError, TypeError):
+                        continue
+                _deal_frequency_per_month: float | None = None
+                if len(_deal_dates) >= 2:
+                    _span_days = (max(_deal_dates) - min(_deal_dates)).days
+                    if _span_days > 0:
+                        _deal_frequency_per_month = round(total_deals / (_span_days / 30.4), 1)
+
+                _deal_discount_data = {
+                    "avg_discount_pct": _avg_discount_pct,
+                    "discount_buckets": dict(_discount_buckets),
+                    "n_deals_with_discount": len(_discounts),
+                    "deal_frequency_per_month": _deal_frequency_per_month,
+                    "n_deals_with_date": len(_deal_dates),
+                }
+
+                ctx.cache["category_deal_intensity"] = _deal_intensity
+                ctx.cache["category_deal_discount_data"] = _deal_discount_data
+                _l2_set(
+                    ctx,
+                    {
+                        "deal_intensity": _deal_intensity,
+                        "deal_discount_data": _deal_discount_data,
+                    },
+                    "deal_intensity",
+                    _deal_hash,
+                )
+                logger.info(
+                    f"[external_intensity] deal_count total={total_deals} "
+                    f"avg_discount={_avg_discount_pct} freq/mo={_deal_frequency_per_month} "
+                    f"across {len(_deal_asin_brand_pairs)} ASINs "
+                    f"({len(_brand_to_asins)} brand searches)"
+                )
+            except Exception as e:
+                logger.error(f"[external_intensity] Deal intensity: {e}")
+                ctx.cache["category_deal_intensity"] = ctx.cache.get("category_deal_intensity", 0)
+                ctx.cache["category_deal_discount_data"] = ctx.cache.get(
+                    "category_deal_discount_data", {}
+                )
 
     # ── helpers (defined before cache check so partial-retry can reuse them) ──
 
@@ -5005,7 +5033,12 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                     else "N/A"
                 ),
                 "units_mo": f"{enriched['sales']:,}" if enriched["sales"] else "N/A",
-                "seller_type": enriched.get("seller_type") or "Unknown",
+                # Pre-classified (FBA/FBM/AMZ/Unknown), not the raw scraped seller_type
+                # string — "Amazon" (FBA: 3rd-party seller, Amazon-fulfilled) and
+                # "Amazon.com" (AMZ: Amazon itself is the seller) are easy to conflate
+                # by surface text alone, so classification happens here rather than
+                # leaving the LLM to infer FBA vs. AMZ from the raw label.
+                "fulfillment": _classify_fulfillment(enriched.get("seller_type")),
             }
         )
 
