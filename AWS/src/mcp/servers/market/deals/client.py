@@ -11,6 +11,8 @@ from typing import Any
 from bs4 import BeautifulSoup
 from curl_cffi import requests
 
+from src.core.errors.codes import ErrorCode, classify_http
+
 logger = logging.getLogger(__name__)
 
 
@@ -71,8 +73,9 @@ class DealHistoryClient:
                     self.session.get, url, headers=headers, timeout=15
                 )
                 if response.status_code != 200:
+                    code = classify_http(response.status_code, provider="slickdeals")
                     logger.warning(
-                        f"Slickdeals returned status {response.status_code} on page {page}. Stopping."
+                        f"Slickdeals [{code}] status {response.status_code} on page {page}. Stopping."
                     )
                     break
 
@@ -85,7 +88,7 @@ class DealHistoryClient:
                 if page < max_pages:
                     await asyncio.sleep(1.0)  # Politeness delay
             except Exception as e:
-                logger.error(f"Slickdeals error on page {page}: {e}")
+                logger.error(f"Slickdeals [{ErrorCode.TIMEOUT}] error on page {page}: {e}")
                 break
         return all_deals
 
@@ -105,6 +108,8 @@ class DealHistoryClient:
         try:
             response = await asyncio.to_thread(self.session.get, url, headers=headers, timeout=15)
             if response.status_code != 200:
+                code = classify_http(response.status_code, provider="dealnews")
+                logger.warning(f"DealNews [{code}] status {response.status_code}")
                 return []
 
             html = response.text
@@ -156,7 +161,7 @@ class DealHistoryClient:
                     await asyncio.sleep(1.0)
 
         except Exception as e:
-            logger.error(f"DealNews error: {e}")
+            logger.error(f"DealNews [{ErrorCode.TIMEOUT}] error: {e}")
 
         return all_deals
 
@@ -207,8 +212,9 @@ class DealHistoryClient:
                     self.session.get, url, headers=headers, timeout=15
                 )
                 if response.status_code != 200:
+                    code = classify_http(response.status_code, provider="woot")
                     logger.warning(
-                        f"Woot forum search returned {response.status_code} on page {page}."
+                        f"Woot forum search [{code}] status {response.status_code} on page {page}."
                     )
                     break
 
@@ -231,7 +237,7 @@ class DealHistoryClient:
                 if page < max_pages:
                     await asyncio.sleep(1.0)  # Politeness delay
             except Exception as e:
-                logger.error(f"Woot forum search error on page {page}: {e}")
+                logger.error(f"Woot forum search [{ErrorCode.TIMEOUT}] error on page {page}: {e}")
                 break
 
         return [
@@ -303,7 +309,7 @@ class DealHistoryClient:
                 return m.group(1)
             logger.debug(f"Redirect landed on non-ASIN URL: {final_url[:120]}")
         except Exception as e:
-            logger.warning(f"Failed to follow redirect {click_url}: {e}")
+            logger.warning(f"[{ErrorCode.TIMEOUT}] Failed to follow redirect {click_url}: {e}")
         return None
 
     async def _resolve_asin_from_deal_page(self, deal_url: str) -> str | None:
@@ -328,7 +334,8 @@ class DealHistoryClient:
                 self.session.get, deal_url, headers=page_headers, timeout=15
             )
             if resp.status_code != 200:
-                logger.warning(f"Deal page returned {resp.status_code}: {deal_url}")
+                code = classify_http(resp.status_code, provider="slickdeals")
+                logger.warning(f"Deal page [{code}] status {resp.status_code}: {deal_url}")
                 return None
 
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -353,7 +360,7 @@ class DealHistoryClient:
             return await self._follow_redirect_extract_asin(click_links[0], referer=deal_url)
 
         except Exception as e:
-            logger.warning(f"Failed to resolve ASIN from {deal_url}: {e}")
+            logger.warning(f"[{ErrorCode.TIMEOUT}] Failed to resolve ASIN from {deal_url}: {e}")
 
         return None
 
@@ -375,7 +382,8 @@ class DealHistoryClient:
         try:
             resp = await asyncio.to_thread(self.session.get, offer_url, headers=headers, timeout=15)
             if resp.status_code != 200:
-                logger.warning(f"Woot offer page returned {resp.status_code}: {offer_url}")
+                code = classify_http(resp.status_code, provider="woot")
+                logger.warning(f"Woot offer page [{code}] status {resp.status_code}: {offer_url}")
                 return []
 
             m = self._WOOT_OFFER_ITEMS_RE.search(resp.text)
@@ -386,7 +394,9 @@ class DealHistoryClient:
             try:
                 items = json.loads(m.group(1))
             except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse offerItems JSON from {offer_url}: {e}")
+                logger.warning(
+                    f"[{ErrorCode.PARSE_ERROR}] Failed to parse offerItems JSON from {offer_url}: {e}"
+                )
                 return []
 
             offers: list[dict[str, Any]] = []
@@ -407,7 +417,7 @@ class DealHistoryClient:
                 )
             return offers
         except Exception as e:
-            logger.warning(f"Failed to resolve offers from {offer_url}: {e}")
+            logger.warning(f"[{ErrorCode.TIMEOUT}] Failed to resolve offers from {offer_url}: {e}")
             return []
 
     async def get_deals_for_asins(

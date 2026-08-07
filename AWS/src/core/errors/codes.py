@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from curl_cffi.requests.exceptions import HTTPError
+
 
 class ErrorCode(StrEnum):
     """
@@ -226,6 +228,26 @@ def classify_http(status: int, provider: str = "") -> ErrorCode:
     if status >= 500:
         return ErrorCode.SERVER_ERROR
     return ErrorCode.UNKNOWN
+
+
+def classify_exception(exc: Exception, provider: str = "") -> ErrorCode:
+    """Classify a caught request exception from a curl_cffi-based scraper/client.
+
+    Returns the HTTP-status-based code via classify_http() when ``exc`` is a
+    curl_cffi HTTPError carrying a response (e.g. raised by
+    ``Response.raise_for_status()``); otherwise treats it as a connection-level
+    failure (DNS, TLS, timeout, connection reset) and returns TIMEOUT.
+
+    Use in the generic ``except Exception as e:`` handler that wraps a
+    ``session.get()``/``session.post()`` call::
+
+        except Exception as e:
+            code = classify_exception(e, provider="cpsc")
+            logger.warning(f"[{code}] request failed: {e}")
+    """
+    if isinstance(exc, HTTPError) and exc.response is not None:
+        return classify_http(exc.response.status_code, provider=provider)
+    return ErrorCode.TIMEOUT
 
 
 def classify_api_code(code: int | str, provider: str) -> ErrorCode:

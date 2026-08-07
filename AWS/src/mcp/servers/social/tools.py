@@ -6,6 +6,7 @@ import time
 from mcp.types import TextContent, Tool
 
 from src.core.data_cache import data_cache
+from src.core.errors.codes import ErrorCode
 from src.intelligence.processors.comment_analyzer import CommentAnalyzer
 from src.intelligence.processors.hashtag_generator import HashtagGenerator
 from src.intelligence.processors.social_virality import SocialViralityProcessor
@@ -134,7 +135,7 @@ async def handle_social_tool(name: str, arguments: dict) -> list[TextContent]:
                 reference_videos.extend(vids)
                 hashtags_fetched.append(tag)
             except Exception as e:
-                logger.warning(f"Reference fetch failed for #{tag}: {e}")
+                logger.warning(f"[{ErrorCode.TIMEOUT}] Reference fetch failed for #{tag}: {e}")
 
         # 4. Cache reference videos under a dedicated key
         ref_cache_key = f"__ref__{keyword}"
@@ -262,7 +263,9 @@ async def handle_social_tool(name: str, arguments: dict) -> list[TextContent]:
                         author_id=author_id,
                     )
                 except Exception as e:
-                    logger.warning(f"Comment fetch failed for video {v_id}: {e}")
+                    logger.warning(
+                        f"[{ErrorCode.TIMEOUT}] Comment fetch failed for video {v_id}: {e}"
+                    )
                     continue
                 texts = [
                     c.get("text", "").strip() for c in raw_comments if c.get("text", "").strip()

@@ -4,6 +4,8 @@ from typing import Any
 
 from curl_cffi import requests
 
+from src.core.errors.codes import ErrorCode, classify_exception
+
 logger = logging.getLogger("mcp-compliance-cpsc")
 
 
@@ -39,7 +41,8 @@ class CPSCRecallProvider:
                 data = resp.json()
                 return self._parse_api_results(data)
             except Exception as e:
-                logger.error(f"Error calling CPSC API for '{keyword}': {e}")
+                code = classify_exception(e, provider="cpsc")
+                logger.error(f"[{code}] Error calling CPSC API for '{keyword}': {e}")
                 # Fallback to scraping if API fails
                 return await self._scrape_search_en(keyword)
 
@@ -80,7 +83,7 @@ class CPSCRecallProvider:
 
                 results.append(res)
             except Exception as e:
-                logger.warning(f"Error parsing API item: {e}")
+                logger.warning(f"[{ErrorCode.PARSE_ERROR}] Error parsing API item: {e}")
                 continue
         return results
 
@@ -94,7 +97,8 @@ class CPSCRecallProvider:
                 resp = await s.get(url, params=params, headers=self.headers, timeout=30)
                 return self._parse_list_zh(resp.text)
             except Exception as e:
-                logger.error(f"Scraping search zh failed: {e}")
+                code = classify_exception(e, provider="cpsc")
+                logger.error(f"[{code}] Scraping search zh failed: {e}")
                 return []
 
     async def _scrape_search_en(self, keyword: str) -> list[dict[str, Any]]:
@@ -105,7 +109,8 @@ class CPSCRecallProvider:
                 resp = await s.get(url, params=params, headers=self.headers, timeout=30)
                 return self._parse_list_en(resp.text)
             except Exception as e:
-                logger.error(f"Scraping search en failed: {e}")
+                code = classify_exception(e, provider="cpsc")
+                logger.error(f"[{code}] Scraping search en failed: {e}")
                 return []
 
     def _parse_list_html(self, html: str) -> list[dict[str, Any]]:
@@ -155,7 +160,8 @@ class CPSCRecallProvider:
                 resp = await s.get(url, headers=self.headers, timeout=30)
                 return self._parse_detail(resp.text)
             except Exception as e:
-                logger.error(f"Detail fetch failed for {url}: {e}")
+                code = classify_exception(e, provider="cpsc")
+                logger.error(f"[{code}] Detail fetch failed for {url}: {e}")
                 return {}
 
     def _parse_detail(self, html: str) -> dict[str, Any]:

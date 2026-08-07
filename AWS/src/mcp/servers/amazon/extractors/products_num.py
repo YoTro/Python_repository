@@ -8,6 +8,7 @@ import re
 
 from bs4 import BeautifulSoup
 
+from src.core.errors.codes import ErrorCode, classify_exception
 from src.core.scraper import AmazonBaseScraper
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class ProductsNumExtractor(AmazonBaseScraper):
         if match:
             return match.group(1)
 
-        logger.warning(f"Could not find seller ID on page: {url}")
+        logger.warning(f"[{ErrorCode.PARSE_ERROR}] Could not find seller ID on page: {url}")
         return None
 
     async def get_products_num_by_seller(self, seller_id: str) -> int:
@@ -99,18 +100,24 @@ class ProductsNumExtractor(AmazonBaseScraper):
                     return int(match.group(1))
 
                 logger.warning(
-                    f"Could not find productsTotalCount in response for seller {seller_id}"
+                    f"[{ErrorCode.PARSE_ERROR}] Could not find productsTotalCount in response "
+                    f"for seller {seller_id}"
                 )
                 return 0
 
             except Exception as e:
+                code = classify_exception(e, provider="amazon")
                 logger.warning(
-                    f"Attempt {attempt + 1}/{max_retries}: Failed to fetch product count for {seller_id}: {e}"
+                    f"[{code}] Attempt {attempt + 1}/{max_retries}: "
+                    f"Failed to fetch product count for {seller_id}: {e}"
                 )
                 await asyncio.sleep(random.uniform(2, 5))
                 headers["User-Agent"] = self._get_random_ua()
 
-        logger.error(f"Failed to fetch product count for {seller_id} after {max_retries} attempts.")
+        logger.error(
+            f"[{ErrorCode.SERVER_ERROR}] Failed to fetch product count for {seller_id} "
+            f"after {max_retries} attempts."
+        )
         return 0
 
     async def get_seller_and_products_count(self, url: str) -> dict:
