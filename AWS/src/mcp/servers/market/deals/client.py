@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 class DealHistoryClient:
     """
     Client to fetch off-Amazon deal history.
-    Targets top-level deal sites like Slickdeals and DealNews.
+    Targets top-level deal sites like Slickdeals, DealNews, and Woot (via its
+    forums.woot.com @wootbot post history, since Woot has no product search API).
     """
 
     def __init__(self):
@@ -32,38 +33,15 @@ class DealHistoryClient:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
         }
 
-    async def get_deal_history(
-        self, asin: str, keyword: str = "", max_pages: int = 3
+    async def _fetch_slickdeals(
+        self, search_term: str, max_pages: int, date_range_days: int = 1095
     ) -> list[dict[str, Any]]:
         """
-        Fetch deal history from multiple external deal sites in parallel.
+        ``date_range_days`` maps to Slickdeals' ``filters[date][]`` search param — an
+        arbitrary lookback window in days (confirmed live: e.g. 7/30/90 return nothing
+        for a term whose only matches are ~1yr+ old, while 1095/3650/9999 progressively
+        surface older results). Defaults to 3 years.
         """
-        search_term = keyword if keyword else asin
-        logger.info(f"Fetching deal history for: {search_term} (up to {max_pages} pages)")
-
-        # Run scrapers for different sites in parallel
-        tasks = [
-            self._fetch_slickdeals(search_term, max_pages),
-            self._fetch_dealnews(search_term, max_pages),
-        ]
-
-        results = await asyncio.gather(*tasks)
-
-        # Flatten the list of lists into a single list of deals
-        all_deals = [deal for sublist in results for deal in sublist]
-
-        # Deduplicate deals based on a unique key (site, title, price)
-        seen = set()
-        unique_deals = []
-        for d in all_deals:
-            key = f"{d['site']}:{d['title']}:{d.get('price', 0)}"
-            if key not in seen:
-                seen.add(key)
-                unique_deals.append(d)
-
-        return unique_deals
-
-    async def _fetch_slickdeals(self, search_term: str, max_pages: int) -> list[dict[str, Any]]:
         encoded_term = urllib.parse.quote(search_term)
         all_deals = []
 
@@ -84,7 +62,7 @@ class DealHistoryClient:
             url = (
                 f"https://slickdeals.net/search?q={encoded_term}&searchtype=normal"
                 f"&filters%5Bforum%5D%5B%5D=&sort=relevance&filters%5Brating%5D%5B%5D=all"
-                f"&filters%5Bdate%5D%5B%5D=1095&filters%5Bprice%5D%5Bmin%5D="
+                f"&filters%5Bdate%5D%5B%5D={date_range_days}&filters%5Bprice%5D%5Bmin%5D="
                 f"&filters%5Bprice%5D%5Bmax%5D=&filters%5Bstore%5D%5B%5D=1&page={page}"
             )
 
@@ -181,6 +159,91 @@ class DealHistoryClient:
             logger.error(f"DealNews error: {e}")
 
         return all_deals
+
+    # Offer links live under whichever category subdomain the deal belongs to
+    # (tools.woot.com, electronics.woot.com, home.woot.com, sports.woot.com, ...),
+    # not just "tools" — match any *.woot.com/offers/<slug>.
+    _WOOT_BLURB_LINK_RE = re.compile(r"https://[a-z0-9-]+\.woot\.com/offers/[\w-]+", re.I)
+
+    async def _fetch_woot(
+        self,
+        search_term: str,
+        max_pages: int = 1,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Search the Woot forums for @wootbot posts mentioning search_term. Woot has no
+        product search API of its own — every live promotion is instead announced by the
+        wootbot forum account, so we search its posts and pull the unique offer link(s)
+        out of each post's blurb (a post's blurb repeats the same link twice).
+
+        ``category:6`` scopes the search to the forum's "Deal Chatter" category, where
+        wootbot posts. ``after``/``before`` are optional Discourse date filters
+        (YYYY-MM-DD) to narrow the search to a specific window.
+        """
+        query = f"{search_term} category:6"
+        if after:
+            query += f" after:{after}"
+        if before:
+            query += f" before:{before}"
+        query += " @wootbot"
+        encoded_query = urllib.parse.quote(query)
+
+        headers = {
+            **self.base_headers,
+            "accept": "application/json, text/javascript, */*; q=0.01",
+            "discourse-present": "true",
+            "x-requested-with": "XMLHttpRequest",
+            "x-csrf-token": "undefined",
+            "referer": f"https://forums.woot.com/search?q={encoded_query}",
+        }
+
+        seen_links: dict[str, dict[str, str]] = {}
+        for page in range(1, max_pages + 1):
+            url = f"https://forums.woot.com/search?q={encoded_query}&page={page}"
+            try:
+                response = await asyncio.to_thread(
+                    self.session.get, url, headers=headers, timeout=15
+                )
+                if response.status_code != 200:
+                    logger.warning(
+                        f"Woot forum search returned {response.status_code} on page {page}."
+                    )
+                    break
+
+                posts = response.json().get("posts", [])
+                if not posts:
+                    break
+
+                for post in posts:
+                    created_at = post.get("created_at", "")
+                    blurb = post.get("blurb", "")
+                    links = set(self._WOOT_BLURB_LINK_RE.findall(blurb))
+                    if not links:
+                        continue
+                    # A wootbot blurb is "<link> <link> <product title>" — the links
+                    # repeat, so whatever text remains after stripping them is the title.
+                    title = self._WOOT_BLURB_LINK_RE.sub("", blurb).strip()
+                    for link in links:
+                        seen_links.setdefault(link, {"date": created_at, "title": title})
+
+                if page < max_pages:
+                    await asyncio.sleep(1.0)  # Politeness delay
+            except Exception as e:
+                logger.error(f"Woot forum search error on page {page}: {e}")
+                break
+
+        return [
+            {
+                "date": info["date"],
+                "title": info["title"],
+                "site": "woot.com",
+                "type": "Forum Post",
+                "deal_url": link,
+            }
+            for link, info in seen_links.items()
+        ]
 
     def _parse_slickdeals(self, html: str) -> list[dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")
@@ -294,26 +357,84 @@ class DealHistoryClient:
 
         return None
 
+    # Offer pages don't expose a JSON API — the offer record(s) are embedded as a JS
+    # array literal (`var offerItems = [{"Asin": ..., "SalePrice": ..., ...}];`) inside
+    # a <script> tag on the rendered HTML page.
+    _WOOT_OFFER_ITEMS_RE = re.compile(r"var offerItems\s*=\s*(\[.*?\]);")
+
+    async def _resolve_woot_offers(self, offer_url: str) -> list[dict[str, Any]]:
+        """
+        Fetch a *.woot.com/offers/... page and extract its offer record(s): asin
+        (Asin), price (SalePrice), discount_pct (parsed from FormattedDiscount, e.g.
+        "35% off" -> 35.0). One offer page can list more than one ASIN (bundles/variants).
+        """
+        if not offer_url:
+            return []
+
+        headers = {**self.base_headers, "referer": "https://forums.woot.com/"}
+        try:
+            resp = await asyncio.to_thread(self.session.get, offer_url, headers=headers, timeout=15)
+            if resp.status_code != 200:
+                logger.warning(f"Woot offer page returned {resp.status_code}: {offer_url}")
+                return []
+
+            m = self._WOOT_OFFER_ITEMS_RE.search(resp.text)
+            if not m:
+                logger.debug(f"No offerItems found on {offer_url}")
+                return []
+
+            try:
+                items = json.loads(m.group(1))
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse offerItems JSON from {offer_url}: {e}")
+                return []
+
+            offers: list[dict[str, Any]] = []
+            seen_asins: set[str] = set()
+            for item in items:
+                asin = item.get("Asin")
+                if not asin or asin in seen_asins:
+                    continue
+                seen_asins.add(asin)
+                offers.append(
+                    {
+                        "asin": asin,
+                        "price": item.get("SalePrice") or 0.0,
+                        "discount_pct": self._extract_percentage(
+                            item.get("FormattedDiscount") or ""
+                        ),
+                    }
+                )
+            return offers
+        except Exception as e:
+            logger.warning(f"Failed to resolve offers from {offer_url}: {e}")
+            return []
+
     async def get_deals_for_asins(
         self, asins: set[str], brand: str, max_pages: int = 2
     ) -> dict[str, list[dict[str, Any]]]:
         """
-        2-phase ASIN-confirmed deal lookup across Slickdeals and DealNews, shared across
-        every ASIN of one brand — a single brand search + candidate resolution pass whose
-        results are then bucketed per target ASIN, instead of repeating both phases once
-        per ASIN (the brand search and per-candidate redirect resolution are identical
-        regardless of which of the brand's ASINs is being confirmed).
+        2-phase ASIN-confirmed deal lookup across Slickdeals, DealNews, and Woot forums,
+        shared across every ASIN of one brand — a single brand search + candidate
+        resolution pass whose results are then bucketed per target ASIN, instead of
+        repeating both phases once per ASIN (the brand search and per-candidate
+        resolution are identical regardless of which of the brand's ASINs is being
+        confirmed).
 
-        Phase 1: search both sites by brand in parallel → candidate deals with click URLs.
-        Phase 2: resolve each candidate's click URL in parallel → bucket by resolved ASIN.
+        Phase 1: search all sources by brand in parallel → candidate deals with a
+                 site-specific URL to resolve.
+        Phase 2: resolve each candidate in parallel → bucket by resolved ASIN(s).
           - Slickdeals: click URL is on the deal detail page (one extra fetch per candidate)
           - DealNews:   click URL (lw/click) is already on the search result card
+          - Woot:       deal_url is the tools.woot.com offer page itself, which can
+                         resolve to more than one ASIN (bundle listings)
         """
-        sd_candidates, dn_candidates = await asyncio.gather(
+        sd_candidates, dn_candidates, woot_candidates = await asyncio.gather(
             self._fetch_slickdeals(brand, max_pages),
             self._fetch_dealnews(brand, max_pages),
+            self._fetch_woot(brand, max_pages),
         )
-        candidates = sd_candidates + dn_candidates
+        candidates = sd_candidates + dn_candidates + woot_candidates
         matched: dict[str, list[dict[str, Any]]] = {asin: [] for asin in asins}
         if not candidates:
             logger.info(f"[get_deals_for_asins] No candidates for brand={brand!r}")
@@ -321,41 +442,36 @@ class DealHistoryClient:
 
         sem = asyncio.Semaphore(5)
 
-        async def resolve(deal: dict) -> tuple[dict, str | None]:
+        async def resolve(deal: dict) -> list[tuple[dict, str | None]]:
             async with sem:
                 if deal["site"] == "slickdeals.net":
                     resolved = await self._resolve_asin_from_deal_page(deal.get("deal_url", ""))
+                    return [(deal, resolved)]
+                elif deal["site"] == "woot.com":
+                    offers = await self._resolve_woot_offers(deal.get("deal_url", ""))
+                    return [({**deal, **offer}, offer["asin"]) for offer in offers]
                 else:
                     # DealNews: deal_url is already the lw/click tracking link
                     resolved = await self._follow_redirect_extract_asin(
                         deal.get("deal_url", ""), referer="https://www.dealnews.com/"
                     )
-            return deal, resolved
+                    return [(deal, resolved)]
 
         results = await asyncio.gather(*(resolve(d) for d in candidates), return_exceptions=True)
 
         for r in results:
             if isinstance(r, Exception):
                 continue
-            deal, resolved_asin = r
-            if resolved_asin in matched:
-                matched[resolved_asin].append({**deal, "confirmed_asin": resolved_asin})
+            for deal, resolved_asin in r:
+                if resolved_asin in matched:
+                    matched[resolved_asin].append({**deal, "confirmed_asin": resolved_asin})
 
         logger.info(
             f"[get_deals_for_asins] brand={brand!r} targets={sorted(asins)}: "
             f"{sum(len(v) for v in matched.values())}/{len(candidates)} confirmed "
-            f"(SD={len(sd_candidates)} DN={len(dn_candidates)})"
+            f"(SD={len(sd_candidates)} DN={len(dn_candidates)} Woot={len(woot_candidates)})"
         )
         return matched
-
-    async def get_deals_for_asin(
-        self, asin: str, brand: str, max_pages: int = 2
-    ) -> list[dict[str, Any]]:
-        """
-        Single-ASIN convenience wrapper around get_deals_for_asins.
-        """
-        matched = await self.get_deals_for_asins({asin}, brand, max_pages)
-        return matched[asin]
 
     def _parse_dealnews(self, html: str) -> list[dict[str, Any]]:
         soup = BeautifulSoup(html, "html.parser")

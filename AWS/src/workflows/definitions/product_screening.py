@@ -216,8 +216,8 @@ async def _enrich_deal_history(item: dict, ctx: WorkflowContext) -> dict:
     from src.mcp.servers.market.deals.client import DealHistoryClient
 
     client = DealHistoryClient()
-    deals = await client.get_deal_history(asin=asin, keyword=keyword)
-    result = {"deal_history": deals}
+    matched = await client.get_deals_for_asins(asins={asin}, brand=keyword)
+    result = {"deal_history": matched.get(asin, [])}
     _l2_set(ctx, result, "deal_history", asin)
     return result
 

@@ -269,16 +269,6 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
     elif name == "get_ad_traffic":
         return [TextContent(type="text", text=json.dumps({"ad_spend": 5000, "roas": 2.1}))]
 
-    elif name == "get_deal_history":
-        from src.mcp.servers.market.deals.client import DealHistoryClient
-
-        client = DealHistoryClient()
-        asin = arguments["asin"]
-        keyword = arguments.get("keyword", "")
-        max_pages = arguments.get("max_pages", 3)
-        deals = await client.get_deal_history(asin, keyword=keyword, max_pages=max_pages)
-        return [TextContent(type="text", text=json.dumps(deals, ensure_ascii=False))]
-
     elif name == "get_deals_for_asins":
         from src.mcp.servers.market.deals.client import DealHistoryClient
 
@@ -648,42 +638,18 @@ market_tools = [
         },
     ),
     Tool(
-        name="get_deal_history",
-        description=(
-            "Scrape off-Amazon deal history for an ASIN from Slickdeals and DealNews. "
-            "Returns list of deal records, each with: date, price (USD), discount_pct, title, site, type. "
-            "Pass the result directly to analyze_promotions to compute promo dependency score."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "asin": {"type": "string", "description": "Product ASIN to look up"},
-                "keyword": {
-                    "type": "string",
-                    "description": "Optional search keyword override (defaults to product title)",
-                },
-                "max_pages": {
-                    "type": "integer",
-                    "default": 3,
-                    "description": "Max pages to scrape per deal site",
-                },
-            },
-            "required": ["asin"],
-        },
-    ),
-    Tool(
         name="get_deals_for_asins",
         description=(
-            "ASIN-confirmed deal lookup on Slickdeals and DealNews. "
-            "Searches both sites once by brand name, then follows each deal's tracking redirect "
-            "to confirm which ASIN it links to. Only returns deals that provably link to one of "
+            "ASIN-confirmed deal lookup on Slickdeals, DealNews, and Woot. "
+            "Searches all three sources once by brand name, then resolves each candidate to the "
+            "ASIN(s) it actually links to (tracking-redirect follow for Slickdeals/DealNews, "
+            "direct offer-page parse for Woot). Only returns deals that provably link to one of "
             "the requested ASINs — no false positives from title-matching. "
             "Pass every ASIN of the same brand in one call (``asins``) — the brand search and "
             "redirect resolution happen once and are shared across all of them, so batching "
             "multiple ASINs from the same brand is far cheaper than calling this once per ASIN. "
             "Returns an object keyed by each requested ASIN, mapping to its list of confirmed "
-            "deals (each with date, price (USD), discount_pct, title, site, deal_url, confirmed_asin). "
-            "Use this instead of get_deal_history when you need ASIN-level precision."
+            "deals (each with date, price (USD), discount_pct, title, site, deal_url, confirmed_asin)."
         ),
         inputSchema={
             "type": "object",
@@ -714,7 +680,7 @@ market_tools = [
             "median_discount_pct (%), promo_dependency_score (0–1), "
             "risk_level ('Low (Stable Price)'|'Medium (Regular Promotions)'|'High (Price War/Clearance)'), "
             "total_deals_found. "
-            "Call get_deal_history first to obtain the deals input."
+            "Call get_deals_for_asins first to obtain the deals input."
         ),
         inputSchema={
             "type": "object",
@@ -723,7 +689,7 @@ market_tools = [
                 "deals": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "Deal records from get_deal_history (each with date, price, discount_pct fields)",
+                    "description": "Deal records from get_deals_for_asins (each with date, price, discount_pct fields)",
                 },
             },
             "required": ["current_price", "deals"],
@@ -1112,10 +1078,9 @@ _MARKET_META = {
     "xiyou_get_login_qr": ("DATA", "URL for WeChat login QR code"),
     "xiyou_check_login_status": ("DATA", "authentication status of pending QR scan"),
     "get_ad_traffic": ("DATA", "ad spend and ROAS estimates"),
-    "get_deal_history": ("DATA", "list of historical deals with dates, prices, and discounts"),
     "get_deals_for_asins": (
         "DATA",
-        "object keyed by each requested ASIN mapping to its redirect-verified deal list from Slickdeals and DealNews",
+        "object keyed by each requested ASIN mapping to its confirmed deal list from Slickdeals, DealNews, and Woot",
     ),
     "analyze_promotions": (
         "COMPUTE",
