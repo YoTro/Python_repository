@@ -3273,6 +3273,59 @@ def _calc_new_entrant_ratio(
     return ratio, display
 
 
+def _rebase_rating_series(
+    pts: list[tuple[str, Any, int | None]], confirm_days: int
+) -> list[tuple[str, Any, int]]:
+    """
+    Re-base a per-ASIN (date, stars, ratings) series against bad ratings reads.
+
+    `ratings` is a cumulative count that should never decrease under normal
+    conditions. A missing reading (None) or a lower reading that doesn't
+    persist is a bad data point — a transient scrape failure or a
+    variation-merge reshuffle — and is dropped, frozen at the last confirmed
+    count, so it can't fabricate a huge fake RSR spike (e.g. treating a bad 0
+    as real gives (15529-0)/4000 = 388%). But a lower reading seen on
+    `confirm_days` consecutive days is trusted as a real re-base — Amazon
+    purging fake reviews or a seller voluntarily splitting variations both
+    legitimately lower the count — so it replaces the stale high-water mark
+    instead of freezing it out for the rest of the ASIN's history.
+    """
+    rating_pts: list[tuple[str, Any, int]] = []
+    last_valid: int | None = None
+    pending: list[tuple[str, Any, int]] = []
+
+    def _discard_pending(pending: list[tuple[str, Any, int]], last_valid: int | None) -> None:
+        for p_date, p_stars, _p_ratings in pending:
+            if last_valid is not None:
+                rating_pts.append((p_date, p_stars, last_valid))
+        pending.clear()
+
+    for date, stars, ratings in pts:
+        if ratings is None:
+            _discard_pending(pending, last_valid)
+            if last_valid is not None:
+                rating_pts.append((date, stars, last_valid))
+            continue
+
+        if last_valid is None or ratings >= last_valid:
+            _discard_pending(pending, last_valid)
+            last_valid = ratings
+            rating_pts.append((date, stars, ratings))
+            continue
+
+        # ratings < last_valid: candidate real decline vs. noise — buffer it
+        # until it either persists long enough to confirm or gets discarded
+        # above by a rebound/missing reading.
+        pending.append((date, stars, ratings))
+        if len(pending) >= confirm_days:
+            rating_pts.extend(pending)
+            last_valid = pending[-1][2]
+            pending.clear()
+
+    _discard_pending(pending, last_valid)  # trailing streak that never got confirmed
+    return rating_pts
+
+
 async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     """Calculates scores and generates flattened niche benchmarks."""
     # Local semaphore: limits concurrent BrandExtractor calls within this invocation.
@@ -4285,6 +4338,11 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     # Signal 1 — Review-to-Sales Ratio (RSR): monthly review growth / monthly sales.
     #   Natural ≈ 1–5%; >10% suggests coordinated review injection.
     _RSR_THRESHOLD = 0.10  # monthly-review-growth / monthly-sales; >10% = suspicious
+    #   Ratings counts are cumulative and shouldn't decrease. A single lower
+    #   reading is treated as a bad scrape and dropped; one that persists this
+    #   many consecutive days is trusted as a real re-base (fake-review purge,
+    #   voluntary variation split) instead of frozen out indefinitely.
+    _RSR_CONFIRM_DAYS = 3
     # Signal 2 — Rating jump: sustained +0.3★ rise in 30 days is implausible organically.
     _JUMP_STARS = 0.3  # minimum stars rise over a 30-day window
     _JUMP_WINDOW = 30  # days
@@ -4318,7 +4376,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
 
     for asin, records in historical_data.items():
         pts = sorted(
-            [(r["date"], r.get("stars"), r.get("ratings") or 0) for r in records if r.get("date")],
+            [(r["date"], r.get("stars"), r.get("ratings")) for r in records if r.get("date")],
             key=lambda x: x[0],
         )
         if len(pts) < 60:
@@ -4329,36 +4387,43 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         # + SalesEstimator monthly sales estimate
         monthly_sales = sales_map.get(asin.upper(), 0)
         if monthly_sales > 0:
-            review_delta = pts[-1][2] - pts[0][2]
-            months_spanned = max(len(pts) / 30, 1)
-            rsr = (review_delta / months_spanned) / monthly_sales
-            rsr_values.append(rsr)
-            if rsr > _RSR_THRESHOLD:
-                flagged_rsr += 1
+            rating_pts = _rebase_rating_series(pts, _RSR_CONFIRM_DAYS)
 
-            mid = len(pts) // 2
-            first_half, second_half = pts[: mid + 1], pts[mid:]
-            if len(first_half) >= 2 and len(second_half) >= 2:
-                first_months = max(len(first_half) / 30, 1)
-                second_months = max(len(second_half) / 30, 1)
-                first_rsr = ((first_half[-1][2] - first_half[0][2]) / first_months) / monthly_sales
-                second_rsr = (
-                    (second_half[-1][2] - second_half[0][2]) / second_months
-                ) / monthly_sales
-                if first_rsr > 0:
-                    rsr_growth_values.append((second_rsr - first_rsr) / first_rsr)
+            if len(rating_pts) >= 2:
+                review_delta = rating_pts[-1][2] - rating_pts[0][2]
+                months_spanned = max(len(rating_pts) / 30, 1)
+                rsr = (review_delta / months_spanned) / monthly_sales
+                rsr_values.append(rsr)
+                if rsr > _RSR_THRESHOLD:
+                    flagged_rsr += 1
 
-            _latest_day = pts[-1][0][:10]  # latest scraped day may still be partial
-            window_rsrs = [
-                (
-                    (pts[i][2] - pts[i - _RSR_WINDOW_DAYS][2]) / monthly_sales,
-                    pts[i][0],
-                    pts[i - _RSR_WINDOW_DAYS][0],
-                )
-                for i in range(_RSR_WINDOW_DAYS, len(pts))
-                if pts[i][0][:10]
-                < _latest_day  # exclude only windows ending on the partial latest day
-            ]
+                mid = len(rating_pts) // 2
+                first_half, second_half = rating_pts[: mid + 1], rating_pts[mid:]
+                if len(first_half) >= 2 and len(second_half) >= 2:
+                    first_months = max(len(first_half) / 30, 1)
+                    second_months = max(len(second_half) / 30, 1)
+                    first_rsr = (
+                        (first_half[-1][2] - first_half[0][2]) / first_months
+                    ) / monthly_sales
+                    second_rsr = (
+                        (second_half[-1][2] - second_half[0][2]) / second_months
+                    ) / monthly_sales
+                    if first_rsr > 0:
+                        rsr_growth_values.append((second_rsr - first_rsr) / first_rsr)
+
+                _latest_day = rating_pts[-1][0][:10]  # latest scraped day may still be partial
+                window_rsrs = [
+                    (
+                        (rating_pts[i][2] - rating_pts[i - _RSR_WINDOW_DAYS][2]) / monthly_sales,
+                        rating_pts[i][0],
+                        rating_pts[i - _RSR_WINDOW_DAYS][0],
+                    )
+                    for i in range(_RSR_WINDOW_DAYS, len(rating_pts))
+                    if rating_pts[i][0][:10]
+                    < _latest_day  # exclude only windows ending on the partial latest day
+                ]
+            else:
+                window_rsrs = []
             if window_rsrs:
                 peak_rsr, peak_end_date, peak_start_date = max(window_rsrs, key=lambda w: w[0])
                 baseline_rsr = statistics.median(w[0] for w in window_rsrs)
