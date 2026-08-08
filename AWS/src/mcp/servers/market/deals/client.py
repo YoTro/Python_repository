@@ -218,21 +218,36 @@ class DealHistoryClient:
                     )
                     break
 
-                posts = response.json().get("posts", [])
+                payload = response.json()
+                posts = payload.get("posts", [])
                 if not posts:
                     break
+
+                # The search response also carries a "topics" array alongside "posts";
+                # fancy_title there is the full, untruncated product title, unlike the
+                # blurb (see below) which Discourse caps to a fixed length.
+                topic_titles = {
+                    t["id"]: t.get("fancy_title", "") for t in payload.get("topics", [])
+                }
 
                 for post in posts:
                     created_at = post.get("created_at", "")
                     blurb = post.get("blurb", "")
-                    links = set(self._WOOT_BLURB_LINK_RE.findall(blurb))
+                    links = self._WOOT_BLURB_LINK_RE.findall(blurb)
                     if not links:
                         continue
                     # A wootbot blurb is "<link> <link> <product title>" — the links
-                    # repeat, so whatever text remains after stripping them is the title.
-                    title = self._WOOT_BLURB_LINK_RE.sub("", blurb).strip()
-                    for link in links:
-                        seen_links.setdefault(link, {"date": created_at, "title": title})
+                    # repeat, then the title follows. The Discourse search API
+                    # truncates `blurb` to a fixed length, and the cutoff sometimes
+                    # lands mid-URL on the second (duplicate) link, e.g. ".../open-box"
+                    # -> ".../open-bo". The first link is always the intact one, so
+                    # use it rather than risking a truncated fragment.
+                    link = links[0]
+                    title = (
+                        topic_titles.get(post.get("topic_id"))
+                        or self._WOOT_BLURB_LINK_RE.sub("", blurb).strip()
+                    )
+                    seen_links.setdefault(link, {"date": created_at, "title": title})
 
                 if page < max_pages:
                     await asyncio.sleep(1.0)  # Politeness delay
