@@ -45,28 +45,35 @@ class ProductDetailsExtractor(AmazonBaseScraper):
             if title_span:
                 product.title = title_span.get_text(strip=True)
 
-        # 2. Brand — four selectors in priority order:
+        # 2. Brand — five selectors in priority order:
         #   A) Premium layout: <img id="brandLogoHiResByline" alt="BrandName"> (exact name, no parsing)
         #   B) Premium layout: <a id="visitStoreDesktopUrl">Visit the X Store</a>
         #   C) Legacy layout:  <a id="bylineInfo">Visit the X Store</a>
-        #   D) Legacy layout:  <span id="bylineInfo">Brand: X</span>
+        #   D) Legacy layout:  <a id="bylineInfo">Brand: X</a>
+        #   E) Legacy layout:  <span id="bylineInfo">Brand: X</span>
         if not product.brand:
             logo_img = soup.find("img", id="brandLogoHiResByline")
             if logo_img and logo_img.get("alt", "").strip():
                 product.brand = logo_img["alt"].strip()
-            else:
-                store_link = soup.find("a", id="visitStoreDesktopUrl")
-                if not store_link:
-                    store_link = soup.find("a", id="bylineInfo")
+
+            if not product.brand:
+                store_link = soup.find("a", id="visitStoreDesktopUrl") or soup.find(
+                    "a", id="bylineInfo"
+                )
                 if store_link:
                     text = store_link.get_text(strip=True)
                     m = re.match(r"Visit the (.+?) Store$", text)
-                    product.brand = m.group(1) if m else text or None
-                else:
-                    byline_span = soup.find("span", id="bylineInfo")
-                    if byline_span:
-                        text = byline_span.get_text(strip=True)
-                        product.brand = re.sub(r"^Brand:\s*", "", text, flags=re.I) or None
+                    if m:
+                        product.brand = m.group(1)
+                    else:
+                        m = re.match(r"Brand:\s*(.+)$", text, flags=re.I)
+                        product.brand = m.group(1) if m else None
+
+            if not product.brand:
+                byline_span = soup.find("span", id="bylineInfo")
+                if byline_span:
+                    text = byline_span.get_text(strip=True)
+                    product.brand = re.sub(r"^Brand:\s*", "", text, flags=re.I) or None
 
         # 3. Features & Description (always deep-dive)
         feature_bullets_div = soup.find("div", id="feature-bullets")

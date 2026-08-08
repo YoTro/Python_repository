@@ -14,17 +14,18 @@ class BrandExtractor(AmazonBaseScraper):
     """
     Extracts the brand name from a single Amazon product listing.
 
-    Four selectors tried in priority order:
+    Five selectors tried in priority order:
       A) img#brandLogoHiResByline  — premium brand logo (alt attribute, exact name)
       B) a#visitStoreDesktopUrl    — "Visit the X Store" link (premium layout)
       C) a#bylineInfo              — "Visit the X Store" link (legacy layout)
-      D) span#bylineInfo           — "Brand: X" plain span (legacy layout)
+      D) a#bylineInfo              — "Brand: X" plain anchor (legacy layout)
+      E) span#bylineInfo           — "Brand: X" plain span (legacy layout)
     """
 
     async def get_brand(self, asin: str, host: str = "https://www.amazon.com") -> dict:
         """
         Returns {"ASIN": asin, "Brand": str | None}.
-        Brand is None when none of the four selectors match.
+        Brand is None when none of the five selectors match.
         """
         host = host.rstrip("/")
         if not host.startswith(("http://", "https://")):
@@ -52,14 +53,24 @@ class BrandExtractor(AmazonBaseScraper):
                 m = re.match(r"Visit the (.+?) Store$", link.get_text(strip=True))
                 brand = m.group(1) if m else link.get_text(strip=True) or None
 
-        # C) Legacy layout — bylineInfo anchor
+        # C) Legacy layout — bylineInfo anchor ("Visit the X Store")
         if not brand:
             link = soup.find("a", id="bylineInfo")
             if link:
-                m = re.match(r"Visit the (.+?) Store$", link.get_text(strip=True))
-                brand = m.group(1) if m else link.get_text(strip=True) or None
+                text = link.get_text(strip=True)
+                m = re.match(r"Visit the (.+?) Store$", text)
+                if m:
+                    brand = m.group(1)
 
-        # D) Legacy layout — bylineInfo span ("Brand: X")
+        # D) Legacy layout — bylineInfo anchor ("Brand: X")
+        if not brand:
+            link = soup.find("a", id="bylineInfo")
+            if link:
+                text = link.get_text(strip=True)
+                m = re.match(r"Brand:\s*(.+)$", text, flags=re.I)
+                brand = m.group(1) if m else None
+
+        # E) Legacy layout — bylineInfo span ("Brand: X")
         if not brand:
             span = soup.find("span", id="bylineInfo")
             if span:

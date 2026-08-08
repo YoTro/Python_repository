@@ -59,10 +59,11 @@ class SearchExtractor(AmazonBaseScraper):
                     parse_integer(sales_el.get_text(strip=True)) if sales_el else None
                 )
 
-                # Brand — three selectors in priority order (search cards lack the logo img):
+                # Brand — four selectors in priority order (search cards lack the logo img):
                 #   A) Premium layout: <a id="visitStoreDesktopUrl">Visit the X Store</a>
                 #   B) Legacy layout:  <a id="bylineInfo">Visit the X Store</a>
-                #   C) Legacy layout:  <span id="bylineInfo">Brand: X</span>
+                #   C) Legacy layout:  <a id="bylineInfo">Brand: X</a>
+                #   D) Legacy layout:  <span id="bylineInfo">Brand: X</span>
                 brand = None
                 store_link = result.find("a", id="visitStoreDesktopUrl") or result.find(
                     "a", id="bylineInfo"
@@ -70,8 +71,13 @@ class SearchExtractor(AmazonBaseScraper):
                 if store_link:
                     text = store_link.get_text(strip=True)
                     m = re.match(r"Visit the (.+?) Store$", text)
-                    brand = m.group(1) if m else text or None
-                else:
+                    if m:
+                        brand = m.group(1)
+                    else:
+                        m = re.match(r"Brand:\s*(.+)$", text, flags=re.I)
+                        brand = m.group(1) if m else None
+
+                if not brand:
                     byline_span = result.find("span", id="bylineInfo")
                     if byline_span:
                         text = byline_span.get_text(strip=True)
