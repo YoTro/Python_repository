@@ -4908,6 +4908,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 "positions": _seller_pos[_sid],
                 "monthly_units": _seller_sales_cnt[_sid],
                 "position_share": round(_seller_pos[_sid] / _N_items, 4),
+                "sales_share": round(_seller_sales_cnt[_sid] / max(_total_brand_sales, 1), 4),
             }
             for _sid, _brands in _seller_brands.items()
             if len(_brands) > 1
