@@ -4712,6 +4712,15 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     churn = result.get("market_churn", {})
     seasonality = result.get("seasonality", {})
     bsr_churn = result.get("bsr_churn", {})
+    bsr_lifecycle = result.get("bsr_lifecycle", {})
+    _bsr_lc_categories = bsr_lifecycle.get("categories", {})
+    _bsr_lc_departed = bsr_lifecycle.get("departed", {})
+
+    def _bsr_lc_cell(cat: dict | None) -> str:
+        if not cat or cat.get("pct") is None:
+            return "N/A"
+        return f"{cat['count']} ({cat['pct']:.0%})"
+
     peak_months_str = ", ".join(str(m) for m in seasonality.get("peak_months", [])) or "N/A"
     platform_warning = (
         " ⚠️ Peak overlaps platform events (Prime Day/Black Friday)"
@@ -5236,6 +5245,18 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             if bsr_churn.get("churn_12m") is not None
             else "N/A",
             "bsr_snapshots": ", ".join(bsr_churn.get("snapshots_available", [])) or "N/A",
+            # BSR composition lifecycle (T vs. T-6 vs. T-12 presence, current Top-100)
+            "bsr_lifecycle_incumbents": _bsr_lc_cell(
+                _bsr_lc_categories.get("long_term_incumbents")
+            ),
+            "bsr_lifecycle_returners": _bsr_lc_cell(_bsr_lc_categories.get("returners")),
+            "bsr_lifecycle_entrants_survived": _bsr_lc_cell(
+                _bsr_lc_categories.get("entrants_survived")
+            ),
+            "bsr_lifecycle_recent_entrants": _bsr_lc_cell(
+                _bsr_lc_categories.get("recent_entrants")
+            ),
+            "bsr_lifecycle_departed": _bsr_lc_cell(_bsr_lc_departed),
             # Seasonality
             "seasonality_pattern": seasonality.get("pattern", "unknown"),
             "seasonality_score": seasonality.get("seasonality_score", "N/A"),

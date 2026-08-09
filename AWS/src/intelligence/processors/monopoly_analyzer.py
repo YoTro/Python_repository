@@ -81,6 +81,7 @@ class CategoryMonopolyAnalyzer:
         else:
             seasonality_result = self._analyze_seasonality(historical_data)
         bsr_churn_result = self._analyze_bsr_churn(bsr_snapshots or {})
+        bsr_lifecycle_result = self._analyze_bsr_lifecycle(bsr_snapshots or {})
 
         review_integrity_score = self._analyze_review_integrity(sorted_products)
         seller_conc_score = self._analyze_seller_concentration(sorted_products)
@@ -139,6 +140,7 @@ class CategoryMonopolyAnalyzer:
             "market_churn": churn_result,
             "seasonality": seasonality_result,
             "bsr_churn": bsr_churn_result,
+            "bsr_lifecycle": bsr_lifecycle_result,
         }
 
     def _calculate_weighted_score(self, metrics: dict[str, float]) -> tuple[float, dict[str, Any]]:
@@ -529,6 +531,24 @@ class CategoryMonopolyAnalyzer:
         top_share = brand_search_data[0].get("keyword_lead_share", 0.0)
         return min(100.0, (top_share / 0.50) * 100.0)
 
+    @staticmethod
+    def _match_snapshot_month(sorted_months: list[str], latest: str, target_gap: int) -> str | None:
+        """
+        Find the snapshot YYYYMM whose month-gap from `latest` is within ±1 of
+        target_gap (e.g. target_gap=6 matches a snapshot taken 5-7 months earlier).
+        Shared by _analyze_bsr_churn and _analyze_bsr_lifecycle so both interpret
+        the same 4 nominal (T, T-3, T-6, T-12) snapshots identically.
+        """
+        latest_y, latest_mo = int(latest[:4]), int(latest[4:])
+        for ym in sorted_months:
+            if ym == latest:
+                continue
+            y, mo = int(ym[:4]), int(ym[4:])
+            gap = (latest_y * 12 + latest_mo) - (y * 12 + mo)
+            if abs(gap - target_gap) <= 1:
+                return ym
+        return None
+
     def _analyze_bsr_churn(
         self,
         snapshots: dict[str, list[dict[str, Any]]],
@@ -588,8 +608,6 @@ class CategoryMonopolyAnalyzer:
         if not latest_set:
             return _empty
 
-        latest_y, latest_mo = int(latest[:4]), int(latest[4:])
-
         def churn_vs(older_ym: str) -> float | None:
             if older_ym not in snapshots:
                 return None
@@ -599,20 +617,12 @@ class CategoryMonopolyAnalyzer:
             new_in_latest = latest_set - older_set
             return len(new_in_latest) / len(latest_set)
 
-        # Map each older snapshot to its approximate time gap
-        churn_3m = churn_6m = churn_12m = None
-        for ym in sorted_months[:-1]:
-            y, mo = int(ym[:4]), int(ym[4:])
-            gap = (latest_y * 12 + latest_mo) - (y * 12 + mo)
-            rate = churn_vs(ym)
-            if rate is None:
-                continue
-            if abs(gap - 3) <= 1:
-                churn_3m = rate
-            elif abs(gap - 6) <= 1:
-                churn_6m = rate
-            elif abs(gap - 12) <= 1:
-                churn_12m = rate
+        ym_3m = self._match_snapshot_month(sorted_months, latest, 3)
+        ym_6m = self._match_snapshot_month(sorted_months, latest, 6)
+        ym_12m = self._match_snapshot_month(sorted_months, latest, 12)
+        churn_3m = churn_vs(ym_3m) if ym_3m else None
+        churn_6m = churn_vs(ym_6m) if ym_6m else None
+        churn_12m = churn_vs(ym_12m) if ym_12m else None
 
         # Require at least one longer-horizon rate (6m or 12m) to label.
         # Without it c12 would default to 0.0, triggering a false "mature_stable"
@@ -640,6 +650,97 @@ class CategoryMonopolyAnalyzer:
             "label": label,
             "snapshots_available": sorted_months,
             "latest_snapshot": latest,
+        }
+
+    def _analyze_bsr_lifecycle(
+        self,
+        snapshots: dict[str, list[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        """
+        Classify each ASIN currently in the Top-100 (snapshot T) into a lifecycle
+        category based on its presence in the T-6 and T-12 snapshots.
+
+        T-3 is deliberately excluded from this breakdown — it already drives the
+        short-term churn_3m signal in _analyze_bsr_churn, and a 3-axis split (8
+        combinations) fragments a ~100-ASIN sample into cells too small to read.
+
+        Categories (mutually exclusive, exhaustive over ASINs present at T):
+          long_term_incumbents   T-12 present, T-6 present  → stable core, present all year
+          returners               T-12 present, T-6 absent   → left and came back (seasonality, SKU swap)
+          entrants_survived       T-12 absent,  T-6 present  → entered ~6mo ago and held position
+          recent_entrants         T-12 absent,  T-6 absent   → appeared within the last ~6 months
+
+        Also reports `departed`: ASINs present in T-12 or T-6 but no longer in T —
+        the mirror image of churn_12m/churn_6m, surfaced per-ASIN rather than only
+        as an aggregate rate.
+
+        Requires BOTH T-6 and T-12 snapshots (unlike _analyze_bsr_churn, which can
+        partially label off a single longer-horizon rate) — placing an ASIN in a
+        cell needs both axes. Returns an empty/unavailable stub otherwise.
+        """
+        _empty: dict[str, Any] = {
+            "available": False,
+            "categories": {},
+            "departed": {"count": 0, "pct": None, "asins": []},
+            "snapshots_used": [],
+        }
+        if not snapshots:
+            return _empty
+
+        sorted_months = sorted(snapshots.keys())
+        latest = sorted_months[-1]
+        latest_asins = {p["asin"] for p in snapshots[latest] if p.get("asin")}
+        if not latest_asins:
+            return _empty
+
+        ym_6m = self._match_snapshot_month(sorted_months, latest, 6)
+        ym_12m = self._match_snapshot_month(sorted_months, latest, 12)
+        if not ym_6m or not ym_12m:
+            return _empty
+
+        set_6m = {p["asin"] for p in snapshots[ym_6m] if p.get("asin")}
+        set_12m = {p["asin"] for p in snapshots[ym_12m] if p.get("asin")}
+
+        buckets: dict[str, list[str]] = {
+            "long_term_incumbents": [],
+            "returners": [],
+            "entrants_survived": [],
+            "recent_entrants": [],
+        }
+        for asin in latest_asins:
+            in_12, in_6 = asin in set_12m, asin in set_6m
+            if in_12 and in_6:
+                buckets["long_term_incumbents"].append(asin)
+            elif in_12 and not in_6:
+                buckets["returners"].append(asin)
+            elif not in_12 and in_6:
+                buckets["entrants_survived"].append(asin)
+            else:
+                buckets["recent_entrants"].append(asin)
+
+        n_latest = len(latest_asins)
+        categories = {
+            name: {
+                "count": len(asins),
+                "pct": round(len(asins) / n_latest, 3),
+                "asins": sorted(asins),
+            }
+            for name, asins in buckets.items()
+        }
+
+        prior_union = set_6m | set_12m
+        departed_asins = sorted(prior_union - latest_asins)
+        departed = {
+            "count": len(departed_asins),
+            "pct": round(len(departed_asins) / len(prior_union), 3) if prior_union else None,
+            "asins": departed_asins,
+        }
+
+        return {
+            "available": True,
+            "categories": categories,
+            "departed": departed,
+            "snapshots_used": [ym_12m, ym_6m, latest],
         }
 
     def _analyze_market_churn(

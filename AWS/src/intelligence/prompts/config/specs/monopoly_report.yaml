@@ -46,6 +46,11 @@ required_vars:
   - bsr_churn_3m
   - bsr_churn_6m
   - bsr_churn_12m
+  - bsr_lifecycle_incumbents
+  - bsr_lifecycle_returners
+  - bsr_lifecycle_entrants_survived
+  - bsr_lifecycle_recent_entrants
+  - bsr_lifecycle_departed
   - new_entrant_ratio
   - seasonality_pattern
   - seasonality_score
@@ -127,7 +132,7 @@ template: |
     Group 2  — Investment Capital: Investment Capital (Total) + Inventory + PPC Seed + Platform Fees + FBA Inbound Freight + Fixed Overhead
     Group 3  — Ad Economics: Category CVR · Median CPC · Estimated Steady-State ACOS · Breakeven ACOS · Ad Traffic Ratio · Ad Profit Drag · Ad Burden Verdict
     Group 4  — Market Health: Price Trend · BSR Composition Shift · Rating Churn Pattern · Low-Review BSR Share · Rating Collapse Rate
-    Group 5  — BSR Metabolism: BSR Listing Metabolism · 3-Month Churn · 6-Month Churn · 12-Month Churn · New Entrant Ratio
+    Group 5  — BSR Metabolism: BSR Listing Metabolism · 3-Month Churn · 6-Month Churn · 12-Month Churn · New Entrant Ratio · Long-Term Incumbents · Returners · 6-Month Entrants (Survived) · Recent Entrants (<6mo) · Departed
     Group 6  — Demand / Seasonality: Seasonality · Demand Trend (YOY) (omit Demand Trend row if demand_trend is 'unknown')
     Group 7  — Review Integrity: Integrity Alert · Integrity: Rating History Coverage · Integrity: Review Ratio Coverage · Review-to-Sales Rate · Review-to-Sales Growth Rate
     Group 8  — Concentration: Brand CR3 (Position) · Brand CR5 (Position) · Brand CR3 (Sales) · Typical Industry CR3 (Benchmark) · HHI (Brand, Position) · Seller CR3 (Position) · HHI (Seller, Position) · Brand Search Monopoly (if non-empty)
@@ -238,6 +243,8 @@ template: |
   - Low-Review BSR Share: {new_product_ratio} (snapshot — % of current BSR products with < 50 reviews; high value = BSR positions not yet defended by social proof, low entry stickiness) | Rating Collapse Rate: {collapse_rate} (% of Xiyouzhaoci-tracked products where first-half peak rating dropped > 0.3★ vs second-half average)
   - BSR Listing Metabolism: **{bsr_churn_label}** | Snapshots: {bsr_snapshots}
     - 3-Month Churn: {bsr_churn_3m} | 6-Month Churn: {bsr_churn_6m} | 12-Month Churn: {bsr_churn_12m}
+  - BSR Composition Lifecycle (current Top-100, classified by T-12/T-6 presence): Long-Term Incumbents {bsr_lifecycle_incumbents} · Returners {bsr_lifecycle_returners} · 6-Month Entrants (Survived) {bsr_lifecycle_entrants_survived} · Recent Entrants (<6mo) {bsr_lifecycle_recent_entrants} · Departed (was ranked, no longer in Top-100) {bsr_lifecycle_departed}
+    Render as FIVE consecutive rows in the Data Breakdown table, Metric='BSR Lifecycle: {{category label}}', Value=the count/pct cell above, Definition per category: Long-Term Incumbents='Ranked at T-12, T-6, and now — the stable core'; Returners='Ranked at T-12, dropped out by T-6, back now — seasonality or SKU swap, not durable competition'; 6-Month Entrants (Survived)='Entered ~6mo ago and held its rank since'; Recent Entrants (<6mo)='First appeared within the last ~6 months — too new to judge durability'; Departed='Was ranked at T-12 or T-6, no longer in the current Top-100'. If bsr_lifecycle_incumbents is 'N/A' (T-6 or T-12 snapshot unavailable), omit all five rows and do not speculate about the entrant/incumbent mix.
   - New Entrant Ratio (Sellersprite T-snapshot): {new_entrant_ratio}
   - Seasonality: {seasonality_pattern} (score: {seasonality_score}, peak/trough swing: {seasonality_amplitude_fold}, source: {seasonality_source}, n={seasonality_n_points} data points) | Peak Months: {peak_months}
     Source legend: 'keyword_weekly_trends' = ABA weekly search-volume (direct consumer intent, independent of BSR history); 'bsr_daily_trends' = Xiyouzhaoci BSR proxy (indirect — reflects competitive rank, not raw demand). Prefer keyword source when available.
@@ -441,6 +448,7 @@ template: |
   - Identify which specific keywords are 'High Barrier' and if PHRASE/EXACT gaps offer opportunities.
   - CHURN ALERT: If churn_pattern is 'predatory_competition' or 'lemon_market', dedicate a paragraph to survival risk and whether the category is worth entering at all.
   - BSR METABOLISM ALERT: If bsr_churn_label is 'fomo_spike_die', warn that this is a trend-driven category where products spike and die — advise on quick-in/quick-out strategy or avoidance. If 'blue_ocean', highlight that new entrants CAN sustain rankings and explain why. If 'mature_stable', cite the low churn rates (bsr_churn_3m / bsr_churn_6m / bsr_churn_12m from the Data Breakdown table) as evidence that incumbents are deeply entrenched, and advise on the differentiation required to displace them.
+  - BSR LIFECYCLE ALERT (skip entirely if bsr_lifecycle_incumbents is 'N/A'): read the composition mix, not the aggregate churn rate alone. If Recent Entrants (<6mo) is high AND Departed is also high, the category floods and flushes new listings quickly — low entry stickiness, do not assume a new listing that cracks the Top-100 will stay there. If Recent Entrants (<6mo) is high but Departed is low, new entrants ARE holding their positions once they break in — a materially more investable signal than the aggregate churn rate suggests. If Returners is notably larger than Recent Entrants (<6mo), flag that the category's apparent turnover is substantially cyclical (seasonal relistings, SKU swaps) rather than genuine new competition — call this out explicitly instead of treating it as ordinary churn.
   - SEASONALITY ALERT: If seasonality_pattern is 'strong_seasonal' or 'multi_peak_seasonal', advise on launch timing relative to peak_months and warn about off-season inventory risk.
   - DEMAND × PRICE CROSS-ANALYSIS — place the conclusion under the sub-heading '## Risk & Opportunity Assessment' in the Strategic Insights section. Skip this entire block if demand_trend is 'unknown' (write nothing — do not speculate). Otherwise, read both axes — demand_trend ({demand_trend}) and price_trend ({price_trend}) — and apply the verdict from the matrix below. Always cite the specific YOY figures (prefer yoy_peak_1y_pct, fall back to yoy_1y_pct; also cite yoy_2y_pct to distinguish a single-year dip from a multi-year trend). State the 2-axis label first, then the actionable conclusion.
     YOY DEPTH RULE: if yoy_2y_pct is also negative and steeper than yoy_1y_pct, call it 'accelerating decline'. If yoy_2y_pct is positive but yoy_1y_pct is negative, call it 'possible post-peak normalization — verify before committing'. Never collapse multi-year data into a single vague phrase.
