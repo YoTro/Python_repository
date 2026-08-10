@@ -182,10 +182,9 @@ async def _fill_missing_brands(
     if not missing_asins:
         return
     logger.info(f"[{log_prefix}] brand-fill via BrandExtractor: {len(missing_asins)} ASINs")
-    extractor = BrandExtractor()
 
     async def _fetch(asin: str) -> tuple[str, str | None]:
-        async with sem:
+        async with sem, BrandExtractor() as extractor:
             try:
                 res = await extractor.get_brand(asin)
                 return asin, res.get("Brand")
@@ -239,8 +238,8 @@ async def _fetch_bsr_list(_items: list[dict], ctx: Any) -> list[dict]:
         logger.info(f"[cat_monopoly] BSR list L2 cache hit for url_hash={url_hash}")
         return cached
 
-    extractor = BestSellersExtractor()
-    products = await extractor.get_bestsellers(url, max_pages=2)
+    async with BestSellersExtractor() as extractor:
+        products = await extractor.get_bestsellers(url, max_pages=2)
     if not products:
         raise ValueError(f"BSR extractor returned no products for URL: {url}")
     _l2_set(ctx, products, "bsr_list", url_hash)
@@ -268,8 +267,8 @@ async def _enrich_sales(items: list[dict], ctx: Any) -> list[dict]:
 
     # Batch-fetch only the uncached ASINs
     if missing:
-        extractor = PastMonthSalesExtractor()
-        fetched = await extractor.get_batch_past_month_sales(missing)
+        async with PastMonthSalesExtractor() as extractor:
+            fetched = await extractor.get_batch_past_month_sales(missing)
         for asin, val in fetched.items():
             sales_map[asin] = val or 0
             _l2_set(ctx, val or 0, "sales", asin)
@@ -301,68 +300,71 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
         SellerFeedbackExtractor(),
         ReviewRatioExtractor(),
     )
+    try:
 
-    async def _get_fulfillment():
-        async with _SEM_FULFILLMENT:
-            return await f_extractor.get_fulfillment_info(asin)
+        async def _get_fulfillment():
+            async with _SEM_FULFILLMENT:
+                return await f_extractor.get_fulfillment_info(asin)
 
-    async def _get_review_count():
-        async with _SEM_REVIEW_COUNT:
-            return await rc_extractor.get_review_count(asin)
+        async def _get_review_count():
+            async with _SEM_REVIEW_COUNT:
+                return await rc_extractor.get_review_count(asin)
 
-    f_res, rc_res = await asyncio.gather(_get_fulfillment(), _get_review_count())
+        f_res, rc_res = await asyncio.gather(_get_fulfillment(), _get_review_count())
 
-    seller_id = f_res.get("SellerId")
-    fulfilled_by = f_res.get("FulfilledBy")
+        seller_id = f_res.get("SellerId")
+        fulfilled_by = f_res.get("FulfilledBy")
 
-    # SellerSprite fallback when Amazon page scraping fails (FulfilledBy is None)
-    if fulfilled_by is None:
-        ss_snapshots = ctx.cache.get("sellersprite_snapshots") or {}
-        if ss_snapshots:
-            _latest = ss_snapshots.get(max(ss_snapshots), [])
-            _ss_item = next((p for p in _latest if p.get("asin") == asin), None)
-            if _ss_item:
-                _fba = _ss_item.get("fba")
-                _ss_seller_name = _ss_item.get("seller_name") or ""
-                if _fba == "FBA":
-                    fulfilled_by = "Amazon"
-                elif _fba is not None:
-                    fulfilled_by = _ss_seller_name or "3P"
-                if not seller_id:
-                    seller_id = _ss_item.get("seller_id")
-                logger.info(
-                    f"[enrich_seller_info] {asin}: SellerSprite fallback → "
-                    f"FulfilledBy={fulfilled_by!r}, seller_id={seller_id!r}"
-                )
+        # SellerSprite fallback when Amazon page scraping fails (FulfilledBy is None)
+        if fulfilled_by is None:
+            ss_snapshots = ctx.cache.get("sellersprite_snapshots") or {}
+            if ss_snapshots:
+                _latest = ss_snapshots.get(max(ss_snapshots), [])
+                _ss_item = next((p for p in _latest if p.get("asin") == asin), None)
+                if _ss_item:
+                    _fba = _ss_item.get("fba")
+                    _ss_seller_name = _ss_item.get("seller_name") or ""
+                    if _fba == "FBA":
+                        fulfilled_by = "Amazon"
+                    elif _fba is not None:
+                        fulfilled_by = _ss_seller_name or "3P"
+                    if not seller_id:
+                        seller_id = _ss_item.get("seller_id")
+                    logger.info(
+                        f"[enrich_seller_info] {asin}: SellerSprite fallback → "
+                        f"FulfilledBy={fulfilled_by!r}, seller_id={seller_id!r}"
+                    )
 
-    feedback_count = None
-    if seller_id:
-        s_res = await s_extractor.get_seller_feedback_count(seller_id)
-        _fc_raw = s_res.get("FeedbackCount")
-        # Extractor now returns time-windowed dict; extract lifetime count as the scalar
-        # expected by downstream (monopoly analyzer compares it to mega_seller_feedback).
-        feedback_count = (
-            (_fc_raw.get("lifetime") or {}).get("count")
-            if isinstance(_fc_raw, dict)
-            else _fc_raw  # None when page unreachable
-        )
+        feedback_count = None
+        if seller_id:
+            s_res = await s_extractor.get_seller_feedback_count(seller_id)
+            _fc_raw = s_res.get("FeedbackCount")
+            # Extractor now returns time-windowed dict; extract lifetime count as the scalar
+            # expected by downstream (monopoly analyzer compares it to mega_seller_feedback).
+            feedback_count = (
+                (_fc_raw.get("lifetime") or {}).get("count")
+                if isinstance(_fc_raw, dict)
+                else _fc_raw  # None when page unreachable
+            )
 
-    # Assign the synthetic Amazon-direct seller ID only after the feedback-count lookup
-    # above, so it's never sent to SellerFeedbackExtractor as if it were a real seller ID —
-    # it exists purely to group AMZ-sold ASINs together for seller-concentration math.
-    if not seller_id and _classify_fulfillment(fulfilled_by) == "AMZ":
-        seller_id = _AMAZON_DIRECT_SELLER_ID
+        # Assign the synthetic Amazon-direct seller ID only after the feedback-count lookup
+        # above, so it's never sent to SellerFeedbackExtractor as if it were a real seller ID —
+        # it exists purely to group AMZ-sold ASINs together for seller-concentration math.
+        if not seller_id and _classify_fulfillment(fulfilled_by) == "AMZ":
+            seller_id = _AMAZON_DIRECT_SELLER_ID
 
-    result = {
-        "seller_type": fulfilled_by or "Unknown",
-        "seller_id": seller_id,
-        "feedback_count": feedback_count,
-        "global_ratings": rc_res.get("GlobalRatings"),
-        "written_reviews": rc_res.get("WrittenReviews"),
-        "review_ratio": rc_res.get("Ratio"),
-    }
-    _l2_set(ctx, result, "seller_info", asin)
-    return result
+        result = {
+            "seller_type": fulfilled_by or "Unknown",
+            "seller_id": seller_id,
+            "feedback_count": feedback_count,
+            "global_ratings": rc_res.get("GlobalRatings"),
+            "written_reviews": rc_res.get("WrittenReviews"),
+            "review_ratio": rc_res.get("Ratio"),
+        }
+        _l2_set(ctx, result, "seller_info", asin)
+        return result
+    finally:
+        await asyncio.gather(f_extractor.close(), s_extractor.close(), rc_extractor.close())
 
 
 def _classify_fulfillment(seller_type: str | None) -> str:
@@ -2929,7 +2931,8 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
         )
         if _rep_asin:
             try:
-                _ps_products = await ProfitabilitySearchExtractor().search_products(_rep_asin)
+                async with ProfitabilitySearchExtractor() as _ps_extractor:
+                    _ps_products = await _ps_extractor.search_products(_rep_asin)
                 _ps_match = next(
                     (p for p in _ps_products if (p.get("asin") or "").upper() == _rep_asin),
                     _ps_products[0] if _ps_products else None,
@@ -3079,8 +3082,8 @@ async def _fetch_reviews_for_entries(
         asin = entry["asin"]
         async with _SEM_COMMENTS:
             try:
-                extractor = CommentsExtractor()
-                reviews = await extractor.get_negative_reviews(asin, max_pages=max_pages)
+                async with CommentsExtractor() as extractor:
+                    reviews = await extractor.get_negative_reviews(asin, max_pages=max_pages)
                 recent = [r for r in reviews if _is_recent(r.date)]
                 fixable = [r for r in recent if _is_fixable_review(r.title, r.content)]
                 n_dropped = len(recent) - len(fixable)
@@ -3923,7 +3926,8 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     _api_referral_resolved = False
     if _rep_asin and median_price > 0:
         try:
-            _fee_data = await ProfitabilitySearchExtractor().get_fees(_rep_asin, median_price)
+            async with ProfitabilitySearchExtractor() as _fee_extractor:
+                _fee_data = await _fee_extractor.get_fees(_rep_asin, median_price)
             _fee_map = ((_fee_data.get("programFeeResultMap") or {}).get("Core#0") or {}).get(
                 "otherFeeInfoMap"
             ) or {}
@@ -3966,7 +3970,8 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         _rep_category_label: str | None = ctx.cache.get("profitability_rank_category")
         if not _rep_category_label and _rep_asin:
             try:
-                _ps_products = await ProfitabilitySearchExtractor().search_products(_rep_asin)
+                async with ProfitabilitySearchExtractor() as _ps_extractor:
+                    _ps_products = await _ps_extractor.search_products(_rep_asin)
                 _ps_match = next(
                     (p for p in _ps_products if (p.get("asin") or "").upper() == _rep_asin),
                     _ps_products[0] if _ps_products else None,

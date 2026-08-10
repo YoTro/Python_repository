@@ -53,6 +53,18 @@ class AmazonBaseScraper:
             proxies=self.proxies,
         )
 
+    async def close(self) -> None:
+        """Release the underlying curl_cffi session (and its socket/fd)."""
+        if self.session is not None:
+            await self.session.close()
+            self.session = None
+
+    async def __aenter__(self) -> AmazonBaseScraper:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.close()
+
     def _get_default_headers(self) -> dict:
         """Return a copy of the base session headers for use in custom requests."""
         return self._headers.copy()
