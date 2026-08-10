@@ -154,8 +154,15 @@ class DealHistoryClient:
                 resp = await asyncio.to_thread(
                     self.session.get, async_url, headers=async_headers, timeout=15
                 )
-                if resp.status_code == 200 and "html" in resp.json():
-                    all_deals.extend(self._parse_dealnews(resp.json()["html"]))
+                if resp.status_code == 200:
+                    # DealNews's async grid API returns "html" as a single string when
+                    # one fragment comes back, but as a list of fragment strings when
+                    # multiple items are batched — normalise before parsing.
+                    html_field = resp.json().get("html")
+                    if isinstance(html_field, list):
+                        html_field = "".join(html_field)
+                    if html_field:
+                        all_deals.extend(self._parse_dealnews(html_field))
 
                 if i < num_extra_pages - 1:
                     await asyncio.sleep(1.0)
