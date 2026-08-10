@@ -3047,6 +3047,77 @@ def _is_fixable_review(title: str | None, content: str | None) -> bool:
     return True
 
 
+async def _fetch_reviews_for_entries(
+    entries: list[dict], recency_days: int = 90, max_pages: int = 2
+) -> dict:
+    """
+    Fetch, recency-filter (<= recency_days), and fixability-filter recent
+    critical (1-3 star) reviews for a list of {"asin", "brand", "rank",
+    "stratum"} entries.
+
+    Shared by the stratified top-brands sampler
+    (_fetch_critical_reviews_top_brands) and the dominant-brand-portfolio
+    follow-up fetch (_fetch_critical_reviews_dominant_portfolio) so both
+    apply identical recency/fixability filtering and result shaping.
+    """
+    # Parse "Reviewed in the United States on March 15, 2025" or bare "March 15, 2025"
+    _DATE_RE = re.compile(r"(\w+ \d+, \d{4})")
+    _cutoff = datetime.now() - timedelta(days=recency_days)
+
+    def _is_recent(date_str: str | None) -> bool:
+        if not date_str:
+            return False
+        m = _DATE_RE.search(date_str)
+        if not m:
+            return False
+        try:
+            return datetime.strptime(m.group(1), "%B %d, %Y") >= _cutoff
+        except ValueError:
+            return False
+
+    async def _fetch_one(entry: dict) -> tuple[str, list]:
+        asin = entry["asin"]
+        async with _SEM_COMMENTS:
+            try:
+                extractor = CommentsExtractor()
+                reviews = await extractor.get_negative_reviews(asin, max_pages=max_pages)
+                recent = [r for r in reviews if _is_recent(r.date)]
+                fixable = [r for r in recent if _is_fixable_review(r.title, r.content)]
+                n_dropped = len(recent) - len(fixable)
+                logger.info(
+                    f"[critical_reviews] [{entry['stratum']}] ASIN={asin} "
+                    f"brand={entry['brand']}: {len(fixable)} fixable "
+                    f"(dropped {n_dropped} non-fixable, {len(reviews) - len(recent)} stale) "
+                    f"of {len(reviews)} total"
+                )
+                return asin, fixable
+            except Exception as e:
+                logger.warning(f"[critical_reviews] Failed for ASIN={asin}: {e}")
+                return asin, []
+
+    results = await asyncio.gather(*[_fetch_one(e) for e in entries])
+
+    critical_data: dict = {}
+    for entry, (asin, reviews) in zip(entries, results, strict=False):
+        critical_data[asin] = {
+            "brand": entry["brand"],
+            "rank": entry["rank"],
+            "stratum": entry["stratum"],
+            "recent_critical_reviews": [
+                {
+                    "rating": r.rating,
+                    "title": r.title,
+                    "content": (r.content or "")[:500],
+                    "date": r.date,
+                    "is_verified": r.is_verified,
+                    "helpful_votes": r.helpful_votes,
+                }
+                for r in reviews
+            ],
+        }
+    return critical_data
+
+
 async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> list[dict]:
     """
     Fetch recent critical (1–3 star) reviews using stratified sampling across
@@ -3064,6 +3135,11 @@ async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> lis
     Stores: ctx.cache["critical_reviews_data"]
       {asin: {"brand": str, "rank": int, "stratum": str,
               "recent_critical_reviews": [...]}}
+
+    Note: the dominant brand's own portfolio (dominant_brand_portfolio) isn't
+    known until _run_monopoly_analysis runs later in the pipeline, so its
+    ASINs are covered separately by _fetch_critical_reviews_dominant_portfolio
+    after that step.
     """
     _RECENCY_DAYS = 90
     _MAX_PAGES = 2
@@ -3152,61 +3228,9 @@ async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> lis
         logger.info(f"[cat_monopoly] Critical reviews L2 cache hit hash={reviews_hash}")
         return items
 
-    # Parse "Reviewed in the United States on March 15, 2025" or bare "March 15, 2025"
-    _DATE_RE = re.compile(r"(\w+ \d+, \d{4})")
-    _cutoff = datetime.now() - timedelta(days=_RECENCY_DAYS)
-
-    def _is_recent(date_str: str | None) -> bool:
-        if not date_str:
-            return False
-        m = _DATE_RE.search(date_str)
-        if not m:
-            return False
-        try:
-            return datetime.strptime(m.group(1), "%B %d, %Y") >= _cutoff
-        except ValueError:
-            return False
-
-    async def _fetch_one(entry: dict) -> tuple[str, list]:
-        asin = entry["asin"]
-        async with _SEM_COMMENTS:
-            try:
-                extractor = CommentsExtractor()
-                reviews = await extractor.get_negative_reviews(asin, max_pages=_MAX_PAGES)
-                recent = [r for r in reviews if _is_recent(r.date)]
-                fixable = [r for r in recent if _is_fixable_review(r.title, r.content)]
-                n_dropped = len(recent) - len(fixable)
-                logger.info(
-                    f"[critical_reviews] [{entry['stratum']}] ASIN={asin} "
-                    f"brand={entry['brand']}: {len(fixable)} fixable "
-                    f"(dropped {n_dropped} non-fixable, {len(reviews) - len(recent)} stale) "
-                    f"of {len(reviews)} total"
-                )
-                return asin, fixable
-            except Exception as e:
-                logger.warning(f"[critical_reviews] Failed for ASIN={asin}: {e}")
-                return asin, []
-
-    results = await asyncio.gather(*[_fetch_one(e) for e in top_entries])
-
-    critical_data: dict = {}
-    for entry, (asin, reviews) in zip(top_entries, results, strict=False):
-        critical_data[asin] = {
-            "brand": entry["brand"],
-            "rank": entry["rank"],
-            "stratum": entry["stratum"],
-            "recent_critical_reviews": [
-                {
-                    "rating": r.rating,
-                    "title": r.title,
-                    "content": (r.content or "")[:500],
-                    "date": r.date,
-                    "is_verified": r.is_verified,
-                    "helpful_votes": r.helpful_votes,
-                }
-                for r in reviews
-            ],
-        }
+    critical_data = await _fetch_reviews_for_entries(
+        top_entries, recency_days=_RECENCY_DAYS, max_pages=_MAX_PAGES
+    )
 
     ctx.cache["critical_reviews_data"] = critical_data
     _l2_set(ctx, critical_data, "critical_reviews", reviews_hash)
@@ -3215,6 +3239,78 @@ async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> lis
         f"[critical_reviews] {total} recent critical reviews collected "
         f"({_RECENCY_DAYS}d filter): "
         f"leaders={len(leaders)}, mid_tier={len(mid_tier)}, new_entrant={len(new_entrants)}"
+    )
+    return items
+
+
+async def _fetch_critical_reviews_dominant_portfolio(items: list[dict], ctx: Any) -> list[dict]:
+    """
+    Extend critical-reviews coverage to the dominant brand's own portfolio.
+
+    _fetch_critical_reviews_top_brands samples by BSR stratum (leaders /
+    mid-tier / new-entrant) and only keeps the single best-ranked ASIN per
+    brand, so a dominant brand's other ASINs in dominant_brand_portfolio are
+    never selected — yet the report's Top Complaint column
+    (monopoly_report.yaml) needs critical_reviews_data for every ASIN listed
+    there. dominant_brand_portfolio doesn't exist until _run_monopoly_analysis
+    runs, so this step runs right after it (calculate_monopoly_score) and
+    only fetches ASINs not already covered by the stratified sample.
+
+    Reads: items[0]["dominant_brand_portfolio"] / ["dominant_brand_name"]
+           (the single-dict output of _run_monopoly_analysis)
+    Merges into: ctx.cache["critical_reviews_data"], and refreshes
+           items[0]["critical_reviews_data"] so deliver_report sees the
+           merged data.
+    """
+    if not items:
+        return items
+    result = items[0]
+
+    try:
+        portfolio = json.loads(result.get("dominant_brand_portfolio") or "[]")
+    except (TypeError, ValueError):
+        portfolio = []
+    if not portfolio:
+        return items
+
+    dom_brand = result.get("dominant_brand_name") or "Unknown"
+    existing = ctx.cache.get("critical_reviews_data") or {}
+
+    missing: list[dict] = []
+    seen: set = set()
+    for p in portfolio:
+        asin = (p.get("asin") or "").strip().upper()
+        if not asin or asin == "N/A" or asin in seen or asin in existing:
+            continue
+        seen.add(asin)
+        missing.append(
+            {"asin": asin, "brand": dom_brand, "rank": None, "stratum": "dominant_portfolio"}
+        )
+
+    if not missing:
+        return items
+
+    asin_key = ",".join(sorted(e["asin"] for e in missing))
+    reviews_hash = _hl.md5(asin_key.encode()).hexdigest()[:12]
+
+    cached = _l2_get(ctx, _TTL_CRITICAL_REVIEWS, "critical_reviews_dom", reviews_hash)
+    if cached is not None:
+        new_data = cached
+        logger.info(
+            f"[cat_monopoly] Dominant-portfolio critical reviews L2 cache hit hash={reviews_hash}"
+        )
+    else:
+        new_data = await _fetch_reviews_for_entries(missing)
+        _l2_set(ctx, new_data, "critical_reviews_dom", reviews_hash)
+
+    merged = {**existing, **new_data}
+    ctx.cache["critical_reviews_data"] = merged
+    result["critical_reviews_data"] = json.dumps(merged, ensure_ascii=False)
+
+    total_new = sum(len(v["recent_critical_reviews"]) for v in new_data.values())
+    logger.info(
+        f"[critical_reviews] dominant_portfolio brand={dom_brand!r}: "
+        f"{len(missing)} new ASIN(s) fetched, {total_new} recent critical reviews collected"
     )
     return items
 
@@ -5347,6 +5443,10 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             # the brand holds that ratio steady across its own ASINs (repeatable playbook, a
             # brand-moat signal) or not.
             "dominant_brand_portfolio": json.dumps(dominant_brand_portfolio, ensure_ascii=False),
+            # Not a prompt var (absent from monopoly_report.yaml's required/optional
+            # vars) — carried only so _fetch_critical_reviews_dominant_portfolio can
+            # label its entries without recomputing brand-dominance from scratch.
+            "dominant_brand_name": _dom_brand or "",
             "dominant_brand_ad_consistency": _dom_brand_ad_consistency,
             # Recent critical reviews for top brands (≤90 days — fixable deficiency signals)
             "critical_reviews_data": json.dumps(
@@ -5462,6 +5562,10 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
                 fn=_fetch_critical_reviews_top_brands,
             ),
             ProcessStep(name="calculate_monopoly_score", fn=_run_monopoly_analysis),
+            ProcessStep(
+                name="fetch_critical_reviews_dominant_portfolio",
+                fn=_fetch_critical_reviews_dominant_portfolio,
+            ),
             ProcessStep(
                 name="deliver_report",
                 # batch_threshold=1,
