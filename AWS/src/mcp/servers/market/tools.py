@@ -266,9 +266,6 @@ async def handle_market_tool(name: str, arguments: dict) -> list[TextContent]:
         )
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
-    elif name == "get_ad_traffic":
-        return [TextContent(type="text", text=json.dumps({"ad_spend": 5000, "roas": 2.1}))]
-
     elif name == "get_deals_for_asins":
         from src.mcp.servers.market.deals.client import DealHistoryClient
 
@@ -625,19 +622,6 @@ market_tools = [
         inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
-        name="get_ad_traffic",
-        description=(
-            "Get advertising traffic estimates for an ASIN. "
-            "Returns: {ad_spend (USD), roas (return on ad spend)}. "
-            "Note: currently returns stub data — wire to a live ad analytics source when available."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {"asin": {"type": "string", "description": "Product ASIN"}},
-            "required": ["asin"],
-        },
-    ),
-    Tool(
         name="get_deals_for_asins",
         description=(
             "ASIN-confirmed deal lookup on Slickdeals, DealNews, and Woot. "
@@ -882,7 +866,13 @@ market_tools = [
             "[Xiyouzhaoci] Fetch 7-day rolling traffic metrics for a list of ASINs. "
             "Returns list of {asin, traffic_score, ad_traffic_ratio (ad dependency 0–1), "
             "organic_traffic_ratio, traffic_growth_rate (7d change %). "
-            "ad_traffic_ratio > 0.7 signals high ad dependency — organic rank may drop if ads stop."
+            "ad_traffic_ratio > 0.7 signals high ad dependency — organic rank may drop if ads stop. "
+            "DATA LAG: a given PT calendar day's traffic score does not start publishing until "
+            "~5:00 AM Beijing Time two days later (≈2:00 PM PT the day before under PDT, "
+            "1:00 PM PT under PST) — e.g. the score for Aug 10, 2026 (PT) only began updating "
+            "at 5:00 AM Beijing on Aug 12, 2026. Any '7-day' window fetched before that day's "
+            "refresh time has landed still reflects the prior week's window (one day short of "
+            "the intended range) — account for this ~2-day lag when interpreting freshness."
         ),
         inputSchema={
             "type": "object",
@@ -905,9 +895,15 @@ market_tools = [
         name="xiyou_get_asin_daily_trends",
         description=(
             "[Xiyouzhaoci] Fetch daily historical data for an ASIN over a date range. "
-            "Returns list of daily records, each with: date, price, rating (stars), "
-            "review_count, bsr_rank, deal_flag (bool). "
-            "Earliest available: 2023-02-01. Max continuous range: 25 months."
+            "Returns {entities: [{country, asin, trends: [{localDate, price, currency, "
+            "ratings, stars, priceDistribution: {deal (bool), originPrice, prime}, "
+            "bestSeller}]}]}. localDate is the marketplace's local site time with UTC "
+            "offset (e.g. '2026-05-09T00:00:00-07:00' for US), not UTC — one entry per "
+            "calendar day. Max continuous range: 25 months. "
+            "Publish lag: daily refresh lands ~2:00 PM PT (PDT) / ~1:00 PM PT (PST) — "
+            "5:00 AM Beijing Time. Before that time, the latest localDate returned trails "
+            "today's site-local date by ~2 days; after it, by ~1 day (yesterday's entry "
+            "becomes available)."
         ),
         inputSchema={
             "type": "object",
@@ -1077,7 +1073,6 @@ _MARKET_META = {
     ),
     "xiyou_get_login_qr": ("DATA", "URL for WeChat login QR code"),
     "xiyou_check_login_status": ("DATA", "authentication status of pending QR scan"),
-    "get_ad_traffic": ("DATA", "ad spend and ROAS estimates"),
     "get_deals_for_asins": (
         "DATA",
         "object keyed by each requested ASIN mapping to its confirmed deal list from Slickdeals, DealNews, and Woot",

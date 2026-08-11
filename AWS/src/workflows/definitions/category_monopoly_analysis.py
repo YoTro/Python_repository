@@ -136,12 +136,12 @@ _STOP_WORDS = {
 # Shared semaphores: cap concurrent amazon_scraper calls across all parallel EnrichStep slots.
 # EnrichStep runs 5 items concurrently; each fires 2 sub-requests → 10 simultaneous without limits.
 # burst:3 in settings.json means anything beyond 3 will timeout. Cap at 3 each.
-# Note: created lazily per-loop (via _get_shared_sems) to avoid "bound to different loop"
-# errors in Python 3.10–3.11 when asyncio.run() is called multiple times (e.g. in tests).
+# Created eagerly at module import (not per-loop) since Python 3.10+ no longer binds
+# asyncio.Semaphore to a loop at construction time, only on first await.
 _SEM_FULFILLMENT = asyncio.Semaphore(3)
 _SEM_REVIEW_COUNT = asyncio.Semaphore(2)
 _SEM_COMMENTS = asyncio.Semaphore(3)
-# _SEM_BRAND is created inside _run_monopoly_analysis (only used there) to stay loop-safe.
+# _sem_brand is created inside _run_monopoly_analysis (only used there) to stay loop-safe.
 
 
 def _parse_int(raw, default: int = 0) -> int:
@@ -177,7 +177,7 @@ async def _fill_missing_brands(
     """Resolve brands for ASINs via BrandExtractor and merge results into target.
 
     `sem` is passed in (rather than module-level) because the caller's semaphore
-    must stay bound to the current event loop — see _SEM_BRAND note above.
+    must stay bound to the current event loop — see _sem_brand note above.
     """
     if not missing_asins:
         return
@@ -968,8 +968,8 @@ async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
 async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
     """
     Step 2 of 2 for market context. Depends on ctx.cache["core_keywords"].
-    Runs ABA keyword data, SERP ad ratio, and CPC bid recommendations concurrently.
-    Writes: ctx.cache["keyword_data"], ctx.cache["ad_ratio"],
+    Runs ABA keyword data and CPC bid recommendations concurrently.
+    Writes: ctx.cache["keyword_data"], ctx.cache["keyword_data_all"],
             ctx.cache["detailed_bid_analysis"]
     """
     core_keywords = ctx.cache.get("core_keywords", ["unknown niche"])
