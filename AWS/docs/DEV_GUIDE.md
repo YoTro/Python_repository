@@ -803,10 +803,11 @@ No qualifier = unit test; all external I/O **must** be mocked.
 ### 7.2 File Naming Convention
 
 ```
-tests/test_{domain}_{feature}[_{qualifier}].py
+tests/{tier}/test_{domain}_{feature}[_{qualifier}].py
 ```
 
-- `{domain}`: matches the `src/` subdirectory or external service (`core`, `workflow`, `agent`, `feishu`, `gemini`, `erp`, `rate_limiting`, …).
+- `{tier}`: `unit`, `integration`, or `live`
+- `{domain}`: matches the `src/` subdirectory or external service (`core`, `workflow`, `intelligence`, `amazon`, `feishu`, `gemini`, `erp`, `xiyou`, `rate_limiting`, …).
 - `{feature}`: specific capability under test (`models`, `engine`, `session`, `pricing`, `client`, `full_flow`).
 - `{qualifier}`: optional — `_live`, `_integration`, `_snapshot`. Omit for pure unit tests.
 - One domain/feature concept per file. Split at ~400 lines or when two unrelated areas appear.
@@ -826,25 +827,24 @@ tests/test_{domain}_{feature}[_{qualifier}].py
 
 ```bash
 # F — Import integrity (run first; catches circular deps early)
-PYTHONPATH=. venv311/bin/pytest tests/test_imports.py
+venv311/bin/pytest tests/unit/test_imports.py
 
 # A/B/C — Core, stateful, and cache
-PYTHONPATH=. venv311/bin/pytest tests/test_core_models.py tests/test_core_utils.py \
-    tests/test_agent_session.py tests/test_workflow_engine.py tests/test_checkpoint_resume.py \
-    tests/test_l1_l2_cache.py
+venv311/bin/pytest tests/unit/test_core_models.py tests/unit/test_core_utils.py \
+    tests/unit/test_agent_session.py tests/integration/test_workflow_engine.py \
+    tests/integration/test_checkpoint_resume.py tests/unit/test_l1_l2_cache.py
 
 # E — Intelligence routing and pricing
-PYTHONPATH=. venv311/bin/pytest tests/test_gemini_advanced_pricing.py tests/test_monopoly_analyzer.py
+venv311/bin/pytest tests/unit/test_intelligence_gemini_pricing.py tests/integration/test_monopoly.py
 
 # G — Rate limiting (all three layers)
-export PYTHONPATH=$PYTHONPATH:. && venv311/bin/python3 -m unittest tests/test_rate_limiting_system.py -v
+venv311/bin/python3 -m unittest tests/unit/test_rate_limiting_system.py -v
 
 # H — Full-flow integration
-PYTHONPATH=. venv311/bin/pytest tests/test_feishu_full_flow.py -s
+venv311/bin/pytest tests/integration/test_feishu.py -s
 
-# I — Ad diagnosis live (requires REDIS_URL)
-PYTHONPATH=. python3 tests/test_inventory_gate.py
-PYTHONPATH=. python3 tests/test_summary_snapshot.py
+# I — Live tests (requires credentials)
+venv311/bin/pytest tests/live/ -m live -s
 ```
 
 ### 7.5 Writing New Tests
@@ -1088,7 +1088,7 @@ Define TTL constants at module level with a comment. Never pass a magic integer 
 3. Define a named `_TTL_*` constant using the table above.
 4. For L2: key via `_l2_key(ctx, "<data_type>", entity_id)` — never a bare string.
 5. For L1: normalize ASIN to uppercase; use `{type}:{ASIN}` for sub-types.
-6. Test with `pytest tests/test_l1_l2_cache.py`.
+6. Test with `pytest tests/unit/test_l1_l2_cache.py`.
 
 ---
 

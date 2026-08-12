@@ -78,11 +78,13 @@ packages = ["src"]
 
 # ── pytest ────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
-addopts = "--strict-markers"
+addopts = "--strict-markers -m 'not live'"
 markers = [
     "live: requires live external API credentials or network access (deselect with '-m \"not live\"')",
     "redis: requires a running Redis instance with real cached data (deselect with '-m \"not redis\"')",
+    "slow: test takes > 5s; run only in full suite",
 ]
+testpaths = ["tests/unit", "tests/integration", "tests/live"]
 
 # ── mypy ──────────────────────────────────────────────────────────────────────
 # Coverage scope: src/core/ (stable, well-typed foundation layer).

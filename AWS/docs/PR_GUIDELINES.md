@@ -127,26 +127,26 @@ Run all applicable items before marking a PR ready for review.
 
 ### Always
 
-- [ ] `PYTHONPATH=. pytest tests/test_imports.py` passes (no circular imports)
-- [ ] `PYTHONPATH=. pytest tests/test_core_models.py tests/test_core_utils.py` passes
+- [ ] `PYTHONPATH=. pytest tests/unit/test_imports.py` passes (no circular imports)
+- [ ] `PYTHONPATH=. pytest tests/unit/test_core_models.py tests/unit/test_core_utils.py` passes
 - [ ] No secrets, API keys, or `.env` values in the diff
 - [ ] No `print()` debug statements left in production code (use `logger.debug()`)
 
 ### If logic changed
 
-- [ ] Relevant unit tests updated or added (`tests/test_{domain}_{feature}.py`)
-- [ ] `PYTHONPATH=. pytest tests/test_rate_limiting_system.py` passes if gateway touched
-- [ ] `PYTHONPATH=. pytest tests/test_workflow_engine.py tests/test_checkpoint_resume.py` passes if workflow engine touched
+- [ ] Relevant unit tests updated or added (`tests/unit/test_{domain}_{feature}.py`)
+- [ ] `PYTHONPATH=. pytest tests/unit/test_rate_limiting_system.py` passes if gateway touched
+- [ ] `PYTHONPATH=. pytest tests/integration/test_workflow_engine.py tests/integration/test_checkpoint_resume.py` passes if workflow engine touched
 
 ### If a pricing JSON was updated
 
-- [ ] `PYTHONPATH=. pytest tests/test_gemini_advanced_pricing.py` passes
-- [ ] `PYTHONPATH=. pytest tests/test_intelligence_pricing.py` passes
+- [ ] `PYTHONPATH=. pytest tests/unit/test_intelligence_gemini_pricing.py` passes
+- [ ] `PYTHONPATH=. pytest tests/unit/test_pricing.py` passes
 - [ ] `last_verified` date updated in the modified JSON
 
 ### If a live-data test exists for the changed area
 
-- [ ] `PYTHONPATH=. python3 tests/test_<name>_live.py` run against a dev Redis instance
+- [ ] `PYTHONPATH=. python3 tests/live/test_<name>_live.py` run against a dev Redis instance
 
 ---
 

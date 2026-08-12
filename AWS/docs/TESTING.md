@@ -42,59 +42,55 @@ No qualifier = pure unit test; **all external I/O must be mocked** — no networ
 
 ### A. Core Unit Tests
 Test the foundational building blocks and utilities.
-*   **Location**: `tests/test_core_models.py`, `tests/test_core_utils.py`, `tests/test_core_telemetry.py`
+*   **Location**: `tests/unit/test_core_models.py`, `tests/unit/test_core_utils.py` (merged `test_core_telemetry`)
 *   **Command**:
     ```bash
-    PYTHONPATH=. venv311/bin/pytest tests/test_core_models.py tests/test_core_utils.py tests/test_core_telemetry.py
+    venv311/bin/pytest tests/unit/test_core_models.py tests/unit/test_core_utils.py
     ```
 
 ### B. Stateful Management Tests
 Verify session persistence for Agents and execution checkpoints for Workflows.
-*   **Location**: `tests/test_agent_session.py`, `tests/test_workflow_engine.py`, `tests/test_checkpoint_resume.py`
+*   **Location**: `tests/unit/test_agent_session.py`, `tests/integration/test_workflow_engine.py`, `tests/integration/test_checkpoint_resume.py`
 *   **Command**:
     ```bash
-    PYTHONPATH=. venv311/bin/pytest tests/test_agent_session.py tests/test_workflow_engine.py tests/test_checkpoint_resume.py
+    venv311/bin/pytest tests/unit/test_agent_session.py tests/integration/test_workflow_engine.py tests/integration/test_checkpoint_resume.py
     ```
 *   **Note**: `AgentSession` now tracks `cloud_token_usage` separately from `token_usage`. Tests should verify that local model tokens do not increment `cloud_token_usage`.
 
 ### C. Data Orchestration (L1/L2) Tests
 Validates that L1 scrapers write to the cache and L2 calculators consume from it correctly.
-*   **Location**: `tests/test_l1_l2_cache.py`
+*   **Location**: `tests/unit/test_l1_l2_cache.py`
 *   **Command**:
     ```bash
-    PYTHONPATH=. venv311/bin/pytest tests/test_l1_l2_cache.py
+    venv311/bin/pytest tests/unit/test_l1_l2_cache.py
     ```
 
 ### D. LLM Provider Tests
 Verifies individual LLM providers (`GeminiProvider`, `ClaudeProvider`, `LlamaCppProvider`) correctly initialize and return `LLMResponse` objects.
-*   **Location**: `tests/test_local_llm_direct.py` (and potentially new cloud provider tests)
+*   **Location**: `tests/unit/test_pricing.py`, `tests/unit/test_openai_provider.py`, `tests/unit/test_local_llm_direct.py` (slow — needs local model file)
 *   **Command**:
     ```bash
-    PYTHONPATH=. venv311/bin/pytest tests/test_local_llm_direct.py
+    venv311/bin/pytest tests/unit/test_pricing.py tests/unit/test_openai_provider.py
     ```
 
 ### E. Intelligence Routing & Processors Tests
 Confirms the `IntelligenceRouter`'s task classification, model routing, and specialized Processors (like the Monopoly Analyzer) are functioning correctly.
-*   **Location**: `tests/test_gemini_advanced_pricing.py` (Price Manager), `tests/test_monopoly_analyzer.py`, `src/intelligence/router/` (Router logic).
-*   **Key Coverage**:
-    *   **Advanced Pricing**: Verifies thinking tokens, prompt caching, and tiered pricing calculations.
-    *   **Heuristics**: Confirms keyword and length-based pre-screening rules trigger correctly.
-    *   **Processors**: Verifies `CategoryMonopolyAnalyzer` correctly calculates dynamic CR3, CV pricing, and relative review disparity.
+*   **Location**: `tests/unit/test_intelligence_gemini_pricing.py`, `tests/integration/test_monopoly.py`, `tests/unit/test_intelligence_ad_budget.py`, `tests/unit/test_intelligence_sales_estimator.py`, `tests/unit/test_intelligence_listing_quality.py`, `tests/unit/test_promo_analyzer.py`
 *   **Command**:
     ```bash
-    PYTHONPATH=. venv311/bin/python -m pytest tests/test_gemini_advanced_pricing.py tests/test_monopoly_analyzer.py
+    venv311/bin/pytest tests/unit/test_intelligence_gemini_pricing.py tests/integration/test_monopoly.py
     ```
 
 ### F. Import Integrity Tests
 Ensures that the Domain-Driven Design (DDD) structure remains free of circular imports.
 *   **Command**:
     ```bash
-    PYTHONPATH=. venv311/bin/pytest tests/test_imports.py
+    venv311/bin/pytest tests/unit/test_imports.py
     ```
 
 ### G. Rate Limiting System Tests
 Validates all three layers of the rate limiting architecture in isolation and combination.
-*   **Location**: `tests/test_rate_limiting_system.py`
+*   **Location**: `tests/unit/test_rate_limiting_system.py`
 *   **Coverage** (37 tests):
 
     | Test Class | Cases | What Is Verified |
@@ -108,42 +104,28 @@ Validates all three layers of the rate limiting architecture in isolation and co
 
 *   **Command**:
     ```bash
-    export PYTHONPATH=$PYTHONPATH:. && venv311/bin/python3 -m unittest tests/test_rate_limiting_system.py -v
+    venv311/bin/python3 -m unittest tests/unit/test_rate_limiting_system.py -v
     ```
 *   **Note**: Tests reset the `RateLimiter` singleton state in `setUp` (`_concurrent`, `_tenant_counters`, `_chat_last`, bucket tokens) to ensure isolation between runs.
 
 ### H. Full-Flow Integration Tests
 Simulates a complete request starting from the entry points through the API Gateway.
 *   **Scenario**: Simulate a Feishu command, track its progress via the Telemetry Tracker, and verify the final Bitable/CSV output.
+*   **Location**: `tests/integration/test_feishu.py`, `tests/integration/test_workflow_product_screening.py`
 *   **Command**:
     ```bash
-    PYTHONPATH=. venv311/bin/pytest tests/test_feishu_full_flow.py -s
+    venv311/bin/pytest tests/integration/test_feishu.py -s
     ```
 
-### I. Ad Diagnosis: Inventory Gate & Quick Metrics Snapshot Tests
+### I. Live Tests (Real API / Redis)
 
-These scripts run against live Redis data and do not require mocking. Set `REDIS_URL` in `.env` before running.
+Tests requiring live credentials or Redis. Run only with explicit `-m live` flag.
 
-**`tests/test_inventory_gate.py`** — Validates the inventory gate logic end-to-end:
-*   Loads campaign, kw_perf, daily_perf, inventory data from Redis.
-*   Runs two scenarios: sea freight (`inbound_lead_days=30`, gate triggers) and domestic US (`inbound_lead_days=10`, gate clears).
-*   Asserts that spend-up actions (`increase_budget`, `enable_and_increase_budget`, `enable_and_review_bids`) are downgraded to `P2` and carry a `prerequisite` block when effective stock is below `stock_gate_days`.
-*   Expected results: sea freight → `effective_stock_days ≈ 12` → actions gated; domestic → `effective_stock_days ≈ 27` → 0 actions gated.
-
-```bash
-PYTHONPATH=. python3 tests/test_inventory_gate.py
-```
-
-**`tests/test_summary_snapshot.py`** — Validates the Quick Metrics Snapshot output:
-*   Loads real Redis data (campaigns, kw_perf, daily_perf, keywords from `aws:cache:ad_diag:*`).
-*   Resolves `avg_bid` from the Ads API keywords cache (`aws:cache:ad_diag:default:US:keywords:*`), filtered to campaigns for the test ASIN.
-*   Injects synthetic inventory (12-day stock scenario) to exercise the inventory gate display.
-*   Calls `_build_item_summary` with a mock `WorkflowContext` and prints the full snapshot JSON.
-*   Key assertions: `avg_bid` is non-null (sourced from Ads API, not spSearchTerm report), `keyword_count` matches the filtered keyword set, `match_type_dist` totals to 100%.
-
-```bash
-PYTHONPATH=. python3 tests/test_summary_snapshot.py
-```
+*   **Location**: `tests/live/` — 10 files including `test_ad_diagnosis_live.py`, `test_comments.py`, `test_profitability_search.py`, etc.
+*   **Command**:
+    ```bash
+    venv311/bin/pytest tests/live/ -m live -s
+    ```
 
 ## 4. Test File Naming & Structure Standard
 
@@ -167,14 +149,13 @@ tests/test_{domain}_{feature}[_{qualifier}].py
 
 **Examples:**
 ```
-tests/test_core_models.py          # Unit: Pydantic DTO validation
-tests/test_workflow_engine.py      # Unit: WorkflowContext + ActivityRunner
-tests/test_gemini_advanced_pricing.py  # Unit: PriceManager for Gemini
-tests/test_feishu_full_flow.py     # Integration: Gateway → Job → MCP
-tests/test_ad_diagnosis_live.py    # Live: real Redis, real Ads API data
-tests/test_summary_snapshot.py     # Live + snapshot: golden JSON comparison
-tests/test_listing_diagnosis_workflow.py  # Unit: listing_diagnosis pipeline (mocked extractors, ReviewSummarizer, vision LLM)
-tests/test_listing_quality_scorer.py      # Unit: ListingQualityScorer module scores and improvement plan
+tests/unit/test_core_models.py                # Unit: Pydantic DTO validation
+tests/integration/test_workflow_engine.py     # Integration: WorkflowContext + ActivityRunner
+tests/unit/test_intelligence_gemini_pricing.py # Unit: PriceManager for Gemini
+tests/integration/test_feishu.py              # Integration: Gateway → Job → MCP
+tests/live/test_ad_diagnosis_live.py          # Live: real Redis, real Ads API data
+tests/integration/test_listing_diagnosis_workflow.py  # Unit: mocked extractors, ReviewSummarizer, vision LLM
+tests/unit/test_intelligence_listing_quality.py       # Unit: ListingQualityScorer module scores
 ```
 
 ### 4.2 Internal File Structure
@@ -287,7 +268,7 @@ The two resume paths are not interchangeable and must each be tested independent
 *   **Local LLM Issues**: If `LlamaCppProvider` fails to load or respond:
     *   Verify `LOCAL_MODEL_PATH` in `.env` points to the *absolute* path of your `.gguf` model file.
     *   Check `llama-cpp-python` installation and GPU support (`n_gpu_layers`).
-    *   Use `tests/test_local_llm_direct.py` for isolated troubleshooting.
+    *   Use `tests/unit/test_local_llm_direct.py` for isolated troubleshooting.
 *   **Cloud LLM SDK Issues**: If `GeminiProvider` or `ClaudeProvider` fail during initialization or generation:
     *   Check for `AttributeError: module 'google.genai' has no attribute 'configure'` or `'Model' object has no attribute 'supported_generation_methods'`. This indicates an `google-generativeai` SDK version mismatch. Consider `pip install google-generativeai --upgrade` or ensure compatibility with older APIs.
     *   Verify `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` in `.env`.

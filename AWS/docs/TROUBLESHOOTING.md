@@ -101,7 +101,7 @@ This guide provides solutions to common issues you might encounter while develop
     *   **Solution**: `LlamaCppProvider` now has a 120-second timeout. If it times out, you'll receive a specific fallback message. Check:
         *   `LOCAL_MODEL_PATH` in `.env` points to the *absolute* path of your `.gguf` model file.
         *   `llama-cpp-python` installation and GPU support (`n_gpu_layers=-1` for Metal/CUDA).
-        *   Use `tests/test_local_llm_direct.py` for isolated troubleshooting of the local model.
+        *   Use `tests/unit/test_local_llm_direct.py` for isolated troubleshooting of the local model.
 
 ## 3. Agent Behavior Issues
 
