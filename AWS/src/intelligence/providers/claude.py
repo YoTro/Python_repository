@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
+# Beta header required to use output_config.effort on claude-opus-4-5 only —
+# GA (no header) on Claude 4.6+ and the 5-generation models.
+_EFFORT_BETA_HEADER = "effort-2025-11-24"
+# effort levels, lowest to highest token spend:
+#   low    - most efficient; significant token savings with some capability reduction
+#   medium - balanced approach with moderate token savings (used as our default)
+#   high   - equivalent to omitting the parameter; complex reasoning / agentic tasks
+#   xhigh  - extended capability for long-horizon agentic/coding work (not on all models)
+#   max    - absolute maximum capability, no constraint on token spending
+_DEFAULT_EFFORT = "medium"
+
 # Priority order for model selection — newest/best first.
 # _active_model() validates against the live /v1/models list and falls back
 # to the first entry that is actually available.
@@ -137,6 +148,20 @@ class ClaudeProvider(BaseLLMProvider):
             return False
         return True
 
+    def _effort_support(self, model: str) -> str:
+        """Return 'ga', 'beta', or 'none' for output_config.effort on *model*.
+
+        GA (no beta header) on Claude 4.6+ and the 5-generation models.
+        claude-opus-4-5 supports effort only behind the effort-2025-11-24 beta
+        header. Haiku 4.5, Sonnet 4.5, and pre-4.6 models reject the parameter.
+        """
+        m = model.lower()
+        if re.match(r"claude-opus-4-5(-|$)", m):
+            return "beta"
+        if re.match(r"claude-(haiku-4-5|sonnet-4-5|[123])", m) or re.match(r"claude-instant", m):
+            return "none"
+        return "ga"
+
     async def count_tokens(self, prompt: str, system_message: str | None = None) -> int:
         try:
             active = await self._active_model()
@@ -202,10 +227,26 @@ class ClaudeProvider(BaseLLMProvider):
             if temperature is not None and not self._is_reasoning_model(api_kwargs["model"]):
                 api_kwargs["temperature"] = temperature
 
+            # output_config.effort controls thinking depth / token spend. Default to
+            # "medium" on models that support it; strip it where the API rejects it.
+            effort_support = self._effort_support(api_kwargs["model"])
+            output_config = filtered_kwargs.pop("output_config", None)
+            if effort_support == "none":
+                output_config = None
+            elif output_config is None:
+                output_config = {"effort": _DEFAULT_EFFORT}
+            if output_config is not None:
+                api_kwargs["output_config"] = output_config
+
             # Merge remaining extra kwargs (allows per-call max_tokens override)
             api_kwargs.update(filtered_kwargs)
 
-            response = await self.client.messages.create(**api_kwargs)
+            if effort_support == "beta" and output_config is not None:
+                response = await self.client.beta.messages.create(
+                    betas=[_EFFORT_BETA_HEADER], **api_kwargs
+                )
+            else:
+                response = await self.client.messages.create(**api_kwargs)
 
             text_content = ""
             for block in response.content:
@@ -223,9 +264,20 @@ class ClaudeProvider(BaseLLMProvider):
             input_tokens = usage.input_tokens
             output_tokens = usage.output_tokens
 
-            # Extract cache info if available
+            # Extract cache info if available. usage.cache_creation breaks the
+            # write down by TTL (ephemeral_5m/1h_input_tokens) when present —
+            # more precise than the flat cache_creation_input_tokens total.
             cache_read = getattr(usage, "cache_read_input_tokens", 0)
             cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
+            cache_creation_detail = getattr(usage, "cache_creation", None)
+            cache_creation_5m = getattr(cache_creation_detail, "ephemeral_5m_input_tokens", None)
+            cache_creation_1h = getattr(cache_creation_detail, "ephemeral_1h_input_tokens", None)
+
+            # Bill at the tier the request was actually served on (e.g. Priority
+            # Tier), not an assumed default — mirrors OpenAIProvider's service_tier
+            # handling. PriceManager falls back to "standard" if the resolved tier
+            # has no pricing data captured for this model.
+            tier = getattr(usage, "service_tier", None) or "standard"
 
             return self.create_response(
                 text=text_content,
@@ -233,6 +285,10 @@ class ClaudeProvider(BaseLLMProvider):
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read,
                 cache_creation_tokens=cache_creation,
+                cache_creation_5m_tokens=cache_creation_5m,
+                cache_creation_1h_tokens=cache_creation_1h,
+                inference_geo=getattr(usage, "inference_geo", None),
+                tier=tier,
             )
         except Exception as e:
             logger.error(f"Claude text generation failed: {e}")
@@ -365,12 +421,24 @@ class ClaudeProvider(BaseLLMProvider):
                     usage = msg.usage
                     cache_read = getattr(usage, "cache_read_input_tokens", 0)
                     cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
+                    cache_creation_detail = getattr(usage, "cache_creation", None)
+                    cache_creation_5m = getattr(
+                        cache_creation_detail, "ephemeral_5m_input_tokens", None
+                    )
+                    cache_creation_1h = getattr(
+                        cache_creation_detail, "ephemeral_1h_input_tokens", None
+                    )
+                    tier = getattr(usage, "service_tier", None) or "standard"
                     results[result.custom_id] = self.create_response(
                         text=text,
                         input_tokens=usage.input_tokens,
                         output_tokens=usage.output_tokens,
                         cache_read_tokens=cache_read,
                         cache_creation_tokens=cache_creation,
+                        cache_creation_5m_tokens=cache_creation_5m,
+                        cache_creation_1h_tokens=cache_creation_1h,
+                        inference_geo=getattr(usage, "inference_geo", None),
+                        tier=tier,
                         is_batch=True,
                     )
                 elif result_type == "expired":

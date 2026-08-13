@@ -243,11 +243,25 @@ class OpenAIProvider(BaseLLMProvider):
                 "Set MAX_LLM_OUTPUT_TOKENS env var to increase the limit."
             )
 
+    # service_tier values the API actually returns, mapped onto PriceManager's
+    # lookup tier names. "default"/"auto" (or the field being absent) means the
+    # request ran at standard pricing; PriceManager itself already accepts
+    # "flex" and "priority" (see price_manager.py's openai branch).
+    _SERVICE_TIER_MAP = {
+        None: "standard",
+        "default": "standard",
+        "auto": "standard",
+        "flex": "flex",
+        "priority": "priority",
+    }
+
     def _parse_response(self, resp, *, is_batch: bool) -> LLMResponse:
         choice = resp.choices[0]
+        message = choice.message
         # Native function calling: convert tool_calls to the text-based ReAct JSON
         # format so the MCPAgent's _parse_tool_call can process it unchanged.
-        tool_calls = getattr(choice.message, "tool_calls", None)
+        tool_calls = getattr(message, "tool_calls", None)
+        refusal = getattr(message, "refusal", None)
         if tool_calls:
             tc = tool_calls[0]  # one tool call per turn matches the ReAct protocol
             try:
@@ -258,8 +272,12 @@ class OpenAIProvider(BaseLLMProvider):
                 {"action": tc.function.name, "action_input": action_input},
                 ensure_ascii=False,
             )
+        elif refusal:
+            # Safety refusal: content is null and `refusal` carries the
+            # explanation. Surface it instead of silently returning "".
+            text = refusal
         else:
-            text = choice.message.content or ""
+            text = message.content or ""
         usage = resp.usage
 
         input_tokens = getattr(usage, "prompt_tokens", 0) or 0
@@ -274,11 +292,18 @@ class OpenAIProvider(BaseLLMProvider):
         prompt_detail = getattr(usage, "prompt_tokens_details", None)
         cached_tokens = getattr(prompt_detail, "cached_tokens", 0) or 0
 
+        # Bill at the tier the request was actually served on, not an assumed
+        # default — the API can serve "flex"/"priority" requests, and PriceManager
+        # defaults to "standard" pricing whenever no tier is passed at all.
+        service_tier = getattr(resp, "service_tier", None)
+        tier = self._SERVICE_TIER_MAP.get(service_tier, "standard")
+
         return self.create_response(
             text=text,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_tokens=cached_tokens,
             reasoning_tokens=reasoning_tokens,
+            tier=tier,
             is_batch=is_batch,
         )

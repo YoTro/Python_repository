@@ -117,6 +117,25 @@ class PriceManager:
 
         elif self.provider == "claude":
             # Claude Pattern: {model}#{tier}#{dimension}
+            #
+            # Normalize the resolved tier before use:
+            #   - "batch" is never used as a direct lookup tier here — `is_batch`
+            #     already drives the 0.5x discount below, and claude_pricing.json's
+            #     #batch# entries are already pre-discounted, so honoring both
+            #     would double-discount a request whose usage.service_tier reports
+            #     "batch" (e.g. from poll_batch results).
+            #   - Any other non-standard tier (e.g. Priority Tier) falls back to
+            #     "standard" with a warning if this model has no pricing data
+            #     captured for it yet, instead of silently billing $0.00.
+            if tier == "batch":
+                tier = "standard"
+            elif tier != "standard" and f"{canonical_model}#{tier}#input" not in self.lookup:
+                logger.warning(
+                    f"Claude pricing has no '{tier}' tier data for {canonical_model}; "
+                    f"billing at the standard rate instead."
+                )
+                tier = "standard"
+
             in_key = f"{canonical_model}#{tier}#input"
             out_key = f"{canonical_model}#{tier}#output"
 
@@ -134,8 +153,70 @@ class PriceManager:
             total_cost = (input_tokens * in_price / 1_000_000.0) + (
                 output_tokens * out_price / 1_000_000.0
             )
+
+            def _cache_price(dimension: str) -> float:
+                key = f"{canonical_model}#standard#{dimension}"
+                if key not in self.lookup:
+                    logger.warning(
+                        f"Claude pricing lookup miss for {dimension}: {key} — "
+                        f"pricing config may be out of date. Cost reported as $0.00 for it."
+                    )
+                return self.lookup.get(key, {}).get("price", 0.0)
+
+            # Prompt caching: usage.input_tokens excludes cache_creation/cache_read
+            # tokens (Anthropic bills those separately, at cache_write_5m|1h and
+            # cache_read rates respectively), so they must be added here or caching
+            # requests are silently under-billed. Cache pricing is only published
+            # under the "standard" tier — no long-context cache surcharge exists.
+            cache_creation_tokens = kwargs.get("cache_creation_tokens", 0) or 0
+            cache_read_tokens = kwargs.get("cache_read_tokens", 0) or 0
+
+            # Anthropic's usage.cache_creation object reports the exact TTL split
+            # (ephemeral_5m_input_tokens / ephemeral_1h_input_tokens) — bill each
+            # portion at its own rate when the caller supplies it, instead of
+            # guessing a single TTL for the whole cache_creation_input_tokens total.
+            cache_creation_5m = kwargs.get("cache_creation_5m_tokens") or 0
+            cache_creation_1h = kwargs.get("cache_creation_1h_tokens") or 0
+            breakdown_total = cache_creation_5m + cache_creation_1h
+
+            if breakdown_total:
+                if cache_creation_tokens and breakdown_total != cache_creation_tokens:
+                    logger.warning(
+                        f"Claude cache-write TTL breakdown ({breakdown_total} tokens) doesn't "
+                        f"match cache_creation_input_tokens ({cache_creation_tokens}) for "
+                        f"{canonical_model}; billing the breakdown as reported."
+                    )
+                total_cost += cache_creation_5m * _cache_price("cache_write_5m") / 1_000_000.0
+                total_cost += cache_creation_1h * _cache_price("cache_write_1h") / 1_000_000.0
+            elif cache_creation_tokens:
+                # No usable breakdown (not supplied, or summed to zero while the
+                # flat total didn't — Anthropic's own sample responses can show
+                # this) — fall back to a single guessed TTL for the whole total.
+                # Defaults to "5m", matching ClaudeProvider's default ephemeral
+                # cache_control, which never sets an explicit ttl; pass
+                # cache_ttl="1h" explicitly for 1-hour cache_control blocks.
+                cache_ttl = "1h" if kwargs.get("cache_ttl") == "1h" else "5m"
+                total_cost += (
+                    cache_creation_tokens * _cache_price(f"cache_write_{cache_ttl}") / 1_000_000.0
+                )
+
+            if cache_read_tokens:
+                total_cost += cache_read_tokens * _cache_price("cache_read") / 1_000_000.0
+
             total_cost = round(total_cost, 10)
-            return total_cost * 0.5 if is_batch else total_cost
+            total_cost = total_cost * 0.5 if is_batch else total_cost
+
+            # Data residency surcharge: a request with inference_geo=US is billed
+            # at 1.1x across every dimension (input/output/cache), applied last
+            # after all other modifiers — see modifiers.data_residency_us in
+            # claude_pricing.json (applies_to_future_models: true, so no per-model
+            # allowlist check is needed here). usage.inference_geo on the response
+            # reports what was actually served, e.g. "global" vs "us".
+            inference_geo = str(kwargs.get("inference_geo") or "").strip().lower()
+            if inference_geo == "us":
+                total_cost *= 1.1
+
+            return round(total_cost, 10)
 
         elif self.provider == "deepseek":
             # DeepSeek Pattern: {model}#{tier}#{dimension}
@@ -144,22 +225,45 @@ class PriceManager:
             import datetime as _dt
 
             cached_tokens = kwargs.get("cached_tokens", 0) or 0
+            now_utc = _dt.datetime.now(_dt.UTC)
 
             # deepseek-v4-pro: 75% discount until 2026-05-31T15:59:00Z; after that, undiscounted tier = 1/4 of launch price (same value).
             _V4PRO_DISCOUNT_END = _dt.datetime(2026, 5, 31, 15, 59, 0, tzinfo=_dt.UTC)
-            if (
-                canonical_model == "deepseek-v4-pro"
-                and _dt.datetime.now(_dt.UTC) > _V4PRO_DISCOUNT_END
-            ):
-                ds_tier = "undiscounted"
-            elif is_batch:
-                ds_tier = "batch"
+            if canonical_model == "deepseek-v4-pro" and now_utc > _V4PRO_DISCOUNT_END:
+                ds_base_tier = "undiscounted"
             else:
-                ds_tier = "standard"
+                ds_base_tier = "standard"
+
+            # DeepSeek has no batch discount tier (unlike Gemini/Claude/OpenAI) — flag
+            # misuse instead of silently mis-keying into a nonexistent "#batch#" price.
+            if is_batch:
+                logger.warning(
+                    f"DeepSeek pricing has no batch tier for {canonical_model}; "
+                    f"billing at the {ds_base_tier} rate instead."
+                )
+
+            # Peak-hour surcharge, effective 2026-07-15: 2x multiplier during
+            # 01:00-04:00 and 06:00-10:00 UTC (see metadata.peak_pricing in
+            # deepseek_pricing.json). Select the *_peak tier variant when applicable.
+            _PEAK_WINDOWS_UTC = (
+                (_dt.time(1, 0), _dt.time(4, 0)),
+                (_dt.time(6, 0), _dt.time(10, 0)),
+            )
+            now_time = now_utc.time()
+            is_peak = any(start <= now_time < end for start, end in _PEAK_WINDOWS_UTC)
+            ds_tier = f"{ds_base_tier}_peak" if is_peak else ds_base_tier
 
             in_key = f"{canonical_model}#{ds_tier}#input"
             cache_hit_key = f"{canonical_model}#{ds_tier}#input_cache_hit"
             out_key = f"{canonical_model}#{ds_tier}#output"
+
+            missing_keys = [k for k in (in_key, out_key) if k not in self.lookup]
+            if missing_keys:
+                logger.warning(
+                    f"DeepSeek pricing lookup miss for model={canonical_model} tier={ds_tier}: "
+                    f"missing {missing_keys} — pricing config may be out of date. "
+                    f"Cost for the missing dimension(s) will be reported as $0.00."
+                )
 
             in_price = self.lookup.get(in_key, {}).get("price", 0.0)
             cache_hit_price = self.lookup.get(cache_hit_key, {}).get("price", 0.0)
@@ -178,8 +282,36 @@ class PriceManager:
             # so cached tokens fall back to the full input price. Batch tier is a
             # uniform 50% discount. Long-context tier applies above 272,000 total
             # prompt tokens; only switched when the model actually publishes it.
+            #
+            # Service tier (pass via `tier=`, matching the API's `service_tier`
+            # request parameter): "flex" reuses the batch lookup keys —
+            # openai_pricing.json's gpt_5_6_coverage_note confirms flex is numerically
+            # identical to batch for every model that publishes it, so no separate
+            # price table is needed. "fast_mode" (2x standard/long_context_standard,
+            # per fast_mode_note) is only published for gpt-5.6-sol/terra/luna; for
+            # every other model it falls back to standard/batch with a warning rather
+            # than fabricating a number. Priority processing was renamed Fast mode on
+            # 2026-07-30 — the API accepts either service_tier: "priority" or "fast"
+            # for the same tier, so both aliases (plus the internal "fast_mode" key
+            # name) are accepted here.
             cached_tokens = kwargs.get("cached_tokens", 0) or 0
-            oa_tier = "batch" if is_batch else "standard"
+            cache_write_tokens = kwargs.get("cache_write_tokens", 0) or 0
+            requested_tier = (tier or "standard").lower()
+
+            if requested_tier == "flex":
+                oa_tier = "batch"
+            elif requested_tier in ("fast_mode", "fast", "priority"):
+                if f"{canonical_model}#fast_mode#input" in self.lookup:
+                    oa_tier = "fast_mode"
+                else:
+                    oa_tier = "batch" if is_batch else "standard"
+                    logger.warning(
+                        f"OpenAI fast_mode pricing is not available for {canonical_model} "
+                        f"(no source data in openai_pricing.json) — billing at the "
+                        f"{oa_tier} rate instead."
+                    )
+            else:
+                oa_tier = "batch" if is_batch else "standard"
 
             if kwargs.get("total_tokens", input_tokens) > 272_000:
                 long_tier = f"long_context_{oa_tier}"
@@ -188,16 +320,22 @@ class PriceManager:
 
             in_key = f"{canonical_model}#{oa_tier}#input"
             cache_hit_key = f"{canonical_model}#{oa_tier}#input_cache_hit"
+            cache_write_key = f"{canonical_model}#{oa_tier}#cache_writes"
             out_key = f"{canonical_model}#{oa_tier}#output"
 
             in_price = self.lookup.get(in_key, {}).get("price", 0.0)
             cache_hit_price = self.lookup.get(cache_hit_key, {}).get("price", in_price)
+            # cache_writes is only published for gpt-5.6-sol/terra/luna (see
+            # cache_writes_note) — models without it are correctly billed $0.00
+            # for any cache-write tokens, per that note's documented convention.
+            cache_write_price = self.lookup.get(cache_write_key, {}).get("price", 0.0)
             out_price = self.lookup.get(out_key, {}).get("price", 0.0)
 
             non_cached = max(0, input_tokens - cached_tokens)
             input_cost = (non_cached * in_price + cached_tokens * cache_hit_price) / 1_000_000.0
+            cache_write_cost = cache_write_tokens * cache_write_price / 1_000_000.0
             output_cost = output_tokens * out_price / 1_000_000.0
-            return round(input_cost + output_cost, 10)
+            return round(input_cost + cache_write_cost + output_cost, 10)
 
         else:
             return 0.0

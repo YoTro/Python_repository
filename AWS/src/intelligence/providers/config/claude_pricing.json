@@ -1,7 +1,7 @@
 {
   "metadata": {
     "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-    "last_verified": "2026-07-04",
+    "last_verified": "2026-08-13",
     "schema_version": "4",
     "conventions": {
       "price_entry_shape": {
@@ -17,10 +17,11 @@
       "multipliers": "In 'modifiers' block only. Price entries contain absolute values.",
       "token_counts": "In 'tool_overhead' block only. See _pricing_formula.",
       "combinability_rule": "NOT_AVAILABLE_WITH > STACKS_WITH",
-      "opus_sonnet_4_6_flat": "Fable 5, Mythos 5, Opus 4.8, Opus 4.7, Opus 4.6 and Sonnet 4.6: flat 1M context, no long-context surcharge. Source: platform.claude.com/docs/en/about-claude/pricing — 'A 900k-token request is billed at the same per-token rate as a 9k-token request.'",
+      "opus_sonnet_4_6_flat": "Fable 5, Mythos 5, Opus 5, Opus 4.8, Opus 4.7, Opus 4.6 Sonnet 5 and Sonnet 4.6: flat 1M context, no long-context surcharge. Source: platform.claude.com/docs/en/about-claude/pricing — 'A 900k-token request is billed at the same per-token rate as a 9k-token request.'",
       "schema_integrity": "All lookup keys are canonical_ids. Verified at build time.",
       "tokenizer_note": "Opus 4.7 and later use a new tokenizer that may consume up to 35% more tokens for the same text than earlier models.",
-      "opus_5_note": "claude-opus-5 standard/fast_mode/cache/batch/data_residency_us pricing ratios are numerically identical to claude-opus-4-8 (fast_mode x2, cache_write_5m x1.25, cache_write_1h x2, cache_read x0.1, batch x0.5, data_residency_us x1.1) — all derived directly from source data, not assumed. context_window is confirmed at a flat 1,000,000 tokens (both default and maximum — no smaller context variant), max_output_tokens confirmed at 128,000 (see model_limits.claude-opus-5), and thinking is enabled by default (see models[].thinking_default). tool_overhead token counts were still not provided and remain omitted (no entry under tool_overhead.tool_use_system_prompt.by_model_id)."
+      "opus_5_note": "claude-opus-5 standard/fast_mode/cache/batch/data_residency_us pricing ratios are numerically identical to claude-opus-4-8 (fast_mode x2, cache_write_5m x1.25, cache_write_1h x2, cache_read x0.1, batch x0.5, data_residency_us x1.1) — all derived directly from source data, not assumed. context_window is confirmed at a flat 1,000,000 tokens (both default and maximum — no smaller context variant), max_output_tokens confirmed at 128,000 (see model_limits.claude-opus-5), and thinking is enabled by default (see models[].thinking_default). tool_overhead token counts were still not provided and remain omitted (no entry under tool_overhead.tool_use_system_prompt.by_model_id).",
+      "fast_mode_availability_note": "Fast mode (modifiers.fast_mode) is only orderable on claude-opus-5 and claude-opus-4-8. It is NOT available on claude-opus-4-7 (speed:\"fast\" returns an error — hard failure, model still usable at standard speed) or claude-opus-4-6 (speed:\"fast\" silently falls back to standard speed and standard billing, usage.speed:\"standard\", no error). Their fast_mode lookup entries were removed accordingly — see models[].fast_mode_note for each model and modifiers.fast_mode.not_applicable_model_ids."
     }
   },
   "model_string_index": {
@@ -112,7 +113,7 @@
     "claude-haiku-3": {
       "canonical_id": "claude-haiku-3",
       "is_alias": false,
-      "is_deprecated": false
+      "is_deprecated": true
     },
     "claude-opus-4-5-20251101": {
       "canonical_id": "claude-opus-4-5",
@@ -238,14 +239,14 @@
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input",
-      "note": "Introductory pricing through 2026-08-31; standard price $3.00/MTok thereafter"
+      "note": "Standard price. Originally launched as introductory pricing through 2026-08-31 with a scheduled increase to $3.00/MTok on 2026-09-01; that increase was cancelled and $2.00/MTok is now the permanent standard price."
     },
     "claude-sonnet-5#standard#output": {
       "price": 10.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
-      "note": "Introductory pricing through 2026-08-31; standard price $15.00/MTok thereafter"
+      "note": "Standard price. Originally launched as introductory pricing through 2026-08-31 with a scheduled increase to $15.00/MTok on 2026-09-01; that increase was cancelled and $10.00/MTok is now the permanent standard price."
     },
     "claude-sonnet-5#standard#cache_write_5m": {
       "price": 2.5,
@@ -509,20 +510,6 @@
       "dimension": "output",
       "discount_vs_standard": 0.5
     },
-    "claude-opus-4-7#fast_mode#input": {
-      "price": 30.0,
-      "unit": "USD",
-      "billing_unit": "per_1M_tokens",
-      "dimension": "input",
-      "multiplier_vs_standard": 6
-    },
-    "claude-opus-4-7#fast_mode#output": {
-      "price": 150.0,
-      "unit": "USD",
-      "billing_unit": "per_1M_tokens",
-      "dimension": "output",
-      "multiplier_vs_standard": 6
-    },
     "claude-opus-4-6#standard#input": {
       "price": 5.0,
       "unit": "USD",
@@ -574,20 +561,6 @@
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
       "discount_vs_standard": 0.5
-    },
-    "claude-opus-4-6#fast_mode#input": {
-      "price": 30.0,
-      "unit": "USD",
-      "billing_unit": "per_1M_tokens",
-      "dimension": "input",
-      "multiplier_vs_standard": 6
-    },
-    "claude-opus-4-6#fast_mode#output": {
-      "price": 150.0,
-      "unit": "USD",
-      "billing_unit": "per_1M_tokens",
-      "dimension": "output",
-      "multiplier_vs_standard": 6
     },
     "claude-sonnet-4-6#standard#input": {
       "price": 3.0,
@@ -1236,7 +1209,7 @@
       },
       "tiers_available": ["standard", "batch"],
       "_lookup_key_prefix": "claude-sonnet-5",
-      "pricing_note": "Introductory pricing through 2026-08-31; standard $3/$15 per MTok thereafter"
+      "pricing_note": "$2/$10 per MTok is the permanent standard price. Originally announced as introductory pricing through 2026-08-31 with a scheduled increase to $3/$15 on 2026-09-01; that increase was cancelled."
     },
     {
       "id": "claude-opus-4-8",
@@ -1283,10 +1256,10 @@
       },
       "tiers_available": [
         "standard",
-        "batch",
-        "fast_mode"
+        "batch"
       ],
-      "_lookup_key_prefix": "claude-opus-4-7"
+      "_lookup_key_prefix": "claude-opus-4-7",
+      "fast_mode_note": "Fast mode is not available on claude-opus-4-7. A request with speed:\"fast\" returns an error (no fallback, no partial billing) — unlike claude-opus-4-6, which silently downgrades to standard speed/pricing. The model itself remains fully available at standard speed. To use fast mode, migrate to claude-opus-5 or claude-opus-4-8."
     },
     {
       "id": "claude-fable-5",
@@ -1357,10 +1330,10 @@
       },
       "tiers_available": [
         "standard",
-        "batch",
-        "fast_mode"
+        "batch"
       ],
-      "_lookup_key_prefix": "claude-opus-4-6"
+      "_lookup_key_prefix": "claude-opus-4-6",
+      "fast_mode_note": "Fast mode is not available on claude-opus-4-6. A request with speed:\"fast\" does not return an error — it silently runs at standard speed, billed at standard rates (not fast mode's premium rates), and the response reports usage.speed:\"standard\". Unlike claude-opus-4-7, this is a silent fallback, not a hard error. To use fast mode, migrate to claude-opus-5 or claude-opus-4-8."
     },
     {
       "id": "claude-sonnet-4-6",
@@ -1719,22 +1692,19 @@
     },
     "fast_mode": {
       "type": "multiplier_on_standard",
-      "factor": 6.0,
       "applies_to_model_ids": [
         "claude-opus-5",
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6"
+        "claude-opus-4-8"
       ],
+      "not_applicable_model_ids": {
+        "claude-opus-4-7": "speed:\"fast\" returns an error — hard failure, no fallback, model remains available at standard speed",
+        "claude-opus-4-6": "speed:\"fast\" is silently downgraded to standard speed and billed at standard rates (usage.speed: \"standard\") — no error, but no fast-mode pricing either"
+      },
       "lookup_keys": [
         "claude-opus-5#fast_mode#input",
         "claude-opus-5#fast_mode#output",
         "claude-opus-4-8#fast_mode#input",
-        "claude-opus-4-8#fast_mode#output",
-        "claude-opus-4-7#fast_mode#input",
-        "claude-opus-4-7#fast_mode#output",
-        "claude-opus-4-6#fast_mode#input",
-        "claude-opus-4-6#fast_mode#output"
+        "claude-opus-4-8#fast_mode#output"
       ],
       "stacks_with": [
         "prompt_caching",
@@ -1747,9 +1717,7 @@
       "availability": "research_preview",
       "factor_by_model": {
         "claude-opus-5": 2.0,
-        "claude-opus-4-8": 2.0,
-        "claude-opus-4-7": 6.0,
-        "claude-opus-4-6": 6.0
+        "claude-opus-4-8": 2.0
       }
     },
     "long_context_gt200k": {
@@ -1886,10 +1854,14 @@
       "dimension": "server_tool_use",
       "free_hours_per_org_per_month": 1550,
       "minimum_billing_minutes": 5,
-      "free_when_combined_with": [
-        "web_search_20260209",
-        "web_fetch_20260209"
-      ]
+      "free_when_combined_with": {
+        "match": "any",
+        "tool_types": [
+          "web_search_20260209",
+          "web_fetch_20260209"
+        ],
+        "note": "Free (no per-hour charge) when code execution is used together with either web search or web fetch — only one of the two is required, not both. Applies to web_search_20260209 / web_fetch_20260209 and any later dated version of these tool types."
+      }
     }
   },
   "model_limits": {
@@ -1905,13 +1877,13 @@
     "claude-haiku-3": {
       "max_output_tokens": 4096
     },
-    "claude-haiku-4": {
+    "claude-haiku-4-0": {
       "max_output_tokens": 8192
     },
     "claude-haiku-4-5": {
       "max_output_tokens": 64000
     },
-    "claude-sonnet-4": {
+    "claude-sonnet-4-0": {
       "max_output_tokens": 16384
     },
     "claude-sonnet-4-5": {
@@ -1926,7 +1898,7 @@
     "claude-fable-5": {
       "max_output_tokens": 128000
     },
-    "claude-opus-4": {
+    "claude-opus-4-0": {
       "max_output_tokens": 32000
     },
     "claude-opus-4-5": {

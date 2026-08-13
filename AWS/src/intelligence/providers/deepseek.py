@@ -235,7 +235,23 @@ class DeepSeekProvider(BaseLLMProvider):
 
     def _parse_response(self, resp, *, is_batch: bool) -> LLMResponse:
         choice = resp.choices[0]
-        text = choice.message.content or ""
+        # Native function calling (OpenAI-compatible): convert tool_calls to the
+        # text-based ReAct JSON format so the MCPAgent's _parse_tool_call can
+        # process it unchanged. Without this, a tool-call response (content is
+        # empty/null, tool_calls populated) silently came back as "".
+        tool_calls = getattr(choice.message, "tool_calls", None)
+        if tool_calls:
+            tc = tool_calls[0]  # one tool call per turn matches the ReAct protocol
+            try:
+                action_input = json.loads(tc.function.arguments)
+            except Exception:
+                action_input = {}
+            text = json.dumps(
+                {"action": tc.function.name, "action_input": action_input},
+                ensure_ascii=False,
+            )
+        else:
+            text = choice.message.content or ""
         usage = resp.usage
 
         input_tokens = getattr(usage, "prompt_tokens", 0) or 0
@@ -248,9 +264,12 @@ class DeepSeekProvider(BaseLLMProvider):
         completion_detail = getattr(usage, "completion_tokens_details", None)
         reasoning_tokens = getattr(completion_detail, "reasoning_tokens", 0) or 0
 
-        # Cache hit tokens from server-side KV cache
-        prompt_detail = getattr(usage, "prompt_tokens_details", None)
-        cached_tokens = getattr(prompt_detail, "cached_tokens", 0) or 0
+        # Cache hit tokens from server-side KV cache. DeepSeek reports this as a
+        # flat `prompt_cache_hit_tokens` field directly on usage — there is no
+        # nested prompt_tokens_details object in this API's schema (that's
+        # OpenAI's shape). Reading it the OpenAI way always returned 0, so every
+        # request was silently billed at the full, non-cached input rate.
+        cached_tokens = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
 
         return self.create_response(
             text=text,

@@ -114,6 +114,9 @@ async def test_claude_provider_cost_population():
     mock_usage.output_tokens = 1000
     mock_usage.cache_read_input_tokens = 500
     mock_usage.cache_creation_input_tokens = 0
+    mock_usage.cache_creation = MagicMock(ephemeral_5m_input_tokens=0, ephemeral_1h_input_tokens=0)
+    mock_usage.inference_geo = "global"
+    mock_usage.service_tier = "standard"
     mock_message.usage = mock_usage
 
     with patch("anthropic.AsyncAnthropic"):
@@ -140,6 +143,10 @@ async def test_claude_provider_cost_population():
             is_batch=False,
             cache_read_tokens=500,
             cache_creation_tokens=0,
+            cache_creation_5m_tokens=0,
+            cache_creation_1h_tokens=0,
+            inference_geo="global",
+            tier="standard",
         )
 
 
