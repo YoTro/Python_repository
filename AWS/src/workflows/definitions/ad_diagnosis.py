@@ -118,7 +118,6 @@ _KEY_KW_PERFORMANCE = "ad_diag:kw_performance"
 _KEY_DAILY_PERF = "ad_diag:daily_performance"
 _KEY_CHANGE_HISTORY = "ad_diag:change_history"
 _KEY_PLACEMENT = "ad_diag:placement"
-_KEY_COVARIATES = "ad_diag:covariates"
 _KEY_YOY_PERF = "ad_diag:yoy_perf"  # ERP YoY post-window (364d back)
 _KEY_TRAILING_EXT = "ad_diag:trailing_ext"  # ERP trailing 3M extension
 _KEY_LEAD_TIME = "ad_diag:lead_time"  # Lingxing shipment lead-time (store-wide)
@@ -851,7 +850,7 @@ async def _enrich_order_metrics(item: dict, ctx: WorkflowContext) -> dict:
         return {}
 
     days = ctx.config.get("days", 30)
-    cached = _l2_get(ctx, 14400, "order_metrics", asin, days)  # 4h TTL
+    cached = _l2_get(ctx, _TTL_STATIC, "order_metrics", asin, days)  # 4h TTL
     if cached is not None:
         return cached
 
@@ -3927,9 +3926,8 @@ def _run_causal_analysis(items: list[dict], ctx: WorkflowContext) -> list[dict]:
         except Exception as e:
             # Unexpected error — likely a code bug; log with full traceback so it
             # surfaces in monitoring rather than being silently swallowed.
-            logger.error(
-                f"[causal_analysis] Unexpected error for {asin}: {type(e).__name__}: {e}",
-                exc_info=True,
+            logger.exception(
+                f"[causal_analysis] Unexpected error for {asin}: {type(e).__name__}: {e}"
             )
             item["causal_analysis_error"] = f"{type(e).__name__}: {e}"
     return items
@@ -6445,6 +6443,10 @@ def _prepare_for_llm(items: list[dict], ctx: WorkflowContext) -> list[dict]:
                                    daily_clicks stripped from rows already covered by
                                    keyword_actions (those fields are now structured
                                    fields on every action entry).
+      - market_trends            : weekly SFR/searches series consumed by
+                                   _build_item_summary above (market_trends_keywords,
+                                   traffic_divergence_label); raw dict would be a
+                                   duplicate subset.
     """
     _STRIP_FIELDS = (
         "performance_records",
@@ -6453,6 +6455,7 @@ def _prepare_for_llm(items: list[dict], ctx: WorkflowContext) -> list[dict]:
         "campaigns",
         "covariate_series",
         "change_events",
+        "market_trends",
     )
     _LP_INPUT_FIELDS = ("avg_cpc", "cvr", "daily_clicks")
     for item in items:
