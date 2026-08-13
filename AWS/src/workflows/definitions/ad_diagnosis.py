@@ -3522,10 +3522,17 @@ async def _enrich_xiyou_rankings(item: dict, ctx: WorkflowContext) -> dict:
             return {}
 
         entry = next((e for e in entities if e.get("asin") == asin), entities[0])
+
+        def _to_float(v):
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
         return {
-            "ad_traffic_ratio": entry.get("advertisingTrafficScoreRatio"),
-            "organic_traffic_ratio": entry.get("organicTrafficScoreRatio"),
-            "traffic_growth_7d": entry.get("totalTrafficScoreGrowthRate"),
+            "ad_traffic_ratio": _to_float(entry.get("advertisingTrafficScoreRatio")),
+            "organic_traffic_ratio": _to_float(entry.get("organicTrafficScoreRatio")),
+            "traffic_growth_7d": _to_float(entry.get("totalTrafficScoreGrowthRate")),
             "xiyou_scores_raw": entry,
         }
     except Exception as e:
