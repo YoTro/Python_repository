@@ -574,29 +574,52 @@ def _causal_impact_analyze(
         return {"skipped": True, "reason": "insufficient pre-period for BSTS"}
 
     try:
+        import causalimpact.analysis as _ci_analysis
         import pandas as pd
-        from causalimpact.misc import standardize as _ci_std
+        from causalimpact import CausalImpact
     except ImportError:
         return {"skipped": True, "reason": "causalimpact not installed"}
 
-    # ── pandas compatibility patches (applied before CausalImpact is imported) ──
-    # Patch 1: pandas ≥ 2.1 renamed DataFrame.applymap → DataFrame.map;
-    #          causalimpact calls the old name inside _format_input_data.
-    if not hasattr(pd.DataFrame, "applymap"):
-        pd.DataFrame.applymap = pd.DataFrame.map  # type: ignore[attr-defined]
+    # ── compatibility patches for causalimpact 0.2.x (PyMC/modular refactor) ──
+    # running against pandas ≥ 2.2 (tested against 3.0). Both patches target
+    # bugs in the vendored library itself, not our call site.
+    #
+    # Patch 1: _align_periods_dtypes calls a pandas private helper that was
+    #          removed in pandas 3.0.
+    if not hasattr(pd.core.dtypes.common, "is_datetime_or_timedelta_dtype"):  # type: ignore[attr-defined]
 
-    # Patch 2: causalimpact 0.1.1 uses mu[0] / sig[0] (label-based) in
-    #          _standardize_pre_post_data; pandas ≥ 2.0 requires .iloc[0].
-    from causalimpact.main import CausalImpact as _CI
+        def _is_datetime_or_timedelta_dtype(arr_or_dtype):
+            return pd.api.types.is_datetime64_any_dtype(
+                arr_or_dtype
+            ) or pd.api.types.is_timedelta64_dtype(arr_or_dtype)
 
-    def _patched_standardize(self: _CI) -> None:
-        self.normed_pre_data, (mu, sig) = _ci_std(self.pre_data)
-        self.normed_post_data = (self.post_data - mu) / sig
-        self.mu_sig = (mu.iloc[0], sig.iloc[0])
+        pd.core.dtypes.common.is_datetime_or_timedelta_dtype = (  # type: ignore[attr-defined]
+            _is_datetime_or_timedelta_dtype
+        )
 
-    _CI._standardize_pre_post_data = _patched_standardize  # type: ignore[method-assign]
+    # Patch 2: standardize_all_variables uses mu[0]/sig[0] (label-based) to
+    #          pull the response column's mean/std out of a Series indexed by
+    #          column name ("y", "x0", ...); pandas ≥ 2.0 no longer falls back
+    #          to positional access for an int key that isn't a real label.
+    #          Same fix as the old 0.1.1 patch, relocated to its new home.
+    if getattr(_ci_analysis.standardize_all_variables, "__module__", None) != __name__:
 
-    from causalimpact import CausalImpact
+        def _standardize_all_variables_fixed(data, pre_period, post_period):
+            data_mu = data.loc[pre_period[0] : pre_period[1], :].mean(skipna=True)
+            data_sd = data.loc[pre_period[0] : pre_period[1], :].std(skipna=True, ddof=0)
+            data = data - data_mu
+            data_sd = data_sd.fillna(1)
+            data[data != 0] = data[data != 0] / data_sd
+            data_pre = data.loc[pre_period[0] : pre_period[1], :]
+            data_post = data.loc[post_period[0] : post_period[1], :]
+            return {
+                "data_pre": data_pre,
+                "data_post": data_post,
+                "orig_std_params": (data_mu.iloc[0], data_sd.iloc[0]),
+            }
+
+        _standardize_all_variables_fixed.__module__ = __name__
+        _ci_analysis.standardize_all_variables = _standardize_all_variables_fixed
 
     try:
         n = len(series)
@@ -605,7 +628,7 @@ def _causal_impact_analyze(
 
         # Drop zero-variance columns in the pre-period.
         # _align_covariates fills entirely-missing columns with 0, giving std=0.
-        # _patched_standardize then divides by sig=0 → produces inf in exog.
+        # standardize_all_variables then divides by sig=0 → produces inf in exog.
         pre_std = cov[:intervention_idx].std(axis=0)
         active = np.where(pre_std > 0)[0]
         cov = cov[:, active] if len(active) > 0 else np.empty((n, 0))
@@ -617,46 +640,69 @@ def _causal_impact_analyze(
         import warnings as _warnings
 
         with _warnings.catch_warnings():
-            # causalimpact passes kwargs (nseasons, standardize, alpha) that
-            # newer statsmodels versions do not accept; suppress until the
-            # library is updated.
-            _warnings.filterwarnings("ignore", category=FutureWarning, module="statsmodels")
+            _warnings.filterwarnings("ignore")
             ci = CausalImpact(df, [0, intervention_idx - 1], [intervention_idx, n - 1])
+            # 0.2.x no longer runs inference in __init__; must call explicitly.
+            ci.run()
 
-        # summary_data is a DataFrame:
-        #   index   = effect metrics (abs_effect, rel_effect, abs_effect_lower, ...)
-        #   columns = ['average', 'cumulative']
-        sd = ci.summary_data
+        # ci.inferences is a per-timestep DataFrame (response, point_pred,
+        # point_pred_lower/upper, ...); reduce to point/CI estimates over the
+        # post period the same way CausalImpact.summary() does internally
+        # (that method only prints — it doesn't return the numbers).
+        post_period = ci.params["post_period"]
+        post_inf = ci.inferences.loc[post_period[0] : post_period[1], :]
+        post_resp = post_inf["response"]
+        post_pred = post_inf["point_pred"]
+        post_pred_lower = post_inf["point_pred_lower"]
+        post_pred_upper = post_inf["point_pred_upper"]
 
-        def _loc(row: str):
-            try:
-                return float(sd.loc[row, "average"])
-            except (KeyError, TypeError):
-                return None
+        mean_pred = float(post_pred.mean())
+        mean_pred_upper = float(post_pred_upper.mean())
 
-        pe = _loc("abs_effect")
+        pe = float((post_resp - post_pred).mean())
+        rel = pe / mean_pred * 100 if mean_pred != 0 else None
+
+        # NB: "effect using the prediction's lower bound" is always ≥ "effect
+        # using the prediction's upper bound" (subtracting a smaller number
+        # yields a bigger result) — sort so ci_lo ≤ ci_hi for the effect itself,
+        # matching the its/dml CI convention elsewhere in this module.
+        eff_from_pred_lower = float((post_resp - post_pred_lower).mean())
+        eff_from_pred_upper = float((post_resp - post_pred_upper).mean())
+        ci_lo, ci_hi = sorted((eff_from_pred_lower, eff_from_pred_upper))
+
+        # p-value: same definition CausalImpact.summary() computes — probability
+        # that the counterfactual prediction (with its own CI-derived std) is
+        # indistinguishable from zero.
+        std_pred = (mean_pred_upper - mean_pred) / 1.96
+        p_value = None
+        if std_pred and np.isfinite(std_pred):
+            import scipy.stats as _st
+
+            z_score = (0 - mean_pred) / std_pred
+            if np.isfinite(z_score):
+                p_value = round(float(_st.norm.cdf(z_score)), 4)
+
         # Guard: BSTS occasionally diverges (degenerate state-space) when the
         # pre-period has near-zero variance, producing a counterfactual near
         # ±millions even though actual orders are in the single digits.
         # Reject if |point_effect| > _CI_OUTLIER_MULT × pre-period scale.
-        if pe is not None:
-            pre_scale = max(float(np.abs(series[:intervention_idx]).max()), 1.0)
-            if abs(pe) > _CI_OUTLIER_MULT * pre_scale:
-                logger.warning(
-                    f"CausalImpact outlier rejected: |point_effect|={pe:.1f} "
-                    f"> {_CI_OUTLIER_MULT}×pre_scale={pre_scale:.1f}"
-                )
-                return {
-                    "skipped": True,
-                    "reason": f"outlier: |effect|={pe:.1f} >> pre_scale={pre_scale:.1f}",
-                }
+        pre_scale = max(float(np.abs(series[:intervention_idx]).max()), 1.0)
+        if abs(pe) > _CI_OUTLIER_MULT * pre_scale:
+            logger.warning(
+                f"CausalImpact outlier rejected: |point_effect|={pe:.1f} "
+                f"> {_CI_OUTLIER_MULT}×pre_scale={pre_scale:.1f}"
+            )
+            return {
+                "skipped": True,
+                "reason": f"outlier: |effect|={pe:.1f} >> pre_scale={pre_scale:.1f}",
+            }
         return {
             "skipped": False,
             "point_effect": pe,
-            "relative_effect": _loc("rel_effect"),
-            "p_value": round(float(ci.p_value), 4) if ci.p_value is not None else None,
-            "ci_lo": _loc("abs_effect_lower"),
-            "ci_hi": _loc("abs_effect_upper"),
+            "relative_effect": rel,
+            "p_value": p_value,
+            "ci_lo": ci_lo,
+            "ci_hi": ci_hi,
         }
     except Exception as e:
         logger.warning(f"CausalImpact failed: {e}")
