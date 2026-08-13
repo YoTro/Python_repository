@@ -12,12 +12,14 @@
         "dimension": "input | input_cache_hit | output"
       },
       "lookup_key_pattern": "{canonical_model_id}#{tier}#{dimension}",
-      "tier_values": "standard | batch",
+      "tier_values": "standard | batch | long_context_standard | long_context_batch",
       "resolution_flow": "any_string -> model_string_index -> canonical_id -> lookup key",
       "cache_note": "Cached input (automatic prompt caching) billed at input_cache_hit price; non-cached input at input price. Reasoning/'pro' models do not expose a cached-input rate — cached tokens fall back to the full input price in PriceManager.",
       "batch_note": "Batch API (async) is a uniform 50% discount on input, cached input, and output. Batch entries are derived as standard x 0.5.",
+      "long_context_note": "long_context_standard / long_context_batch apply when total prompt tokens > 272,000 (the long_context threshold); PriceManager switches to these keys automatically when the model publishes them (see gpt_5_6_coverage_note). Below the threshold, standard / batch apply. Published for gpt-5.4-pro and every model at or above it in the GPT-5.x line (gpt-5.4-pro, gpt-5.4, gpt-5.5-pro, gpt-5.5, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna); earlier/smaller models (gpt-5.4-mini, gpt-5.4-nano, gpt-5.3-codex, chatgpt-latest, gpt-5.6-cyber) do not publish a long-context rate.",
       "gpt_5_5_pro_batch_note": "Source page returned an anomalous batch rate for gpt-5.5-pro (higher than standard); corrected to the standard 50% discount, matching its sibling gpt-5.4-pro.",
-      "coverage_note": "Only the GPT-5.x generation (plus chatgpt-latest and gpt-5.3-codex) is listed on the developer pricing page. Earlier families (gpt-4.1, gpt-4o, o3, o4-mini) were not present and are intentionally omitted."
+      "coverage_note": "Only the GPT-5.x generation (plus chatgpt-latest and gpt-5.3-codex) is listed on the developer pricing page. Earlier families (gpt-4.1, gpt-4o, o3, o4-mini) were not present and are intentionally omitted.",
+      "gpt_5_6_coverage_note": "gpt-5.6-sol/terra/luna source data also publishes a flex tier, a fast_mode tier, and a cache_writes dimension. flex is numerically identical to batch for every gpt-5.6 model, so omitting it loses no information; fast_mode and cache_writes have no equivalent tier/dimension in this schema and are genuinely dropped. gpt-5.6-cyber's source only publishes a standard short_context tier (no batch, no long_context). long_context_batch entries for gpt-5.4-pro/gpt-5.4/gpt-5.5-pro/gpt-5.5 are derived as long_context_standard x 0.5 (source did not publish batch or long_context_batch rates directly for these models, but every other batch entry in this file matches this ratio exactly)."
     }
   },
   "model_string_index": {
@@ -62,6 +64,22 @@
       "canonical_id": "gpt-5.5",
       "is_alias": true,
       "note": "Shorthand mapped to the current flagship gpt-5.5"
+    },
+    "gpt-5.6-sol": {
+      "canonical_id": "gpt-5.6-sol",
+      "is_alias": false
+    },
+    "gpt-5.6-terra": {
+      "canonical_id": "gpt-5.6-terra",
+      "is_alias": false
+    },
+    "gpt-5.6-luna": {
+      "canonical_id": "gpt-5.6-luna",
+      "is_alias": false
+    },
+    "gpt-5.6-cyber": {
+      "canonical_id": "gpt-5.6-cyber",
+      "is_alias": false
     }
   },
   "lookup": {
@@ -104,6 +122,51 @@
       "dimension": "output",
       "discount_vs_standard": 0.5
     },
+    "gpt-5.5#long_context_standard#input": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.5#long_context_standard#input_cache_hit": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.5#long_context_standard#output": {
+      "price": 45.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.5#long_context_batch#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+    },
+    "gpt-5.5#long_context_batch#input_cache_hit": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+    },
+    "gpt-5.5#long_context_batch#output": {
+      "price": 22.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+    },
     "gpt-5.5-pro#standard#input": {
       "price": 30.0,
       "unit": "USD",
@@ -131,6 +194,36 @@
       "dimension": "output",
       "discount_vs_standard": 0.5,
       "note": "Derived; source page batch figure was anomalous (see metadata)"
+    },
+    "gpt-5.5-pro#long_context_standard#input": {
+      "price": 60.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.5-pro#long_context_standard#output": {
+      "price": 270.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.5-pro#long_context_batch#input": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+    },
+    "gpt-5.5-pro#long_context_batch#output": {
+      "price": 135.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
     },
     "gpt-5.4#standard#input": {
       "price": 2.5,
@@ -170,6 +263,51 @@
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
       "discount_vs_standard": 0.5
+    },
+    "gpt-5.4#long_context_standard#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.4#long_context_standard#input_cache_hit": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.4#long_context_standard#output": {
+      "price": 22.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.4#long_context_batch#input": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+    },
+    "gpt-5.4#long_context_batch#input_cache_hit": {
+      "price": 0.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+    },
+    "gpt-5.4#long_context_batch#output": {
+      "price": 11.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
     },
     "gpt-5.4-mini#standard#input": {
       "price": 0.75,
@@ -275,6 +413,36 @@
       "dimension": "output",
       "discount_vs_standard": 0.5
     },
+    "gpt-5.4-pro#long_context_standard#input": {
+      "price": 60.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.4-pro#long_context_standard#output": {
+      "price": 270.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.4-pro#long_context_batch#input": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+    },
+    "gpt-5.4-pro#long_context_batch#output": {
+      "price": 135.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+    },
     "gpt-5.3-codex#standard#input": {
       "price": 1.75,
       "unit": "USD",
@@ -328,6 +496,276 @@
     },
     "chatgpt-latest#standard#output": {
       "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.6-sol#standard#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.6-sol#standard#input_cache_hit": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.6-sol#standard#output": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.6-sol#batch#input": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.6-sol#batch#input_cache_hit": {
+      "price": 0.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.6-sol#batch#output": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.6-sol#long_context_standard#input": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-sol#long_context_standard#input_cache_hit": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-sol#long_context_standard#output": {
+      "price": 45.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-sol#long_context_batch#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-sol#long_context_batch#input_cache_hit": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-sol#long_context_batch#output": {
+      "price": 22.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-terra#standard#input": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.6-terra#standard#input_cache_hit": {
+      "price": 0.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.6-terra#standard#output": {
+      "price": 12.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.6-terra#batch#input": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.6-terra#batch#input_cache_hit": {
+      "price": 0.1,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.6-terra#batch#output": {
+      "price": 6.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.6-terra#long_context_standard#input": {
+      "price": 4.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-terra#long_context_standard#input_cache_hit": {
+      "price": 0.4,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-terra#long_context_standard#output": {
+      "price": 18.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-terra#long_context_batch#input": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-terra#long_context_batch#input_cache_hit": {
+      "price": 0.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-terra#long_context_batch#output": {
+      "price": 9.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-luna#standard#input": {
+      "price": 0.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.6-luna#standard#input_cache_hit": {
+      "price": 0.02,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.6-luna#standard#output": {
+      "price": 1.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.6-luna#batch#input": {
+      "price": 0.1,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.6-luna#batch#input_cache_hit": {
+      "price": 0.01,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.6-luna#batch#output": {
+      "price": 0.6,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-5.6-luna#long_context_standard#input": {
+      "price": 0.4,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-luna#long_context_standard#input_cache_hit": {
+      "price": 0.04,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-luna#long_context_standard#output": {
+      "price": 1.8,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-luna#long_context_batch#input": {
+      "price": 0.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-luna#long_context_batch#input_cache_hit": {
+      "price": 0.02,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-luna#long_context_batch#output": {
+      "price": 0.9,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-5.6-cyber#standard#input": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.6-cyber#standard#input_cache_hit": {
+      "price": 1.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.6-cyber#standard#output": {
+      "price": 75.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output"

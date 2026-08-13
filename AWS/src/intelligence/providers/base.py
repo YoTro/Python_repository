@@ -131,12 +131,23 @@ class BaseLLMProvider(ABC):
                 return limit
         return 0
 
+    def _get_output_reserve(self) -> int:
+        """Tokens to hold back for the response when checking input against the
+        context window. Uses the provider's actual configured output budget
+        (``_DEFAULT_MAX_TOKENS`` — set per-instance from MAX_LLM_OUTPUT_TOKENS,
+        capped at the model's real ceiling) when available, since that is what
+        every call actually requests as max_tokens; falls back to the class
+        default for providers (e.g. local llama.cpp) that don't set it.
+        """
+        return getattr(self, "_DEFAULT_MAX_TOKENS", None) or self._OUTPUT_RESERVE
+
     async def _check_context_limit(self, prompt: str, system_message: str | None = None) -> None:
         """Accurate pre-flight check for single calls. Raises FatalError if over limit."""
         limit = self._get_context_window()
         if not limit:
             return
-        max_input = limit - self._OUTPUT_RESERVE
+        output_reserve = self._get_output_reserve()
+        max_input = limit - output_reserve
         tokens = await self.count_tokens(prompt, system_message)
         if tokens > max_input:
             from src.core.errors.exceptions import FatalError
@@ -144,7 +155,7 @@ class BaseLLMProvider(ABC):
             raise FatalError(
                 f"Context limit exceeded: {tokens:,} input tokens > {max_input:,} allowed "
                 f"(provider={self.provider_name}, model={self.model_name}, "
-                f"window={limit:,}, output_reserve={self._OUTPUT_RESERVE})"
+                f"window={limit:,}, output_reserve={output_reserve})"
             )
 
     def _check_batch_context_limit_sync(self, requests: list[BatchRequest]) -> None:
@@ -157,7 +168,7 @@ class BaseLLMProvider(ABC):
         limit = self._get_context_window()
         if not limit:
             return
-        max_input = limit - self._OUTPUT_RESERVE
+        max_input = limit - self._get_output_reserve()
         for req in requests:
             estimated = (len(req.prompt) + len(req.system_message or "")) // 4
             if int(estimated * 1.2) > max_input:

@@ -37,11 +37,8 @@ TEMPERATURE_PRESETS = {
 }
 
 _CONTEXT_WINDOWS = {
-    "deepseek-v4-flash": 131_072,
-    "deepseek-v4-pro": 131_072,
-    # Legacy aliases — deprecated 2026-07-24, resolved to deepseek-v4-flash
-    "deepseek-chat": 131_072,
-    "deepseek-reasoner": 131_072,
+    "deepseek-v4-flash": 1_000_000,
+    "deepseek-v4-pro": 1_000_000,
 }
 
 
@@ -50,11 +47,9 @@ class DeepSeekProvider(BaseLLMProvider):
     DeepSeek provider using the OpenAI-compatible REST API.
     Requires `openai` package (pip install openai).
 
-    Current models:
-      - deepseek-v4-flash  (general purpose, formerly deepseek-chat / deepseek-v3)
-      - deepseek-v4-pro    (reasoning, formerly deepseek-reasoner / deepseek-r1)
-
-    Deprecated aliases (removed 2026-07-24): deepseek-chat, deepseek-reasoner.
+    Current models (per live GET /models — see list_models()):
+      - deepseek-v4-flash  (general purpose)
+      - deepseek-v4-pro    (reasoning)
 
     Server-side KV cache is automatic; prompt_cache_hit_tokens in the
     usage response drives the cheaper cache-hit billing rate.
@@ -246,7 +241,8 @@ class DeepSeekProvider(BaseLLMProvider):
         input_tokens = getattr(usage, "prompt_tokens", 0) or 0
         output_tokens = getattr(usage, "completion_tokens", 0) or 0
 
-        # Reasoning tokens (deepseek-reasoner only) are included in completion_tokens.
+        # Reasoning tokens (deepseek-v4-pro / thinking-mode requests only) are
+        # included in completion_tokens.
         # Extract them for transparency but do NOT double-count in cost — the API
         # already rolls them into completion_tokens for billing.
         completion_detail = getattr(usage, "completion_tokens_details", None)

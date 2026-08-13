@@ -171,12 +171,20 @@ class PriceManager:
             return round(input_cost + output_cost, 10)
 
         elif self.provider == "openai":
-            # OpenAI Pattern: {model}#{tier}#{dimension}, tier = standard | batch.
-            # Automatic prompt caching bills cached_tokens at input_cache_hit price;
-            # reasoning ('pro') models publish no cached rate, so cached tokens fall
-            # back to the full input price. Batch tier is a uniform 50% discount.
+            # OpenAI Pattern: {model}#{tier}#{dimension}, tier = standard | batch
+            # (| long_context_standard | long_context_batch for models that publish
+            # a long-context rate). Automatic prompt caching bills cached_tokens at
+            # input_cache_hit price; reasoning ('pro') models publish no cached rate,
+            # so cached tokens fall back to the full input price. Batch tier is a
+            # uniform 50% discount. Long-context tier applies above 272,000 total
+            # prompt tokens; only switched when the model actually publishes it.
             cached_tokens = kwargs.get("cached_tokens", 0) or 0
             oa_tier = "batch" if is_batch else "standard"
+
+            if kwargs.get("total_tokens", input_tokens) > 272_000:
+                long_tier = f"long_context_{oa_tier}"
+                if f"{canonical_model}#{long_tier}#input" in self.lookup:
+                    oa_tier = long_tier
 
             in_key = f"{canonical_model}#{oa_tier}#input"
             cache_hit_key = f"{canonical_model}#{oa_tier}#input_cache_hit"

@@ -33,12 +33,19 @@ class ClaudeProvider(BaseLLMProvider):
     Claude (Anthropic) provider with Cost Calculation.
     """
 
-    # Context windows per model family (prefix-matched against self.model_name).
-    # All Claude 3+ / 4+ / 5 models share a 200k context window.
+    # Context windows per model family (prefix-matched against self.model_name;
+    # _get_context_window() returns the FIRST matching entry in this dict's
+    # iteration order, so more specific prefixes must be listed before the
+    # broader ones they'd otherwise be swallowed by — e.g. claude-opus-4-5
+    # (200k) must precede the claude-opus-4 (1M) catch-all for opus-4-8/4-7/4-6.
     _MODEL_CONTEXT_WINDOWS = {
+        "claude-opus-5": 1_000_000,
         "claude-sonnet-5": 1_000_000,
         "claude-fable-5": 1_000_000,
         "claude-mythos-5": 1_000_000,
+        "claude-opus-4-5": 200_000,
+        "claude-opus-4-1": 200_000,
+        "claude-opus-4-0": 200_000,
         "claude-opus-4": 1_000_000,
         "claude-sonnet-4-6": 1_000_000,
         "claude-sonnet-4": 200_000,
@@ -55,7 +62,14 @@ class ClaudeProvider(BaseLLMProvider):
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY missing.")
 
-        self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
+        # 1-hour timeout, matching the SDK's own ceiling for non-streaming
+        # requests (anthropic._base_client._calculate_nonstreaming_timeout:
+        # maximum_time=3600s). Without this, any call requesting close to a
+        # model's full max_output_tokens (e.g. 128k for claude-opus-5 and
+        # siblings) trips the SDK's built-in guard — "Streaming is required
+        # for operations that may take longer than 10 minutes" — which only
+        # activates while the client is still on the 10-minute DEFAULT_TIMEOUT.
+        self.client = anthropic.AsyncAnthropic(api_key=self.api_key, timeout=3600.0)
 
         selected_model = model_name or os.getenv("ANTHROPIC_MODEL") or _MODEL_PRIORITIES[0]
         super().__init__("claude", selected_model)
