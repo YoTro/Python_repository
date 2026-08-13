@@ -9,7 +9,6 @@ from mcp.types import TextContent
 from src.mcp.servers.market.tools import handle_market_tool, market_tools
 from src.mcp.servers.market.xiyouzhaoci.client import XiyouZhaociAPI
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -188,8 +187,7 @@ class TestGetTrafficScores:
         assert result["success"] is True
         assert mock_request.call_count == 1
         assert (
-            mock_request.call_args[1]["headers"]["request-url"]
-            == "/detail/asin/look_up/US/unknown"
+            mock_request.call_args[1]["headers"]["request-url"] == "/detail/asin/look_up/US/unknown"
         )
 
     def test_error(self, mock_api_authed):
@@ -239,6 +237,4 @@ class TestXiyouToolDispatch:
             data = json.loads(result[0].text)
             assert data == mock_response
 
-            mock_api_instance.get_traffic_scores.assert_called_once_with(
-                country="US", asins=asins
-            )
+            mock_api_instance.get_traffic_scores.assert_called_once_with(country="US", asins=asins)

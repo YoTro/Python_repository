@@ -12,7 +12,6 @@ from src.workflows.definitions.category_monopoly_analysis import _run_monopoly_a
 from src.workflows.steps.base import ComputeTarget, WorkflowContext
 from src.workflows.steps.process import ProcessStep
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -59,7 +58,11 @@ class TestMonopolyAnalyzer:
 
     def test_review_barrier(self, analyzer):
         high = [
-            {"rank": i, "review_count": 10000 if i <= 10 else 100, "rating": 4.6 if i <= 10 else 4.0}
+            {
+                "rank": i,
+                "review_count": 10000 if i <= 10 else 100,
+                "rating": 4.6 if i <= 10 else 4.0,
+            }
             for i in range(1, 60)
         ]
         low = [

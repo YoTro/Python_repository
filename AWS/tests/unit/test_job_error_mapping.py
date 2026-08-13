@@ -1,8 +1,9 @@
 """Error → callback mapping tests for JobManager._run_job."""
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,8 +12,12 @@ from src.jobs.manager import _BATCH_SUSPEND_BACKSTOP_SEC, JobManager, JobRecord,
 
 class _FakeSlot:
     """Minimal async context manager that does nothing."""
-    async def __aenter__(self): return self
-    async def __aexit__(self, *args): pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
 
 
 @asynccontextmanager
@@ -44,9 +49,7 @@ def record():
 
 async def _run_job_with_error(mgr, rec, error):
     mgr._jobs[rec.job_id] = rec
-    with patch(
-        "src.gateway.rate_limit.RateLimiter.concurrent_slot", _fake_concurrent_slot
-    ):
+    with patch("src.gateway.rate_limit.RateLimiter.concurrent_slot", _fake_concurrent_slot):
         with patch.object(mgr, "_run_workflow_mode") as mock_run:
             mock_run.side_effect = error
             await mgr._run_job(rec.job_id)
@@ -62,11 +65,15 @@ class TestBatchPendingError:
         record.callback.on_error = AsyncMock()
 
         await _run_job_with_error(
-            manager, record,
+            manager,
+            record,
             BatchPendingError(
-                "batch submitted", batch_job_id="batch_123",
+                "batch submitted",
+                batch_job_id="batch_123",
                 handle=MagicMock(provider="gemini"),
-                requests=[], items_snapshot=[], output_field="analysis",
+                requests=[],
+                items_snapshot=[],
+                output_field="analysis",
             ),
         )
 
@@ -84,11 +91,15 @@ class TestBatchPendingError:
         record.callback.on_progress = AsyncMock()
 
         await _run_job_with_error(
-            manager, record,
+            manager,
+            record,
             BatchPendingError(
-                "batch submitted", batch_job_id="batch_abc",
+                "batch submitted",
+                batch_job_id="batch_abc",
                 handle=MagicMock(provider="gemini"),
-                requests=[], items_snapshot=[], output_field="analysis",
+                requests=[],
+                items_snapshot=[],
+                output_field="analysis",
             ),
         )
 
@@ -104,7 +115,8 @@ class TestRetryableError:
         record.callback.on_error = AsyncMock()
 
         await _run_job_with_error(
-            manager, record,
+            manager,
+            record,
             RetryableError("rate limited", http_status=429, provider="test"),
         )
 
@@ -120,7 +132,8 @@ class TestRuntimeErrorConcurrentLimit:
         record.callback.on_error = AsyncMock()
 
         await _run_job_with_error(
-            manager, record,
+            manager,
+            record,
             RuntimeError("concurrent limit reached for entry_type=cli_workflow"),
         )
 

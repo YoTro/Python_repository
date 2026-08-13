@@ -11,7 +11,6 @@ from src.intelligence.dto import LLMResponse
 from src.jobs.callbacks.feishu import FeishuCallback
 from src.workflows.engine import WorkflowResult
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
