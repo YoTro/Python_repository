@@ -264,11 +264,14 @@ class DeepSeekProvider(BaseLLMProvider):
         completion_detail = getattr(usage, "completion_tokens_details", None)
         reasoning_tokens = getattr(completion_detail, "reasoning_tokens", 0) or 0
 
-        # Cache hit tokens from server-side KV cache. DeepSeek reports this as a
-        # flat `prompt_cache_hit_tokens` field directly on usage — there is no
-        # nested prompt_tokens_details object in this API's schema (that's
-        # OpenAI's shape). Reading it the OpenAI way always returned 0, so every
-        # request was silently billed at the full, non-cached input rate.
+        # Cache hit tokens from server-side KV cache. DeepSeek reports these via
+        # the flat `prompt_cache_hit_tokens` field directly on usage — that is
+        # the canonical field and the one we bill on. Note: the API also returns
+        # a nested prompt_tokens_details.cached_tokens (confirmed live on
+        # 2026-08-13, deepseek-v4-pro: both reported 7680 for the same request),
+        # so an earlier comment claiming that nested object doesn't exist in
+        # this schema was wrong. Reading the flat field remains correct; the two
+        # values always agree.
         cached_tokens = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
 
         return self.create_response(
