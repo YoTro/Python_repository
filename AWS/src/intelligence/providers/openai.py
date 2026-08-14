@@ -291,6 +291,9 @@ class OpenAIProvider(BaseLLMProvider):
         # Cached input tokens from automatic prompt caching → cheaper cache-hit rate.
         prompt_detail = getattr(usage, "prompt_tokens_details", None)
         cached_tokens = getattr(prompt_detail, "cached_tokens", 0) or 0
+        # Unadjusted prompt tokens written to cache (gpt-5.6-sol/terra/luna only;
+        # billed at the cache_writes rate, $0.00 for models that don't publish it).
+        cache_write_tokens = getattr(prompt_detail, "cache_write_tokens", 0) or 0
 
         # Bill at the tier the request was actually served on, not an assumed
         # default — the API can serve "flex"/"priority" requests, and PriceManager
@@ -303,6 +306,7 @@ class OpenAIProvider(BaseLLMProvider):
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
             reasoning_tokens=reasoning_tokens,
             tier=tier,
             is_batch=is_batch,

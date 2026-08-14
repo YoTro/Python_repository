@@ -227,6 +227,7 @@ class BaseLLMProvider(ABC):
         cached_tokens = kwargs.get("cached_tokens", 0)
         cache_read_tokens = kwargs.get("cache_read_tokens", 0)
         cache_creation_tokens = kwargs.get("cache_creation_tokens", 0)
+        cache_write_tokens = kwargs.get("cache_write_tokens", 0)
         is_batch = kwargs.pop("is_batch", False)
 
         # 2. Calculate Cost using the shared price manager
@@ -250,6 +251,8 @@ class BaseLLMProvider(ABC):
             metadata["cache_read_tokens"] = cache_read_tokens
         if cache_creation_tokens:
             metadata["cache_creation_tokens"] = cache_creation_tokens
+        if cache_write_tokens:
+            metadata["cache_write_tokens"] = cache_write_tokens
 
         return LLMResponse(
             text=text,
