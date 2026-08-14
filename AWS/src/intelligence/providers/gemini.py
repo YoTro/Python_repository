@@ -1033,6 +1033,18 @@ class GeminiProvider(BaseLLMProvider):
             logger.error(f"Structured generation failed on {self.model_name}: {e}")
             self._raise_mapped_error(e)
 
+    @staticmethod
+    def _modality_token_breakdown(usage: Any) -> dict[str, int]:
+        """Sum ``usage.prompt_tokens_details`` (list of ModalityTokenCount) into
+        {"text": N, "image": N, ...} so multimodal input can be billed per-modality
+        instead of at the flat text rate."""
+        breakdown: dict[str, int] = {}
+        for entry in getattr(usage, "prompt_tokens_details", None) or []:
+            modality = getattr(entry, "modality", None)
+            name = (getattr(modality, "name", None) or str(modality) or "text").lower()
+            breakdown[name] = breakdown.get(name, 0) + (getattr(entry, "token_count", 0) or 0)
+        return breakdown
+
     async def generate_vision_structured(
         self,
         image_urls: list[str],
@@ -1100,6 +1112,32 @@ class GeminiProvider(BaseLLMProvider):
                     f"Vision model returned unparsable JSON (len={len(response.text or '')}): "
                     f"{(response.text or '')[:200]!r}"
                 )
+
+            # Route through the same billing path as generate_text/generate_structured
+            # so image/audio/video tokens are priced at their published rate instead of
+            # being silently unbilled. The caller only wants the parsed schema, so the
+            # cost is logged rather than returned.
+            usage = getattr(response, "usage_metadata", None)
+            input_tokens = (usage.prompt_token_count or 0) if usage else 0
+            output_tokens = (usage.candidates_token_count or 0) if usage else 0
+            thought_tokens = getattr(usage, "thoughts_token_count", 0) or 0
+            cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
+            modality_tokens = self._modality_token_breakdown(usage)
+            llm_response = self.create_response(
+                text=response.text or "",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                thought_tokens=thought_tokens,
+                cached_tokens=cached_tokens,
+                modality_tokens=modality_tokens,
+                tier=tier,
+            )
+            logger.info(
+                f"[vision] {self.model_name}: input_tokens={input_tokens} "
+                f"(by modality: {modality_tokens}), output_tokens={output_tokens}, "
+                f"cost={llm_response.cost:.6f} {llm_response.currency}"
+            )
+
             return schema(**data)
         except Exception as e:
             self._raise_mapped_error(e)

@@ -80,6 +80,12 @@ class PriceManager:
                 or kwargs.get("thoughts_tokens")
                 or 0
             )
+            # Per-modality input breakdown (e.g. {"text": 120, "image": 4300}) from
+            # usage_metadata.prompt_tokens_details — lets vision/audio/video calls bill
+            # each modality at its own published rate instead of the flat text rate.
+            modality_tokens: dict[str, int] = (
+                kwargs.get("modality_tokens") or kwargs.get("input_tokens_by_modality") or {}
+            )
 
             # 2. Prepare billing parameters
             gemini_tier = tier if "_" in tier else f"{tier}_paid"
@@ -96,29 +102,42 @@ class PriceManager:
             # Context tier is typically determined by total input (prompt) tokens
             context_tier = "gt_200k" if input_tokens > 200000 else "lte_200k"
 
-            # 3. Construct lookup keys
-            in_key = f"{canonical_model}#{gemini_tier}#input#text#{context_tier}"
-            cache_key = f"{canonical_model}#{gemini_tier}#cache_read#text#{context_tier}"
-            out_key = f"{canonical_model}#{gemini_tier}#output#text#{context_tier}"
+            def _price(direction: str, modality: str = "text") -> float:
+                """Look up a per-1M-token price, falling back to the flat (non-tiered) key,
+                then to the text rate for modalities the model doesn't publish separately
+                (most Gemini models charge image/video at the same rate as text)."""
+                key = f"{canonical_model}#{gemini_tier}#{direction}#{modality}#{context_tier}"
+                if key not in self.lookup:
+                    key = f"{canonical_model}#{gemini_tier}#{direction}#{modality}"
+                if key not in self.lookup and modality != "text":
+                    return _price(direction, "text")
+                return self.lookup.get(key, {}).get("price", 0.0)
 
-            # Fallback for models without tiered pricing or missing keys
-            if in_key not in self.lookup:
-                in_key = f"{canonical_model}#{gemini_tier}#input#text"
-            if out_key not in self.lookup:
-                out_key = f"{canonical_model}#{gemini_tier}#output#text"
-            if cache_key not in self.lookup:
-                cache_key = f"{canonical_model}#{gemini_tier}#cache_read#text"
+            out_price = _price("output")
+            cache_price = _price("cache_read")
 
-            # 4. Extract prices (per 1M tokens)
-            in_price = self.lookup.get(in_key, {}).get("price", 0.0)
-            out_price = self.lookup.get(out_key, {}).get("price", 0.0)
-            cache_price = self.lookup.get(cache_key, {}).get("price", 0.0)
+            if modality_tokens:
+                # Context caching in this codebase only caches text/system-instruction
+                # content, so cached tokens are attributed to the "text" bucket first.
+                input_cost = 0.0
+                remaining_cached = cached_tokens
+                for modality, count in modality_tokens.items():
+                    modality = str(modality).lower()
+                    cached_here = min(remaining_cached, count) if modality == "text" else 0
+                    remaining_cached -= cached_here
+                    billable = max(0, count - cached_here)
+                    input_cost += billable * _price("input", modality)
+                    input_cost += cached_here * cache_price
+                if remaining_cached > 0:
+                    input_cost += remaining_cached * cache_price
+            else:
+                # 3/4. Precise calculation:
+                # Input = (non-cached part * input price) + (cached part * cache read price)
+                in_price = _price("input")
+                input_cost = (max(0, input_tokens - cached_tokens) * in_price) + (
+                    cached_tokens * cache_price
+                )
 
-            # 5. Precise calculation:
-            # Input = (non-cached part * input price) + (cached part * cache read price)
-            input_cost = (max(0, input_tokens - cached_tokens) * in_price) + (
-                cached_tokens * cache_price
-            )
             # Output = (regular output + thoughts tokens) * output price
             output_cost = (output_tokens + thoughts_tokens) * out_price
 
