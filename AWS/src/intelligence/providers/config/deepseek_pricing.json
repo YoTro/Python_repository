@@ -1,7 +1,7 @@
 {
   "metadata": {
     "source": "https://api-docs.deepseek.com/quick_start/pricing",
-    "last_verified": "2026-07-02",
+    "last_verified": "2026-08-13",
     "schema_version": "2",
     "conventions": {
       "price_entry_shape": {
@@ -11,12 +11,12 @@
         "dimension": "input | input_cache_hit | output"
       },
       "lookup_key_pattern": "{canonical_model_id}#{tier}#{dimension}",
-      "tier_values": "standard | standard_peak | undiscounted | undiscounted_peak",
+      "tier_values": "standard | standard_peak | undiscounted | undiscounted_peak | standard_2026_08_16 | standard_2026_08_16_peak",
       "resolution_flow": "any_string → model_string_index → canonical_id → lookup key",
-      "cache_note": "Server-side KV cache. Cache hits billed at input_cache_hit price; misses at input price.",
-      "v4_pro_discount_note": "deepseek-v4-pro is at 75% off (standard tier) until 2026-05-31T15:59:00Z. After the promotion ends, the API price is officially set to 1/4 of the original launch price (numerically identical to the promotion price). Undiscounted tier reflects this post-promotion official price.",
-      "cache_hit_reduction_note": "Effective 2026-04-26T12:15Z, input_cache_hit price for all models is set to 1/10 of the pre-reduction launch cache-hit price.",
-      "peak_pricing_note": "Effective 2026-07-15, peak-hour surcharge applies: all billing dimensions cost 2x the off-peak rate. Peak hours (UTC): 01:00–04:00 and 06:00–10:00 (UTC+8: 09:00–12:00 and 14:00–18:00). Use *_peak tier variants for peak-hour cost estimation."
+      "cache_note": "Server-side KV cache. Cache hits billed at input_cache_hit price (\"cache miss\" in the official pricing table = the plain input price).",
+      "v4_pro_discount_note": "deepseek-v4-pro's 75%-off promotion ended 2026-05-31T15:59:00Z; the standard and undiscounted tiers are the same post-promotion official price and are kept numerically identical in this file. This distinction is superseded by price_update_2026_08_16_note below once that cutover takes effect.",
+      "price_update_2026_08_16_note": "A new peak/off-peak pricing structure takes effect 2026-08-16T16:00:00Z, verified directly against DeepSeek's official pricing table on 2026-08-13 (ahead of the cutover). Off-peak rates are exactly half the peak rates, same peak windows as the existing standard tier. Stored under standard_2026_08_16 / standard_2026_08_16_peak — PriceManager switches to these once 'now' reaches the cutover, for both deepseek-v4-flash and deepseek-v4-pro (the v4-pro promotion/undiscounted distinction becomes moot once this supersedes it). Until the cutover, standard / standard_peak / undiscounted / undiscounted_peak remain the currently-billed prices — do not overwrite them early.",
+      "peak_pricing_note": "Effective 2026-07-15, peak-hour surcharge applies: all billing dimensions cost 2x the off-peak rate. Peak hours (UTC): 01:00–04:00 and 06:00–10:00 (UTC+8: 09:00–12:00 and 14:00–18:00). Use *_peak tier variants for peak-hour cost estimation. Same windows apply to the 2026-08-16 pricing update."
     },
     "peak_pricing": {
       "effective_date": "2026-07-15",
@@ -168,6 +168,96 @@
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
       "peak_multiplier": 2.0
+    },
+    "deepseek-v4-flash#standard_2026_08_16#input": {
+      "price": 0.22,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "Cache miss rate, off-peak. Effective 2026-08-16T16:00:00Z. Verified against official pricing table 2026-08-13, ahead of the cutover."
+    },
+    "deepseek-v4-flash#standard_2026_08_16#input_cache_hit": {
+      "price": 0.007,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "Cache hit rate, off-peak. Effective 2026-08-16T16:00:00Z."
+    },
+    "deepseek-v4-flash#standard_2026_08_16#output": {
+      "price": 0.66,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "Off-peak. Effective 2026-08-16T16:00:00Z."
+    },
+    "deepseek-v4-flash#standard_2026_08_16_peak#input": {
+      "price": 0.44,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "peak_multiplier": 2.0,
+      "note": "Cache miss rate, peak. Effective 2026-08-16T16:00:00Z."
+    },
+    "deepseek-v4-flash#standard_2026_08_16_peak#input_cache_hit": {
+      "price": 0.014,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "peak_multiplier": 2.0,
+      "note": "Cache hit rate, peak. Effective 2026-08-16T16:00:00Z."
+    },
+    "deepseek-v4-flash#standard_2026_08_16_peak#output": {
+      "price": 1.32,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "peak_multiplier": 2.0,
+      "note": "Peak. Effective 2026-08-16T16:00:00Z."
+    },
+    "deepseek-v4-pro#standard_2026_08_16#input": {
+      "price": 0.66,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "Cache miss rate, off-peak. Effective 2026-08-16T16:00:00Z; supersedes the standard/undiscounted promotion-era distinction. Verified against official pricing table 2026-08-13, ahead of the cutover."
+    },
+    "deepseek-v4-pro#standard_2026_08_16#input_cache_hit": {
+      "price": 0.022,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "Cache hit rate, off-peak. Effective 2026-08-16T16:00:00Z."
+    },
+    "deepseek-v4-pro#standard_2026_08_16#output": {
+      "price": 1.98,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "Off-peak. Effective 2026-08-16T16:00:00Z."
+    },
+    "deepseek-v4-pro#standard_2026_08_16_peak#input": {
+      "price": 1.32,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "peak_multiplier": 2.0,
+      "note": "Cache miss rate, peak. Effective 2026-08-16T16:00:00Z."
+    },
+    "deepseek-v4-pro#standard_2026_08_16_peak#input_cache_hit": {
+      "price": 0.044,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "peak_multiplier": 2.0,
+      "note": "Cache hit rate, peak. Effective 2026-08-16T16:00:00Z."
+    },
+    "deepseek-v4-pro#standard_2026_08_16_peak#output": {
+      "price": 3.96,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "peak_multiplier": 2.0,
+      "note": "Peak. Effective 2026-08-16T16:00:00Z."
     }
   },
   "model_limits": {

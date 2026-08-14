@@ -83,6 +83,16 @@ class PriceManager:
 
             # 2. Prepare billing parameters
             gemini_tier = tier if "_" in tier else f"{tier}_paid"
+
+            # gemini-3.7-flash: pricing doubles on 2027-01-01 (no timezone given
+            # on the source page; assumed UTC — see gemini_3_7_flash_note in
+            # gemini_pricing.json). Paid tiers only — free tiers stay $0.
+            if canonical_model == "gemini-3.7-flash" and gemini_tier.endswith("_paid"):
+                import datetime as _dt
+
+                if _dt.datetime.now(_dt.UTC) >= _dt.datetime(2027, 1, 1, tzinfo=_dt.UTC):
+                    gemini_tier = f"{gemini_tier}_2027_01_01"
+
             # Context tier is typically determined by total input (prompt) tokens
             context_tier = "gt_200k" if input_tokens > 200000 else "lte_200k"
 
@@ -227,9 +237,16 @@ class PriceManager:
             cached_tokens = kwargs.get("cached_tokens", 0) or 0
             now_utc = _dt.datetime.now(_dt.UTC)
 
+            # New peak/off-peak pricing structure effective 2026-08-16T16:00:00Z
+            # (see metadata.conventions.price_update_2026_08_16_note in
+            # deepseek_pricing.json) — supersedes the v4-pro promotion/undiscounted
+            # distinction below for both models once the cutover is reached.
+            _PRICE_UPDATE_2026_08_16 = _dt.datetime(2026, 8, 16, 16, 0, 0, tzinfo=_dt.UTC)
             # deepseek-v4-pro: 75% discount until 2026-05-31T15:59:00Z; after that, undiscounted tier = 1/4 of launch price (same value).
             _V4PRO_DISCOUNT_END = _dt.datetime(2026, 5, 31, 15, 59, 0, tzinfo=_dt.UTC)
-            if canonical_model == "deepseek-v4-pro" and now_utc > _V4PRO_DISCOUNT_END:
+            if now_utc >= _PRICE_UPDATE_2026_08_16:
+                ds_base_tier = "standard_2026_08_16"
+            elif canonical_model == "deepseek-v4-pro" and now_utc > _V4PRO_DISCOUNT_END:
                 ds_base_tier = "undiscounted"
             else:
                 ds_base_tier = "standard"
