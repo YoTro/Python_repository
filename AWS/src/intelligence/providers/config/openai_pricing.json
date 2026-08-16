@@ -1,7 +1,7 @@
 {
   "metadata": {
     "source": "https://developers.openai.com/api/docs/pricing",
-    "last_verified": "2026-08-13",
+    "last_verified": "2026-08-16",
     "currency": "USD",
     "schema_version": "1",
     "conventions": {
@@ -15,13 +15,15 @@
       "tier_values": "standard | batch | long_context_standard | long_context_batch | fast_mode | long_context_fast_mode",
       "resolution_flow": "any_string -> model_string_index -> canonical_id -> lookup key",
       "cache_note": "Cached input (automatic prompt caching) billed at input_cache_hit price; non-cached input at input price. Reasoning/'pro' models do not expose a cached-input rate — cached tokens fall back to the full input price in PriceManager.",
-      "cache_writes_note": "gpt-5.6-sol/terra/luna are the only models that publish a distinct cache_writes rate (cost of newly writing a segment into the prompt cache, separate from cache_hit reads). Sourced directly for the standard and long_context_standard tiers; batch and long_context_batch cache_writes entries are derived as standard x 0.5 / long_context_standard x 0.5 (source did not publish a batch cache_writes rate — see batch_note). Models without a captured cache_writes entry (all non-gpt-5.6 models) simply have no cache-write billing dimension; PriceManager should treat any provided cache-write token count as $0.00 for those models rather than erroring.",
-      "batch_note": "Batch API (async) is a uniform 50% discount on input, cached input, cache_writes, and output. Batch entries are derived as standard x 0.5.",
-      "long_context_note": "long_context_standard / long_context_batch / long_context_fast_mode apply when total prompt tokens > 272,000 (the long_context threshold); PriceManager switches to these keys automatically when the model publishes them (see gpt_5_6_coverage_note). Below the threshold, standard / batch / fast_mode apply. standard/batch published for gpt-5.4-pro and every model at or above it in the GPT-5.x line (gpt-5.4-pro, gpt-5.4, gpt-5.5-pro, gpt-5.5, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna); earlier/smaller models (gpt-5.4-mini, gpt-5.4-nano, gpt-5.3-codex, chatgpt-latest, gpt-5.6-cyber) do not publish a long-context rate. fast_mode/long_context_fast_mode are gpt-5.6-sol/terra/luna only.",
-      "fast_mode_note": "fast_mode is a distinct, higher-throughput service tier published only for gpt-5.6-sol/terra/luna, priced at exactly 2x the corresponding standard/long_context_standard rate across every dimension (input, input_cache_hit, cache_writes, output) for all three models — sourced directly, not derived, but the 2x ratio is exact and can be used to sanity-check future updates. There is no fast_mode_batch variant; fast_mode and batch are mutually exclusive service tiers. Naming: this tier was called 'Priority processing' before being renamed 'Fast mode' on 2026-07-30; the API request parameter service_tier accepts either \"priority\" or \"fast\" for the same tier (same pricing, same lookup key 'fast_mode' in this schema) — PriceManager.calculate_cost accepts tier values \"fast_mode\", \"fast\", or \"priority\" interchangeably.",
-      "gpt_5_5_pro_batch_note": "Source page returned an anomalous batch rate for gpt-5.5-pro (higher than standard); corrected to the standard 50% discount, matching its sibling gpt-5.4-pro.",
-      "coverage_note": "Only the GPT-5.x generation (plus chatgpt-latest and gpt-5.3-codex) is listed on the developer pricing page. Earlier families (gpt-4.1, gpt-4o, o3, o4-mini) were not present and are intentionally omitted.",
-      "gpt_5_6_coverage_note": "gpt-5.6-sol/terra/luna source data also publishes a flex tier. flex is numerically identical to batch for every gpt-5.6 model, so it is intentionally omitted — PriceManager maps tier='flex' straight onto the batch lookup keys, losing no information. fast_mode and cache_writes (previously dropped) are now fully captured — see fast_mode_note and cache_writes_note. gpt-5.6-cyber's source only publishes a standard short_context tier (no batch, no long_context, no fast_mode). long_context_batch entries for gpt-5.4-pro/gpt-5.4/gpt-5.5-pro/gpt-5.5 are derived as long_context_standard x 0.5 (source did not publish batch or long_context_batch rates directly for these models, but every other batch entry in this file matches this ratio exactly)."
+      "cache_writes_note": "gpt-5.6-sol/terra/luna are the only models that publish a distinct cache_writes rate (cost of newly writing a segment into the prompt cache, separate from cache_hit reads). Sourced directly for the standard and long_context_standard tiers; batch and long_context_batch cache_writes entries are now also sourced directly (the 2026-08-16 refresh captured an expanded Batch tab showing all four dimensions for these three models, matching the standard x 0.5 / long_context_standard x 0.5 ratio exactly — see batch_note). Models without a captured cache_writes entry (all non-gpt-5.6 models) simply have no cache-write billing dimension; PriceManager should treat any provided cache-write token count as $0.00 for those models rather than erroring.",
+      "batch_note": "Batch API (async) is a uniform 50% discount on input, cached input, cache_writes, and output. Sourced directly (via the Batch and/or Flex pricing tables, which are numerically identical per gpt_5_6_coverage_note) for: gpt-5.6-sol/terra/luna (short + long context), gpt-5.5, gpt-5.5-pro, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.4-pro, gpt-5.2, gpt-5.1, gpt-5, gpt-5-mini, gpt-5-nano, o3, and o4-mini. The Flex table's own displayed figures are occasionally rounded to 2-3 decimals (e.g. gpt-5.4 cached input shown as $0.13, o4-mini cached input shown as $0.138); this file stores the exact standard x 0.5 value instead of the table's rounded display wherever the two diverge only in rounding. For every other model (gpt-5.3-codex, chatgpt-latest, gpt-4.1/4o/3.5-turbo family, remaining o-series, etc.) no batch/flex table entry has been captured; batch entries for those are derived as standard x 0.5 per this uniform-discount rule rather than sourced per model.",
+      "long_context_note": "long_context_standard / long_context_batch / long_context_fast_mode apply when total prompt tokens > 272,000 (the long_context threshold); PriceManager switches to these keys automatically when the model publishes them (see gpt_5_6_coverage_note). Below the threshold, standard / batch / fast_mode apply. standard/batch published for gpt-5.4-pro and every model at or above it in the GPT-5.x line (gpt-5.4-pro, gpt-5.4, gpt-5.5-pro, gpt-5.5, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna); earlier/smaller models (gpt-5.4-mini, gpt-5.4-nano, gpt-5.3-codex, chatgpt-latest, gpt-5.6-cyber, gpt-5.5-cyber, and every legacy model added in the 2026-08-16 sync) do not publish a long-context rate. long_context_fast_mode is gpt-5.6-sol/terra/luna only; plain fast_mode is published for a much wider set of models — see fast_mode_note.",
+      "fast_mode_note": "fast_mode is a distinct, higher-throughput service tier. Its price is NOT a fixed multiple of standard across models — every model's fast_mode row is sourced directly from a dedicated 'Fast pricing data' table, and the standard-to-fast ratio varies per model (e.g. exactly 2x for gpt-5.6-sol/terra/luna, gpt-5.4, gpt-5.4-mini, gpt-5.2, gpt-5.1, gpt-5, and gpt-4.1-nano; 2.5x for gpt-5.5; 1.8x for gpt-5-mini; 1.75x for gpt-4.1, gpt-4.1-mini, gpt-4o-2024-05-13, o3; 1.7x for gpt-4o; ~1.667x for gpt-4o-mini; ~1.818x for o4-mini) — do not assume 2x for a model without direct source data. Published (as of the 2026-08-16 sync) for: gpt-5.6-sol/terra/luna (input, input_cache_hit, cache_writes, output, both short and long context — the only models with a fast_mode cache_writes rate or a long_context_fast_mode tier); gpt-5.3-codex (input, input_cache_hit, output only); and gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.2, gpt-5.1, gpt-5, gpt-5-mini, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o3, o4-mini (input, input_cache_hit, output — short-context only, no cache_writes). gpt-4o-2024-05-13#fast_mode has no input_cache_hit entry, matching its standard tier's lack of a cache dimension. Models absent from the fast-pricing table (gpt-5.4-pro, gpt-5.5-pro, chatgpt-latest, o1, o1-pro, o3-mini, o3-pro, and every model older than gpt-4o-2024-05-13) have no known fast_mode rate; PriceManager falls back to standard/batch with a warning for those (see price_manager.py). There is no fast_mode_batch variant; fast_mode and batch are mutually exclusive service tiers. Naming: this tier was called 'Priority processing' before being renamed 'Fast mode' on 2026-07-30; the API request parameter service_tier accepts either \"priority\" or \"fast\" for the same tier (same pricing, same lookup key 'fast_mode' in this schema) — PriceManager.calculate_cost accepts tier values \"fast_mode\", \"fast\", or \"priority\" interchangeably.",
+      "gpt_5_5_pro_batch_note": "Source page originally returned an anomalous batch rate for gpt-5.5-pro (higher than standard); corrected to the standard 50% discount, matching its sibling gpt-5.4-pro. The Flex pricing table (2026-08-16 sync) independently confirms this correction — its short-context figures ($15.00 input / $90.00 output) match the corrected 50%-discount values exactly.",
+      "coverage_note": "As of the 2026-08-16 sync, the developer pricing page's 'Flagship models' table was captured in its expanded ('View more') state, which reveals the full legacy catalog previously omitted from this file: gpt-5.2, gpt-5.2-pro, gpt-5.1, gpt-5, gpt-5-mini, gpt-5-nano, gpt-5-pro, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o4-mini, o3, o3-mini, o3-pro, o1, o1-pro, gpt-4o-2024-05-13, gpt-4-turbo-2024-04-09, gpt-4-0613, gpt-3.5-turbo (+0125/1106/instruct variants), davinci-002, babbage-002. These are captured at standard tier only (input/input_cache_hit/output) — the source's Batch/Flex/Fast-mode tabs were not expanded for this subset, so no batch or long-context rate is asserted for them (see batch_note). Models with no cache column on the source table (dash) simply have no input_cache_hit entry, matching the 'pro'/reasoning-model convention already used for gpt-5.4-pro/gpt-5.5-pro.",
+      "gpt_5_alias_fix_note": "Prior to the 2026-08-16 sync, the bare string 'gpt-5' was mapped as an alias to gpt-5.5's pricing. The source page lists 'gpt-5' as its own distinct (older, cheaper) model — $1.25/$0.125/$10.00 vs gpt-5.5's $5.00/$0.50/$30.00 — so treating it as a gpt-5.5 alias silently overbilled any call using the literal model id 'gpt-5' by 4x. Fixed: 'gpt-5' is now its own canonical entry with its real published pricing.",
+      "gpt_5_6_coverage_note": "gpt-5.6-sol/terra/luna source data also publishes a flex tier. flex is numerically identical to batch for every gpt-5.6 model (reconfirmed by the 2026-08-16 sync's expanded Flex tab, which matches the Batch tab exactly), so it is intentionally omitted — PriceManager maps tier='flex' straight onto the batch lookup keys, losing no information. gpt-5.6-cyber's source only publishes a standard short_context tier (no batch, no long_context, no fast_mode). gpt-5.5-cyber (added 2026-08-16) likewise only publishes a standard short_context tier, with no cache_writes dimension. gpt-5.4-cyber is listed on the source page but every dimension is '-' (no active pricing published — likely retired/unavailable), so it is intentionally omitted here rather than encoded as all-zero prices. long_context_batch entries for gpt-5.4-pro/gpt-5.4/gpt-5.5-pro/gpt-5.5 are derived as long_context_standard x 0.5 (source did not publish batch or long_context_batch rates directly for these models, but every other batch entry in this file matches this ratio exactly).",
+      "daybreak_alias_note": "daybreak-blue-latest and daybreak-red-latest are Daybreak-program aliases that currently point to gpt-5.6-sol and gpt-5.6-cyber respectively. As new frontier models are released through the program these aliases will be repointed with pricing adjusted to match the new underlying model — re-verify at the next sync rather than assuming the mapping is permanent."
     }
   },
   "model_string_index": {
@@ -62,11 +64,6 @@
       "canonical_id": "chatgpt-latest",
       "is_alias": true
     },
-    "gpt-5": {
-      "canonical_id": "gpt-5.5",
-      "is_alias": true,
-      "note": "Shorthand mapped to the current flagship gpt-5.5"
-    },
     "gpt-5.6-sol": {
       "canonical_id": "gpt-5.6-sol",
       "is_alias": false
@@ -81,6 +78,129 @@
     },
     "gpt-5.6-cyber": {
       "canonical_id": "gpt-5.6-cyber",
+      "is_alias": false
+    },
+    "gpt-5.5-cyber": {
+      "canonical_id": "gpt-5.5-cyber",
+      "is_alias": false
+    },
+    "daybreak-blue-latest": {
+      "canonical_id": "gpt-5.6-sol",
+      "is_alias": true,
+      "note": "Daybreak program alias — see daybreak_alias_note"
+    },
+    "daybreak-red-latest": {
+      "canonical_id": "gpt-5.6-cyber",
+      "is_alias": true,
+      "note": "Daybreak program alias — see daybreak_alias_note"
+    },
+    "gpt-5.2": {
+      "canonical_id": "gpt-5.2",
+      "is_alias": false
+    },
+    "gpt-5.2-pro": {
+      "canonical_id": "gpt-5.2-pro",
+      "is_alias": false
+    },
+    "gpt-5.1": {
+      "canonical_id": "gpt-5.1",
+      "is_alias": false
+    },
+    "gpt-5": {
+      "canonical_id": "gpt-5",
+      "is_alias": false,
+      "note": "Distinct legacy model, not an alias for gpt-5.5 — see gpt_5_alias_fix_note"
+    },
+    "gpt-5-mini": {
+      "canonical_id": "gpt-5-mini",
+      "is_alias": false
+    },
+    "gpt-5-nano": {
+      "canonical_id": "gpt-5-nano",
+      "is_alias": false
+    },
+    "gpt-5-pro": {
+      "canonical_id": "gpt-5-pro",
+      "is_alias": false
+    },
+    "gpt-4.1": {
+      "canonical_id": "gpt-4.1",
+      "is_alias": false
+    },
+    "gpt-4.1-mini": {
+      "canonical_id": "gpt-4.1-mini",
+      "is_alias": false
+    },
+    "gpt-4.1-nano": {
+      "canonical_id": "gpt-4.1-nano",
+      "is_alias": false
+    },
+    "gpt-4o": {
+      "canonical_id": "gpt-4o",
+      "is_alias": false
+    },
+    "gpt-4o-mini": {
+      "canonical_id": "gpt-4o-mini",
+      "is_alias": false
+    },
+    "o4-mini": {
+      "canonical_id": "o4-mini",
+      "is_alias": false
+    },
+    "o3": {
+      "canonical_id": "o3",
+      "is_alias": false
+    },
+    "o3-mini": {
+      "canonical_id": "o3-mini",
+      "is_alias": false
+    },
+    "o3-pro": {
+      "canonical_id": "o3-pro",
+      "is_alias": false
+    },
+    "o1": {
+      "canonical_id": "o1",
+      "is_alias": false
+    },
+    "o1-pro": {
+      "canonical_id": "o1-pro",
+      "is_alias": false
+    },
+    "gpt-4o-2024-05-13": {
+      "canonical_id": "gpt-4o-2024-05-13",
+      "is_alias": false
+    },
+    "gpt-4-turbo-2024-04-09": {
+      "canonical_id": "gpt-4-turbo-2024-04-09",
+      "is_alias": false
+    },
+    "gpt-4-0613": {
+      "canonical_id": "gpt-4-0613",
+      "is_alias": false
+    },
+    "gpt-3.5-turbo": {
+      "canonical_id": "gpt-3.5-turbo",
+      "is_alias": false
+    },
+    "gpt-3.5-turbo-0125": {
+      "canonical_id": "gpt-3.5-turbo-0125",
+      "is_alias": false
+    },
+    "gpt-3.5-turbo-1106": {
+      "canonical_id": "gpt-3.5-turbo-1106",
+      "is_alias": false
+    },
+    "gpt-3.5-turbo-instruct": {
+      "canonical_id": "gpt-3.5-turbo-instruct",
+      "is_alias": false
+    },
+    "davinci-002": {
+      "canonical_id": "davinci-002",
+      "is_alias": false
+    },
+    "babbage-002": {
+      "canonical_id": "babbage-002",
       "is_alias": false
     }
   },
@@ -168,6 +288,24 @@
       "dimension": "output",
       "discount_vs_standard": 0.5,
       "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+    },
+    "gpt-5.5#fast_mode#input": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.5#fast_mode#input_cache_hit": {
+      "price": 1.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.5#fast_mode#output": {
+      "price": 75.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
     },
     "gpt-5.5-pro#standard#input": {
       "price": 30.0,
@@ -311,6 +449,24 @@
       "discount_vs_standard": 0.5,
       "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
     },
+    "gpt-5.4#fast_mode#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.4#fast_mode#input_cache_hit": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.4#fast_mode#output": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
     "gpt-5.4-mini#standard#input": {
       "price": 0.75,
       "unit": "USD",
@@ -349,6 +505,24 @@
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
       "discount_vs_standard": 0.5
+    },
+    "gpt-5.4-mini#fast_mode#input": {
+      "price": 1.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.4-mini#fast_mode#input_cache_hit": {
+      "price": 0.15,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.4-mini#fast_mode#output": {
+      "price": 9.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
     },
     "gpt-5.4-nano#standard#input": {
       "price": 0.2,
@@ -484,6 +658,24 @@
       "dimension": "output",
       "discount_vs_standard": 0.5
     },
+    "gpt-5.3-codex#fast_mode#input": {
+      "price": 3.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.3-codex#fast_mode#input_cache_hit": {
+      "price": 0.35,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.3-codex#fast_mode#output": {
+      "price": 28.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
     "chatgpt-latest#standard#input": {
       "price": 5.0,
       "unit": "USD",
@@ -597,8 +789,7 @@
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes",
-      "discount_vs_standard": 0.5,
-      "note": "Derived as standard x 0.5, per batch_note convention; source did not publish a batch cache_writes rate"
+      "discount_vs_standard": 0.5
     },
     "gpt-5.6-sol#long_context_standard#cache_writes": {
       "price": 12.5,
@@ -613,7 +804,7 @@
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes",
       "discount_vs_standard": 0.5,
-      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+      "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#fast_mode#input": {
       "price": 10.0,
@@ -762,8 +953,7 @@
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes",
-      "discount_vs_standard": 0.5,
-      "note": "Derived as standard x 0.5, per batch_note convention; source did not publish a batch cache_writes rate"
+      "discount_vs_standard": 0.5
     },
     "gpt-5.6-terra#long_context_standard#cache_writes": {
       "price": 5.0,
@@ -778,7 +968,7 @@
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes",
       "discount_vs_standard": 0.5,
-      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+      "note": "input tokens > 272,000"
     },
     "gpt-5.6-terra#fast_mode#input": {
       "price": 4.0,
@@ -927,8 +1117,7 @@
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes",
-      "discount_vs_standard": 0.5,
-      "note": "Derived as standard x 0.5, per batch_note convention; source did not publish a batch cache_writes rate"
+      "discount_vs_standard": 0.5
     },
     "gpt-5.6-luna#long_context_standard#cache_writes": {
       "price": 0.5,
@@ -943,7 +1132,7 @@
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes",
       "discount_vs_standard": 0.5,
-      "note": "input tokens > 272,000; derived as long_context_standard x 0.5, per batch_note convention"
+      "note": "input tokens > 272,000"
     },
     "gpt-5.6-luna#fast_mode#input": {
       "price": 0.4,
@@ -1011,6 +1200,792 @@
     },
     "gpt-5.6-cyber#standard#output": {
       "price": 75.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.5-cyber#standard#input": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.5-cyber#standard#input_cache_hit": {
+      "price": 1.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.5-cyber#standard#output": {
+      "price": 75.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.2#standard#input": {
+      "price": 1.75,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.2#standard#input_cache_hit": {
+      "price": 0.175,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.2#standard#output": {
+      "price": 14.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.2#fast_mode#input": {
+      "price": 3.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.2#fast_mode#input_cache_hit": {
+      "price": 0.35,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.2#fast_mode#output": {
+      "price": 28.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.2#batch#input": {
+      "price": 0.875,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5.2#batch#input_cache_hit": {
+      "price": 0.0875,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5.2#batch#output": {
+      "price": 7.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5.2-pro#standard#input": {
+      "price": 21.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.2-pro#standard#output": {
+      "price": 168.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.1#standard#input": {
+      "price": 1.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.1#standard#input_cache_hit": {
+      "price": 0.125,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.1#standard#output": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.1#fast_mode#input": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5.1#fast_mode#input_cache_hit": {
+      "price": 0.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5.1#fast_mode#output": {
+      "price": 20.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5.1#batch#input": {
+      "price": 0.625,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5.1#batch#input_cache_hit": {
+      "price": 0.0625,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5.1#batch#output": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5#standard#input": {
+      "price": 1.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5#standard#input_cache_hit": {
+      "price": 0.125,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5#standard#output": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5#fast_mode#input": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5#fast_mode#input_cache_hit": {
+      "price": 0.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5#fast_mode#output": {
+      "price": 20.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5#batch#input": {
+      "price": 0.625,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5#batch#input_cache_hit": {
+      "price": 0.0625,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5#batch#output": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5-mini#standard#input": {
+      "price": 0.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5-mini#standard#input_cache_hit": {
+      "price": 0.025,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5-mini#standard#output": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5-mini#fast_mode#input": {
+      "price": 0.45,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5-mini#fast_mode#input_cache_hit": {
+      "price": 0.045,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5-mini#fast_mode#output": {
+      "price": 3.6,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5-mini#batch#input": {
+      "price": 0.125,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5-mini#batch#input_cache_hit": {
+      "price": 0.0125,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5-mini#batch#output": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5-nano#standard#input": {
+      "price": 0.05,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5-nano#standard#input_cache_hit": {
+      "price": 0.005,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-5-nano#standard#output": {
+      "price": 0.4,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-5-nano#batch#input": {
+      "price": 0.025,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5-nano#batch#input_cache_hit": {
+      "price": 0.0025,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5-nano#batch#output": {
+      "price": 0.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "gpt-5-pro#standard#input": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-5-pro#standard#output": {
+      "price": 120.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4.1#standard#input": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4.1#standard#input_cache_hit": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-4.1#standard#output": {
+      "price": 8.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4.1#fast_mode#input": {
+      "price": 3.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4.1#fast_mode#input_cache_hit": {
+      "price": 0.875,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-4.1#fast_mode#output": {
+      "price": 14.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4.1-mini#standard#input": {
+      "price": 0.4,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4.1-mini#standard#input_cache_hit": {
+      "price": 0.1,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-4.1-mini#standard#output": {
+      "price": 1.6,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4.1-mini#fast_mode#input": {
+      "price": 0.7,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4.1-mini#fast_mode#input_cache_hit": {
+      "price": 0.175,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-4.1-mini#fast_mode#output": {
+      "price": 2.8,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4.1-nano#standard#input": {
+      "price": 0.1,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4.1-nano#standard#input_cache_hit": {
+      "price": 0.025,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-4.1-nano#standard#output": {
+      "price": 0.4,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4.1-nano#fast_mode#input": {
+      "price": 0.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4.1-nano#fast_mode#input_cache_hit": {
+      "price": 0.05,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-4.1-nano#fast_mode#output": {
+      "price": 0.8,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4o#standard#input": {
+      "price": 2.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4o#standard#input_cache_hit": {
+      "price": 1.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-4o#standard#output": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4o#fast_mode#input": {
+      "price": 4.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4o#fast_mode#input_cache_hit": {
+      "price": 2.125,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-4o#fast_mode#output": {
+      "price": 17.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4o-mini#standard#input": {
+      "price": 0.15,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4o-mini#standard#input_cache_hit": {
+      "price": 0.075,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-4o-mini#standard#output": {
+      "price": 0.6,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "o4-mini#standard#input": {
+      "price": 1.1,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "o4-mini#standard#input_cache_hit": {
+      "price": 0.275,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "o4-mini#standard#output": {
+      "price": 4.4,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "o4-mini#fast_mode#input": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "o4-mini#fast_mode#input_cache_hit": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "o4-mini#fast_mode#output": {
+      "price": 8.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "o4-mini#batch#input": {
+      "price": 0.55,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note); table displays cached input rounded to $0.138, exact half of standard $0.275 is $0.1375"
+    },
+    "o4-mini#batch#input_cache_hit": {
+      "price": 0.1375,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note); table displays this rounded to $0.138"
+    },
+    "o4-mini#batch#output": {
+      "price": 2.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "o3#standard#input": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "o3#standard#input_cache_hit": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "o3#standard#output": {
+      "price": 8.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "o3#fast_mode#input": {
+      "price": 3.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "o3#fast_mode#input_cache_hit": {
+      "price": 0.875,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "o3#fast_mode#output": {
+      "price": 14.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "o3#batch#input": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "o3#batch#input_cache_hit": {
+      "price": 0.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "o3#batch#output": {
+      "price": 4.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "Confirmed via Flex pricing table (flex == batch, see gpt_5_6_coverage_note)"
+    },
+    "o3-mini#standard#input": {
+      "price": 1.1,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "o3-mini#standard#input_cache_hit": {
+      "price": 0.55,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "o3-mini#standard#output": {
+      "price": 4.4,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "o3-pro#standard#input": {
+      "price": 20.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "o3-pro#standard#output": {
+      "price": 80.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "o1#standard#input": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "o1#standard#input_cache_hit": {
+      "price": 7.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "o1#standard#output": {
+      "price": 60.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "o1-pro#standard#input": {
+      "price": 150.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "o1-pro#standard#output": {
+      "price": 600.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4o-2024-05-13#standard#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4o-2024-05-13#standard#output": {
+      "price": 15.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4o-2024-05-13#fast_mode#input": {
+      "price": 8.75,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4o-2024-05-13#fast_mode#output": {
+      "price": 26.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4-turbo-2024-04-09#standard#input": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4-turbo-2024-04-09#standard#output": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-4-0613#standard#input": {
+      "price": 30.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-4-0613#standard#output": {
+      "price": 60.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-3.5-turbo#standard#input": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-3.5-turbo#standard#output": {
+      "price": 1.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-3.5-turbo-0125#standard#input": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-3.5-turbo-0125#standard#output": {
+      "price": 1.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-3.5-turbo-1106#standard#input": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-3.5-turbo-1106#standard#output": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-3.5-turbo-instruct#standard#input": {
+      "price": 1.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-3.5-turbo-instruct#standard#output": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "davinci-002#standard#input": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "davinci-002#standard#output": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "babbage-002#standard#input": {
+      "price": 0.4,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "babbage-002#standard#output": {
+      "price": 0.4,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output"
