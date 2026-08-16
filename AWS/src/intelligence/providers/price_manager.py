@@ -90,10 +90,12 @@ class PriceManager:
             # 2. Prepare billing parameters
             gemini_tier = tier if "_" in tier else f"{tier}_paid"
 
-            # gemini-3.7-flash: pricing doubles on 2027-01-01 (no timezone given
-            # on the source page; assumed UTC — see gemini_3_7_flash_note in
-            # gemini_pricing.json). Paid tiers only — free tiers stay $0.
-            if canonical_model == "gemini-3.7-flash" and gemini_tier.endswith("_paid"):
+            # gemini-3.6-flash and gemini-3.7-flash: pricing doubles on 2027-01-01
+            # (no timezone given on the source page; assumed UTC — see
+            # gemini_3_7_flash_note in gemini_pricing.json). Paid tiers only —
+            # free tiers stay $0.
+            _GEMINI_2027_01_01_MODELS = ("gemini-3.6-flash", "gemini-3.7-flash")
+            if canonical_model in _GEMINI_2027_01_01_MODELS and gemini_tier.endswith("_paid"):
                 import datetime as _dt
 
                 if _dt.datetime.now(_dt.UTC) >= _dt.datetime(2027, 1, 1, tzinfo=_dt.UTC):
