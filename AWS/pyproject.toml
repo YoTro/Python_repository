@@ -48,6 +48,7 @@ dependencies = [
 
     # Integrations
     "lark-oapi",
+    "slack-bolt",
     "ortools>=9.8.0",
 ]
 
@@ -105,6 +106,8 @@ module = [
     "curl_cffi.*",
     "DrissionPage.*",
     "lark_oapi.*",
+    "slack_bolt.*",
+    "slack_sdk.*",
     "google.genai.*",
     "google.api_core.*",
     "causalimpact.*",

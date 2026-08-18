@@ -11,13 +11,18 @@
     "integrations": {
         "feishu": {
             "default_bot": "amazon_bot"
+        },
+        "slack": {
+            "default_bot": "toryunbot"
         }
     },
     "rate_limits": {
         "entry_limits": {
             "cli_workflow":    { "concurrent_jobs": 5,  "cooldown_seconds": 0  },
             "feishu_workflow": { "concurrent_jobs": 10, "per_chat_concurrent": 2, "cooldown_seconds": 5  },
-            "feishu_explore":  { "concurrent_jobs": 3,  "per_chat_concurrent": 1, "cooldown_seconds": 15 }
+            "feishu_explore":  { "concurrent_jobs": 3,  "per_chat_concurrent": 1, "cooldown_seconds": 15 },
+            "slack_workflow":  { "concurrent_jobs": 10, "per_chat_concurrent": 2, "cooldown_seconds": 5  },
+            "slack_explore":   { "concurrent_jobs": 3,  "per_chat_concurrent": 1, "cooldown_seconds": 15 }
         },
         "tenant_quotas": {
             "free":       { "daily_requests": 50     },

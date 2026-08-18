@@ -122,3 +122,68 @@ class APIGateway:
 
         job_mgr = get_job_manager()
         return job_mgr.submit(request)
+
+    @staticmethod
+    def dispatch_slack_command(
+        workflow_name: str,
+        params: dict[str, Any],
+        chat_id: str,
+        bot_name: str = "toryunbot",
+        callback_type: str = "slack_bitable",
+    ) -> str:
+        """
+        Handles async Slack Bot commands.
+        Immediately returns job_id so bot can reply 'Accepted'.
+        Pass callback_type="slack_card" for LLM text results that should be
+        sent as a Block Kit card instead of a CSV attachment.
+        """
+        identity = AuthMiddleware.authenticate()
+
+        if not RateLimiter().check_limit(identity, request_type="slack_workflow", chat_id=chat_id):
+            raise AWSBaseError(f"Rate limit exceeded for Slack workflow (chat: {chat_id}).")
+
+        callback = CallbackConfig(
+            type=callback_type, target=chat_id, options={"bot_name": bot_name}
+        )
+
+        request = UnifiedRequest(
+            tenant_id=identity["tenant_id"],
+            user_id=identity["user_id"],
+            plan_tier=identity["plan_tier"],
+            workflow_name=workflow_name,
+            params=params,
+            callback=callback,
+            entry_type="slack_workflow",
+            chat_id=chat_id,
+        )
+
+        job_mgr = get_job_manager()
+        return job_mgr.submit(request)
+
+    @staticmethod
+    def dispatch_slack_explore(intent: str, chat_id: str, bot_name: str = "toryunbot") -> str:
+        """
+        Handles async Slack Bot exploration (Agent) commands.
+        Immediately returns job_id so bot can reply 'Accepted'.
+        """
+        identity = AuthMiddleware.authenticate()
+
+        if not RateLimiter().check_limit(identity, request_type="slack_explore", chat_id=chat_id):
+            raise AWSBaseError(f"Rate limit exceeded for Slack explore (chat: {chat_id}).")
+
+        callback = CallbackConfig(
+            type="slack_card", target=chat_id, options={"bot_name": bot_name, "total_steps": 15}
+        )
+
+        request = UnifiedRequest(
+            tenant_id=identity["tenant_id"],
+            user_id=identity["user_id"],
+            plan_tier=identity["plan_tier"],
+            intent=intent,
+            callback=callback,
+            entry_type="slack_explore",
+            chat_id=chat_id,
+        )
+
+        job_mgr = get_job_manager()
+        return job_mgr.submit(request)

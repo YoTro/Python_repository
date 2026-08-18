@@ -21,6 +21,7 @@ class ErrorCode(StrEnum):
       DeepSeek    — platform.deepseek.com/api-docs/error-codes
       Gemini Exch — docs.gemini.com/rest-api/#errors
       Feishu      — upload error map (src/entry/feishu/const.py)
+      Slack       — Web API error map (src/entry/slack/const.py)
       Lingxing    — ERP token expiry codes (src/mcp/servers/erp/lingxing/client.py)
       Sellersprite — auth codes (src/mcp/servers/market/sellersprite/client.py)
     """
@@ -127,6 +128,18 @@ _API_CODE_MAP: dict[str, dict[int | str, ErrorCode]] = {
         234010: ErrorCode.FILE_EMPTY,
         234041: ErrorCode.STORAGE_ERROR,
         234042: ErrorCode.STORAGE_FULL,
+    },
+    "slack": {
+        # src/entry/slack/const.py: UPLOAD_ERROR_MAP
+        "invalid_auth": ErrorCode.AUTH_TOKEN_EXPIRED,
+        "account_inactive": ErrorCode.AUTH_FAILED,
+        "missing_scope": ErrorCode.UNAUTHORIZED_APP,
+        "not_in_channel": ErrorCode.UNAUTHORIZED_APP,
+        "channel_not_found": ErrorCode.NOT_FOUND,
+        "msg_too_long": ErrorCode.INVALID_PARAMS,
+        "invalid_blocks": ErrorCode.INVALID_PARAMS,
+        "ratelimited": ErrorCode.RATE_LIMITED,
+        "file_uploads_disabled": ErrorCode.UNAUTHORIZED_APP,
     },
     "sellersprite": {
         # src/mcp/servers/market/sellersprite/client.py

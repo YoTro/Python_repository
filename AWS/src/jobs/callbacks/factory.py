@@ -7,6 +7,7 @@ from src.jobs.callbacks.base import JobCallback
 from src.jobs.callbacks.csv_callback import CSVCallback
 from src.jobs.callbacks.feishu import FeishuCallback
 from src.jobs.callbacks.mcp_callback import MCPCallback
+from src.jobs.callbacks.slack import SlackCallback
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,9 @@ class CallbackFactory:
         if cb_type == "feishu_bitable" or cb_type == "feishu_card":
             output_mode = "card" if cb_type == "feishu_card" else "bitable"
             return FeishuCallback(chat_id=config.target, output_mode=output_mode, **config.options)
+        elif cb_type == "slack_bitable" or cb_type == "slack_card":
+            output_mode = "card" if cb_type == "slack_card" else "bitable"
+            return SlackCallback(chat_id=config.target, output_mode=output_mode, **config.options)
         elif cb_type == "csv":
             return CSVCallback(output_path=config.target)
         elif cb_type == "mcp":

@@ -111,3 +111,28 @@ class ConfigHelper:
             "user_access_token": os.getenv(f"{prefix}USER_ACCESS_TOKEN", ""),
             "webhook_url": os.getenv(f"{prefix}WEBHOOK_URL", ""),
         }
+
+    # ── Slack helpers ─────────────────────────────────────────────────────────
+
+    @classmethod
+    def get_slack_bot(cls, bot_name: str) -> dict[str, str] | None:
+        """
+        Load Slack bot credentials from environment variables.
+        Naming convention: SLACK_{BOT_NAME_UPPER}_{FIELD}
+        Returns None if BOT_TOKEN is not set.
+
+        bot_token   : xoxb-... Bot User OAuth Token (chat.postMessage, files.upload, etc.)
+        app_token   : xapp-... App-Level Token with connections:write, required for Socket Mode
+        """
+        prefix = f"SLACK_{bot_name.upper()}_"
+        bot_token = os.getenv(f"{prefix}BOT_TOKEN", "")
+        if not bot_token:
+            return None
+        return {
+            "app_id": os.getenv(f"{prefix}APP_ID", ""),
+            "client_id": os.getenv(f"{prefix}CLIENT_ID", ""),
+            "client_secret": os.getenv(f"{prefix}CLIENT_SECRET", ""),
+            "signing_secret": os.getenv(f"{prefix}SIGNING_SECRET", ""),
+            "bot_token": bot_token,
+            "app_token": os.getenv(f"{prefix}APP_TOKEN", ""),
+        }

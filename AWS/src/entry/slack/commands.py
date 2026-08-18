@@ -1,0 +1,535 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from abc import ABC, abstractmethod
+
+from src.core.telemetry.tracker import TimeEstimator
+from src.entry.slack.client import SlackClient
+
+logger = logging.getLogger(__name__)
+
+
+class BotCommand(ABC):
+    """Abstract Strategy for handling Slack Bot commands."""
+
+    def __init__(self, bot_name: str = "toryunbot", loop: asyncio.AbstractEventLoop | None = None):
+        self.bot_name = bot_name
+        self.loop = loop or asyncio.get_event_loop()
+
+    @abstractmethod
+    def match(self, text: str) -> bool:
+        pass
+
+    @abstractmethod
+    def execute(self, text: str, chat_id: str):
+        pass
+
+
+class RefreshCookieCommand(BotCommand):
+    def match(self, text: str) -> bool:
+        return "更新亚马逊" in text and "Cookies" in text
+
+    def execute(self, text: str, chat_id: str):
+        logger.info(f"Manual cookie refresh triggered: {chat_id}")
+        slack_client = SlackClient(bot_name=self.bot_name)
+        slack_client.send_text_message(
+            "channel", chat_id, "🔄 收到！正在启动有头浏览器刷新亚马逊 Cookies..."
+        )
+
+        async def _do_refresh():
+            try:
+                from src.core.utils.cookie_helper import AmazonCookieHelper
+
+                helper = AmazonCookieHelper(headless=False)
+                await asyncio.to_thread(helper.fetch_fresh_cookies, True)
+                slack_client.send_card_message("channel", chat_id, "✅ 亚马逊 Cookies 更新成功！")
+            except Exception as e:
+                logger.error(f"Cookie refresh failed: {e}")
+                slack_client.send_card_message("channel", chat_id, f"❌ Cookies 更新失败: {str(e)}")
+
+        asyncio.run_coroutine_threadsafe(_do_refresh(), self.loop)
+
+
+class ExtractBSRCommand(BotCommand):
+    def __init__(self, bot_name: str = "toryunbot", loop: asyncio.AbstractEventLoop | None = None):
+        super().__init__(bot_name, loop)
+        self.url_map = {
+            "Electronics": "https://www.amazon.com/Best-Sellers-Electronics/zgbs/electronics/",
+            "Camera": "https://www.amazon.com/Best-Sellers-Camera-Photo/zgbs/camera-photo/",
+            "Software": "https://www.amazon.com/best-sellers-software/zgbs/software/",
+        }
+
+    def match(self, text: str) -> bool:
+        return bool(re.search(r"获取\s*(.*?)\s*BSR", text, re.IGNORECASE))
+
+    def execute(self, text: str, chat_id: str):
+        match = re.search(r"获取\s*(.*?)\s*BSR", text, re.IGNORECASE)
+        category = match.group(1).strip()
+        target_url = self.url_map.get(category)
+
+        slack_client = SlackClient(bot_name=self.bot_name)
+        if target_url:
+            eta = TimeEstimator.estimate_workflow("amazon_bsr", params={"category": category})
+            slack_client.send_text_message(
+                "channel", chat_id, f"🚀 开始抓取 {category} BSR 数据...\n⏱️ 预计耗时: {eta}"
+            )
+
+            async def _dispatch_job():
+                from src.gateway import APIGateway
+
+                params = {"amazon_url": target_url, "category": category}
+                job_id = APIGateway.dispatch_slack_command(
+                    workflow_name="amazon_bsr",
+                    params=params,
+                    chat_id=chat_id,
+                    bot_name=self.bot_name,
+                )
+                logger.info(
+                    f"Slack command routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
+
+            asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+        else:
+            slack_client.send_text_message("channel", chat_id, f"❌ 未知类目: {category}")
+
+
+class AnalyzeCategoryMonopolyCommand(BotCommand):
+    def match(self, text: str) -> bool:
+        return "分析垄断度" in text or "分析类目垄断度" in text
+
+    def execute(self, text: str, chat_id: str):
+        match = re.search(r"(https?://www\.amazon\.com[^\s]+)", text)
+        url = match.group(1) if match else None
+
+        slack_client = SlackClient(bot_name=self.bot_name)
+
+        if not url:
+            slack_client.send_text_message(
+                "channel",
+                chat_id,
+                "❌ 请提供要分析的 Amazon Best Sellers 类目 URL。格式：分析垄断度 [URL]",
+            )
+            return
+
+        eta = TimeEstimator.estimate_workflow("category_monopoly_analysis", params={})
+        slack_client.send_text_message(
+            "channel",
+            chat_id,
+            f"📊 开始分析该类目垄断度...\n⏱️ 预计耗时: {eta}，由于需要抓取大量 ASIN 数据，请耐心等待。",
+        )
+
+        async def _dispatch_job():
+            try:
+                from src.gateway import APIGateway
+
+                job_id = APIGateway.dispatch_slack_command(
+                    workflow_name="category_monopoly_analysis",
+                    params={"url": url},
+                    chat_id=chat_id,
+                    bot_name=self.bot_name,
+                )
+                logger.info(
+                    f"Monopoly analysis routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
+            except Exception as e:
+                logger.error(f"Monopoly analysis dispatch failed: {e}")
+                slack_client.send_text_message("channel", chat_id, f"❌ 分析任务启动失败: {e}")
+
+        asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+
+
+class ResumeJobCommand(BotCommand):
+    """
+    Handles '恢复任务 <job_id>' messages.
+
+    Full resume flow:
+      1. Parse job_id from the message.
+      2. Load checkpoint — confirms the job exists and retrieves workflow_name + params.
+      3. Rebuild SlackCallback pointing back to the same channel.
+      4. Call manager.resume_from_checkpoint() — engine skips completed steps automatically.
+    """
+
+    _PATTERN = re.compile(r"恢复任务\s+([0-9a-f]{8})", re.IGNORECASE)
+
+    def match(self, text: str) -> bool:
+        return bool(self._PATTERN.search(text))
+
+    def execute(self, text: str, chat_id: str):
+        match = self._PATTERN.search(text)
+        job_id = match.group(1)
+
+        slack_client = SlackClient(bot_name=self.bot_name)
+
+        async def _do_resume():
+            try:
+                from src.jobs.callbacks.slack import SlackCallback
+                from src.jobs.checkpoint import CheckpointManager
+                from src.jobs.manager import get_job_manager
+
+                checkpoint = CheckpointManager().load(job_id)
+                if not checkpoint:
+                    slack_client.send_text_message(
+                        "channel", chat_id, f"❌ 未找到任务 `{job_id}` 的断点，无法恢复。"
+                    )
+                    return
+
+                callback = SlackCallback(chat_id=chat_id, bot_name=self.bot_name)
+
+                slack_client.send_text_message(
+                    "channel",
+                    chat_id,
+                    f"▶️ 正在从断点恢复任务 `{job_id}`（已完成步骤: {checkpoint.step_name}）…",
+                )
+
+                get_job_manager().resume_from_checkpoint(job_id=job_id, callback=callback)
+
+            except Exception as e:
+                logger.error(f"Resume job failed: {e}")
+                slack_client.send_text_message("channel", chat_id, f"❌ 恢复任务失败: {e}")
+
+        asyncio.run_coroutine_threadsafe(_do_resume(), self.loop)
+
+
+class ProductScreeningCommand(BotCommand):
+    """
+    Handles '产品筛选 <关键词>' messages.
+
+    Dispatches the product_screening workflow which runs a multi-stage funnel:
+      price/rating → competition → promo risk → profitability → compliance → ad ratio → LLM synthesis
+    """
+
+    _PATTERN = re.compile(r"产品筛选\s+(.+)", re.IGNORECASE)
+
+    def match(self, text: str) -> bool:
+        return bool(self._PATTERN.search(text))
+
+    def execute(self, text: str, chat_id: str):
+        match = self._PATTERN.search(text)
+        keyword = match.group(1).strip()
+
+        slack_client = SlackClient(bot_name=self.bot_name)
+        eta = TimeEstimator.estimate_workflow("product_screening", params={"keyword": keyword})
+        slack_client.send_text_message(
+            "channel",
+            chat_id,
+            f"🔍 开始筛选「{keyword}」类目产品...\n⏱️ 预计耗时: {eta}\n"
+            "将依次执行价格/评分 → 利润 → 合规 → 广告流量多维过滤，请耐心等待。",
+        )
+
+        async def _dispatch_job():
+            try:
+                from src.gateway import APIGateway
+
+                job_id = APIGateway.dispatch_slack_command(
+                    workflow_name="product_screening",
+                    params={"keyword": keyword},
+                    chat_id=chat_id,
+                    bot_name=self.bot_name,
+                )
+                logger.info(
+                    f"Product screening routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
+            except Exception as e:
+                logger.error(f"Product screening dispatch failed: {e}")
+                slack_client.send_text_message("channel", chat_id, f"❌ 产品筛选任务启动失败: {e}")
+
+        asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+
+
+class AdDiagnosisCommand(BotCommand):
+    """
+    Handles '广告诊断 <ASIN>' messages.
+
+    Dispatches the ad_diagnosis workflow which fetches keyword/placement/change-history
+    data, correlates changes with performance shifts, and produces an LLM report.
+    """
+
+    _PATTERN = re.compile(r"广告诊断\s+([A-Z0-9]{10})", re.IGNORECASE)
+
+    def match(self, text: str) -> bool:
+        return bool(self._PATTERN.search(text))
+
+    def execute(self, text: str, chat_id: str):
+        match = self._PATTERN.search(text)
+        asin = match.group(1).upper()
+
+        slack_client = SlackClient(bot_name=self.bot_name)
+        eta = TimeEstimator.estimate_workflow("ad_diagnosis", params={"asin": asin})
+        slack_client.send_text_message(
+            "channel",
+            chat_id,
+            f"🔍 开始诊断 {asin} 广告表现...\n⏱️ 预计耗时: {eta}\n"
+            "将分析关键词绩效、版位数据及变更历史，请耐心等待。",
+        )
+
+        async def _dispatch_job():
+            try:
+                from src.gateway import APIGateway
+
+                job_id = APIGateway.dispatch_slack_command(
+                    workflow_name="ad_diagnosis",
+                    params={"asin": asin},
+                    chat_id=chat_id,
+                    bot_name=self.bot_name,
+                    callback_type="slack_card",
+                )
+                logger.info(
+                    f"Ad diagnosis routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
+            except Exception as e:
+                logger.error(f"Ad diagnosis dispatch failed: {e}")
+                slack_client.send_text_message("channel", chat_id, f"❌ 广告诊断任务启动失败: {e}")
+
+        asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+
+
+class LpValidationCommand(BotCommand):
+    """
+    Handles '验证LP <ASIN> <YYYY-MM-DD> [<n_days>]' messages.
+
+    Dispatches the lp_validation workflow which compares LP optimizer predictions
+    stored in a snapshot against actual post-period performance to compute PAS.
+
+    Examples:
+        验证LP B0FXFGMD7Z 2026-05-29
+        验证LP B0FXFGMD7Z 2026-05-29 14
+    """
+
+    _PATTERN = re.compile(
+        r"验证LP\s+([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})(?:\s+(\d+))?",
+        re.IGNORECASE,
+    )
+
+    def match(self, text: str) -> bool:
+        return bool(self._PATTERN.search(text))
+
+    def execute(self, text: str, chat_id: str):
+        match = self._PATTERN.search(text)
+        asin = match.group(1).upper()
+        snapshot_date = match.group(2)
+        n_days = int(match.group(3)) if match.group(3) else 28
+
+        slack_client = SlackClient(bot_name=self.bot_name)
+        slack_client.send_text_message(
+            "channel",
+            chat_id,
+            f"📐 开始验证 {asin} LP 模型预测准确性...\n"
+            f"　快照日期：{snapshot_date}　验证窗口：{n_days} 天\n"
+            "将拉取广告后验数据并计算 PAS（预测准确率分），请稍候。",
+        )
+
+        async def _dispatch_job():
+            try:
+                from src.gateway import APIGateway
+
+                params = {"asin": asin, "snapshot_date": snapshot_date, "n_days": n_days}
+                job_id = APIGateway.dispatch_slack_command(
+                    workflow_name="lp_validation",
+                    params=params,
+                    chat_id=chat_id,
+                    bot_name=self.bot_name,
+                )
+                logger.info(
+                    "LP validation routed to Gateway, job_id=%s, asin=%s, snapshot=%s",
+                    job_id,
+                    asin,
+                    snapshot_date,
+                )
+            except Exception as e:
+                logger.error("LP validation dispatch failed: %s", e)
+                slack_client.send_text_message("channel", chat_id, f"❌ LP 验证任务启动失败: {e}")
+
+        asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+
+
+class ListingDiagnosisCommand(BotCommand):
+    """
+    Handles 'Listing诊断 <ASIN>' messages.
+
+    Dispatches the listing_diagnosis workflow which fetches main product details,
+    discovers top competitors, scores all listings, and produces an LLM diagnosis report.
+    """
+
+    _PATTERN = re.compile(r"[Ll]isting诊断\s+([A-Z0-9]{10})", re.IGNORECASE)
+
+    def match(self, text: str) -> bool:
+        return bool(self._PATTERN.search(text))
+
+    def execute(self, text: str, chat_id: str):
+        match = self._PATTERN.search(text)
+        asin = match.group(1).upper()
+
+        slack_client = SlackClient(bot_name=self.bot_name)
+        eta = TimeEstimator.estimate_workflow("listing_diagnosis", params={"asin": asin})
+        slack_client.send_text_message(
+            "channel",
+            chat_id,
+            f"🔍 开始诊断 {asin} Listing 质量...\n⏱️ 预计耗时: {eta}\n"
+            "将抓取主品及竞品详情、评分 Listing 质量并生成专业诊断报告，请稍候。",
+        )
+
+        async def _dispatch_job():
+            try:
+                from src.gateway import APIGateway
+
+                job_id = APIGateway.dispatch_slack_command(
+                    workflow_name="listing_diagnosis",
+                    params={"asin": asin},
+                    chat_id=chat_id,
+                    bot_name=self.bot_name,
+                )
+                logger.info(
+                    f"Listing diagnosis routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
+            except Exception as e:
+                logger.error(f"Listing diagnosis dispatch failed: {e}")
+                slack_client.send_text_message("channel", chat_id, f"❌ Listing 诊断任务启动失败: {e}")
+
+        asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
+
+
+class HelpCommand(BotCommand):
+    """响应'常用命令'消息或 /top 斜杠命令，列出所有可用指令。"""
+
+    _HELP_TEXT = (
+        "📋 *常用命令列表*\n\n"
+        "🍪 *更新亚马逊 Cookies*\n"
+        "　触发词：`更新亚马逊 Cookies`\n"
+        "　作用：启动有头浏览器刷新亚马逊登录凭证\n\n"
+        "▶️ *恢复中断任务*\n"
+        "　触发词：`恢复任务 <job_id>`\n"
+        "　示例：`恢复任务 a1b2c3d4`\n\n"
+        "📊 *抓取 BSR 榜单*\n"
+        "　触发词：`获取 <类目> BSR`\n"
+        "　示例：`获取 Electronics BSR`\n"
+        "　支持类目：Electronics / Camera / Software\n\n"
+        "🏆 *分析类目垄断度*\n"
+        "　触发词：`分析垄断度 <URL>` 或 `分析类目垄断度 <URL>`\n"
+        "　示例：`分析垄断度 https://www.amazon.com/...`\n\n"
+        "🔎 *产品筛选*\n"
+        "　触发词：`产品筛选 <关键词>`\n"
+        "　示例：`产品筛选 yoga mat`\n\n"
+        "📈 *广告诊断*\n"
+        "　触发词：`广告诊断 <ASIN>`\n"
+        "　示例：`广告诊断 B0FXFGMD7Z`\n\n"
+        "🏷️ *Listing 诊断*\n"
+        "　触发词：`Listing诊断 <ASIN>`\n"
+        "　示例：`Listing诊断 B0FXFGMD7Z`\n"
+        "　作用：抓取主品竞品详情、质量评分并生成含改进计划的专业诊断报告\n\n"
+        "📐 *LP 模型验证*\n"
+        "　触发词：`验证LP <ASIN> <快照日期> [<天数>]`\n"
+        "　示例：`验证LP B0FXFGMD7Z 2026-05-29`\n"
+        "　　　　`验证LP B0FXFGMD7Z 2026-05-29 14`\n"
+        "　作用：对比 LP 预测与广告后验数据，输出预测准确率（PAS）\n\n"
+        "🧰 */list* — 列出所有可调用工具（工具列表）\n\n"
+        "🤖 *智能 Agent（其他问题）*\n"
+        "　触发词：任意文本（以上命令未匹配时自动触发）\n"
+    )
+
+    def match(self, text: str) -> bool:
+        return text.strip() == "常用命令"
+
+    def execute(self, text: str, chat_id: str):
+        SlackClient(bot_name=self.bot_name).send_text_message("channel", chat_id, self._HELP_TEXT)
+
+    def execute_slash(self, chat_id: str) -> None:
+        """Entry point for the /top slash command — same content as the message trigger."""
+        self.execute("常用命令", chat_id)
+
+
+class ListToolsCommand(BotCommand):
+    """响应 /list 斜杠命令（工具列表），枚举 ToolRegistry 中注册的全部工具。"""
+
+    def match(self, text: str) -> bool:
+        return False  # slash-command only, never matched from plain message text
+
+    def execute(self, text: str, chat_id: str):
+        self.execute_slash(chat_id)
+
+    def execute_slash(self, chat_id: str) -> None:
+        from src.registry.tools import tool_registry
+
+        tools = sorted(tool_registry.get_all_tools(), key=lambda t: t.name)
+        if not tools:
+            SlackClient(bot_name=self.bot_name).send_text_message(
+                "channel", chat_id, "🧰 暂无已注册工具。"
+            )
+            return
+
+        lines = [f"🧰 *工具列表*（共 {len(tools)} 个）\n"]
+        for tool in tools:
+            meta = tool_registry.get_tool_meta(tool.name)
+            category = f"[{meta.category}] " if meta else ""
+            desc = (tool.description or "").strip().splitlines()[0] if tool.description else ""
+            lines.append(f"　{category}`{tool.name}` — {desc}")
+
+        text = "\n".join(lines)
+        SlackClient(bot_name=self.bot_name).send_card_message("channel", chat_id, text)
+
+
+class AgentExploreCommand(BotCommand):
+    def match(self, text: str) -> bool:
+        return True
+
+    def execute(self, text: str, chat_id: str):
+        logger.info(f"Agent fallback triggered for: {text}")
+        slack_client = SlackClient(bot_name=self.bot_name)
+        eta = TimeEstimator.estimate_agent()
+        slack_client.send_text_message(
+            "channel", chat_id, f"🤖 收到！正在召唤 MCP Agent 深度分析...\n⏱️ 预计耗时: {eta}"
+        )
+
+        async def _dispatch_agent():
+            try:
+                from src.gateway import APIGateway
+
+                job_id = APIGateway.dispatch_slack_explore(
+                    intent=text, chat_id=chat_id, bot_name=self.bot_name
+                )
+                logger.info(
+                    f"Slack explore command routed to Gateway, job_id={job_id}, bot_name={self.bot_name}"
+                )
+            except Exception as e:
+                logger.error(f"Agent dispatch failed: {e}")
+                slack_client.send_text_message("channel", chat_id, f"❌ Agent 调度失败: {e}")
+
+        asyncio.run_coroutine_threadsafe(_dispatch_agent(), self.loop)
+
+
+class CommandDispatcher:
+    def __init__(self, bot_name: str = "toryunbot", loop: asyncio.AbstractEventLoop | None = None):
+        self.bot_name = bot_name
+        self.loop = loop
+        self.help_command = HelpCommand(bot_name, loop)
+        self.list_tools_command = ListToolsCommand(bot_name, loop)
+        self.commands = [
+            self.help_command,
+            RefreshCookieCommand(bot_name, loop),
+            ResumeJobCommand(bot_name, loop),
+            ExtractBSRCommand(bot_name, loop),
+            AnalyzeCategoryMonopolyCommand(bot_name, loop),
+            ProductScreeningCommand(bot_name, loop),
+            AdDiagnosisCommand(bot_name, loop),
+            ListingDiagnosisCommand(bot_name, loop),
+            LpValidationCommand(bot_name, loop),
+            AgentExploreCommand(bot_name, loop),  # fallback — must stay last
+        ]
+
+    def dispatch(self, text: str, chat_id: str) -> bool:
+        for cmd in self.commands:
+            if cmd.match(text):
+                cmd.execute(text, chat_id)
+                return True
+        return False
+
+    def dispatch_slash(self, command: str, chat_id: str) -> bool:
+        """Routes /list and /top slash commands. Returns False for unrecognized commands."""
+        if command == "/list":
+            self.list_tools_command.execute_slash(chat_id)
+            return True
+        if command == "/top":
+            self.help_command.execute_slash(chat_id)
+            return True
+        return False
