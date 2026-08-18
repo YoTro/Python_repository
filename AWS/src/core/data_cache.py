@@ -21,8 +21,12 @@ class _CacheBackend(ABC):
         """Return the raw envelope {data, updated_at} or None."""
 
     @abstractmethod
-    def set_raw(self, domain: str, key: str, envelope: dict[str, Any]) -> None:
-        """Persist the raw envelope."""
+    def set_raw(
+        self, domain: str, key: str, envelope: dict[str, Any], ttl_seconds: int | None = None
+    ) -> None:
+        """Persist the raw envelope. ttl_seconds, when given, lets the backend expire the
+        key on its own (e.g. Redis EX) instead of relying solely on the read-time check in
+        DataCache.get()."""
 
     @abstractmethod
     def exists(self, domain: str, key: str) -> bool:
@@ -62,7 +66,12 @@ class _JsonFileBackend(_CacheBackend):
         self._load(domain)
         return self._mem[domain].get(key)
 
-    def set_raw(self, domain: str, key: str, envelope: dict[str, Any]) -> None:
+    def set_raw(
+        self, domain: str, key: str, envelope: dict[str, Any], ttl_seconds: int | None = None
+    ) -> None:
+        # No native expiry mechanism for a plain JSON file; staleness is still enforced by
+        # DataCache.get()'s updated_at check. ttl_seconds is accepted for interface parity
+        # with _RedisBackend but not acted on here.
         self._load(domain)
         self._mem[domain][key] = envelope
         try:
@@ -98,9 +107,16 @@ class _RedisBackend(_CacheBackend):
             logger.error(f"[cache] Redis get failed: {e}")
             return None
 
-    def set_raw(self, domain: str, key: str, envelope: dict[str, Any]) -> None:
+    def set_raw(
+        self, domain: str, key: str, envelope: dict[str, Any], ttl_seconds: int | None = None
+    ) -> None:
         try:
-            self._r.set(self._key(domain, key), json.dumps(envelope, ensure_ascii=False))
+            payload = json.dumps(envelope, ensure_ascii=False)
+            # ex=ttl_seconds lets Redis reclaim the key on its own once it goes stale,
+            # instead of relying on DataCache.get()'s read-time check — which only skips
+            # stale data, it never deletes it, so unread keys would otherwise accumulate
+            # in Redis forever.
+            self._r.set(self._key(domain, key), payload, ex=ttl_seconds)
         except Exception as e:
             logger.error(f"[cache] Redis set failed: {e}")
 
@@ -160,12 +176,12 @@ class DataCache:
             return {k: DataCache._to_serializable(v) for k, v in value.items()}
         return value
 
-    def set(self, domain: str, key: str, value: Any) -> None:
+    def set(self, domain: str, key: str, value: Any, ttl_seconds: int | None = None) -> None:
         envelope = {
             "data": self._to_serializable(value),
             "updated_at": datetime.utcnow().isoformat(),
         }
-        self._backend.set_raw(domain, key, envelope)
+        self._backend.set_raw(domain, key, envelope, ttl_seconds=ttl_seconds)
 
     def get(self, domain: str, key: str, ttl_seconds: int | None = None) -> Any | None:
         envelope = self._backend.get_raw(domain, key)

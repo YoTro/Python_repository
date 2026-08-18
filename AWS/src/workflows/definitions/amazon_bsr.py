@@ -30,8 +30,8 @@ def _l2_get(ctx: WorkflowContext, ttl: int, *parts):
     return _data_cache.get(_L2_DOMAIN, _l2_key(ctx, *parts), ttl_seconds=ttl)
 
 
-def _l2_set(ctx: WorkflowContext, value, *parts) -> None:
-    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value)
+def _l2_set(ctx: WorkflowContext, value, ttl: int, *parts) -> None:
+    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value, ttl_seconds=ttl)
 
 
 @WorkflowRegistry.register("amazon_bsr")
@@ -55,7 +55,7 @@ def build_amazon_bsr(config: dict) -> Workflow:
             extractor = BestSellersExtractor()
             results = await extractor.get_bestsellers(url)
 
-        _l2_set(ctx, results, "bsr", url_hash)
+        _l2_set(ctx, results, _TTL_BSR, "bsr", url_hash)
         logger.info(
             f"[amazon_bsr] Fetched {len(results) if isinstance(results, list) else '?'} items, cached url_hash={url_hash}"
         )

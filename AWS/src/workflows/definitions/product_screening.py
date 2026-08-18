@@ -52,8 +52,8 @@ def _l2_get(ctx: WorkflowContext, ttl: int, *parts):
     return _data_cache.get(_L2_DOMAIN, _l2_key(ctx, *parts), ttl_seconds=ttl)
 
 
-def _l2_set(ctx: WorkflowContext, value, *parts) -> None:
-    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value)
+def _l2_set(ctx: WorkflowContext, value, ttl: int, *parts) -> None:
+    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value, ttl_seconds=ttl)
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ async def _enrich_via_profitability_api(item: dict, ctx: WorkflowContext) -> dic
         "brand": p.get("brandName"),
         "fee_category": p.get("feeCategoryString"),
     }
-    _l2_set(ctx, result, "profitability", asin)
+    _l2_set(ctx, result, _TTL_PRODUCT, "profitability", asin)
     return result
 
 
@@ -179,7 +179,7 @@ async def _enrich_past_month_sales(item: dict, ctx: WorkflowContext) -> dict:
     batch = await extractor.get_batch_past_month_sales([asin])
     past_sales = batch.get(asin) or 0
     result = {"past_month_sales": past_sales, "daily_sales": round(past_sales / 30.0, 2)}
-    _l2_set(ctx, result, "past_month_sales", asin)
+    _l2_set(ctx, result, _TTL_SALES, "past_month_sales", asin)
     return result
 
 
@@ -195,7 +195,7 @@ async def _enrich_fulfillment(item: dict, ctx: WorkflowContext) -> dict:
     extractor = FulfillmentExtractor()
     raw = await extractor.get_fulfillment_info(asin)
     result = {"fulfilled_by": raw.get("FulfilledBy")}
-    _l2_set(ctx, result, "fulfillment", asin)
+    _l2_set(ctx, result, _TTL_FULFILL, "fulfillment", asin)
     return result
 
 
@@ -218,7 +218,7 @@ async def _enrich_deal_history(item: dict, ctx: WorkflowContext) -> dict:
     client = DealHistoryClient()
     matched = await client.get_deals_for_asins(asins={asin}, brand=keyword)
     result = {"deal_history": matched.get(asin, [])}
-    _l2_set(ctx, result, "deal_history", asin)
+    _l2_set(ctx, result, _TTL_DEALS, "deal_history", asin)
     return result
 
 
@@ -381,7 +381,7 @@ async def _enrich_compliance(item: dict, ctx: WorkflowContext) -> dict:
         "cpsc_recalled": cpsc_recalled,
         "required_certifications": list(dict.fromkeys(required_certifications)),
     }
-    _l2_set(ctx, result, "compliance", kw_hash)
+    _l2_set(ctx, result, _TTL_COMPLIANCE, "compliance", kw_hash)
     return result
 
 
@@ -404,7 +404,7 @@ async def _enrich_reviews(item: dict, ctx: WorkflowContext) -> dict:
     extractor = CommentsExtractor()
     reviews = await extractor.get_all_comments(asin, max_pages=2)
     result = {"reviews": reviews}
-    _l2_set(ctx, result, "reviews", asin)
+    _l2_set(ctx, result, _TTL_REVIEWS, "reviews", asin)
     return result
 
 
@@ -493,7 +493,7 @@ async def _enrich_ad_metrics_xiyou(item: dict, ctx: WorkflowContext) -> dict:
                 "ad_traffic_ratio": _to_float(entry.get("advertisingTrafficScoreRatio")),
                 "traffic_growth_7d": _to_float(entry.get("totalTrafficScoreGrowthRate")),
             }
-            _l2_set(ctx, result, "ad_traffic", asin)
+            _l2_set(ctx, result, _TTL_AD, "ad_traffic", asin)
             return result
     except Exception as e:
         logger.error(f"Failed to fetch Xiyou traffic scores for {asin}: {e}")

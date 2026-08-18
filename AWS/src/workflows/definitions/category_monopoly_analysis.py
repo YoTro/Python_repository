@@ -211,8 +211,8 @@ def _l2_get(ctx, ttl: int, *parts):
     return _data_cache.get(_L2_DOMAIN, _l2_key(ctx, *parts), ttl_seconds=ttl)
 
 
-def _l2_set(ctx, value, *parts) -> None:
-    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value)
+def _l2_set(ctx, value, ttl: int, *parts) -> None:
+    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value, ttl_seconds=ttl)
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +242,7 @@ async def _fetch_bsr_list(_items: list[dict], ctx: Any) -> list[dict]:
         products = await extractor.get_bestsellers(url, max_pages=2)
     if not products:
         raise ValueError(f"BSR extractor returned no products for URL: {url}")
-    _l2_set(ctx, products, "bsr_list", url_hash)
+    _l2_set(ctx, products, _TTL_BSR, "bsr_list", url_hash)
     logger.info(f"[cat_monopoly] Fetched {len(products)} BSR products, cached url_hash={url_hash}")
     return products
 
@@ -271,7 +271,7 @@ async def _enrich_sales(items: list[dict], ctx: Any) -> list[dict]:
             fetched = await extractor.get_batch_past_month_sales(missing)
         for asin, val in fetched.items():
             sales_map[asin] = val or 0
-            _l2_set(ctx, val or 0, "sales", asin)
+            _l2_set(ctx, val or 0, _TTL_SALES, "sales", asin)
 
     for item, asin in zip(items, all_asins, strict=False):
         item["sales"] = sales_map.get(asin) or 0
@@ -361,7 +361,7 @@ async def _enrich_seller_info(item: dict, ctx: Any) -> dict:
             "written_reviews": rc_res.get("WrittenReviews"),
             "review_ratio": rc_res.get("Ratio"),
         }
-        _l2_set(ctx, result, "seller_info", asin)
+        _l2_set(ctx, result, _TTL_SELLER, "seller_info", asin)
         return result
     finally:
         await asyncio.gather(f_extractor.close(), s_extractor.close(), rc_extractor.close())
@@ -622,6 +622,7 @@ async def _fetch_core_keywords(items: list[dict], ctx: Any) -> list[dict]:
     _l2_set(
         ctx,
         {"core_keywords": core_keywords, "main_keyword": core_keywords[0]},
+        _TTL_KEYWORDS,
         "core_keywords",
         cache_hash,
     )
@@ -1042,6 +1043,7 @@ async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
             "keyword_data_all": ctx.cache.get("keyword_data_all", []),
             "detailed_bid_analysis": ctx.cache.get("detailed_bid_analysis", {}),
         },
+        _TTL_SIGNALS,
         "market_signals",
         kw_hash,
     )
@@ -1313,6 +1315,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
                         "deal_intensity": _deal_intensity,
                         "deal_discount_data": _deal_discount_data,
                     },
+                    _TTL_DEAL,
                     "deal_intensity",
                     _deal_hash,
                 )
@@ -1627,7 +1630,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
         ctx.cache.update(_upd_cached)
         _still_errors = len(_collect_failed(_c_all))
         if _still_errors == 0:
-            _l2_set(ctx, _upd_cached, "external_intensity", kw_hash)
+            _l2_set(ctx, _upd_cached, _TTL_EXTERNAL, "external_intensity", kw_hash)
             logger.info(
                 f"[external_intensity] Partial re-fetch succeeded, cache refreshed kw_hash={kw_hash}"
             )
@@ -1743,7 +1746,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     }
     _remaining_errors = len(_collect_failed([kw_result] + _brand_tag_results))
     if _remaining_errors == 0:
-        _l2_set(ctx, _ext, "external_intensity", kw_hash)
+        _l2_set(ctx, _ext, _TTL_EXTERNAL, "external_intensity", kw_hash)
     else:
         logger.warning(
             f"[external_intensity] {_remaining_errors} platform(s) still failing after retries, "
@@ -1984,6 +1987,7 @@ async def _enrich_batch_traffic_scores(items: list[dict], ctx: Any) -> list[dict
                     "ad_ratio_rank_correlation": rank_corr,
                     "ad_ratio_by_asin": ratio_by_asin,
                 },
+                _TTL_TRAFFIC,
                 "traffic_scores",
                 asins_hash,
             )
@@ -2072,6 +2076,7 @@ async def _fetch_time_series_data(items: list[dict], ctx: Any) -> list[dict]:
             "historical_data": ctx.cache.get("historical_data", {}),
             "keyword_weekly_trends": ctx.cache.get("keyword_weekly_trends"),
         },
+        _TTL_TIMESERIES,
         "time_series",
         ts_hash,
     )
@@ -2359,6 +2364,7 @@ async def _fetch_sellersprite_bsr(items: list[dict], ctx: Any) -> list[dict]:
                 "ss_median_cvr": ctx.cache.get("ss_median_cvr"),
                 "ss_return_rate_pct": ctx.cache.get("ss_return_rate_pct"),
             },
+            _TTL_SS_BSR,
             "ss_bsr",
             ss_cache_key,
         )
@@ -2973,6 +2979,7 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
                 "browse_category": browse_category,
                 "keywords_hash": keywords_hash,  # audit: which keywords validated the match
             },
+            _TTL_CVR,
             "category_cvr",
             cvr_hash,
         )
@@ -3236,7 +3243,7 @@ async def _fetch_critical_reviews_top_brands(items: list[dict], ctx: Any) -> lis
     )
 
     ctx.cache["critical_reviews_data"] = critical_data
-    _l2_set(ctx, critical_data, "critical_reviews", reviews_hash)
+    _l2_set(ctx, critical_data, _TTL_CRITICAL_REVIEWS, "critical_reviews", reviews_hash)
     total = sum(len(v["recent_critical_reviews"]) for v in critical_data.values())
     logger.info(
         f"[critical_reviews] {total} recent critical reviews collected "
@@ -3304,7 +3311,7 @@ async def _fetch_critical_reviews_dominant_portfolio(items: list[dict], ctx: Any
         )
     else:
         new_data = await _fetch_reviews_for_entries(missing)
-        _l2_set(ctx, new_data, "critical_reviews_dom", reviews_hash)
+        _l2_set(ctx, new_data, _TTL_CRITICAL_REVIEWS, "critical_reviews_dom", reviews_hash)
 
     merged = {**existing, **new_data}
     ctx.cache["critical_reviews_data"] = merged

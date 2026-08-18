@@ -184,8 +184,8 @@ def _l2_get(ctx: WorkflowContext, ttl: int, *parts):
     return _data_cache.get(_L2_DOMAIN, _l2_key(ctx, *parts), ttl_seconds=ttl)
 
 
-def _l2_set(ctx: WorkflowContext, value, *parts) -> None:
-    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value)
+def _l2_set(ctx: WorkflowContext, value, ttl: int, *parts) -> None:
+    _data_cache.set(_L2_DOMAIN, _l2_key(ctx, *parts), value, ttl_seconds=ttl)
 
 
 # Per-key asyncio locks to prevent cache stampede: when the cache expires and
@@ -253,7 +253,7 @@ def _l2_cached(
 
                     value = await fn(ctx, *args, **kwargs)
                     ctx.cache[l1_key] = value
-                    _l2_set(ctx, value, *l2_parts)
+                    _l2_set(ctx, value, l2_ttl, *l2_parts)
                     _fetched = True
                     return value
             finally:
@@ -895,7 +895,7 @@ async def _enrich_order_metrics(item: dict, ctx: WorkflowContext) -> dict:
                     f"total_inventory_days={total_inventory_days}"
                 )
 
-        _l2_set(ctx, result, "order_metrics", asin, days)
+        _l2_set(ctx, result, _TTL_STATIC, "order_metrics", asin, days)
         return result
 
     except Exception as e:
@@ -3810,7 +3810,7 @@ def _fetch_erp_baseline_sync(
         result = {}
 
     ctx.cache[l1_key] = result
-    _l2_set(ctx, result, *l2_parts)
+    _l2_set(ctx, result, _TTL_YOY, *l2_parts)
     return result
 
 
