@@ -515,10 +515,8 @@ class SlackCallback(JobCallback):
         lines = [f"❌ Workflow failed: {error}"]
         if job_id:
             lines.append(f"Job ID: `{job_id}`")
-            lines.append("A checkpoint was saved. To resume, run:")
-            lines.append(
-                f"  `manager.resume_from_checkpoint(job_id='{job_id}', workflow_name='...')`"
-            )
+            lines.append("A checkpoint was saved. To resume, send:")
+            lines.append(f"  `恢复任务 {job_id}`")
         await self.notify("\n".join(lines))
 
     async def notify(self, message: str) -> None:

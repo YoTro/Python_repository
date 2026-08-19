@@ -108,7 +108,7 @@ class AnalyzeCategoryMonopolyCommand(BotCommand):
 
     def execute(self, text: str, chat_id: str):
         # Extract URL if present
-        match = re.search(r"(https?://www\.amazon\.com[^\s]+)", text)
+        match = re.search(r"(https?://www\.amazon\.com[^\s<>|]+)", text)
         url = match.group(1) if match else None
 
         feishu_client = FeishuClient(bot_name=self.bot_name)
@@ -159,7 +159,9 @@ class ResumeJobCommand(BotCommand):
       4. Call manager.resume_from_checkpoint() — engine skips completed steps automatically.
     """
 
-    _PATTERN = re.compile(r"恢复任务\s+([0-9a-f]{8})", re.IGNORECASE)
+    # `?` tolerates the job id being wrapped in a code span (e.g. "恢复任务 `8f620c3d`"),
+    # which users naturally type/paste since the failure notification renders it that way.
+    _PATTERN = re.compile(r"恢复任务\s+`?([0-9a-f]{8})`?", re.IGNORECASE)
 
     def match(self, text: str) -> bool:
         return bool(self._PATTERN.search(text))
@@ -261,7 +263,7 @@ class AdDiagnosisCommand(BotCommand):
     data, correlates changes with performance shifts, and produces an LLM report.
     """
 
-    _PATTERN = re.compile(r"广告诊断\s+([A-Z0-9]{10})", re.IGNORECASE)
+    _PATTERN = re.compile(r"广告诊断\s+`?([A-Z0-9]{10})`?", re.IGNORECASE)
 
     def match(self, text: str) -> bool:
         return bool(self._PATTERN.search(text))
@@ -313,7 +315,7 @@ class LpValidationCommand(BotCommand):
     """
 
     _PATTERN = re.compile(
-        r"验证LP\s+([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})(?:\s+(\d+))?",
+        r"验证LP\s+`?([A-Z0-9]{10})`?\s+`?(\d{4}-\d{2}-\d{2})`?(?:\s+`?(\d+)`?)?",
         re.IGNORECASE,
     )
 
@@ -367,7 +369,7 @@ class ListingDiagnosisCommand(BotCommand):
     discovers top competitors, scores all listings, and produces an LLM diagnosis report.
     """
 
-    _PATTERN = re.compile(r"[Ll]isting诊断\s+([A-Z0-9]{10})", re.IGNORECASE)
+    _PATTERN = re.compile(r"[Ll]isting诊断\s+`?([A-Z0-9]{10})`?", re.IGNORECASE)
 
     def match(self, text: str) -> bool:
         return bool(self._PATTERN.search(text))

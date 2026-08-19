@@ -34,6 +34,15 @@ logger = logging.getLogger("slack-bot")
 dispatcher: CommandDispatcher | None = None
 global_bg_loop: asyncio.AbstractEventLoop | None = None
 
+# Slack auto-wraps URLs in message text as `<https://example.com/path|display text>`
+# (or bare `<https://example.com/path>` with no display text). Strip that mrkdwn
+# envelope down to the raw URL before any command tries to regex a URL out of the text.
+_SLACK_LINK_RE = re.compile(r"<(https?://[^|>]+)(?:\|[^>]*)?>")
+
+
+def _unwrap_slack_links(text: str) -> str:
+    return _SLACK_LINK_RE.sub(r"\1", text)
+
 
 def handle_message_event(event: dict) -> None:
     try:
@@ -45,7 +54,7 @@ def handle_message_event(event: dict) -> None:
         if event.get("bot_id") or event.get("subtype"):
             return
 
-        text = event.get("text", "")
+        text = _unwrap_slack_links(event.get("text", ""))
         chat_id = event.get("channel")
         if not chat_id:
             return
