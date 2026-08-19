@@ -388,7 +388,9 @@ class ListingDiagnosisCommand(BotCommand):
                 )
             except Exception as e:
                 logger.error(f"Listing diagnosis dispatch failed: {e}")
-                slack_client.send_text_message("channel", chat_id, f"❌ Listing 诊断任务启动失败: {e}")
+                slack_client.send_text_message(
+                    "channel", chat_id, f"❌ Listing 诊断任务启动失败: {e}"
+                )
 
         asyncio.run_coroutine_threadsafe(_dispatch_job(), self.loop)
 

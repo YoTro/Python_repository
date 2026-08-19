@@ -142,7 +142,9 @@ def handle_block_action(action: dict) -> None:
 
 
 def build_app(bot_config: dict) -> App:
-    app = App(token=bot_config["bot_token"], signing_secret=bot_config.get("signing_secret") or None)
+    app = App(
+        token=bot_config["bot_token"], signing_secret=bot_config.get("signing_secret") or None
+    )
 
     @app.event("message")
     def _on_message(event, ack=None):  # noqa: ANN001 — slack_bolt injects these
@@ -185,7 +187,9 @@ def main():
 
     bot_config = ConfigHelper.get_slack_bot(args.bot)
     if not bot_config:
-        logger.error(f"Bot '{args.bot}' not configured. Set SLACK_{args.bot.upper()}_BOT_TOKEN in .env")
+        logger.error(
+            f"Bot '{args.bot}' not configured. Set SLACK_{args.bot.upper()}_BOT_TOKEN in .env"
+        )
         sys.exit(1)
     if not bot_config.get("app_token"):
         logger.error(

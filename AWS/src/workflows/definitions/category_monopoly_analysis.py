@@ -5268,11 +5268,91 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         or "N/A"
     )
 
+    # ── Entry verdict (deterministic — pre-computed for the Seller Decision Snapshot) ──
+    # Decision DIRECTION only: ENTER / ENTER WITH CONDITIONS / AVOID. Neutral labels are
+    # deliberate — P0/P1/P2 are reserved EXCLUSIVELY for Actionable Prioritization priority
+    # tiers downstream and must never be re-used here as direction labels. Considers the
+    # monopoly score, margin feasibility (ACOS vs breakeven), review integrity, compliance,
+    # demand trend, and rating-collapse risk.
+    _ev_monopoly = float(result.get("overall_score", 0) or 0)
+    _ev_integrity = str(integrity_risk or "unknown").upper()
+    _ev_collapse = float(churn.get("collapse_rate", 0) or 0)
+    _ev_compliance = str((compliance_risks or {}).get("overall_risk", "NONE")).upper()
+    _ev_demand = str(seasonality.get("demand_trend", "unknown")).lower()
+    _ev_acos = _estimated_acos
+    _ev_be = _breakeven_acos
+
+    _ev_reasons: list[str] = []
+    if _ev_monopoly >= 65:
+        _ev_reasons.append(f"monopoly {_ev_monopoly:.0f}/100")
+    if _ev_acos is not None and _ev_be > 0 and _ev_acos > 1.5 * _ev_be:
+        _ev_reasons.append(f"ACOS {_ev_acos:.0%} > 1.5× breakeven {_ev_be:.0%}")
+    if _ev_integrity == "HIGH" and _ev_collapse > 0.40:
+        _ev_reasons.append("integrity HIGH + rating collapse > 40%")
+    if _ev_compliance == "CRITICAL":
+        _ev_reasons.append("critical compliance risk")
+    if _ev_demand == "collapsing":
+        _ev_reasons.append("collapsing demand")
+
+    if _ev_reasons:
+        entry_verdict = "AVOID — " + "; ".join(_ev_reasons[:3])
+    else:
+        _ev_enter = (
+            _ev_monopoly < 40
+            and (_ev_acos is not None and _ev_be > 0 and _ev_acos <= 0.9 * _ev_be)
+            and _ev_integrity != "HIGH"
+            and _ev_compliance not in ("HIGH", "CRITICAL")
+            and _ev_demand not in ("declining", "collapsing")
+        )
+        if _ev_enter:
+            entry_verdict = "ENTER"
+        else:
+            _ev_cond: list[str] = []
+            if _ev_monopoly >= 40:
+                _ev_cond.append(f"monopoly {_ev_monopoly:.0f}/100")
+            if _ev_acos is not None and _ev_be > 0 and _ev_acos > _ev_be:
+                _ev_cond.append(f"ACOS {_ev_acos:.0%} vs breakeven {_ev_be:.0%}")
+            if _ev_integrity == "HIGH":
+                _ev_cond.append("integrity HIGH")
+            if _ev_compliance in ("HIGH", "MEDIUM"):
+                _ev_cond.append(f"{_ev_compliance.lower()} compliance risk")
+            if _ev_demand in ("declining", "collapsing"):
+                _ev_cond.append(f"{_ev_demand} demand")
+            if _ev_collapse > 0.25:
+                _ev_cond.append(f"rating collapse {_ev_collapse:.0%}")
+            entry_verdict = "ENTER WITH CONDITIONS"
+            if _ev_cond:
+                entry_verdict += " — " + "; ".join(_ev_cond[:3])
+
+    # FBA share of fulfillment (for the snapshot Logistics Risk row) — derived from the
+    # same fulfillment_distribution breakdown the diagnostic table renders.
+    _fba_entry = next(
+        (
+            b
+            for b in (fulfillment_distribution or {}).get("breakdown", [])
+            if b.get("type") == "FBA"
+        ),
+        None,
+    )
+    _fba_pct_str = (
+        f"{_fba_entry['pct']:.0%}" if _fba_entry and _fba_entry.get("pct") is not None else "N/A"
+    )
+
     return [
         {
             "analysis_result": json.dumps(result, ensure_ascii=False),
             "monopoly_score": round(result.get("overall_score", 0), 2),
             "monopoly_status": result.get("status", "N/A"),
+            # Deterministic snapshot verdict + supporting snapshot inputs (promoted from
+            # nested data so the template's {entry_verdict} / {review_floor_top20} /
+            # {fulfillment_fba_pct} placeholders resolve at render time).
+            "entry_verdict": entry_verdict,
+            "review_floor_top20": (
+                str(opportunity_signals.get("review_floor_top20"))
+                if opportunity_signals.get("review_floor_top20") is not None
+                else "N/A"
+            ),
+            "fulfillment_fba_pct": _fba_pct_str,
             "main_keyword": ctx.cache.get("main_keyword"),
             "core_keywords": ", ".join(ctx.cache.get("core_keywords", [])),
             "niche_median_price": f"${median_price:.2f}",

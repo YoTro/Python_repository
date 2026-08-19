@@ -333,7 +333,10 @@ class SlackCallback(JobCallback):
                         "elements": [
                             {
                                 "type": "button",
-                                "text": {"type": "plain_text", "text": ui_config.get("button_text", "我已确认扫码")},
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": ui_config.get("button_text", "我已确认扫码"),
+                                },
                                 "style": "primary",
                                 "action_id": action_name,
                                 "value": json.dumps(
