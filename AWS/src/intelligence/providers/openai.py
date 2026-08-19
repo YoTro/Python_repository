@@ -225,6 +225,13 @@ class OpenAIProvider(BaseLLMProvider):
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
+            # Some reasoning models (e.g. gpt-5.6-luna) reject tool calls combined
+            # with a non-"none" reasoning_effort on /v1/chat/completions ("Function
+            # tools with reasoning_effort are not supported ... set reasoning_effort
+            # to 'none'"). Tool-calling doesn't need reasoning, so default it off
+            # unless the caller explicitly asked for an effort level.
+            if self._is_reasoning_model(resolved) and "reasoning_effort" not in filtered:
+                params["reasoning_effort"] = "none"
         params.update(filtered)
         return params
 
