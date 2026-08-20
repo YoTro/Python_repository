@@ -172,8 +172,8 @@ Rationale: JSON-RPC cannot throw a Python exception across the wire, so the **se
 
 The server distinguishes **controlled** failures (`⚠️`) from **unexpected** ones (`🆘`) by exception type: framework errors (`AWSBaseError` and its subclasses — `ScraperError`, `RetryableError`, `FatalError`, …) and explicit `ToolExecutionError` are known/handled conditions; everything else is treated as a bug and logged with a full traceback.
 
-Exception hierarchy (`src/mcp/exceptions.py`): `MCPError(message, hint)` → `ToolNotFoundError`, `ToolExecutionError`, `ValidationError`, `ResourceNotFoundError`. Current wiring:
-- `ToolNotFoundError` — **live**; raised by `ToolRegistry.call_tool` for an unregistered name.
+Exception hierarchy (`src/core/errors/exceptions.py`, re-exported from `src.core.errors`): `MCPError(message, hint)` → `ToolNotFoundError`, `ToolExecutionError`, `ValidationError`, `ResourceNotFoundError`. These live alongside the `AWSBaseError` framework hierarchy but keep `MCPError` as a separate root (the MCP protocol / tool-dispatch boundary). Import them from `src.core.errors`, e.g. `from src.core.errors import ToolNotFoundError`. Current wiring:
+- `ToolNotFoundError` — **live**; imported by `ToolRegistry` (`src/registry/tools.py`) and raised by `ToolRegistry.call_tool` for an unregistered name. The stdio server (`src/mcp/server.py`) catches it and renders `❌ Error: {message}`, while in-process `LocalMCPClient` callers receive it raised.
 - `ToolExecutionError` — raise it inside a handler to force the `⚠️ Execution failed` rendering for a controlled failure. (Framework `AWSBaseError`s already land in the same branch, so most handlers need not raise it explicitly.)
 - `ValidationError`, `ResourceNotFoundError` — defined, not yet used (the registry currently *strips* unknown args rather than raising — see §3.5 / DEV_GUIDE §12.1).
 

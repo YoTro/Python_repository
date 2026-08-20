@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from mcp.types import TextContent, Tool
 
-from src.mcp.exceptions import ToolNotFoundError
+from src.core.errors import ToolNotFoundError
 
 logger = logging.getLogger(__name__)
 

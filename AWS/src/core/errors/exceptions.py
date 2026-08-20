@@ -19,7 +19,13 @@ Unified exception hierarchy for the AWS project.
   ├── CheckpointError       Checkpoint save / load failures
   └── JobSuspendedError     Human-in-the-loop suspension
 
-All exceptions accept an optional ``code`` (ErrorCode) that maps the failure
+  MCPError                  MCP protocol / tool-dispatch boundary (separate root)
+  ├── ToolNotFoundError     Requested tool does not exist
+  ├── ToolExecutionError    Tool found but failed during execution
+  ├── ValidationError       Input arguments do not meet requirements
+  └── ResourceNotFoundError Requested resource (ASIN, File) is missing
+
+All AWSBaseError exceptions accept an optional ``code`` (ErrorCode) that maps the failure
 to a canonical platform error code defined in src/core/errors/codes.py.
 Use codes.is_retryable() / codes.is_auth_error() to drive retry logic instead
 of comparing raw HTTP status codes or provider-specific strings.
@@ -174,3 +180,36 @@ class JobSuspendedError(AWSBaseError):
         # Dynamically extract timeout from the signal's data payload (default 300s)
         data = signal.get("data", {})
         self.timeout_sec = data.get("expires_in", 300)
+
+
+class MCPError(Exception):
+    """Base class for all MCP related errors."""
+
+    def __init__(self, message: str, hint: str = ""):
+        super().__init__(message)
+        self.message = message
+        self.hint = hint
+
+
+class ToolNotFoundError(MCPError):
+    """Raised when the requested tool does not exist."""
+
+    pass
+
+
+class ToolExecutionError(MCPError):
+    """Raised when a tool is found but fails during execution (e.g., Scraper blocked)."""
+
+    pass
+
+
+class ValidationError(MCPError):
+    """Raised when input arguments do not meet requirements."""
+
+    pass
+
+
+class ResourceNotFoundError(MCPError):
+    """Raised when a requested resource (ASIN, File) is missing."""
+
+    pass

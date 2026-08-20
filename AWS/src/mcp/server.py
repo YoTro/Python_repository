@@ -16,8 +16,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # Use absolute imports instead of relative to avoid 'no known parent package' errors
-from src.core.errors import AWSBaseError
-from src.mcp.exceptions import ToolExecutionError, ToolNotFoundError
+from src.core.errors import AWSBaseError, ToolExecutionError, ToolNotFoundError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mcp-server")

@@ -17,9 +17,14 @@ from src.core.errors.exceptions import (
     ExtractorError,
     FatalError,
     JobSuspendedError,
+    MCPError,
+    ResourceNotFoundError,
     RetryableError,
     ScraperError,
     StepError,
+    ToolExecutionError,
+    ToolNotFoundError,
+    ValidationError,
     WorkflowError,
 )
 
@@ -36,6 +41,12 @@ __all__ = [
     "CheckpointError",
     "BatchPendingError",
     "JobSuspendedError",
+    # MCP protocol / tool-dispatch errors
+    "MCPError",
+    "ToolNotFoundError",
+    "ToolExecutionError",
+    "ValidationError",
+    "ResourceNotFoundError",
     # Error codes & helpers
     "ErrorCode",
     "classify_http",
