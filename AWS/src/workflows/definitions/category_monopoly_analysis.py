@@ -2664,23 +2664,136 @@ def _detect_compliance_risks(scan_texts: list) -> dict:
     }
 
 
-def _ads_category_matches_niche(browse_category: str | None, core_keywords: list[str]) -> bool:
+# Amazon top-level department vocabularies.  Each frozenset holds the distinctive
+# tokens of one department; a label maps to the first department whose vocabulary it
+# touches.  Tokens are chosen to be non-overlapping across departments so first-match
+# ordering is unambiguous.  Used both to validate the Ads benchmark's browse_category
+# against the analyzed list's authoritative primary category and (as a weaker signal)
+# to guard against cross-domain keyword matches.
+_AMAZON_DEPARTMENTS: list[frozenset[str]] = [
+    frozenset(
+        {
+            "electronics",
+            "computers",
+            "camera",
+            "phone",
+            "tv",
+            "audio",
+            "video",
+            "software",
+            "headphone",
+            "speaker",
+            "bluetooth",
+            "wireless",
+        }
+    ),
+    frozenset({"book", "books", "kindle", "magazine", "music", "movie", "dvd"}),
+    frozenset(
+        {
+            "clothing",
+            "shoes",
+            "jewelry",
+            "apparel",
+            "fashion",
+            "watch",
+            "watches",
+            "handbag",
+            "luggage",
+        }
+    ),
+    frozenset(
+        {
+            "grocery",
+            "food",
+            "gourmet",
+            "beverage",
+            "coffee",
+            "tea",
+            "snack",
+            "supplement",
+            "vitamin",
+        }
+    ),
+    frozenset({"automotive", "car", "truck", "motorcycle", "vehicle", "tire"}),
+    frozenset({"industrial", "scientific", "laboratory", "commercial"}),
+    frozenset({"baby", "infant", "toddler", "diaper", "nursery"}),
+    frozenset({"beauty", "skincare", "makeup", "cosmetic", "hair", "shampoo", "lotion"}),
+    # Home & Kitchen — distinct from Patio, Lawn & Garden below.
+    frozenset(
+        {
+            "kitchen",
+            "dining",
+            "home",
+            "furniture",
+            "decor",
+            "bedding",
+            "bath",
+            "cookware",
+            "appliances",
+        }
+    ),
+    # Patio, Lawn & Garden — outdoor/gardening, NOT the same department as kitchen.
+    frozenset({"patio", "lawn", "garden", "gardening"}),
+    frozenset({"pet", "pets", "dog", "cat", "aquarium"}),
+    frozenset({"toys", "toy", "games", "puzzle"}),
+    frozenset({"health", "household", "wellness"}),
+    frozenset({"sports", "outdoors", "fitness", "exercise", "cycling"}),
+    frozenset({"tools", "improvement", "hardware", "hvac"}),
+]
+
+_DEPT_STOP = {"the", "a", "an", "for", "in", "of", "and", "&", "or", "to", "with", "by", "us"}
+
+
+def _amazon_department(label: str | None) -> int | None:
+    """Map a category label to its Amazon top-level department index, or None if ambiguous.
+
+    Returns the index of the first department in ``_AMAZON_DEPARTMENTS`` whose
+    vocabulary overlaps the label's tokens; None when the label is empty or matches
+    no known department (treated as ambiguous by callers).
+    """
+    if not label:
+        return None
+    tokens = {t for t in re.split(r"[\s,&/>]+", label.lower()) if t and t not in _DEPT_STOP}
+    for i, dept in enumerate(_AMAZON_DEPARTMENTS):
+        if tokens & dept:
+            return i
+    return None
+
+
+def _ads_category_matches_niche(
+    browse_category: str | None,
+    core_keywords: list[str],
+    primary_category: str | None = None,
+) -> bool:
     """
     Return True when the Amazon Ads benchmark category is relevant to the analyzed niche.
 
-    Pass 1 (token overlap): if any non-stop token is shared, accept immediately.
-    Pass 2 (domain exclusion): accept unless *both* sides are identified as belonging
-    to distinct, incompatible product domains.  When either side is ambiguous the
-    benchmark is kept — it is better to use a slightly off CVR than to silently fall
-    back to a crude model estimate.
+    Strong check (authoritative): when the analyzed list's primary Amazon category
+    (``salesRankContextName``) is known, the decision is department equality — the
+    primary category comes from the actual products being analyzed, so if it and the
+    benchmark's browse_category resolve to distinct, known Amazon departments the
+    benchmark is for an unrelated category and MUST be rejected (e.g. primary
+    "Kitchen & Dining" vs. benchmark "Patio, Lawn & Garden").  When both departments
+    are known this check is decisive; keyword overlap cannot override it.
 
-    Rationale: pure token overlap is too strict.  Amazon taxonomy names use broad
-    geographic/functional terms ("Patio, Lawn & Garden") while product keywords are
-    specific ("pest control", "mosquito repellent") — no literal tokens overlap even
-    though the category is correct.  Token overlap stays as a cheap fast-accept path;
-    the domain-exclusion check handles the common mismatch cases.
+    Weak fallback (primary category unavailable/ambiguous): the older keyword heuristic:
+    - Pass 1 (token overlap): if any non-stop token is shared, accept immediately.
+    - Pass 2 (domain exclusion): accept unless *both* sides map to distinct known
+      departments.  When either side is ambiguous the benchmark is kept.
     """
-    if not browse_category or not core_keywords:
+    if not browse_category:
+        return False
+
+    cat_dept = _amazon_department(browse_category)
+
+    # ── Strong check: authoritative primary category decides when both are known ──
+    if primary_category:
+        primary_dept = _amazon_department(primary_category)
+        if cat_dept is not None and primary_dept is not None:
+            return cat_dept == primary_dept
+
+    # ── Weak fallback: keyword heuristic (primary category unavailable/ambiguous) ──
+    if not core_keywords:
         return False
 
     _STOP = {"the", "a", "an", "for", "in", "of", "and", "&", "or", "to", "with", "by"}
@@ -2691,69 +2804,10 @@ def _ads_category_matches_niche(browse_category: str | None, core_keywords: list
     if cat_tokens & kw_tokens:
         return True
 
-    # Pass 2: reject only when both sides are clearly from different known domains.
-    # Each frozenset identifies one product domain by its distinctive vocabulary.
-    _DOMAINS: list[frozenset[str]] = [
-        frozenset(
-            {
-                "electronics",
-                "computers",
-                "camera",
-                "phone",
-                "tv",
-                "audio",
-                "video",
-                "software",
-                "headphone",
-                "speaker",
-                "bluetooth",
-                "wireless",
-            }
-        ),
-        frozenset({"book", "books", "kindle", "magazine", "music", "movie", "dvd", "video game"}),
-        frozenset(
-            {
-                "clothing",
-                "shoes",
-                "jewelry",
-                "apparel",
-                "fashion",
-                "watch",
-                "watches",
-                "handbag",
-                "luggage",
-            }
-        ),
-        frozenset(
-            {
-                "grocery",
-                "food",
-                "gourmet",
-                "beverage",
-                "coffee",
-                "tea",
-                "snack",
-                "supplement",
-                "vitamin",
-            }
-        ),
-        frozenset({"automotive", "car", "truck", "motorcycle", "vehicle", "tire"}),
-        frozenset({"industrial", "scientific", "laboratory", "commercial"}),
-        frozenset({"baby", "infant", "toddler", "diaper", "nursery"}),
-        frozenset({"beauty", "skincare", "makeup", "cosmetic", "hair", "shampoo", "lotion"}),
-    ]
+    # Pass 2: reject only when both sides map to distinct known departments.
+    kw_dept = _amazon_department(" ".join(core_keywords))
 
-    def _domain_index(tokens: set[str]) -> int | None:
-        for i, domain in enumerate(_DOMAINS):
-            if tokens & domain:
-                return i
-        return None  # unknown / multi-domain → ambiguous
-
-    cat_domain = _domain_index(cat_tokens)
-    kw_domain = _domain_index(kw_tokens)
-
-    # Discard only when both sides are identified AND they disagree.
-    if cat_domain is not None and kw_domain is not None and cat_domain != kw_domain:
+    if cat_dept is not None and kw_dept is not None and cat_dept != kw_dept:
         return False
 
     return True
@@ -2818,8 +2872,10 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
     Fetch category-median click-to-purchase CVR for steady-state ACOS estimation.
 
     Primary:   Amazon Ads crossProgramBenchmarks → newToBrandPurchaseRateP50,
-               accepted only when browse_category overlaps the analyzed niche keywords
-               (guard against the store's ad account being in a different category).
+               accepted only when browse_category resolves to the same Amazon
+               department as the analyzed list's authoritative primary category
+               (salesRankContextName); guards against the store's ad account being
+               registered under an unrelated category.
     Fallback:  SellerSprite get_market_research → search_to_buy_ratio_pm / 1000
                (requires fetch_sellersprite_bsr to have run first so ss_node_id_path
                is already in ctx.cache).
@@ -2868,6 +2924,33 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
     source = "default_0.10"
     browse_category: str | None = None
 
+    # Resolve the authoritative primary Amazon category (salesRankContextName) from a
+    # representative ASIN once, up front.  This is the ground truth for validating the
+    # Amazon Ads benchmark (its ad account may be registered under a different
+    # category) and is reused by the power-law fallback below.  One call suffices —
+    # all BSR items share the same primary category.
+    _amazon_category: str | None = None
+    _rep_asin = next(
+        (
+            (item.get("ASIN") or item.get("asin") or "").strip().upper()
+            for item in items
+            if item.get("ASIN") or item.get("asin")
+        ),
+        None,
+    )
+    if _rep_asin:
+        try:
+            async with ProfitabilitySearchExtractor() as _ps_extractor:
+                _ps_products = await _ps_extractor.search_products(_rep_asin)
+            _ps_match = next(
+                (p for p in _ps_products if (p.get("asin") or "").upper() == _rep_asin),
+                _ps_products[0] if _ps_products else None,
+            )
+            if _ps_match:
+                _amazon_category = _ps_match.get("salesRankContextName") or None
+        except Exception as _e:
+            logger.warning(f"[fetch_category_cvr] ProfitabilitySearch for {_rep_asin}: {_e}")
+
     # ── Primary: Amazon Ads benchmark ────────────────────────────────────────
     try:
         ads_result = await AmazonAdsClient(store_id=store_id).get_category_cvr_benchmark(
@@ -2878,7 +2961,7 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
         raw_cpc_p50 = ads_result.get("cpc_p50")
 
         if median_cvr and 0 < median_cvr < 1:
-            if _ads_category_matches_niche(browse_category, core_keywords):
+            if _ads_category_matches_niche(browse_category, core_keywords, _amazon_category):
                 cvr = median_cvr
                 ads_cpc_p50 = raw_cpc_p50  # only trust CPC when category matched
                 source_type = _CVR_SRC_ADS
@@ -2894,7 +2977,8 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
             else:
                 logger.warning(
                     f"[fetch_category_cvr] Amazon Ads browse_category={browse_category!r} "
-                    f"does not match niche keywords {core_keywords}; "
+                    f"does not match primary category={_amazon_category!r} "
+                    f"(niche keywords {core_keywords}); "
                     f"discarding benchmark CVR and CPC (raw_cpc=${raw_cpc_p50})"
                 )
     except Exception as e:
@@ -2922,32 +3006,9 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
         ]
         _median_price = statistics.median(_raw_prices) if _raw_prices else 25.0
 
-        # Resolve the primary Amazon category name from a representative ASIN so
-        # _model_default_cvr can use the authoritative salesRankContextName string
+        # Reuse the authoritative primary Amazon category (salesRankContextName)
+        # resolved up front so _model_default_cvr can scale by category multiplier
         # (e.g. "Pet Supplies > Dogs") instead of relying solely on keyword matching.
-        # One call suffices — all BSR items share the same primary category.
-        _amazon_category: str | None = None
-        _rep_asin = next(
-            (
-                (item.get("ASIN") or item.get("asin") or "").strip().upper()
-                for item in items
-                if item.get("ASIN") or item.get("asin")
-            ),
-            None,
-        )
-        if _rep_asin:
-            try:
-                async with ProfitabilitySearchExtractor() as _ps_extractor:
-                    _ps_products = await _ps_extractor.search_products(_rep_asin)
-                _ps_match = next(
-                    (p for p in _ps_products if (p.get("asin") or "").upper() == _rep_asin),
-                    _ps_products[0] if _ps_products else None,
-                )
-                if _ps_match:
-                    _amazon_category = _ps_match.get("salesRankContextName") or None
-            except Exception as _e:
-                logger.warning(f"[fetch_category_cvr] ProfitabilitySearch for {_rep_asin}: {_e}")
-
         cvr = _model_default_cvr(_median_price, _amazon_category)
         source_type = _CVR_SRC_POWER_LAW
         source = (
