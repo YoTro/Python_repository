@@ -40,6 +40,12 @@
       "is_alias": false,
       "is_deprecated": false
     },
+    "deepseek-v4-flash-vision-exp": {
+      "canonical_id": "deepseek-v4-flash",
+      "is_alias": true,
+      "is_deprecated": false,
+      "note": "Experimental vision variant; priced identically to deepseek-v4-flash. Aliased to the deepseek-v4-flash canonical id so it inherits the same lookup keys (standard / *_peak / *_2026_08_16) with no price duplication."
+    },
     "deepseek-v4-pro": {
       "canonical_id": "deepseek-v4-pro",
       "is_alias": false,
@@ -269,6 +275,9 @@
       "max_output_tokens": 8192
     },
     "deepseek-v4-flash": {
+      "max_output_tokens": 393216
+    },
+    "deepseek-v4-flash-vision-exp": {
       "max_output_tokens": 393216
     },
     "deepseek-v4-pro": {
