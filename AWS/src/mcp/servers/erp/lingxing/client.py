@@ -324,6 +324,177 @@ class LingxingClient(ERPClient):
         )
         return records
 
+    # ── Product management search ─────────────────────────────────────────────
+
+    def search_product(
+        self,
+        search_value: str,
+        search_field: str = "sku",
+        search_field_time: str = "create_time",
+        sort_field: str = "create_time",
+        sort_type: str = "desc",
+        status: list[str] | None = None,
+        product_type: list[int] | None = None,
+        length: int = 20,
+        fetch_all: bool = True,
+        **kwargs,
+    ) -> list[dict[str, Any]]:
+        """
+        Search local products in Lingxing Product Management.
+
+        Endpoint: POST /api/product/lists (erp.lingxing.com)
+
+        Parameters
+        ----------
+        search_value     : text value to match against ``search_field``.
+        search_field     : dimension to search. Valid values:
+                             "sku"                            (default)
+                             "sku_identifier"
+                             "msku"
+                             "product_name"
+                             "model"
+                             "description"
+                             "customs_clearance_internal_code"
+        search_field_time: date field for time-based filtering (default "create_time").
+        sort_field       : field to sort by (default "create_time").
+        sort_type        : "desc" (default) or "asc".
+        status           : list of product status filters (default: all).
+        product_type     : list of product type ids (default [1, 2]).
+        length           : rows per page (default 20).
+        fetch_all        : auto-paginate to collect all records (default True).
+
+        Returns
+        -------
+        List of product record dicts. Each record contains the full product
+        detail from Product Management, including (non-exhaustive):
+
+            id                        : Lingxing internal product id
+            sku                       : local SKU
+            sku_identifier            : SKU identifier
+            product_name              : product name
+            model                     : model / spec
+            spu, spu_name             : SPU code and name
+            brand_name                : brand
+            category_name             : category
+            pic_url                   : main image URL
+            status, status_text       : status code + label (e.g. 1 / "在售")
+            open_status               : listing-open status
+            product_type              : product type id
+            is_combo                  : 1 = bundle/combo product
+            unit                      : product unit (e.g. "kg")
+            cg_price                  : purchase/cost price
+            cg_delivery               : purchase lead time (days)
+            cg_transport_costs        : transport cost
+            cg_product_gross_weight   : gross weight (+ *_unit fields)
+            cg_package_length/width/height, cg_box_length/width/height, cg_box_pcs,
+            cg_box_weight             : packaging & carton dimensions/weight
+            supplier_name, primary_supplier_id : supplier info
+            quote_step_prices         : tiered quote prices
+            product_creator_realname, product_developer, cg_opt_username : owner names
+            create_time, update_time  : timestamps ("YYYY-MM-DD HH:MM")
+            custom_fields             : dict of custom attributes {id: {name, val, val_text, ...}}
+            is_matched_listing, is_matched_alibaba(_text) : matching flags
+            sonProducts, comboProducts, global_tags, logistics, clearance_price : related data
+
+        Returns an empty list when nothing matches.
+
+        Note: the API signals success with ``code == 1`` (not 0) and returns
+        ``list``/``total`` at the top level of the response body.
+        """
+        _seq_counter = [0]
+
+        def _extract(resp: dict) -> tuple[list, int]:
+            """Pull (records, total) from a /api/product/lists response.
+
+            The endpoint returns ``list``/``total`` at the top level, but fall
+            back to a nested ``data`` container for robustness.
+            """
+            records = resp.get("list")
+            total = resp.get("total")
+            if records is None:
+                raw = resp.get("data", {})
+                if isinstance(raw, dict):
+                    records = raw.get("list", raw.get("data", []))
+                    if total is None:
+                        total = raw.get("total", 0)
+                elif isinstance(raw, list):
+                    records = raw
+            if not isinstance(records, list):
+                records = []
+            if not isinstance(total, int):
+                total = len(records)
+            return records, total
+
+        def _build_payload(offset: int) -> dict:
+            _seq_counter[0] += 1
+            return {
+                "search_field_time": search_field_time,
+                "product_creator_uid": [],
+                "product_developer_uid": [],
+                "permission_uid": [],
+                "cg_opt_uid": [],
+                "supplier_id": [],
+                "sort_field": sort_field,
+                "sort_type": sort_type,
+                "search_field": search_field,
+                "search_value": search_value,
+                "attribute": [],
+                "status": status or [],
+                "open_status": "",
+                "gtag_ids": "",
+                "senior_search_list": "[]",
+                "single_product_id": [],
+                "is_matched_listing": "",
+                "is_matched_alibaba": "",
+                "relation_aux": "",
+                "is_have_pic": "",
+                "cg_package": "",
+                "cg_product_gross_weight": {"left": "", "right": "", "symbol": "gt"},
+                "cg_price": {"left": "", "right": "", "symbol": "gt"},
+                "cg_transport_costs": {
+                    "left": "",
+                    "right": "",
+                    "symbol": "gt",
+                    "country_code": "US",
+                },
+                "offset": offset,
+                "is_combo": "",
+                "length": length,
+                "is_aux": 0,
+                "product_type": product_type or [1, 2],
+                "selected_product_ids": "",
+                "req_time_sequence": f"/api/product/lists$${_seq_counter[0]}",
+            }
+
+        path = "/api/product/lists"
+        resp = self._erp_request(path, _build_payload(0))
+        if not resp:
+            return []
+
+        # Response: {"code": 1, "msg": "操作成功", "total": N, "list": [...]}
+        records, total = _extract(resp)
+
+        if not fetch_all:
+            logger.info(
+                f"search_product: {len(records)}/{total} records ({search_field}={search_value})"
+            )
+            return records
+
+        fetched = len(records)
+        while fetched < total:
+            next_resp = self._erp_request(path, _build_payload(fetched))
+            page_data, _ = _extract(next_resp)
+            if not page_data:
+                break
+            records.extend(page_data)
+            fetched += len(page_data)
+
+        logger.info(
+            f"search_product: fetched {len(records)}/{total} records "
+            f"({search_field}={search_value})"
+        )
+        return records
+
     # ── Ad report ─────────────────────────────────────────────────────────────
 
     def get_sp_campaign_ad_report(

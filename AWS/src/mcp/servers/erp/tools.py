@@ -55,6 +55,20 @@ async def handle_erp_tool(name: str, arguments: dict) -> list[TextContent]:
                 ovs_start_field=arguments.get("ovs_start_field", "overseas_ship_date"),
                 ovs_end_field=arguments.get("ovs_end_field", "fba_received_date"),
             )
+        elif name == "erp_product_search":
+            status_raw = arguments.get("status")
+            ptype_raw = arguments.get("product_type")
+            result = client.search_product(
+                search_value=arguments["search_value"],
+                search_field=arguments.get("search_field", "sku"),
+                search_field_time=arguments.get("search_field_time", "create_time"),
+                sort_field=arguments.get("sort_field", "create_time"),
+                sort_type=arguments.get("sort_type", "desc"),
+                status=status_raw if isinstance(status_raw, list) else None,
+                product_type=ptype_raw if isinstance(ptype_raw, list) else None,
+                length=int(arguments.get("length", 20)),
+                fetch_all=bool(arguments.get("fetch_all", True)),
+            )
         elif name == "erp_sp_campaign_ad_report":
             asin_raw = arguments.get("asin")
             result = client.get_sp_campaign_ad_report(
@@ -225,6 +239,86 @@ erp_tools = [
         },
     ),
     Tool(
+        name="erp_product_search",
+        description=(
+            "Search local products in Lingxing Product Management. "
+            "Match a text value against one dimension (SKU, MSKU, product name, model, etc.) "
+            "and return the matching product records with their full details. "
+            "Auto-paginates to return all matches by default. "
+            "Returns a JSON array of product records; each record includes: "
+            "id, sku, sku_identifier, product_name, model, spu/spu_name, brand_name, "
+            "category_name, pic_url (main image), status/status_text (e.g. 1/'在售'), "
+            "open_status, product_type, is_combo (1=bundle), unit, cg_price (cost), "
+            "cg_delivery (purchase lead-time days), cg_transport_costs, "
+            "cg_product_gross_weight, packaging/carton dims (cg_package_*, cg_box_*), "
+            "supplier_name, quote_step_prices, owner names "
+            "(product_creator_realname/product_developer/cg_opt_username), "
+            "create_time/update_time, custom_fields (dict of custom attributes), "
+            "is_matched_listing / is_matched_alibaba(_text), and related data "
+            "(sonProducts, comboProducts, global_tags, logistics, clearance_price). "
+            "Returns an empty array when nothing matches. "
+            "Supported providers: lingxing."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "search_value": {
+                    "type": "string",
+                    "description": "Text value to match against search_field",
+                },
+                "search_field": {
+                    "type": "string",
+                    "enum": [
+                        "sku",
+                        "sku_identifier",
+                        "msku",
+                        "product_name",
+                        "model",
+                        "description",
+                        "customs_clearance_internal_code",
+                    ],
+                    "description": "Dimension to search. Default: sku.",
+                },
+                "search_field_time": {
+                    "type": "string",
+                    "description": "Date field for time-based filtering. Default: create_time.",
+                },
+                "sort_field": {
+                    "type": "string",
+                    "description": "Field to sort by. Default: create_time.",
+                },
+                "sort_type": {
+                    "type": "string",
+                    "enum": ["desc", "asc"],
+                    "description": "Sort direction. Default: desc.",
+                },
+                "status": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter by product status list (optional). Omit for all.",
+                },
+                "product_type": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Filter by product type ids (optional). Default: [1, 2].",
+                },
+                "length": {
+                    "type": "integer",
+                    "description": "Rows per page (default: 20)",
+                },
+                "fetch_all": {
+                    "type": "boolean",
+                    "description": "Auto-paginate and merge all pages (default: true)",
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "ERP provider name (default: lingxing)",
+                },
+            },
+            "required": ["search_value"],
+        },
+    ),
+    Tool(
         name="erp_sp_campaign_ad_report",
         description=(
             "Query Sponsored Products campaign-level ad performance report from Lingxing ERP. "
@@ -291,6 +385,7 @@ _TOOL_RETURNS = {
     "erp_sales_orders": "ERP recent sales order list with qty and dates",
     "erp_shipment_lead_time": "Quarterly lead-time distributions: sea transit days + overseas-to-FBA days (p25/median/p75/p90)",
     "erp_sp_campaign_ad_report": "SP campaign ad report: clicks, impressions, orders, spends, sales, acos, roas per campaign/day",
+    "erp_product_search": "Product Management search results: matching product records with full details",
 }
 
 for tool in erp_tools:
