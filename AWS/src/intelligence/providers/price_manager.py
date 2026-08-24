@@ -281,14 +281,19 @@ class PriceManager:
                 )
 
             # Peak-hour surcharge, effective 2026-07-15: 2x multiplier during
-            # 01:00-04:00 and 06:00-10:00 UTC (see metadata.peak_pricing in
-            # deepseek_pricing.json). Select the *_peak tier variant when applicable.
+            # 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday only
+            # (see metadata.peak_pricing in deepseek_pricing.json). All other
+            # hours — and all day Saturday/Sunday — are off-peak. Select the
+            # *_peak tier variant only inside a weekday peak window.
             _PEAK_WINDOWS_UTC = (
                 (_dt.time(1, 0), _dt.time(4, 0)),
                 (_dt.time(6, 0), _dt.time(10, 0)),
             )
             now_time = now_utc.time()
-            is_peak = any(start <= now_time < end for start, end in _PEAK_WINDOWS_UTC)
+            is_weekday = now_utc.weekday() < 5  # Mon=0 .. Fri=4; Sat/Sun excluded
+            is_peak = is_weekday and any(
+                start <= now_time < end for start, end in _PEAK_WINDOWS_UTC
+            )
             ds_tier = f"{ds_base_tier}_peak" if is_peak else ds_base_tier
 
             in_key = f"{canonical_model}#{ds_tier}#input"

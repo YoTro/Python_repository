@@ -16,12 +16,14 @@
       "cache_note": "Server-side KV cache. Cache hits billed at input_cache_hit price (\"cache miss\" in the official pricing table = the plain input price).",
       "v4_pro_discount_note": "deepseek-v4-pro's 75%-off promotion ended 2026-05-31T15:59:00Z; the standard and undiscounted tiers are the same post-promotion official price and are kept numerically identical in this file. This distinction is superseded by price_update_2026_08_16_note below once that cutover takes effect.",
       "price_update_2026_08_16_note": "A new peak/off-peak pricing structure takes effect 2026-08-16T16:00:00Z, verified directly against DeepSeek's official pricing table on 2026-08-13 (ahead of the cutover). Off-peak rates are exactly half the peak rates, same peak windows as the existing standard tier. Stored under standard_2026_08_16 / standard_2026_08_16_peak — PriceManager switches to these once 'now' reaches the cutover, for both deepseek-v4-flash and deepseek-v4-pro (the v4-pro promotion/undiscounted distinction becomes moot once this supersedes it). Until the cutover, standard / standard_peak / undiscounted / undiscounted_peak remain the currently-billed prices — do not overwrite them early.",
-      "peak_pricing_note": "Effective 2026-07-15, peak-hour surcharge applies: all billing dimensions cost 2x the off-peak rate. Peak hours (UTC): 01:00–04:00 and 06:00–10:00 (UTC+8: 09:00–12:00 and 14:00–18:00). Use *_peak tier variants for peak-hour cost estimation. Same windows apply to the 2026-08-16 pricing update."
+      "peak_pricing_note": "Effective 2026-07-15, peak-hour surcharge applies: all billing dimensions cost 2x the off-peak rate. Peak hours (UTC): 01:00–04:00 and 06:00–10:00 (UTC+8: 09:00–12:00 and 14:00–18:00), Monday through Friday only — all other hours, and all day Saturday/Sunday, are off-peak (off-peak = half the peak rate). Use *_peak tier variants for peak-hour cost estimation. Same windows and weekday restriction apply to the 2026-08-16 pricing update."
     },
     "peak_pricing": {
       "effective_date": "2026-07-15",
       "multiplier": 2.0,
       "applies_to": "all billing dimensions (input, input_cache_hit, output) across all tiers",
+      "peak_days": "Monday through Friday only; Saturday and Sunday are entirely off-peak",
+      "off_peak_note": "Off-peak rate = half the peak rate. The base (non-_peak) tiers store the off-peak price.",
       "peak_windows_utc": [
         {"start": "01:00", "end": "04:00"},
         {"start": "06:00", "end": "10:00"}
@@ -37,6 +39,12 @@
       "canonical_id": "deepseek-v4-flash",
       "is_alias": false,
       "is_deprecated": false
+    },
+    "deepseek-v4-flash-vision-exp": {
+      "canonical_id": "deepseek-v4-flash",
+      "is_alias": true,
+      "is_deprecated": false,
+      "note": "Experimental vision variant; priced identically to deepseek-v4-flash. Aliased to the deepseek-v4-flash canonical id so it inherits the same lookup keys (standard / *_peak / *_2026_08_16) with no price duplication."
     },
     "deepseek-v4-pro": {
       "canonical_id": "deepseek-v4-pro",
@@ -267,6 +275,9 @@
       "max_output_tokens": 8192
     },
     "deepseek-v4-flash": {
+      "max_output_tokens": 393216
+    },
+    "deepseek-v4-flash-vision-exp": {
       "max_output_tokens": 393216
     },
     "deepseek-v4-pro": {
