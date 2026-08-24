@@ -2992,7 +2992,16 @@ async def _fetch_category_cvr(items: list[dict], ctx: Any) -> list[dict]:
         if ss_cvr and 0 < ss_cvr < 1:
             cvr = ss_cvr
             source_type = _CVR_SRC_SS
-            source = f"sellersprite_bsr_snapshot median conversionRate ({cvr:.2%})"
+            # SellerSprite's conversionRate here surfaces Amazon Marketplace Product
+            # Guidance's 30-day search-to-purchase ratio (number of times the ASIN was
+            # purchased ÷ total searches on it), taken as the median across the BSR
+            # snapshot. Describe it by that true provenance, not the SellerSprite field.
+            source = (
+                f"Amazon Marketplace Product Guidance 30-day search-to-purchase ratio "
+                f"(times these ASINs were purchased ÷ total searches on them), "
+                # Displayed in per-mille (‰) — the native unit for this ratio.
+                f"median across BSR ASINs via SellerSprite ({cvr * 1000:.1f}‰)"
+            )
             logger.info(f"[fetch_category_cvr] SellerSprite CVR={cvr:.2%} — {source}")
 
     # ── Last resort: price-based power-law model ─────────────────────────────
@@ -4978,9 +4987,26 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
     # past 3 months.  Already read into _rr_raw above; aliased here for the output dict.
     _ss_return_rate_pct: float | None = _rr_raw
 
-    # If bimodal, compute capital against each tier's median separately
-    # so the operator can see how the budget changes by tier choice.
-    _cap_price = median_price  # overall median — may be in the gap if bimodal
+    # If bimodal, the overall median falls in the empty valley between the two
+    # price clusters and matches no real product position. Size the headline
+    # launch capital to the HIGHER (premium) tier instead: it is the larger
+    # capital commitment, so budgeting to it avoids under-funding a premium-tier
+    # entry, and it carries more margin headroom to absorb PPC during ranking.
+    # The per-tier breakdown below still lets the operator pick the budget tier.
+    _cap_price = median_price  # overall median — used only when NOT bimodal
+    _cap_basis_tier = ""  # non-empty label only when bimodal (names the chosen tier)
+    if price_dist.get("is_bimodal") and price_dist.get("tiers"):
+        _prem_tier, _prem_med = None, -1.0
+        for _t in price_dist["tiers"]:
+            try:
+                _tm = float(str(_t.get("median", "")).lstrip("$"))
+            except ValueError:
+                continue
+            if _tm > _prem_med:
+                _prem_med, _prem_tier = _tm, _t
+        if _prem_tier is not None:
+            _cap_price = _prem_med
+            _cap_basis_tier = _prem_tier.get("label", "Premium tier")
     # Gross units to ORDER: net target / (1 − return_rate).  Returns consume inventory
     # that was bought at full COGS but cannot be resold, so the sourcing cost must
     # scale with gross units.  PPC and referral fees are computed on net units sold
@@ -5002,7 +5028,7 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
                 t_med = float(t_median_str.lstrip("$"))
             except ValueError:
                 continue
-            t_inv = int(_CAP_UNITS * t_med * _CAP_COGS)
+            t_inv = int(_cap_gross_units * t_med * _CAP_COGS)  # gross-up for returns, as headline
             t_ppc = int(_CAP_UNITS * t_med * _CAP_ACOS)
             t_fees = int(_CAP_UNITS * t_med * _CAP_FEES)
             t_sub = t_inv + t_ppc + t_fees + _cap_inbound + _CAP_OVERHEAD
@@ -5445,6 +5471,8 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "review_to_sales_rate": review_to_sales_rate_str,
             "review_to_sales_growth_rate": review_to_sales_growth_str,
             "recommended_capital": f"${_cap_total:,}",
+            "capital_basis_price": f"${_cap_price:.2f}",
+            "capital_basis_tier": _cap_basis_tier,
             "capital_inventory": f"${_cap_inv:,}",
             "capital_ppc": f"${_cap_ppc:,}",
             "capital_fees": f"${_cap_fees:,}",
@@ -5559,7 +5587,13 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
             "contamination_warning": contamination_warning,
             "contamination_stats": json.dumps(contamination_stats, ensure_ascii=False),
             # Steady-state ad burden (no owned product required — derived from market data)
-            "category_cvr": f"{_category_cvr:.1%}",
+            # Marketplace Product Guidance search-to-purchase ratio is conventionally
+            # shown in per-mille (‰); keep the % in parens for the ACOS formula readers.
+            "category_cvr": (
+                f"{_category_cvr * 1000:.1f}‰ ({_category_cvr:.2%})"
+                if ctx.cache.get("category_cvr_source_type") == _CVR_SRC_SS
+                else f"{_category_cvr:.1%}"
+            ),
             "category_cvr_source": ctx.cache.get("category_cvr_source", "N/A"),
             "median_cpc": f"${_median_cpc:.2f}" if _median_cpc else "N/A",
             "estimated_steady_state_acos": f"{_estimated_acos:.0%}" if _estimated_acos else "N/A",

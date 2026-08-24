@@ -99,6 +99,8 @@ required_vars:
 
 optional_vars:
   core_keywords: "(none)"
+  capital_basis_price: "the niche median price"
+  capital_basis_tier: ""
   brand_social_data: "[]"
   concentration_data: "{}"
   fulfillment_distribution: "{}"
@@ -144,6 +146,12 @@ template: |
     sections):
       1. 💰 Capital Plan · 2. 📈 Ad Economics · 3. ⚔️ Competition
       4. 🔄 BSR Metabolism · 5. 🛡️ Review Integrity · 6. 📦 Fulfillment & Returns · 7. 🎯 Final Scores
+    KEYWORD ECONOMICS EXCEPTION (the ONLY permitted interruption of the diagnostic-table sequence): the two
+    standalone keyword tables — '### Keyword Bid Recommendations' and '### Keyword Click Concentration' (both
+    defined under DYNAMIC BENCHMARKS) — render immediately AFTER table 2 ('📈 Ad Economics') and BEFORE table 3
+    ('⚔️ Competition'), because they are ad-economics evidence. They are STANDALONE tables placed between two
+    diagnostic tables — NEVER rows folded inside the '📈 Ad Economics' table or any other diagnostic table. Do NOT
+    place them anywhere else (not at the end of the diagnostic block, not after Strategic Insights).
     Every metric that an instruction below still phrases as 'render in the Data Breakdown table' MUST now be placed
     in its designated Layer-2 diagnostic table or Layer-1 snapshot row per that instruction's mapping. NO metric may
     be rendered in BOTH layers — the snapshot summarizes the verdict, the diagnostic table carries the proof.
@@ -170,8 +178,9 @@ template: |
     Row 2  'Monopoly Score' — '{monopoly_score}/100 ({monopoly_status})' + one-line entry-difficulty reading.
     Row 3  'Market Size' — '{niche_monthly_units} units/mo · {niche_monthly_gmv} GMV' + one-line scale reading
            (see UNIT/REVENUE RULE for the exact cell format).
-    Row 4  'Required Capital' — '{recommended_capital}' + the chosen price tier (name the bimodal tier when
-           tier_capitals is non-empty) + what the budget covers.
+    Row 4  'Required Capital' — '{recommended_capital}' + the chosen price tier + what the budget covers. When
+           tier_capitals is non-empty (bimodal market), state that this figure is sized to the higher price band —
+           the '{capital_basis_tier}' — not the overall median.
     Row 5  'Margin Feasibility' — from the STEADY-STATE AD BURDEN block: cite estimated_steady_state_acos and
            breakeven_acos side by side with the ad_burden_verdict conclusion, e.g.
            '🚨 ACOS 34% vs breakeven 22% — PPC-led entry is structurally unprofitable' / '⚠️ marginal' / '✅ profitable'.
@@ -212,13 +221,14 @@ template: |
 
   CAPITAL TABLE RULE: In the '💰 Capital Plan' diagnostic table (Layer 2), Investment Capital MUST appear as SIX consecutive rows — never collapsed into one:
     Row 1: Metric='Investment Capital (Total)' | Value='{recommended_capital}' | Definition='Subtotal × 1.20 working-capital buffer'
-    Row 2: If capital_gross_units == capital_units (no return rate data): Metric='  └ Inventory ({capital_units} units, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_units} units × {niche_median_price} × {capital_cogs_pct} COGS'. If capital_gross_units ≠ capital_units (return rate available): Metric='  └ Inventory ({capital_gross_units} gross units ordered to net {capital_units} sold, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_gross_units} gross units × {niche_median_price} × {capital_cogs_pct} COGS (grossed up for {return_rate_pct} return rate)'
-    Row 3: Metric='  └ PPC Seed ({capital_acos_pct} ACOS on {capital_units} units, ~{capital_sell_months}mo sell-through)' | Value='{capital_ppc}' | Definition='{capital_units} units × {niche_median_price} × {capital_acos_pct} ACOS'
-    Row 4: Metric='  └ Platform Fees ({capital_fees_pct} on {capital_units} units)' | Value='{capital_fees}' | Definition='{capital_units} units × {niche_median_price} × {capital_fees_pct} (referral {referral_fee_pct} [{referral_fee_source}] + FBA — {fba_fee_source})'
+    Row 2: If capital_gross_units == capital_units (no return rate data): Metric='  └ Inventory ({capital_units} units, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_units} units × {capital_basis_price} × {capital_cogs_pct} COGS'. If capital_gross_units ≠ capital_units (return rate available): Metric='  └ Inventory ({capital_gross_units} gross units ordered to net {capital_units} sold, COGS {capital_cogs_pct})' | Value='{capital_inventory}' | Definition='{capital_gross_units} gross units × {capital_basis_price} × {capital_cogs_pct} COGS (grossed up for {return_rate_pct} return rate)'
+    Row 3: Metric='  └ PPC Seed ({capital_acos_pct} ACOS on {capital_units} units, ~{capital_sell_months}mo sell-through)' | Value='{capital_ppc}' | Definition='{capital_units} units × {capital_basis_price} × {capital_acos_pct} ACOS'
+    Row 4: Metric='  └ Platform Fees ({capital_fees_pct} on {capital_units} units)' | Value='{capital_fees}' | Definition='{capital_units} units × {capital_basis_price} × {capital_fees_pct} (referral {referral_fee_pct} [{referral_fee_source}] + FBA — {fba_fee_source})'
+    (NOTE — capital_basis_price: when the market is NOT bimodal this equals {niche_median_price}; when the market IS bimodal it equals the HIGHER (premium) price tier's median, because the headline Investment Capital is deliberately sized to the premium tier per the BIMODAL CAPITAL RULE below. Row 5's FBA Inbound Freight stays anchored to {niche_median_price} because inbound freight is a flat per-unit dollar cost, unaffected by tier choice.)
     Row 5: Metric='  └ FBA Inbound Freight ({inbound_fee_pct} of median price, {capital_units} units)' | Value='{capital_inbound}' | Definition='AGL SZX→US FC, {inbound_freight_detail}; {capital_units} units × {niche_median_price} × {inbound_fee_pct}'
     Row 6: Metric='  └ Fixed Overhead' | Value='{capital_overhead}' | Definition='Photography, A+ content, listing'
   NEVER show a single Investment Capital row without these five sub-rows.
-  BIMODAL CAPITAL RULE: tier_capitals={tier_capitals}. If tier_capitals is non-empty (bimodal market detected), append a second capital table immediately after the '💰 Capital Plan' diagnostic table under the sub-heading '### Capital by Price Tier' with columns: Tier | Tier Median | Inventory | PPC | Fees | FBA Inbound | Overhead | Total. Warn the operator: 'The base Investment Capital above uses the overall median price which falls in the gap between tiers — choose the tier you plan to enter and use the corresponding Total as your actual budget.'
+  BIMODAL CAPITAL RULE: tier_capitals={tier_capitals}, capital_basis_tier={capital_basis_tier}. If tier_capitals is non-empty (bimodal market detected), you MUST state clearly, immediately below the '💰 Capital Plan' table: 'This market is bimodal. The headline Investment Capital above is deliberately sized to the **{capital_basis_tier}** (the higher price band), NOT the overall median — the overall median of a bimodal market falls in the empty valley between the two price clusters and matches no real product position. The premium tier is the larger capital commitment and carries more margin headroom to absorb PPC during ranking, so it is the prudent budgeting anchor.' Then append a second capital table immediately after that statement under the sub-heading '### Capital by Price Tier' with columns: Tier | Tier Median | Inventory | PPC | Fees | FBA Inbound | Overhead | Total. The {capital_basis_tier} row's Total reconciles with the headline Investment Capital. Add: 'If you intend to enter the budget tier instead, use that tier's Total from this table as your actual budget.'
   Category Return Rate: {return_rate_pct} (source: Amazon Marketplace Product Guidance via SellerSprite — avg_return_rate_pct is the average return rate of same-type sub-categories over the past 3 months; return rate = returns ÷ total purchases in the past 3 months; e.g. under Shoes the figure is averaged across 18 sub-categories such as Women's Road Running and Men's Road Running). Add one row to the '📦 Fulfillment & Returns' diagnostic table (Layer 2): Metric='Category Return Rate' | Value='{return_rate_pct}' | Definition='Avg return rate of same-type sub-categories, past 3 months (Amazon Marketplace Product Guidance); >5% warrants a return-buffer reserve'. If return_rate_pct is 'N/A', omit this row. The snapshot 'Logistics Risk' row (Row 12) cites this number together with the FBA share.
   Primary Niche: **{main_keyword}** | Related Terms: {core_keywords}
   Data Confidence (R²): **{data_confidence_r2}**
@@ -229,9 +239,9 @@ template: |
   - Est. Niche Monthly GMV: {niche_monthly_gmv} (= unit_sales × median_price; use as market-size proxy)
   UNIT/REVENUE RULE: '{niche_monthly_units}' is a unit COUNT — NEVER prefix it with $. '{niche_monthly_gmv}' is revenue — always use the $ prefix. The snapshot 'Market Size' row (Row 3) must report BOTH numbers in its Seller Read cell: monthly units (integer, e.g. 40,694 units) AND GMV (dollar figure, e.g. $702,400). NEVER merge them into a single '$...' figure; never drop either.
   - Keyword Bid Recommendations: {bid_insight}
-    Structure: {{LEGACY_FOR_SALES: [...], AUTO_FOR_SALES: [...]}}. Each entry has targetingExpression (keyword + matchType) and suggestedBid (startBid / endBid). Render as a separate markdown table (NOT inside the snapshot or any diagnostic table) with header `| Keyword | Match Type | Manual CPC (LEGACY) | Auto CPC (AUTO) |` and separator `| :--- | :--- | :--- | :--- |`. One row per keyword; merge LEGACY and AUTO bids for the same keyword onto one row. LEGACY = flat manual bid. AUTO = Amazon dynamic estimate (usually higher). A large LEGACY→AUTO gap signals the platform rates this keyword as highly contested.
+    Structure: {{LEGACY_FOR_SALES: [...], AUTO_FOR_SALES: [...]}}. Each entry has targetingExpression (keyword + matchType) and suggestedBid (startBid / endBid). PLACEMENT (mandatory — per the KEYWORD ECONOMICS EXCEPTION in the diagnostic-table layout rule above): render as a STANDALONE markdown table under the sub-heading '### Keyword Bid Recommendations', positioned immediately after the '📈 Ad Economics' Layer-2 diagnostic table and before the '⚔️ Competition' table. It is a standalone table — NOT a row folded inside the '📈 Ad Economics' table, NOT inside the snapshot, and NOT inside any other diagnostic table. Header `| Keyword | Match Type | Manual CPC (LEGACY) | Auto CPC (AUTO) |` and separator `| :--- | :--- | :--- | :--- |`. One row per keyword; merge LEGACY and AUTO bids for the same keyword onto one row. LEGACY = flat manual bid. AUTO = Amazon dynamic estimate (usually higher). A large LEGACY→AUTO gap signals the platform rates this keyword as highly contested. If bid_insight has no keyword entries, omit this table and write 'CPC data unavailable — bid barrier analysis skipped' per the DATA QUALITY caveat rule.
   - Keyword Click Concentration: {keyword_click_concentration}
-    JSON array of {{keyword, top3_click_share, concentration, top_asin_brand, top_asin_click_share, phrase_cpc, exact_cpc, exact_phrase_gap}}. If non-empty, render as a compact table immediately after the Keyword Bid Recommendations table, under the sub-heading '### Keyword Click Concentration', with header `| Keyword | Top-3 Click Share | Concentration | #1 Brand | Brand Click Share | PHRASE CPC | EXACT CPC | EXACT/PHRASE Gap |` and separator `| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |`. KEYWORD LIMIT RULE: show at most 8 keywords, sorted by phrase_cpc descending; if the array has fewer than 5 entries, show all. Interpretation rules (apply in Strategic Insights — NEVER skip these when data is present):
+    JSON array of {{keyword, top3_click_share, concentration, top_asin_brand, top_asin_click_share, phrase_cpc, exact_cpc, exact_phrase_gap}}. If non-empty, render as a compact STANDALONE table immediately after the Keyword Bid Recommendations table (i.e. still between the '📈 Ad Economics' and '⚔️ Competition' diagnostic tables, per the KEYWORD ECONOMICS EXCEPTION above — NOT a row inside any diagnostic table), under the sub-heading '### Keyword Click Concentration', with header `| Keyword | Top-3 Click Share | Concentration | #1 Brand | Brand Click Share | PHRASE CPC | EXACT CPC | EXACT/PHRASE Gap |` and separator `| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |`. KEYWORD LIMIT RULE: show at most 8 keywords, sorted by phrase_cpc descending; if the array has fewer than 5 entries, show all. Interpretation rules (apply in Strategic Insights — NEVER skip these when data is present):
     • concentration='fragmented' (top-3 < 30% clicks): no incumbent lock-in on this keyword — flag as a low-resistance entry angle where a new listing can gain organic click share without displacing an entrenched brand.
     • concentration='concentrated' (top-3 > 50% clicks): incumbent lock-in — a new entrant must outbid or out-convert the dominant brand to appear meaningfully; flag as high barrier.
     • exact_phrase_gap > +30%: EXACT match commands a significant premium; flag as 'PHRASE-first strategy recommended — test keyword fit at lower CPC before committing to EXACT.'
@@ -282,8 +292,9 @@ template: |
 
   ### STEADY-STATE AD BURDEN
   Derived from market-level data only — no owned product required.
-  Formula: Estimated ACOS = median_cpc ÷ (median_price × category_cvr × (1 − return_rate)). When return_rate_pct is 'N/A' the (1 − return_rate) term is omitted (equals 1). Both CPC and CVR sourced from the Amazon Ads ecosystem for internal consistency. Returns reduce effective ad revenue per click because the sale is reversed after the ad spend is already sunk.
+  Formula: Estimated ACOS = median_cpc ÷ (median_price × category_cvr × (1 − return_rate)). When return_rate_pct is 'N/A' the (1 − return_rate) term is omitted (equals 1). Ideally both CPC and CVR come from the Amazon Ads ecosystem for internal consistency; when the Ads CVR benchmark is unavailable, category_cvr falls back to the Amazon Marketplace Product Guidance 30-day search-to-purchase ratio (via SellerSprite) or, as a last resort, a price-based power-law model — read the actual basis from {category_cvr_source} and reflect it per the CATEGORY CVR DEFINITION RULE below; do NOT assert CVR came from Amazon Ads when the source string says otherwise. Returns reduce effective ad revenue per click because the sale is reversed after the ad spend is already sunk.
   - Category CVR: {category_cvr} (source: {category_cvr_source})
+    CATEGORY CVR DEFINITION RULE (mandatory): the '📈 Ad Economics' Category CVR row's Definition cell must state the ACTUAL source, read verbatim-in-spirit from {category_cvr_source} — never default to 'Amazon Ads'. If {category_cvr_source} mentions 'Marketplace Product Guidance' / 'search-to-purchase' (the SellerSprite snapshot source), write: 'Amazon Marketplace Product Guidance 30-day search-to-purchase ratio (number of times these ASINs were purchased ÷ total searches on them), median across BSR ASINs via SellerSprite; expressed in per-mille (‰), the native unit for this ratio'. For this source the {category_cvr} Value already carries the ‰ figure (with the % equivalent in parentheses) — render it verbatim; do NOT convert it to a bare %. If it mentions 'Amazon Ads' / crossProgramBenchmarks, write: 'Amazon Ads category conversion benchmark (crossProgramBenchmarks)'. If it mentions 'power_law' / 'model', write: 'Price-based power-law model estimate — no live category CVR was available'. This one row's Definition MAY exceed the 100-char diagnostic-table limit in order to carry the full provenance.
   - Median CPC: {median_cpc}
   - Estimated Steady-State ACOS: {estimated_steady_state_acos}
   - Breakeven ACOS: {breakeven_acos} (= 1 − 30% COGS − {referral_fee_pct} referral [{referral_fee_source}] − {fba_fee_pct} FBA [{fba_fee_source}] − {inbound_fee_pct} FBA inbound freight [AGL SZX→US FC, {inbound_freight_detail}])
@@ -353,6 +364,10 @@ template: |
   9. Strategic Insights / Risk & Opportunity Assessment
   10. Actionable Prioritization
   If a triggered section-specific placement sentence conflicts with this list, this list wins.
+  NOTE: the two standalone keyword tables ('### Keyword Bid Recommendations' and '### Keyword Click Concentration')
+  are NOT '##' report sections and are intentionally absent from this list — they render inside the diagnostic-table
+  region immediately after the '📈 Ad Economics' table (KEYWORD ECONOMICS EXCEPTION above), i.e. BEFORE item 1 here.
+  This list does not override that placement.
 
   ### TOP ASIN EVIDENCE TABLE
   {top_asin_table}
@@ -442,7 +457,7 @@ template: |
   BIMODAL RULE: if 'is_bimodal' is true, the overall median is NOT representative — it falls in the gap between two clusters. You MUST:
     a) Add a '⚠️ Bimodal distribution detected' alert above the tables, citing the valley range from 'valley_range'.
     b) Render the 'tiers' array as a third table: Tier | Price Range | # Products | Share | Tier Median
-    c) State which tier the recommended_capital targets (it is always based on the overall median, which may be misleading — flag this explicitly).
+    c) State explicitly that recommended_capital is deliberately sized to the HIGHER (premium) price tier — the '{capital_basis_tier}' — NOT the overall median (which falls in the valley between tiers and matches no real product position). An operator who instead plans to enter the budget tier should use that tier's Total from the '### Capital by Price Tier' table as their actual budget.
     d) In the Strategic Insights section, analyse each tier separately: barrier, competitive intensity, and positioning advice differ by tier.
   If 'is_bimodal' is false, add one sentence on whether the distribution is skewed low, skewed high, or balanced, and the pricing implication.
 
