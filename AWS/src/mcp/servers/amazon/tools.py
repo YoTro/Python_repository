@@ -450,6 +450,16 @@ async def handle_amazon_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await client.get_catalog_item(asin=arguments["asin"])
         return _json_response(result)
 
+    if name == "get_sp_listings_item":
+        client = SPAPIClient(store_id=arguments.get("store_id"))
+        result = await client.get_listings_item(
+            sku=arguments["sku"],
+            seller_id=arguments.get("seller_id"),
+            included_data=arguments.get("included_data"),
+            marketplace_ids=arguments.get("marketplace_ids"),
+        )
+        return _json_response(result)
+
     if name == "get_fba_inventory_planning":
         client = SPAPIClient(store_id=arguments.get("store_id"))
         result = await client.get_fba_inventory_planning(
@@ -1255,6 +1265,46 @@ amazon_tools = [
         },
     ),
     Tool(
+        name="get_sp_listings_item",
+        description=(
+            "Fetch the seller's own listing for a SKU from Amazon Listings Items API "
+            "(2021-08-01). By default returns ALL datasets: per-marketplace summaries "
+            "(asin, productType, status, itemName, mainImage), attributes, offers (price), "
+            "fulfillment_availability, relationships (variations), product_types, procurement, "
+            "and the issues array with suppression/enforcement details. Derives two convenience "
+            "fields: suppressed (bool) and enforcement_actions (list, e.g. SEARCH_SUPPRESSED, "
+            "LISTING_SUPPRESSED, CATALOG_ITEM_REMOVED). Useful for diagnosing listing health."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "sku": {"type": "string", "description": "Seller SKU (vendor code) to look up."},
+                "seller_id": {
+                    "type": "string",
+                    "description": (
+                        "Selling partner / merchant token (e.g. 'A30LSDT2DLX4EH'). Falls back to "
+                        "AMAZON_SP_SELLER_ID_<store> or AMAZON_SP_SELLER_ID env var."
+                    ),
+                },
+                "included_data": {
+                    "type": "string",
+                    "description": (
+                        "Comma-separated datasets. Defaults to ALL. Valid values: summaries, "
+                        "attributes, issues, offers, fulfillmentAvailability, procurement, "
+                        "relationships, productTypes. Pass a subset to shrink the payload."
+                    ),
+                },
+                "marketplace_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Marketplace IDs to query. Defaults to the store's own marketplace.",
+                },
+                "store_id": {"type": "string", "description": "Store ID suffix (e.g. 'US')."},
+            },
+            "required": ["sku"],
+        },
+    ),
+    Tool(
         name="get_fba_inventory_planning",
         description=(
             "Request GET_FBA_INVENTORY_PLANNING_DATA from SP-API, poll until complete, "
@@ -1475,6 +1525,10 @@ _AMAZON_META = {
     "get_sp_catalog_item": (
         "DATA",
         "product metadata from Catalog API: title, brand, size, bullet points",
+    ),
+    "get_sp_listings_item": (
+        "DATA",
+        "seller's own listing from Listings Items API: summaries, attributes, offers, fulfillment, relationships, product types, procurement, issues, suppression/enforcement status",
     ),
     "get_fba_inventory_planning": (
         "DATA",

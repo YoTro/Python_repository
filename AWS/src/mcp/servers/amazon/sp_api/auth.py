@@ -79,6 +79,12 @@ class SPAPIAuth:
                 f"Unknown marketplace for store '{self.store_id}'. Set {marketplace_env}."
             )
 
+        # Seller ID (merchant token), from Seller Central → Settings → Account
+        # Info → Merchant Token. Optional — only APIs that address the seller
+        # directly (e.g. Listings Items) require it.
+        seller_env = f"AMAZON_SP_SELLER_ID_{self.store_id}"
+        self.seller_id = os.getenv(seller_env) or os.getenv("AMAZON_SP_SELLER_ID")
+
     def get_access_token(self) -> str:
         cache = self._token_cache.get(self.store_id)
         if cache and cache["expiry"] > datetime.now():

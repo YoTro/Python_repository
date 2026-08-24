@@ -10,6 +10,7 @@ from typing import Any
 import requests
 
 from src.core.errors import (
+    ConfigError,
     ErrorCode,
     ExtractorError,
     FatalError,
@@ -599,6 +600,66 @@ class SPAPIClient:
         data = await asyncio.to_thread(self._get, f"/catalog/2022-04-01/items/{asin}", params)
         return _parse_catalog_item(asin, data)
 
+    # ── Listings ───────────────────────────────────────────────────────────
+
+    # All datasets the Listings Items API exposes. Requested in full by default
+    # so the caller gets the complete listing picture in one call.
+    LISTINGS_ALL_DATA = (
+        "summaries,attributes,issues,offers,fulfillmentAvailability,"
+        "procurement,relationships,productTypes"
+    )
+
+    async def get_listings_item(
+        self,
+        sku: str,
+        seller_id: str | None = None,
+        included_data: str | None = None,
+        marketplace_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Listings Items API 2021-08-01 — getListingsItem.
+
+        Retrieves the seller's own listing details for a single SKU, including
+        per-marketplace summaries (asin, productType, status, itemName, image),
+        attributes, offers (price), fulfillment availability, relationships
+        (variations), product types, and — most useful for listing health — the
+        `issues` array with suppression/enforcement actions.
+
+        Rate limit: 5 req/s, burst 10.
+
+        Args:
+            sku:             The seller SKU (vendor code) to look up.
+            seller_id:       Selling partner / merchant token (e.g. "A30LSDT2DLX4EH").
+                             Defaults to the store's configured seller ID
+                             (auth.seller_id, loaded from AMAZON_SP_SELLER_ID_<store>).
+            included_data:   Comma-separated dataset selector. Defaults to ALL
+                             datasets (LISTINGS_ALL_DATA). Valid values: summaries,
+                             attributes, issues, offers, fulfillmentAvailability,
+                             procurement, relationships, productTypes.
+            marketplace_ids: Marketplaces to query; defaults to the store's own.
+
+        Returns:
+            Parsed dict with keys: sku, summaries, attributes, offers,
+            fulfillment_availability, relationships, product_types, procurement,
+            issues, suppressed, enforcement_actions.
+        """
+        resolved_seller = seller_id or self.auth.seller_id
+        if not resolved_seller:
+            raise ConfigError(
+                "Missing seller_id for getListingsItem. Pass seller_id, or set "
+                f"AMAZON_SP_SELLER_ID_{self.auth.store_id} (or AMAZON_SP_SELLER_ID) in .env. "
+                "Find it in Seller Central → Settings → Account Info → Merchant Token."
+            )
+
+        mkts = marketplace_ids or [self.auth.marketplace_id]
+        params = {
+            "marketplaceIds": ",".join(mkts),
+            "includedData": included_data or self.LISTINGS_ALL_DATA,
+        }
+        path = f"/listings/2021-08-01/items/{resolved_seller}/{sku}"
+        data = await asyncio.to_thread(self._get, path, params)
+        return _parse_listings_item(data)
+
 
 # ── parsers ────────────────────────────────────────────────────────────────
 
@@ -655,6 +716,45 @@ def _parse_catalog_item(asin: str, data: dict) -> dict[str, Any]:
         "color": _first_attr(attributes, "color"),
         "size": _first_attr(attributes, "size"),
         "bullet_point_count": len(attributes.get("bullet_point", [])),
+    }
+
+
+def _parse_listings_item(data: dict) -> dict[str, Any]:
+    """
+    Parse a getListingsItem (Listings Items API 2021-08-01) response.
+
+    Preserves the raw datasets and derives two convenience fields:
+      suppressed           — True if any issue carries a *_SUPPRESSED or
+                             CATALOG_ITEM_REMOVED enforcement action.
+      enforcement_actions  — flat, de-duplicated list of every enforcement
+                             action across all issues.
+    """
+    issues = data.get("issues", []) or []
+
+    enforcement_actions: list[str] = []
+    for issue in issues:
+        actions = (issue.get("enforcements") or {}).get("actions") or []
+        for action in actions:
+            name = action.get("action")
+            if name and name not in enforcement_actions:
+                enforcement_actions.append(name)
+
+    suppressed = any(
+        a.endswith("_SUPPRESSED") or a == "CATALOG_ITEM_REMOVED" for a in enforcement_actions
+    )
+
+    return {
+        "sku": data.get("sku"),
+        "summaries": data.get("summaries", []),
+        "attributes": data.get("attributes", {}),
+        "offers": data.get("offers", []),
+        "fulfillment_availability": data.get("fulfillmentAvailability", []),
+        "relationships": data.get("relationships", []),
+        "product_types": data.get("productTypes", []),
+        "procurement": data.get("procurement", []),
+        "issues": issues,
+        "suppressed": suppressed,
+        "enforcement_actions": enforcement_actions,
     }
 
 
