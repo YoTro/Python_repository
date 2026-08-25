@@ -91,8 +91,32 @@ def _extract_search_keywords(title: str, n: int = 6) -> str:
     return " ".join(content[:n])
 
 
+def _effective_title(data: dict) -> str:
+    """The full buyer-facing title: primary title plus item-highlight differentiators.
+
+    Amazon's newer layout caps span#productTitle at ~75 chars and relocates the overflow
+    into title_highlights, so `full_title` (when present) represents the listing better
+    than `title` alone. Falls back to `title` for older data lacking the computed field.
+    """
+    return (data.get("full_title") or data.get("title") or "").strip()
+
+
+def _product_for_scoring(data: dict) -> Product:
+    """Build a Product whose `title` is the full effective title (primary + highlights).
+
+    Ensures the deterministic quality scorer judges the complete buyer-facing title rather
+    than the ~75-char truncation. Highlights are folded into the title and cleared so the
+    text is not double-counted.
+    """
+    p = Product(**data)
+    if p.title_highlights:
+        return p.model_copy(update={"title": p.full_title, "title_highlights": None})
+    return p
+
+
 def _slim_competitor(c: dict) -> dict:
     slim = {k: c.get(k) for k in _COMPETITOR_FIELDS}
+    slim["title"] = _effective_title(c) or c.get("title")
     slim["image_count"] = len(c.get("images") or [])
     slim["video_count"] = len(c.get("videos") or [])
     return slim
@@ -152,7 +176,7 @@ async def _fetch_product_details(item: dict, ctx: WorkflowContext) -> dict:
 async def _search_competitors(item: dict, ctx: WorkflowContext) -> dict:
     """Search for competitors using keywords from the main product."""
     product_data = item.get("product_data", {})
-    title = product_data.get("title", "")
+    title = _effective_title(product_data)
     if not title:
         logger.warning("No title available for competitor discovery.")
         return {"competitor_list": []}
@@ -534,7 +558,7 @@ def _sp_listing_content(sp: dict) -> dict:
 def _scraped_listing_content(product_data: dict) -> dict:
     """Fallback listing content from the scraped PDP when SP-API data is unavailable."""
     return {
-        "title": product_data.get("title", "") or "",
+        "title": _effective_title(product_data),
         "bullets": list(product_data.get("features", []) or []),
         "description": product_data.get("description", "") or "",
         "keywords": "",
@@ -1531,10 +1555,10 @@ def _run_scoring(items: list[dict], ctx: WorkflowContext) -> list[dict]:
         keyword_config: dict | None = item.get("keyword_config")
 
         comp_data: list[dict] = item.get("competitor_data") or []
-        comp_products = [Product(**c) for c in comp_data if isinstance(c, dict)]
+        comp_products = [_product_for_scoring(c) for c in comp_data if isinstance(c, dict)]
 
         if "product_data" in item:
-            p = Product(**item["product_data"])
+            p = _product_for_scoring(item["product_data"])
             rs_raw = item.get("review_summary")
             review_summary: ReviewSummary | None = (
                 ReviewSummary(**rs_raw)
@@ -1562,7 +1586,7 @@ def _run_scoring(items: list[dict], ctx: WorkflowContext) -> list[dict]:
             comp_summaries: dict[str, dict] = item.get("competitor_review_summaries", {})
             scores = [
                 scorer.score(
-                    Product(**c),
+                    _product_for_scoring(c),
                     keyword_config=keyword_config,
                     review_summary=(
                         ReviewSummary(**comp_summaries[c["asin"]])
@@ -1686,7 +1710,7 @@ def _prepare_semantic_prompt(items: list[dict], ctx: WorkflowContext) -> list[di
         p_data = item.get("product_data", {})
         variables = {
             "asin": item.get("asin", ""),
-            "title": p_data.get("title", "N/A"),
+            "title": _effective_title(p_data) or "N/A",
             "features": "\n".join(f"{i + 1}. {f}" for i, f in enumerate(p_data.get("features", [])))
             or "(no bullet points)",
         }
@@ -1960,7 +1984,7 @@ def _prepare_llm_prompt(items: list[dict], ctx: WorkflowContext) -> list[dict]:
 
         variables = {
             "asin": item.get("asin"),
-            "title": p_data.get("title", "N/A"),
+            "title": _effective_title(p_data) or "N/A",
             "description": p_data.get("description", ""),
             "features": "\n".join([f"- {f}" for f in p_data.get("features", [])]),
             "target_image_count": len(p_data.get("images") or []),

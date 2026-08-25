@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 from typing import List, Optional
 
 
@@ -12,7 +12,21 @@ class Product(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     asin: str = Field(..., description="Amazon Standard Identification Number (Unique ID)")
-    title: Optional[str] = Field(None, description="The full product title")
+    title: Optional[str] = Field(
+        None,
+        description=(
+            "The primary product title (span#productTitle). Amazon now caps this at "
+            "~75 chars including spaces; overflow moves to title_highlights."
+        ),
+    )
+    title_highlights: Optional[str] = Field(
+        None,
+        description=(
+            "Title differentiators / 'item highlights' shown beneath the title "
+            "(div.dp-title-differentiators) — up to ~125 additional chars of product "
+            "detail. Empty on older listings that still keep everything in the title."
+        ),
+    )
     features: List[str] = Field(
         default_factory=list, description="A list of bullet points highlighting key features"
     )
@@ -52,3 +66,18 @@ class Product(BaseModel):
     aplus_images: List[str] = Field(
         default_factory=list, description="A+ content image URLs extracted from the product page"
     )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def full_title(self) -> Optional[str]:
+        """Primary title plus item-highlight differentiators, as the buyer effectively reads it.
+
+        Joined with ' | ' to match the canonical format Amazon's own profitability API
+        returns for `title` (e.g. "Main Title | highlight details"), so full titles are
+        consistent across scraped pages and API sources. Use this (rather than `title`
+        alone) for keyword extraction and listing-quality analysis, since Amazon may
+        relocate up to ~125 chars of the title into the differentiators block. Falls back
+        to `title` when no highlights are present.
+        """
+        parts = [p.strip() for p in (self.title, self.title_highlights) if p and p.strip()]
+        return " | ".join(parts) if parts else self.title

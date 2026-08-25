@@ -43,7 +43,21 @@ class ProductDetailsExtractor(AmazonBaseScraper):
         if not product.title or len(product.title) < 20:
             title_span = soup.find("span", id="productTitle")
             if title_span:
-                product.title = title_span.get_text(strip=True)
+                product.title = self._normalize_ws(title_span.get_text())
+
+        # 1b. Title differentiators / "item highlights" — Amazon's newer layout caps the
+        # primary title at ~75 chars and moves the overflow into this block
+        # (<div class="dp-title-differentiators"><span class="a-color-secondary">…</span>).
+        # Content varies: comma-separated prose or ' | '-separated phrases. We store it
+        # verbatim; Product.full_title joins it to the title with ' | '. Older listings
+        # keep everything in the title and omit this div.
+        diff_div = soup.find("div", class_="dp-title-differentiators")
+        if diff_div:
+            diff_span = diff_div.find("span", class_="a-color-secondary") or diff_div.find("span")
+            if diff_span:
+                highlights = self._normalize_ws(diff_span.get_text())
+                if highlights:
+                    product.title_highlights = highlights
 
         # 2. Brand — five selectors in priority order:
         #   A) Premium layout: <img id="brandLogoHiResByline" alt="BrandName"> (exact name, no parsing)
@@ -175,6 +189,11 @@ class ProductDetailsExtractor(AmazonBaseScraper):
                 logger.info(f"Found {len(product.videos)} video(s) for {product.asin}")
 
         return product
+
+    @staticmethod
+    def _normalize_ws(text: str) -> str:
+        """Collapse internal whitespace runs and trim — Amazon pads titles with stray spaces."""
+        return re.sub(r"\s+", " ", text or "").strip()
 
     @staticmethod
     def _extract_main_images(soup: BeautifulSoup, html: str) -> tuple[list[str], dict[str, dict]]:
