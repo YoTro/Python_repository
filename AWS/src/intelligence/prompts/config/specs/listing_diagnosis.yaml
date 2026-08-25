@@ -17,6 +17,7 @@ required_vars:
   - review_summary
   - competitive_gap
   - semantic_scoring
+  - content_validation
 template: |
   # Listing Quality Diagnosis Report
 
@@ -47,6 +48,17 @@ template: |
   qualitative analysis below. Do not simply repeat them; synthesise them into insights.
 
   {semantic_scoring}
+
+  ## Source-of-Truth Content Validation (own-store only)
+
+  The following reconciles the seller's internal ERP product master against the
+  published listing. "Missing" items are real product facts absent from the listing
+  (enrichment); "Conflicts" are listing values that contradict the master (errors);
+  "Unverifiable" claims are NOT errors — the ERP data simply cannot confirm them.
+  When present, ground your Copywriting and Roadmap sections in these concrete,
+  product-specific findings rather than generic advice.
+
+  {content_validation}
 
   ## Instructions
 

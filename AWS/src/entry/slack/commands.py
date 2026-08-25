@@ -349,28 +349,69 @@ class LpValidationCommand(BotCommand):
 
 class ListingDiagnosisCommand(BotCommand):
     """
-    Handles 'Listing诊断 <ASIN>' messages.
+    Handles 'Listing诊断 <ASIN>' messages, optionally with own-store validation.
 
     Dispatches the listing_diagnosis workflow which fetches main product details,
     discovers top competitors, scores all listings, and produces an LLM diagnosis report.
+
+    Own-store source-of-truth validation (optional): append `sku=<localSKU>` to also
+    reconcile the listing against the ERP product master and the SP-API listing. Keys:
+        sku=          Lingxing local SKU — enables validation; ERP search value
+        msku=         Amazon seller SKU for SP-API getListingsItem (defaults to sku)
+        store=        SP-API store id (resolves seller_id + marketplace)
+        sku_field=    ERP search dimension (sku | msku | product_name | model | ...)
+        erp_provider= ERP provider name (default: lingxing)
+
+    Example: Listing诊断 B0FXFGMD7Z sku=ABC-01 store=US01 msku=AMZ-ABC-01
     """
 
     _PATTERN = re.compile(r"[Ll]isting诊断\s+`?([A-Z0-9]{10})`?", re.IGNORECASE)
+    # Optional own-store validation params, e.g. "... sku=ABC-01 store=US01 msku=AMZ-ABC-01"
+    _KV_PATTERN = re.compile(
+        r"\b(sku|msku|store|sku_field|erp_provider)=`?([^\s`]+)`?", re.IGNORECASE
+    )
+    # Maps a parsed key to the workflow param name it sets.
+    _KV_TO_PARAM = {
+        "msku": "msku",
+        "store": "store_id",
+        "sku_field": "sku_field",
+        "erp_provider": "erp_provider",
+    }
 
     def match(self, text: str) -> bool:
         return bool(self._PATTERN.search(text))
 
+    def _build_params(self, text: str, asin: str) -> dict:
+        """Base ASIN params, plus own-store validation params when a sku= is supplied."""
+        params: dict = {"asin": asin}
+        kv = {k.lower(): v for k, v in self._KV_PATTERN.findall(text)}
+        if kv.get("sku"):
+            params["sku"] = kv["sku"]
+            params["enable_validate_content"] = True
+            for key, param_name in self._KV_TO_PARAM.items():
+                if kv.get(key):
+                    params[param_name] = kv[key]
+        return params
+
     def execute(self, text: str, chat_id: str):
         match = self._PATTERN.search(text)
         asin = match.group(1).upper()
+        params = self._build_params(text, asin)
 
         slack_client = SlackClient(bot_name=self.bot_name)
         eta = TimeEstimator.estimate_workflow("listing_diagnosis", params={"asin": asin})
+        validation_note = (
+            f"\n📋 已启用自有店铺内容校验（SKU: {params['sku']}），"
+            "将比对 ERP 产品主数据与 SP-API Listing 源数据。"
+            if params.get("enable_validate_content")
+            else ""
+        )
         slack_client.send_text_message(
             "channel",
             chat_id,
             f"🔍 开始诊断 {asin} Listing 质量...\n⏱️ 预计耗时: {eta}\n"
-            "将抓取主品及竞品详情、评分 Listing 质量并生成专业诊断报告，请稍候。",
+            "将抓取主品及竞品详情、评分 Listing 质量并生成专业诊断报告，请稍候。"
+            f"{validation_note}",
         )
 
         async def _dispatch_job():
@@ -379,7 +420,7 @@ class ListingDiagnosisCommand(BotCommand):
 
                 job_id = APIGateway.dispatch_slack_command(
                     workflow_name="listing_diagnosis",
-                    params={"asin": asin},
+                    params=params,
                     chat_id=chat_id,
                     bot_name=self.bot_name,
                 )
@@ -422,6 +463,8 @@ class HelpCommand(BotCommand):
         "🏷️ *Listing 诊断*\n"
         "　触发词：`Listing诊断 <ASIN>`\n"
         "　示例：`Listing诊断 B0FXFGMD7Z`\n"
+        "　自有店铺校验（可选）：追加 `sku=<本地SKU>` 比对 ERP 与 SP-API 源数据\n"
+        "　　示例：`Listing诊断 B0FXFGMD7Z sku=ABC-01 store=US01 msku=AMZ-ABC-01`\n"
         "　作用：抓取主品竞品详情、质量评分并生成含改进计划的专业诊断报告\n\n"
         "📐 *LP 模型验证*\n"
         "　触发词：`验证LP <ASIN> <快照日期> [<天数>]`\n"

@@ -52,6 +52,18 @@ bsr_collection:
   max_pages: 2
   categories: []
 
+listing_diagnosis:
+  # ── Own-store content validation (source-of-truth reconciliation) ──────────
+  # Off by default: competitor / plain-ASIN runs are unaffected. When enabled,
+  # requires `sku` (Lingxing local SKU) and `store_id`; optionally `msku`
+  # (Amazon seller SKU, for SP-API getListingsItem) and `sku_field`
+  # (ERP search dimension, default "sku").
+  enable_validate_content: false
+  sku: ""                       # Lingxing local SKU (ERP search value)
+  msku: ""                      # Amazon seller SKU for SP-API (defaults to sku)
+  sku_field: "sku"              # ERP search_field: sku | msku | product_name | model | ...
+  store_id: ""                  # SP-API store id (resolves seller_id + marketplace)
+
 ad_diagnosis:
   # ── Observation window ────────────────────────────────────────────────────
   days: 30                      # lookback period for all SP reports

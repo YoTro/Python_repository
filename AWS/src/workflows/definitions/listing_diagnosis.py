@@ -389,6 +389,983 @@ async def _fetch_keywords(item: dict, ctx: WorkflowContext) -> dict:
     return {"keyword_config": kw_config}
 
 
+# ---------------------------------------------------------------------------
+# Content validation against source-of-truth (ERP + SP-API) — own-store only
+#
+# Gated behind `enable_validate_content`. Reconciles the seller's internal
+# product master (Lingxing `search_product`) against the authoritative published
+# listing (SP-API `get_listings_item`, falling back to the scraped PDP) to find:
+#   • missing        — a real ERP fact absent from the listing (enrichment)
+#   • conflict        — listing states a value contradicting the ERP master (error)
+#   • unverifiable    — listing claims something the ERP master is silent on
+#                       (ERP omission is NOT proof the listing is wrong)
+# The design is schema-agnostic: it harvests whatever `custom_fields` a SKU
+# happens to carry rather than assuming a fixed category schema.
+# ---------------------------------------------------------------------------
+
+
+class _ContentFinding(BaseModel):
+    kind: str = Field(default="missing", description="One of: missing | conflict | unverifiable")
+    erp_label: str = Field(default="", description="ERP fact label, e.g. '电池型号'")
+    erp_value: str = Field(default="", description="ERP fact value, verbatim")
+    listing_evidence: str = Field(
+        default="", description="Quoted listing text this finding refers to (empty if none)"
+    )
+    detail: str = Field(default="", description="One concise sentence explaining the finding")
+    confidence: int = Field(default=50, ge=0, le=100)
+
+
+class _ContentValidationLLM(BaseModel):
+    findings: list[_ContentFinding] = Field(default_factory=list)
+    covered_labels: list[str] = Field(
+        default_factory=list, description="ERP labels judged already reflected in the listing"
+    )
+
+
+# First-class ERP scalar fields worth treating as facts, beyond custom_fields.
+_ERP_SCALAR_FACTS: dict[str, str] = {
+    "product_name": "Product Name",
+    "model": "Model",
+    "brand_name": "Brand",
+    "category_name": "Category",
+    "cg_product_material": "Material",
+    "description": "Description",
+}
+
+_ERP_JUNK_VALUES = {"", "none", "null", "n/a", "-", "0"}
+
+
+def _erp_dimensions(erp: dict) -> str:
+    """Render package L×W×H with unit, or '' when incomplete."""
+
+    def _num(x) -> str | None:
+        try:
+            return f"{float(x):g}"
+        except (TypeError, ValueError):
+            return None
+
+    length, width, height = (
+        _num(erp.get("cg_package_length")),
+        _num(erp.get("cg_package_width")),
+        _num(erp.get("cg_package_height")),
+    )
+    unit = erp.get("cg_package_spec_unit") or ""
+    if length and width and height:
+        return f"{length} × {width} × {height} {unit}".strip()
+    return ""
+
+
+def _erp_weight(erp: dict) -> str:
+    """Render gross weight with unit, or '' when absent."""
+    w = erp.get("cg_product_gross_weight")
+    unit = erp.get("cg_product_gross_weight_unit") or ""
+    try:
+        return f"{float(w):g} {unit}".strip() if w not in (None, "") else ""
+    except (TypeError, ValueError):
+        return ""
+
+
+def _flatten_erp_facts(erp: dict) -> list[dict]:
+    """
+    Harvest whatever this SKU's ERP record happens to contain into a flat list of
+    ``{label, value}`` facts. Makes no assumption about which custom fields exist —
+    a product with 3 custom fields and one with 30 both flow through unchanged.
+    """
+    facts: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(label: str, value) -> None:
+        label = (label or "").strip()
+        value = "" if value is None else str(value).strip()
+        if not label or value.lower() in _ERP_JUNK_VALUES:
+            return
+        key = (label, value)
+        if key in seen:
+            return
+        seen.add(key)
+        facts.append({"label": label, "value": value})
+
+    # 1. custom_fields — the open-ended, category-specific bag ({id: {name, val, val_text}})
+    for f in (erp.get("custom_fields") or {}).values():
+        if isinstance(f, dict) and f.get("name"):
+            _add(f["name"], f.get("val_text") or f.get("val"))
+
+    # 2. first-class scalar fields
+    for key, label in _ERP_SCALAR_FACTS.items():
+        if erp.get(key):
+            _add(label, erp[key])
+
+    # 3. parseable physical quantities (numeric conflict candidates for the LLM)
+    dims = _erp_dimensions(erp)
+    if dims:
+        _add("Package Dimensions", dims)
+    weight = _erp_weight(erp)
+    if weight:
+        _add("Gross Weight", weight)
+
+    return facts
+
+
+def _sp_listing_content(sp: dict) -> dict:
+    """Extract canonical published listing text from a getListingsItem `attributes` block."""
+    attrs = sp.get("attributes") or {}
+
+    def _vals(key: str) -> list[str]:
+        out: list[str] = []
+        for x in attrs.get(key, []) or []:
+            if isinstance(x, dict) and x.get("value") not in (None, ""):
+                out.append(str(x["value"]))
+        return out
+
+    title = " ".join(_vals("item_name"))
+    if not title:
+        for s in sp.get("summaries", []) or []:
+            if s.get("itemName"):
+                title = s["itemName"]
+                break
+    return {
+        "title": title,
+        "bullets": _vals("bullet_point"),
+        "description": " ".join(_vals("product_description")),
+        "keywords": " ".join(_vals("generic_keyword")),
+    }
+
+
+def _scraped_listing_content(product_data: dict) -> dict:
+    """Fallback listing content from the scraped PDP when SP-API data is unavailable."""
+    return {
+        "title": product_data.get("title", "") or "",
+        "bullets": list(product_data.get("features", []) or []),
+        "description": product_data.get("description", "") or "",
+        "keywords": "",
+    }
+
+
+def _render_listing_for_prompt(content: dict) -> str:
+    bullets = (
+        "\n".join(f"{i + 1}. {b}" for i, b in enumerate(content.get("bullets", []))) or "(none)"
+    )
+    return (
+        f"Title: {content.get('title') or '(none)'}\n\n"
+        f"Bullet Points:\n{bullets}\n\n"
+        f"Description: {content.get('description') or '(none)'}\n\n"
+        f"Search Keywords: {content.get('keywords') or '(none)'}"
+    )
+
+
+_CONTENT_VALIDATION_SYSTEM = (
+    "You are a meticulous Amazon listing auditor. You compare a seller's internal "
+    "product master data (source of truth) against their published listing and report "
+    "only well-grounded discrepancies. You never invent facts and you clearly separate "
+    "'the listing omits a real product fact' from 'the listing claims something the "
+    "master data cannot confirm'."
+)
+
+_CONTENT_VALIDATION_PROMPT = """\
+Compare the seller's internal product master data (SOURCE OF TRUTH) against their
+currently published Amazon listing for ASIN {asin}, and report content discrepancies.
+
+## Source of Truth — ERP product facts
+Each line is a fact from the seller's internal product management system, formatted
+`- [label] value`. Labels may be in Chinese; the listing is in English — match by
+meaning, not by string. This list is authoritative but INCOMPLETE: an absent fact
+means "unknown", never "the product lacks this".
+
+{erp_facts}
+
+## Published Listing
+{listing_content}
+
+## Your task
+For every ERP fact, decide whether the listing reflects it, then classify findings.
+Also scan the listing for factual claims that contradict the ERP facts.
+
+NOTE: Numeric, unit, dimension, pack-quantity, model-number, and brand comparisons
+have ALREADY been resolved deterministically in code and are excluded from the facts
+above. Do not attempt to re-verify measurements or unit conversions — focus on the
+semantic, descriptive, and cross-lingual matching the facts below require.
+
+Rules — follow the asymmetry exactly:
+- kind="missing"      — an ERP fact is real but the listing does not surface it.
+                        These are enrichment opportunities. Cite erp_label + erp_value.
+- kind="conflict"     — the listing states a value that CONTRADICTS an ERP fact.
+                        Cite both erp_value and listing_evidence. Only report a genuine
+                        contradiction, not a mere rephrasing.
+- kind="unverifiable" — the listing makes a specific factual claim the ERP facts can
+                        neither confirm nor deny. Report at most the 3 most material
+                        such claims. NEVER label these as errors.
+- Do NOT invent findings. If a fact is clearly covered, list its label in
+  `covered_labels` instead of creating a finding.
+- Set `confidence` (0–100) per finding; lower it when the match is ambiguous or the
+  listing text is sparse.
+
+Populate `covered_labels` with the ERP labels you judged already reflected in the listing.
+
+Return JSON with keys: findings (array of {{kind, erp_label, erp_value,
+listing_evidence, detail, confidence}}) and covered_labels (array of strings).\
+"""
+
+
+# ---------------------------------------------------------------------------
+# Deterministic reconciliation — numbers, units, dimensions, pack, model,
+# brand, compatibility, explicit-claim presence.
+#
+# These comparisons are resolved in code (not by the LLM) so unit equivalence
+# like 100 g == 0.1 kg is decided arithmetically, not by model judgement. The
+# LLM afterwards only handles the fuzzy, semantic residue (synonyms, scenarios,
+# non-Latin copy) for facts this layer could not conclusively settle.
+# ---------------------------------------------------------------------------
+
+# Unit → (base multiplier, dimension). Base units: weight=g, length=mm, volume=ml.
+_UNIT_TABLE: dict[str, tuple[float, str]] = {
+    "mg": (0.001, "weight"),
+    "g": (1.0, "weight"),
+    "gram": (1.0, "weight"),
+    "grams": (1.0, "weight"),
+    "gm": (1.0, "weight"),
+    "kg": (1000.0, "weight"),
+    "kgs": (1000.0, "weight"),
+    "kilogram": (1000.0, "weight"),
+    "oz": (28.3495, "weight"),
+    "ounce": (28.3495, "weight"),
+    "ounces": (28.3495, "weight"),
+    "lb": (453.592, "weight"),
+    "lbs": (453.592, "weight"),
+    "pound": (453.592, "weight"),
+    "pounds": (453.592, "weight"),
+    "mm": (1.0, "length"),
+    "cm": (10.0, "length"),
+    "m": (1000.0, "length"),
+    "in": (25.4, "length"),
+    "inch": (25.4, "length"),
+    "inches": (25.4, "length"),
+    '"': (25.4, "length"),
+    "ft": (304.8, "length"),
+    "feet": (304.8, "length"),
+    "foot": (304.8, "length"),
+    "ml": (1.0, "volume"),
+    "l": (1000.0, "volume"),
+    "liter": (1000.0, "volume"),
+    "liters": (1000.0, "volume"),
+    "litre": (1000.0, "volume"),
+    "litres": (1000.0, "volume"),
+}
+
+_QTY_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([a-zA-Z\"]+)")
+_DIM_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)\s*([a-zA-Z\"]*)"
+)
+_PACK_RE = re.compile(
+    r"(?:pack\s+of\s+(\d+)|set\s+of\s+(\d+)|(\d+)\s*[- ]?\s*(?:pack|pcs|pieces|count|ct|pk|pairs?))",
+    re.IGNORECASE,
+)
+_MODEL_HINT_RE = re.compile(
+    r"model\s*(?:number|no\.?|#)?\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9\-/]{1,})", re.IGNORECASE
+)
+_REL_TOL = 0.02  # 2% tolerance absorbs rounding/unit-conversion noise
+
+_COMPAT_HINTS = ("compat", "兼容", "适用", "适配", "fits", "fit for", "for use with")
+
+
+def _listing_blob(content: dict) -> str:
+    return " ".join(
+        [
+            content.get("title", "") or "",
+            " ".join(content.get("bullets", []) or []),
+            content.get("description", "") or "",
+            content.get("keywords", "") or "",
+        ]
+    )
+
+
+def _norm_text(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").lower()).strip()
+
+
+def _has_cjk(s: str) -> bool:
+    return any("一" <= ch <= "鿿" for ch in (s or ""))
+
+
+def _to_base(value: float, unit: str) -> tuple[float, str] | None:
+    entry = _UNIT_TABLE.get(unit.lower())
+    if not entry:
+        return None
+    mult, dim = entry
+    return value * mult, dim
+
+
+def _quantities_in(text: str) -> dict[str, list[float]]:
+    """Return {dimension: [base_value, ...]} for every number+unit token in text."""
+    out: dict[str, list[float]] = {}
+    for num, unit in _QTY_RE.findall(text):
+        base = _to_base(float(num), unit)
+        if base:
+            out.setdefault(base[1], []).append(base[0])
+    return out
+
+
+def _approx_in(target: float, candidates: list[float]) -> bool:
+    return any(abs(target - c) <= _REL_TOL * max(abs(target), abs(c), 1e-9) for c in candidates)
+
+
+def _parse_erp_quantity(value: str) -> tuple[float, str] | None:
+    m = _QTY_RE.search(value)
+    if not m:
+        return None
+    return _to_base(float(m.group(1)), m.group(2))
+
+
+def _parse_dims(text: str) -> list[tuple[tuple[float, float, float], str]]:
+    """Return [(sorted_base_triplet, dimension)] for each LxWxH pattern found."""
+    out = []
+    for a, b, c, unit in _DIM_RE.findall(text):
+        vals = [float(a), float(b), float(c)]
+        base = _to_base(1.0, unit) if unit else None
+        mult, dim = (base[0], base[1]) if base else (1.0, "length")
+        triplet = tuple(sorted(v * mult for v in vals))
+        out.append((triplet, dim))
+    return out
+
+
+def _parse_pack(text: str) -> int | None:
+    for a, b, c in _PACK_RE.findall(text):
+        for g in (a, b, c):
+            if g:
+                try:
+                    return int(g)
+                except ValueError:
+                    continue
+    return None
+
+
+def _det_finding(kind: str, label: str, value: str, evidence: str, detail: str) -> dict:
+    return {
+        "kind": kind,
+        "erp_label": label,
+        "erp_value": value,
+        "listing_evidence": evidence,
+        "detail": detail,
+        "confidence": 95,
+        "method": "deterministic",
+    }
+
+
+def _deterministic_content_checks(
+    facts: list[dict], content: dict, sp_listing: dict | None = None
+) -> tuple[list[dict], set[str], set[str]]:
+    """
+    Resolve every fact this layer can decide arithmetically or by literal presence.
+
+    Returns (findings, covered_labels, handled_labels). `handled_labels` are the ERP
+    labels this layer settled (present OR flagged) and which the LLM should therefore
+    skip, so numeric/unit equivalence is never re-adjudicated by the model.
+    """
+    findings: list[dict] = []
+    covered: set[str] = set()
+    handled: set[str] = set()
+
+    blob = _listing_blob(content)
+    norm_blob = _norm_text(blob)
+    listing_dims = _parse_dims(blob)
+    listing_qty = _quantities_in(blob)
+    listing_pack = _parse_pack(blob)
+
+    # Brand from SP-API attributes/summaries when available (authoritative value).
+    sp_brand = None
+    if sp_listing:
+        attrs = sp_listing.get("attributes") or {}
+        brand_vals = attrs.get("brand") or []
+        if brand_vals and isinstance(brand_vals, list) and isinstance(brand_vals[0], dict):
+            sp_brand = brand_vals[0].get("value")
+        if not sp_brand:
+            for s in sp_listing.get("summaries", []) or []:
+                if s.get("brand"):
+                    sp_brand = s["brand"]
+                    break
+
+    for f in facts:
+        label = f["label"]
+        value = f["value"]
+        low_label = label.lower()
+
+        # 1. Dimensions (L×W×H) --------------------------------------------------
+        erp_dims = _parse_dims(value)
+        if erp_dims:
+            handled.add(label)
+            erp_trip, erp_dim = erp_dims[0]
+            match = any(
+                dim == erp_dim and all(_approx_in(erp_trip[i], [trip[i]]) for i in range(3))
+                for trip, dim in listing_dims
+            )
+            if match:
+                covered.add(label)
+            elif listing_dims:
+                findings.append(
+                    _det_finding(
+                        "conflict",
+                        label,
+                        value,
+                        " × ".join(f"{v:g}" for v in listing_dims[0][0]),
+                        "Package dimensions differ from the ERP master after unit normalization.",
+                    )
+                )
+            else:
+                findings.append(
+                    _det_finding(
+                        "missing",
+                        label,
+                        value,
+                        "",
+                        "Dimensions are not stated anywhere in the listing.",
+                    )
+                )
+            continue
+
+        # 2. Pack / quantity -----------------------------------------------------
+        erp_pack = _parse_pack(f"{label} {value}")
+        if erp_pack is not None and (
+            "pack" in low_label
+            or "pcs" in low_label
+            or "count" in low_label
+            or "数量" in label
+            or "装" in value
+            or _PACK_RE.search(value)
+        ):
+            handled.add(label)
+            if listing_pack == erp_pack:
+                covered.add(label)
+            elif listing_pack is not None:
+                findings.append(
+                    _det_finding(
+                        "conflict",
+                        label,
+                        value,
+                        f"{listing_pack}-pack",
+                        f"Listing states {listing_pack} units; ERP master says {erp_pack}.",
+                    )
+                )
+            else:
+                findings.append(
+                    _det_finding(
+                        "missing",
+                        label,
+                        value,
+                        "",
+                        f"Pack quantity ({erp_pack}) is not stated in the listing.",
+                    )
+                )
+            continue
+
+        # 3. Numeric value + unit (weight, capacity, any measured spec) ----------
+        erp_qty = _parse_erp_quantity(value)
+        if erp_qty:
+            handled.add(label)
+            base_val, dim = erp_qty
+            cands = listing_qty.get(dim, [])
+            if _approx_in(base_val, cands):
+                covered.add(label)
+            elif cands:
+                findings.append(
+                    _det_finding(
+                        "conflict",
+                        label,
+                        value,
+                        ", ".join(f"{c:g} (base)" for c in cands),
+                        f"'{label}' value disagrees with the listing after unit normalization.",
+                    )
+                )
+            else:
+                findings.append(
+                    _det_finding(
+                        "missing",
+                        label,
+                        value,
+                        "",
+                        f"'{label}' ({value}) is not stated in the listing.",
+                    )
+                )
+            continue
+
+        # 4. Model number --------------------------------------------------------
+        if low_label in {"model", "型号"} or "model" in low_label:
+            handled.add(label)
+            erp_model = re.sub(r"[^a-z0-9]", "", value.lower())
+            listing_norm = re.sub(r"[^a-z0-9]", "", norm_blob)
+            hinted = _MODEL_HINT_RE.search(blob)
+            if len(erp_model) >= 3 and erp_model in listing_norm:
+                covered.add(label)
+            elif hinted and re.sub(r"[^a-z0-9]", "", hinted.group(1).lower()) != erp_model:
+                findings.append(
+                    _det_finding(
+                        "conflict",
+                        label,
+                        value,
+                        hinted.group(1),
+                        "Listing shows a different model number than the ERP master.",
+                    )
+                )
+            else:
+                findings.append(
+                    _det_finding(
+                        "missing",
+                        label,
+                        value,
+                        "",
+                        f"Model number '{value}' does not appear in the listing.",
+                    )
+                )
+            continue
+
+        # 5. Brand ---------------------------------------------------------------
+        if low_label in {"brand", "品牌"}:
+            handled.add(label)
+            if sp_brand and _norm_text(sp_brand) != _norm_text(value):
+                findings.append(
+                    _det_finding(
+                        "conflict",
+                        label,
+                        value,
+                        sp_brand,
+                        "Published brand differs from the ERP master brand.",
+                    )
+                )
+            elif _norm_text(value) in norm_blob or (
+                sp_brand and _norm_text(sp_brand) == _norm_text(value)
+            ):
+                covered.add(label)
+            else:
+                findings.append(
+                    _det_finding(
+                        "missing",
+                        label,
+                        value,
+                        "",
+                        f"Brand '{value}' is not present in the listing.",
+                    )
+                )
+            continue
+
+        # 6. Compatibility -------------------------------------------------------
+        if any(h in low_label for h in _COMPAT_HINTS) and not _has_cjk(value):
+            handled.add(label)
+            if _norm_text(value) in norm_blob:
+                covered.add(label)
+            else:
+                findings.append(
+                    _det_finding(
+                        "missing",
+                        label,
+                        value,
+                        "",
+                        f"Compatibility '{value}' is not stated in the listing.",
+                    )
+                )
+            continue
+
+        # 7. Explicit-claim presence (short, atomic Latin values only) -----------
+        # Deterministic literal search is only reliable for short atomic claims/specs.
+        # Non-Latin values (cross-lingual) and multi-word prose (e.g. product_name,
+        # description) are deferred to the LLM — a long ERP phrase rarely appears
+        # verbatim, so a substring test would over-report "missing".
+        norm_val = _norm_text(value)
+        is_prose = (
+            low_label in {"description", "product name"}
+            or len(value.split()) > 4
+            or len(value) > 32
+        )
+        if not _has_cjk(value) and len(norm_val) >= 3 and not is_prose:
+            handled.add(label)
+            if norm_val in norm_blob:
+                covered.add(label)
+            else:
+                findings.append(
+                    _det_finding(
+                        "missing",
+                        label,
+                        value,
+                        "",
+                        f"'{label}: {value}' does not appear in the listing.",
+                    )
+                )
+            continue
+
+    return findings, covered, handled
+
+
+def _validation_gate(ctx: WorkflowContext) -> bool:
+    """Enabled only when the feature flag is set. Per-item SKU resolution happens in the loop."""
+    return bool((ctx.config or {}).get("enable_validate_content"))
+
+
+def _resolve_seller_sku(
+    explicit_msku: str | None, erp_search_value: str, sku_field: str, erp_product: dict | None
+) -> str | None:
+    """
+    Resolve the Amazon *seller* SKU (msku) that keys the SP-API getListingsItem call.
+
+    Never guesses: the ERP search value is only a valid seller SKU when the search
+    was performed on the msku dimension. Otherwise we require an explicit `msku`
+    value or an msku carried on the matched ERP record. Returns None when no seller
+    SKU can be established — in which case SP-API is skipped and we fall back to the
+    scraped PDP rather than querying a wrong listing.
+    """
+    explicit = (explicit_msku or "").strip()
+    if explicit:
+        return explicit
+    if sku_field == "msku" and erp_search_value:
+        return erp_search_value
+    # Best-effort read from the matched ERP record, if the provider exposes one.
+    if erp_product:
+        for key in ("msku", "seller_sku", "amazon_sku"):
+            val = erp_product.get(key)
+            if val:
+                return str(val)
+    return None
+
+
+def _has_usable_content(content: dict) -> bool:
+    """True when the listing content carries at least a title, a bullet, or a description."""
+    return bool(
+        (content.get("title") or "").strip()
+        or content.get("bullets")
+        or (content.get("description") or "").strip()
+    )
+
+
+def _parse_validation_output(raw) -> _ContentValidationLLM | None:
+    """Coerce a router LLMResponse / dict / model into a _ContentValidationLLM."""
+    if raw is None:
+        return None
+    if isinstance(raw, _ContentValidationLLM):
+        return raw
+    data = None
+    if isinstance(raw, dict):
+        data = raw
+    else:
+        text = getattr(raw, "text", None)
+        if text:
+            from src.intelligence.parsers.markdown_cleaner import OutputParser
+
+            data = OutputParser.parse_dirty_json(text)
+    if not data:
+        return None
+    try:
+        return _ContentValidationLLM(**data)
+    except Exception as e:
+        logger.warning(f"Failed to parse content-validation output: {e}")
+        return None
+
+
+async def _validate_content(items: list[dict], ctx: WorkflowContext) -> list[dict]:
+    """
+    Own-store content validation. Self-gated and self-contained: fetches the ERP
+    master + SP-API listing, runs one LLM reconciliation pass, and attaches a
+    `content_validation` dict. No-op (items unchanged) when the flag is off, no SKU
+    resolves, or no source of truth is available — so the competitor path is untouched.
+    """
+    if not _validation_gate(ctx):
+        return items
+
+    cfg = ctx.config or {}
+    provider = getattr(ctx.router, "cloud", None) if ctx.router else None
+
+    from src.mcp.servers.amazon.sp_api.client import SPAPIClient
+    from src.mcp.servers.erp.registry import get_erp_client
+
+    for item in items:
+        # Per-item identity: item-level keys override the run-level config so a single
+        # run can validate several items, each mapped to its own SKU / store.
+        erp_search_value = item.get("sku") or cfg.get("sku") or cfg.get("msku")
+        if not erp_search_value:
+            # Enabled globally but this item carries no SKU — nothing to validate.
+            continue
+        sku_field = item.get("sku_field") or cfg.get("sku_field", "sku")
+        store_id = item.get("store_id") or cfg.get("store_id")
+        explicit_msku = item.get("msku") or cfg.get("msku")
+        erp_provider = item.get("erp_provider") or cfg.get("erp_provider", "lingxing")
+
+        # 1. Source of truth: ERP product master (required) --------------------
+        # `status` distinguishes the outcomes that must never look alike in the final
+        # prompt: disabled (content_validation absent), no_erp (enabled but no master),
+        # llm_failed / no_provider (facts + deterministic checks ran, semantic pass did
+        # not), and ok.
+        erp_product = None
+        try:
+            erp_client = get_erp_client(erp_provider)
+            if not hasattr(erp_client, "search_product"):
+                item["content_validation"] = {
+                    "status": "no_erp",
+                    "reason": f"ERP provider '{erp_provider}' has no search_product capability",
+                    "erp_search_value": erp_search_value,
+                }
+                logger.warning(item["content_validation"]["reason"])
+                continue
+            records = await asyncio.to_thread(
+                erp_client.search_product,
+                erp_search_value,
+                search_field=sku_field,
+                fetch_all=False,
+            )
+            erp_product = records[0] if records else None
+        except Exception as e:
+            logger.warning(f"ERP source-of-truth fetch failed for {erp_search_value}: {e}")
+
+        if not erp_product:
+            item["content_validation"] = {
+                "status": "no_erp",
+                "reason": f"no ERP master found for {sku_field}={erp_search_value}",
+                "erp_search_value": erp_search_value,
+            }
+            logger.warning(f"Content validation: {item['content_validation']['reason']}.")
+            continue
+
+        facts = _flatten_erp_facts(erp_product)
+        if not facts:
+            item["content_validation"] = {
+                "status": "no_erp",
+                "reason": "ERP record carried no usable facts",
+                "erp_search_value": erp_search_value,
+            }
+            logger.warning("Content validation: ERP record carried no usable facts.")
+            continue
+
+        # 2. Published listing: SP-API (preferred) or scraped PDP (fallback) ----
+        # Only query SP-API when a genuine Amazon seller SKU can be resolved — never
+        # reuse the ERP search value as a seller SKU, which would query a wrong listing.
+        sp_listing = None
+        seller_sku = _resolve_seller_sku(explicit_msku, erp_search_value, sku_field, erp_product)
+        if seller_sku:
+            try:
+                sp_listing = await SPAPIClient(store_id=store_id).get_listings_item(sku=seller_sku)
+            except Exception as e:
+                logger.warning(f"SP-API listing fetch failed for {seller_sku}: {e}")
+
+            # ASIN-consistency guard: if the returned listing is for a different ASIN
+            # than the target, the SKU mapping is wrong — discard it and fall back to
+            # the scraped PDP rather than validating against someone else's listing.
+            if sp_listing:
+                sp_asin = next(
+                    (s.get("asin") for s in (sp_listing.get("summaries") or []) if s.get("asin")),
+                    None,
+                )
+                target_asin = item.get("asin")
+                if sp_asin and target_asin and sp_asin != target_asin:
+                    logger.warning(
+                        f"SP-API ASIN mismatch for SKU {seller_sku}: listing is {sp_asin}, "
+                        f"target is {target_asin}. Discarding SP data, using scraped PDP."
+                    )
+                    sp_listing = None
+        else:
+            logger.info(
+                "Content validation: no Amazon seller SKU resolvable (pass msku= or search on "
+                "the msku field); using scraped PDP for listing content."
+            )
+
+        # Prefer SP-API content, but fall back to the scraped PDP when SP-API is
+        # absent OR returned a thin/empty listing — otherwise a sparse SP response
+        # would suppress the richer scraped content.
+        sp_content = _sp_listing_content(sp_listing) if sp_listing else {}
+        if _has_usable_content(sp_content):
+            content = sp_content
+            content_source = "sp_api"
+        else:
+            content = _scraped_listing_content(item.get("product_data", {}))
+            content_source = "scraped_pdp"
+
+        total_facts = len(facts)
+
+        # 3. Deterministic reconciliation (numbers/units/dims/pack/model/brand/
+        #    compatibility/explicit claims). Always runs — independent of the LLM. ─
+        det_findings, det_covered, det_handled = _deterministic_content_checks(
+            facts, content, sp_listing
+        )
+        residual_facts = [f for f in facts if f["label"] not in det_handled]
+
+        # 4. LLM reconciliation — semantic residue only (facts the deterministic
+        #    layer could not settle: synonyms, scenarios, non-Latin copy). It is told
+        #    NOT to re-judge numeric/unit equivalence, which is already resolved. ────
+        llm_result: _ContentValidationLLM | None = None
+        llm_status = "skipped"  # ok | llm_failed | no_provider | skipped (nothing left)
+        if not residual_facts:
+            llm_status = "ok"  # deterministic layer settled everything
+        elif not provider:
+            llm_status = "no_provider"
+            logger.warning("No cloud provider on ctx.router; deterministic checks only.")
+        else:
+            from src.intelligence.router import TaskCategory
+
+            prompt = _CONTENT_VALIDATION_PROMPT.format(
+                asin=item.get("asin", ""),
+                erp_facts="\n".join(f"- [{f['label']}] {f['value']}" for f in residual_facts),
+                listing_content=_render_listing_for_prompt(content),
+            )
+            try:
+                raw = await ctx.router.route_and_execute(
+                    prompt,
+                    category=TaskCategory.DEEP_REASONING,
+                    schema=_ContentValidationLLM,
+                    session_id=ctx.job_id,
+                    system_message=_CONTENT_VALIDATION_SYSTEM,
+                )
+                llm_result = _parse_validation_output(raw)
+                llm_status = "ok" if llm_result is not None else "llm_failed"
+                if llm_result is None:
+                    logger.warning(
+                        f"Content-validation LLM output unparseable for {item.get('asin')}; "
+                        "keeping deterministic findings, marking semantic pass failed."
+                    )
+            except Exception as e:
+                llm_status = "llm_failed"
+                logger.warning(f"Content-validation LLM call failed for {item.get('asin')}: {e}")
+
+        # Constrain the LLM to the residual labels and drop any label the
+        # deterministic layer already settled (deterministic wins on overlap).
+        residual_labels = {f["label"] for f in residual_facts}
+        llm_findings = [
+            f.model_dump()
+            for f in (llm_result.findings if llm_result else [])
+            if f.erp_label in residual_labels and f.erp_label not in det_handled
+        ]
+        llm_covered = {
+            lbl
+            for lbl in (llm_result.covered_labels if llm_result else [])
+            if lbl in residual_labels and lbl not in det_handled
+        }
+
+        findings = det_findings + llm_findings
+        covered = det_covered | llm_covered
+        missing = [f for f in findings if f["kind"] == "missing"]
+        conflicts = [f for f in findings if f["kind"] == "conflict"]
+        unverifiable = [f for f in findings if f["kind"] == "unverifiable"]
+
+        # 5. Coverage — real even when the semantic pass failed, because deterministic
+        #    coverage is genuine. Flagged partial so it is never read as a full audit. ─
+        assessed_labels = det_handled | llm_covered | {f["erp_label"] for f in llm_findings}
+        partial = llm_status in {"llm_failed", "no_provider"}
+        coverage_score = (
+            round(100 * min(len(covered), total_facts) / total_facts) if total_facts else None
+        )
+
+        # 6. Amazon health signals passthrough ---------------------------------
+        listing_issues = []
+        if sp_listing:
+            for iss in sp_listing.get("issues", []) or []:
+                listing_issues.append(
+                    {
+                        "code": iss.get("code"),
+                        "message": iss.get("message"),
+                        "severity": iss.get("severity"),
+                    }
+                )
+
+        item["content_validation"] = {
+            "status": "ok",
+            "llm_status": llm_status,
+            "partial": partial,
+            "content_source": content_source,
+            "erp_fact_count": total_facts,
+            "assessed_fact_count": len(assessed_labels & {f["label"] for f in facts}),
+            "coverage_score": coverage_score,
+            "missing": missing,
+            "conflicts": conflicts,
+            "unverifiable": unverifiable,
+            "deterministic_finding_count": len(det_findings),
+            "listing_issues": listing_issues,
+            "suppressed": bool(sp_listing.get("suppressed")) if sp_listing else None,
+            "enforcement_actions": (sp_listing.get("enforcement_actions") if sp_listing else [])
+            or [],
+        }
+        logger.info(
+            f"Content validation for {item.get('asin')} [{content_source}, llm={llm_status}"
+            f"{', partial' if partial else ''}]: coverage={coverage_score}% over {total_facts} facts "
+            f"({len(det_findings)} deterministic), {len(missing)} missing, "
+            f"{len(conflicts)} conflicts, {len(unverifiable)} unverifiable, "
+            f"{len(listing_issues)} listing issues."
+        )
+
+    return items
+
+
+def _format_content_validation(cv: dict | None) -> str:
+    """Render content_validation into a text block for the final LLM diagnosis prompt."""
+    # Disabled: validation never ran for this request (competitor / no own-store SKU).
+    if not cv:
+        return (
+            "Not applicable — own-store content validation was not enabled for this run "
+            "(no SKU / source of truth). Do not infer anything about content completeness."
+        )
+
+    # Enabled, but the internal product master could not be loaded.
+    if cv.get("status") == "no_erp":
+        return (
+            "Own-store validation was enabled but could not run: "
+            f"{cv.get('reason', 'ERP product master unavailable')}. No source of truth was "
+            "available, so listing completeness was NOT assessed — treat as unknown."
+        )
+
+    partial = cv.get("partial")
+    llm_status = cv.get("llm_status")
+    cov = cv.get("coverage_score")
+    cov_str = f"{cov}%" if cov is not None else "n/a"
+    lines = [
+        f"Listing source: {cv.get('content_source')}",
+        f"Coverage: {cov_str} of {cv.get('erp_fact_count')} internal product facts "
+        f"are reflected in the listing ({cv.get('deterministic_finding_count', 0)} deterministic "
+        "discrepancies).",
+    ]
+    if partial:
+        why = (
+            "no LLM provider was available"
+            if llm_status == "no_provider"
+            else ("the semantic reconciliation LLM call failed")
+        )
+        lines.append(
+            f"⚠️ PARTIAL: {why}. Findings below are from the deterministic checks "
+            "(numbers, units, dimensions, pack, model, brand) only; the semantic/cross-lingual "
+            "pass did not run, so coverage is a lower bound, not a full audit."
+        )
+    if cv.get("suppressed"):
+        lines.append(
+            f"⚠️ Listing is SUPPRESSED by Amazon: {', '.join(cv.get('enforcement_actions', []))}"
+        )
+
+    def _block(title: str, rows: list[dict], fmt) -> None:
+        if not rows:
+            return
+        lines.append(f"\n{title}:")
+        lines.extend(fmt(r) for r in rows)
+
+    _block(
+        "Missing content (in ERP master, absent from listing — enrichment)",
+        cv.get("missing", []),
+        lambda r: (
+            f"  • [{r.get('erp_label')}] {r.get('erp_value')} — {r.get('detail')} "
+            f"(confidence {r.get('confidence')})"
+        ),
+    )
+    _block(
+        "Conflicts (listing contradicts ERP master — likely errors)",
+        cv.get("conflicts", []),
+        lambda r: (
+            f"  • [{r.get('erp_label')}] ERP='{r.get('erp_value')}' vs "
+            f"listing='{r.get('listing_evidence')}' — {r.get('detail')} "
+            f"(confidence {r.get('confidence')})"
+        ),
+    )
+    _block(
+        "Unverifiable listing claims (ERP master is silent — NOT errors)",
+        cv.get("unverifiable", []),
+        lambda r: f"  • '{r.get('listing_evidence')}' — {r.get('detail')}",
+    )
+    issues = cv.get("listing_issues", [])
+    if issues:
+        lines.append("\nAmazon listing issues (from SP-API):")
+        lines.extend(
+            f"  • [{i.get('severity')}] {i.get('code')}: {i.get('message')}" for i in issues
+        )
+    return "\n".join(lines)
+
+
 _VISUAL_SCORING_PROMPT = """\
 You are evaluating Amazon product listing images for quality and conversion effectiveness.
 
@@ -996,6 +1973,7 @@ def _prepare_llm_prompt(items: list[dict], ctx: WorkflowContext) -> list[dict]:
             "review_summary": _format_review_summary(item.get("review_summary")),
             "competitive_gap": _format_competitive_gap(item.get("competitive_delta")),
             "semantic_scoring": _format_semantic_details(item.get("semantic_details")),
+            "content_validation": _format_content_validation(item.get("content_validation")),
         }
 
         rendered = prompt_manager.render_spec("listing_diagnosis", variables)
@@ -1012,6 +1990,134 @@ _UNSAFE_CHARS_RE = re.compile(r"[^a-zA-Z0-9_\-]")
 def _safe_stem(text: str) -> str:
     """Replace any character not safe in a filename with '_'."""
     return _UNSAFE_CHARS_RE.sub("_", text or "unknown")
+
+
+def _md_cell(val) -> str:
+    """Escape a value for safe inclusion in a Markdown table cell.
+
+    Pipes would break the column structure and newlines would break the row, so
+    both are neutralised; a leading/trailing whitespace trim keeps cells tidy.
+    """
+    if val is None:
+        return "—"
+    return (
+        str(val)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r\n", " ")
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .strip()
+        or "—"
+    )
+
+
+def _render_content_validation_md(cv: dict | None) -> str:
+    """Render the own-store content-validation section, or '' when not applicable."""
+    if not cv:
+        return ""
+
+    header = [
+        "## Content Validation (vs. Source of Truth)",
+        "_Own-store only. Reconciles the internal ERP product master against the "
+        "published listing. ERP data is authoritative but incomplete — an absent fact "
+        "means 'unknown', never 'the product lacks it'._",
+        "",
+    ]
+
+    if cv.get("status") == "no_erp":
+        return "\n".join(
+            header
+            + [
+                f"> ⚠️ Enabled, but could not run — {cv.get('reason', 'ERP master unavailable')}. "
+                "No source of truth was available; listing completeness was **not assessed** "
+                "(unknown, not zero).",
+                "",
+                "---",
+                "",
+            ]
+        )
+
+    cov = cv.get("coverage_score")
+    cov_str = f"{cov}%" if cov is not None else "n/a"
+    parts = header + [
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Listing source | {cv.get('content_source', '—')} |",
+        f"| Coverage | {cov_str} of {cv.get('erp_fact_count', '—')} internal facts |",
+        f"| Deterministic discrepancies | {cv.get('deterministic_finding_count', 0)} |",
+    ]
+    if cv.get("partial"):
+        why = (
+            "no LLM provider"
+            if cv.get("llm_status") == "no_provider"
+            else "semantic LLM call failed"
+        )
+        parts.append(
+            f"| ⚠️ Coverage basis | **PARTIAL** — {why}; deterministic checks only, coverage is a lower bound |"
+        )
+    if cv.get("suppressed"):
+        parts.append(
+            f"| ⚠️ Amazon status | **SUPPRESSED** — {', '.join(cv.get('enforcement_actions', []))} |"
+        )
+
+    missing = cv.get("missing", [])
+    parts += ["", "### Missing Content (enrichment opportunities)"]
+    if missing:
+        parts += [
+            "| ERP Field | Value | Note | Confidence |",
+            "|-----------|-------|------|------------|",
+        ]
+        parts += [
+            f"| {_md_cell(m.get('erp_label'))} | {_md_cell(m.get('erp_value'))} "
+            f"| {_md_cell(m.get('detail'))} | {_md_cell(m.get('confidence'))} |"
+            for m in missing
+        ]
+    else:
+        parts.append("_None — every internal fact is reflected in the listing._")
+
+    conflicts = cv.get("conflicts", [])
+    parts += ["", "### Conflicts (listing contradicts the master — likely errors)"]
+    if conflicts:
+        parts += [
+            "| ERP Field | ERP Value | Listing Says | Note | Confidence |",
+            "|-----------|-----------|--------------|------|------------|",
+        ]
+        parts += [
+            f"| {_md_cell(c.get('erp_label'))} | {_md_cell(c.get('erp_value'))} "
+            f"| {_md_cell(c.get('listing_evidence'))} | {_md_cell(c.get('detail'))} "
+            f"| {_md_cell(c.get('confidence'))} |"
+            for c in conflicts
+        ]
+    else:
+        parts.append("_None detected._")
+
+    unverifiable = cv.get("unverifiable", [])
+    if unverifiable:
+        parts += [
+            "",
+            "### Unverifiable Listing Claims",
+            "_ERP master is silent on these — not errors, possibly ERP data to back-fill._",
+        ]
+        parts += [
+            f"- **{u.get('listing_evidence', '—')}** — {u.get('detail', '')}" for u in unverifiable
+        ]
+
+    issues = cv.get("listing_issues", [])
+    if issues:
+        parts += [
+            "",
+            "### Amazon Listing Issues (SP-API)",
+            "| Severity | Code | Message |",
+            "|----------|------|---------|",
+        ]
+        parts += [
+            f"| {_md_cell(i.get('severity'))} | {_md_cell(i.get('code'))} | {_md_cell(i.get('message'))} |"
+            for i in issues
+        ]
+
+    parts += ["", "---", ""]
+    return "\n".join(parts)
 
 
 def _render_markdown(report: dict) -> str:
@@ -1032,6 +2138,7 @@ def _render_markdown(report: dict) -> str:
     module_deltas = ca.get("module_deltas", {})
     plan = report["improvement_plan"]
     diagnosis = report["qualitative_diagnosis"] or "_No LLM analysis available._"
+    content_validation_md = _render_content_validation_md(report.get("content_validation"))
 
     # Split module scores by basis so readers are not misled about comparability.
     det_mod_rows = "\n".join(
@@ -1192,7 +2299,7 @@ in the competitive gap below — competitors are not LLM-scored._
 
 ---
 
-## Semantic Quality Analysis
+{content_validation_md}## Semantic Quality Analysis
 
 ### Title
 
@@ -1271,6 +2378,7 @@ def _generate_report(items: list[dict], ctx: WorkflowContext) -> list[dict]:
         rs = item.get("review_summary") or {}
         cd = item.get("competitive_delta") or {}
         sd = item.get("semantic_details") or {}
+        cv = item.get("content_validation") or None
 
         report = {
             "asin": main_asin,
@@ -1311,6 +2419,7 @@ def _generate_report(items: list[dict], ctx: WorkflowContext) -> list[dict]:
                 "weaker_modules": cd.get("weaker_modules", []),
             },
             "semantic_details": sd,
+            "content_validation": cv,
             "qualitative_diagnosis": llm_analysis,
             "improvement_plan": main_score.get("improvement_plan", []),
         }
@@ -1399,6 +2508,12 @@ def build_listing_diagnosis(config: dict) -> Workflow:
             ProcessStep(
                 name="merge_semantic_scores",
                 fn=_merge_semantic_scores,
+            ),
+            ProcessStep(
+                # Own-store only; self-gated behind `enable_validate_content`.
+                # No-op for competitor / plain-ASIN runs.
+                name="validate_content",
+                fn=_validate_content,
             ),
             ProcessStep(
                 name="prepare_llm_prompt",
