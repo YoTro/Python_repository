@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
+import platform
 import uuid
 
 from cryptography.hazmat.primitives import padding
@@ -91,6 +93,13 @@ class LingxingAuth:
             "verify_code": "",
             "uuid": str(uuid.uuid4()),
             "auto_login": 1,
+            # A stable device fingerprint lets Lingxing recognise this client as a
+            # trusted device and skip the double-check (2FA) challenge that otherwise
+            # withholds the token. Without these fields the server treats every login
+            # as a new device and returns doubleCheckConfigRes instead of a token.
+            "device": self._USER_AGENT,
+            "fingerprint": self._fingerprint(account),
+            "sensorsAnonymousId": self._sensors_id(account),
             "secretId": secret_id,
             "doubleCheckLoginReq": {"doubleCheckType": 1, "mobileLoginCode": "", "loginTick": ""},
         }
@@ -99,27 +108,69 @@ class LingxingAuth:
             logger.info(f"Logging in to Lingxing ERP as '{account}'")
             resp = self.session.post(url, headers=headers, json=payload)
             data = resp.json()
-            # Response is flat: code=1 means success; token at root level.
+            # code=1 means the request was accepted. On a fully successful login the
+            # token sits at the body root, alongside uid/zid/envKey/companyId. When the
+            # device is not trusted, code is still 1 but the body carries
+            # doubleCheckConfigRes and no token — a 2FA challenge, not a real success.
             if data.get("code") == 1:
                 token = data.get("token")
                 if token:
                     self._save_token(
                         token,
                         meta={
-                            "uid": data.get("uid", ""),
+                            "uid": str(data.get("uid", "")),
                             "zid": str(data.get("zid", "")),
                             "env_key": data.get("envKey", ""),
-                            "company_id": data.get("companyId", ""),
+                            "company_id": str(data.get("companyId", "")),
                         },
                     )
                     logger.info("Lingxing login successful")
                     return token
-                logger.error(f"Token not found in login response: {list(data.keys())}")
+                if data.get("doubleCheckConfigRes"):
+                    logger.error(
+                        "Lingxing login requires double-check (2FA): the device was not "
+                        "recognised, so no token was issued. Complete the mobile verification "
+                        "in a browser once from this environment, then set LINGXING_FINGERPRINT "
+                        "to that trusted browser's fingerprint value and retry."
+                    )
+                else:
+                    logger.error(
+                        f"Lingxing login returned code=1 but no token: {list(data.keys())}"
+                    )
             else:
                 logger.error(f"Lingxing login failed: {data.get('msg')} (code={data.get('code')})")
         except Exception as e:
             logger.error(f"Lingxing login error: {e}")
         return None
+
+    # Chrome UA matching the curl_cffi impersonation profile; sent as the login `device`.
+    _USER_AGENT = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+    )
+
+    @staticmethod
+    def _fingerprint(account: str) -> str:
+        """Stable per-install device fingerprint so a trusted device can skip 2FA.
+
+        Prefers LINGXING_FINGERPRINT (recommended: copy the value a trusted browser
+        session sends); otherwise derives a value that is at least stable across runs
+        on this machine, so a device stays recognised once 2FA has been completed once.
+        """
+        fp = os.getenv("LINGXING_FINGERPRINT")
+        if fp:
+            return fp
+        seed = f"{account}:{platform.node()}:lingxing-erp".encode()
+        return hashlib.md5(seed, usedforsecurity=False).hexdigest()
+
+    @staticmethod
+    def _sensors_id(account: str) -> str:
+        """Stable analytics id sent with login; env override or a per-install derivation."""
+        sid = os.getenv("LINGXING_SENSORS_ID")
+        if sid:
+            return sid
+        seed = f"sensors:{account}:{platform.node()}".encode()
+        return hashlib.md5(seed, usedforsecurity=False).hexdigest()
 
     def _save_token(self, token: str, meta: dict = None):
         try:
