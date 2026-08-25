@@ -156,13 +156,15 @@ async def test_structured_requests_json_object(provider):
 
 @pytest.mark.asyncio
 async def test_parse_usage_and_cost_with_cached_tokens(provider):
+    # Token counts stay under the 272,000 long-context threshold so standard-tier
+    # rates apply (1M tokens would trip gpt-5.5's long_context_standard tier).
     provider._client.chat.completions.create = AsyncMock(
         return_value=_fake_completion(
             text="result",
-            prompt_tokens=1_000_000,
-            completion_tokens=1_000_000,
-            cached_tokens=500_000,
-            reasoning_tokens=200_000,
+            prompt_tokens=200_000,
+            completion_tokens=200_000,
+            cached_tokens=100_000,
+            reasoning_tokens=40_000,
         )
     )
 
@@ -171,12 +173,12 @@ async def test_parse_usage_and_cost_with_cached_tokens(provider):
     assert resp.text == "result"
     assert resp.provider_name == "openai"
     assert resp.currency == "USD"
-    # gpt-5.5: 0.5M input@$5 + 0.5M cached@$0.5 + 1M output@$30
-    #        = 2.5 + 0.25 + 30 = 32.75  (per 1M-token rates)
-    assert resp.cost == pytest.approx(32.75)
-    # token_usage = input + output + thought (reasoning is already inside output)
-    assert resp.token_usage == 2_000_000
-    assert resp.metadata["cached_tokens"] == 500_000
+    # gpt-5.5 standard: 100K input@$5 + 100K cached@$0.5 + 200K output@$30
+    #        = 0.5 + 0.05 + 6.0 = 6.55  (rates are per 1M tokens)
+    assert resp.cost == pytest.approx(6.55)
+    # token_usage = input + output (reasoning is already inside output)
+    assert resp.token_usage == 400_000
+    assert resp.metadata["cached_tokens"] == 100_000
 
 
 @pytest.mark.asyncio
@@ -187,14 +189,46 @@ async def test_batch_flag_halves_cost():
     os.environ["OPENAI_API_KEY"] = "test-key"
     p = OpenAIProvider(model_name="gpt-5.5")
 
+    # Under the 272,000 long-context threshold → standard-tier rates.
     std = p._parse_response(
-        _fake_completion(prompt_tokens=1_000_000, completion_tokens=1_000_000),
+        _fake_completion(prompt_tokens=200_000, completion_tokens=200_000),
         is_batch=False,
     )
     batch = p._parse_response(
-        _fake_completion(prompt_tokens=1_000_000, completion_tokens=1_000_000),
+        _fake_completion(prompt_tokens=200_000, completion_tokens=200_000),
         is_batch=True,
     )
-    # standard 5 + 30 = 35 ; batch 2.5 + 15 = 17.5
-    assert std.cost == pytest.approx(35.0)
-    assert batch.cost == pytest.approx(17.5)
+    # standard 200K in@$5 + 200K out@$30 = 1.0 + 6.0 = 7.0
+    # batch (50% off)  200K in@$2.5 + 200K out@$15 = 0.5 + 3.0 = 3.5
+    assert std.cost == pytest.approx(7.0)
+    assert batch.cost == pytest.approx(3.5)
+
+
+@pytest.mark.asyncio
+async def test_long_context_tier_above_272k_threshold():
+    """>272,000 prompt tokens switches gpt-5.5 to its long-context tier.
+
+    Standard rates ($5/$0.5/$30) give way to long_context_standard ($10/$1/$45),
+    and the batch discount stacks on top (long_context_batch = $5/$0.5/$22.5).
+    """
+    import os
+
+    os.environ["OPENAI_API_KEY"] = "test-key"
+    p = OpenAIProvider(model_name="gpt-5.5")
+
+    # 300K prompt tokens > 272K threshold; 100K of them are a cache hit.
+    completion = _fake_completion(
+        prompt_tokens=300_000,
+        completion_tokens=100_000,
+        cached_tokens=100_000,
+    )
+
+    std = p._parse_response(completion, is_batch=False)
+    batch = p._parse_response(completion, is_batch=True)
+
+    # long_context_standard: 200K in@$10 + 100K cached@$1 + 100K out@$45
+    #                      = 2.0 + 0.1 + 4.5 = 6.6
+    assert std.cost == pytest.approx(6.6)
+    # long_context_batch: 200K in@$5 + 100K cached@$0.5 + 100K out@$22.5
+    #                   = 1.0 + 0.05 + 2.25 = 3.3
+    assert batch.cost == pytest.approx(3.3)
