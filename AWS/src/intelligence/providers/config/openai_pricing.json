@@ -1,7 +1,7 @@
 {
   "metadata": {
     "source": "https://developers.openai.com/api/docs/pricing",
-    "last_verified": "2026-08-16",
+    "last_verified": "2026-08-25",
     "currency": "USD",
     "schema_version": "1",
     "conventions": {
@@ -23,7 +23,8 @@
       "coverage_note": "As of the 2026-08-16 sync, the developer pricing page's 'Flagship models' table was captured in its expanded ('View more') state, which reveals the full legacy catalog previously omitted from this file: gpt-5.2, gpt-5.2-pro, gpt-5.1, gpt-5, gpt-5-mini, gpt-5-nano, gpt-5-pro, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o4-mini, o3, o3-mini, o3-pro, o1, o1-pro, gpt-4o-2024-05-13, gpt-4-turbo-2024-04-09, gpt-4-0613, gpt-3.5-turbo (+0125/1106/instruct variants), davinci-002, babbage-002. These are captured at standard tier only (input/input_cache_hit/output) — the source's Batch/Flex/Fast-mode tabs were not expanded for this subset, so no batch or long-context rate is asserted for them (see batch_note). Models with no cache column on the source table (dash) simply have no input_cache_hit entry, matching the 'pro'/reasoning-model convention already used for gpt-5.4-pro/gpt-5.5-pro.",
       "gpt_5_alias_fix_note": "Prior to the 2026-08-16 sync, the bare string 'gpt-5' was mapped as an alias to gpt-5.5's pricing. The source page lists 'gpt-5' as its own distinct (older, cheaper) model — $1.25/$0.125/$10.00 vs gpt-5.5's $5.00/$0.50/$30.00 — so treating it as a gpt-5.5 alias silently overbilled any call using the literal model id 'gpt-5' by 4x. Fixed: 'gpt-5' is now its own canonical entry with its real published pricing.",
       "gpt_5_6_coverage_note": "gpt-5.6-sol/terra/luna source data also publishes a flex tier. flex is numerically identical to batch for every gpt-5.6 model (reconfirmed by the 2026-08-16 sync's expanded Flex tab, which matches the Batch tab exactly), so it is intentionally omitted — PriceManager maps tier='flex' straight onto the batch lookup keys, losing no information. gpt-5.6-cyber's source only publishes a standard short_context tier (no batch, no long_context, no fast_mode). gpt-5.5-cyber (added 2026-08-16) likewise only publishes a standard short_context tier, with no cache_writes dimension. gpt-5.4-cyber is listed on the source page but every dimension is '-' (no active pricing published — likely retired/unavailable), so it is intentionally omitted here rather than encoded as all-zero prices. long_context_batch entries for gpt-5.4-pro/gpt-5.4/gpt-5.5-pro/gpt-5.5 are derived as long_context_standard x 0.5 (source did not publish batch or long_context_batch rates directly for these models, but every other batch entry in this file matches this ratio exactly).",
-      "daybreak_alias_note": "daybreak-blue-latest and daybreak-red-latest are Daybreak-program aliases that currently point to gpt-5.6-sol and gpt-5.6-cyber respectively. As new frontier models are released through the program these aliases will be repointed with pricing adjusted to match the new underlying model — re-verify at the next sync rather than assuming the mapping is permanent."
+      "daybreak_alias_note": "daybreak-blue-latest and daybreak-red-latest are Daybreak-program aliases that currently point to gpt-5.6-sol and gpt-5.6-cyber respectively. As new frontier models are released through the program these aliases will be repointed with pricing adjusted to match the new underlying model — re-verify at the next sync rather than assuming the mapping is permanent.",
+      "gpt_5_6_sol_promo_note": "gpt-5.6-sol is currently under promotional pricing (2026-08-25 sync), lowered from its prior $5.00/$0.50/$6.25/$30.00 standard short-context rates to $4.00/$0.40/$5.00/$20.00. Per OpenAI, the promotion runs at least through 2026-11-21 — after that date these rates may revert, so re-verify at the next sync. All six tiers (standard, batch, long_context_standard, long_context_batch, fast_mode, long_context_fast_mode) were repriced together; batch/long_context_batch remain exactly standard x 0.5 and long_context_standard x 0.5, and fast_mode remains exactly 2x standard, preserving every ratio invariant asserted in batch_note / fast_mode_note / cache_writes_note. The daybreak-blue-latest alias inherits these promo rates via gpt-5.6-sol."
     }
   },
   "model_string_index": {
@@ -695,67 +696,67 @@
       "dimension": "output"
     },
     "gpt-5.6-sol#standard#input": {
-      "price": 5.0,
+      "price": 4.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input"
     },
     "gpt-5.6-sol#standard#input_cache_hit": {
-      "price": 0.5,
+      "price": 0.4,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit"
     },
     "gpt-5.6-sol#standard#output": {
-      "price": 30.0,
+      "price": 20.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output"
     },
     "gpt-5.6-sol#batch#input": {
-      "price": 2.5,
+      "price": 2.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input",
       "discount_vs_standard": 0.5
     },
     "gpt-5.6-sol#batch#input_cache_hit": {
-      "price": 0.25,
+      "price": 0.2,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit",
       "discount_vs_standard": 0.5
     },
     "gpt-5.6-sol#batch#output": {
-      "price": 15.0,
+      "price": 10.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
       "discount_vs_standard": 0.5
     },
     "gpt-5.6-sol#long_context_standard#input": {
-      "price": 10.0,
+      "price": 8.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input",
       "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#long_context_standard#input_cache_hit": {
-      "price": 1.0,
+      "price": 0.8,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit",
       "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#long_context_standard#output": {
-      "price": 45.0,
+      "price": 30.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
       "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#long_context_batch#input": {
-      "price": 5.0,
+      "price": 4.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input",
@@ -763,7 +764,7 @@
       "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#long_context_batch#input_cache_hit": {
-      "price": 0.5,
+      "price": 0.4,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit",
@@ -771,7 +772,7 @@
       "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#long_context_batch#output": {
-      "price": 22.5,
+      "price": 15.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
@@ -779,27 +780,27 @@
       "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#standard#cache_writes": {
-      "price": 6.25,
+      "price": 5.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes"
     },
     "gpt-5.6-sol#batch#cache_writes": {
-      "price": 3.125,
+      "price": 2.5,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes",
       "discount_vs_standard": 0.5
     },
     "gpt-5.6-sol#long_context_standard#cache_writes": {
-      "price": 12.5,
+      "price": 10.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes",
       "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#long_context_batch#cache_writes": {
-      "price": 6.25,
+      "price": 5.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes",
@@ -807,52 +808,52 @@
       "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#fast_mode#input": {
-      "price": 10.0,
+      "price": 8.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input"
     },
     "gpt-5.6-sol#fast_mode#input_cache_hit": {
-      "price": 1.0,
+      "price": 0.8,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit"
     },
     "gpt-5.6-sol#fast_mode#cache_writes": {
-      "price": 12.5,
+      "price": 10.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes"
     },
     "gpt-5.6-sol#fast_mode#output": {
-      "price": 60.0,
+      "price": 40.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output"
     },
     "gpt-5.6-sol#long_context_fast_mode#input": {
-      "price": 20.0,
+      "price": 16.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input",
       "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#long_context_fast_mode#input_cache_hit": {
-      "price": 2.0,
+      "price": 1.6,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit",
       "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#long_context_fast_mode#cache_writes": {
-      "price": 25.0,
+      "price": 20.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "cache_writes",
       "note": "input tokens > 272,000"
     },
     "gpt-5.6-sol#long_context_fast_mode#output": {
-      "price": 90.0,
+      "price": 60.0,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
