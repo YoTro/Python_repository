@@ -130,3 +130,10 @@ category_monopoly_analysis:
     mega_seller_feedback: 10000 # Feedback count that classifies a seller as an industry giant
     seller_cr3_limit: 0.40      # Top-3 sellers > 40% BSR slots = seller-level concentration
     review_ratio_ceiling: 0.15  # Written/global ratio > 15% = review manipulation signal
+
+  # Segmentation (Option 2): a mixed parent category (e.g. "traps" = flying-insect
+  # + rodent + roach) is split into sub-markets and the deep analysis is re-run per
+  # segment, yielding one report per segment. max_segments caps how many of the
+  # largest sub-markets get the full external-call pipeline (the rest fold into
+  # "misc" and are skipped) — raise it for deeper coverage at N× the API cost.
+  max_segments: 2

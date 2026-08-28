@@ -21,6 +21,7 @@ import statistics
 import time
 import uuid as _uuid
 from collections import Counter, defaultdict
+from dataclasses import replace as _dc_replace
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -51,7 +52,7 @@ from src.mcp.servers.social.tiktok.client import TikTokClient
 from src.mcp.servers.social.youtube.client import YouTubeClient
 from src.workflows.engine import Workflow
 from src.workflows.registry import WorkflowRegistry
-from src.workflows.steps.base import ComputeTarget
+from src.workflows.steps.base import ComputeTarget, Step, StepResult, WorkflowContext
 from src.workflows.steps.enrich import EnrichStep
 from src.workflows.steps.process import ProcessStep
 
@@ -433,6 +434,46 @@ def _ngram_candidates(titles: list, min_doc_freq: int = 3, top_n: int = 15) -> l
                     doc_counts[gram] += 1
                     seen_in_doc.add(gram)
     return [term for term, cnt in doc_counts.most_common(top_n) if cnt >= min_doc_freq]
+
+
+# ── Segmentation helpers (shared by _segment_category / PerSegmentStep) ────────
+def _seg_stem(t: str) -> str:
+    """Naive plural fold: 'traps'→'trap'. Mirrors _filter_category_coherence."""
+    return t[:-1] if t.endswith("s") and len(t) > 4 else t
+
+
+def _seg_tokenize(title: str) -> frozenset:
+    return frozenset(
+        _seg_stem(t)
+        for t in re.findall(r"[a-z0-9]+", (title or "").lower())
+        if t not in _STOP_WORDS and len(t) > 1 and not t.isdigit()
+    )
+
+
+def _seg_jaccard(a: frozenset, b: frozenset) -> float:
+    union = len(a | b)
+    return 1.0 - len(a & b) / union if union else 0.0
+
+
+def _hhi(shares: list[float]) -> float:
+    """Herfindahl–Hirschman Index over fractional shares (0..1). 1.0 = monopoly."""
+    return round(sum(s * s for s in shares), 4)
+
+
+def _parent_brand_hhi(items: list[dict]) -> float:
+    """Best-effort brand HHI over the pooled parent list, for artifact detection.
+
+    Brands are often unresolved at the parent level (resolution happens inside
+    _run_monopoly_analysis), so this is a lower-bound signal: returns 0.0 when no
+    brand fields are present rather than pretending the market is fragmented.
+    """
+    brands = [(it.get("Brand") or it.get("brand")) for it in items]
+    brands = [b for b in brands if b]
+    if not brands:
+        return 0.0
+    counts = Counter(brands)
+    total = sum(counts.values())
+    return _hhi([c / total for c in counts.values()])
 
 
 async def _fetch_core_keywords(items: list[dict], ctx: Any) -> list[dict]:
@@ -964,6 +1005,354 @@ async def _filter_category_coherence(items: list[dict], ctx: Any) -> list[dict]:
         f"[category_coherence] Filtering skipped ({_phase2_reason or 'both phases failed'})"
     )
     return items
+
+
+_SEG_GENERIC_TOKENS = frozenset(
+    {"indoor", "outdoor", "home", "house", "for", "large", "small", "mini", "value", "killer"}
+)
+_SEG_MISC_LABELS = frozenset({"misc", "other", "uncategorized", "unknown", ""})
+
+
+def _seg_n_real(grouping: list[tuple[str, list[int]]], min_size: int) -> int:
+    """Count non-misc groups large enough to become their own segment."""
+    return sum(
+        1
+        for lab, idxs in grouping
+        if lab.strip().lower() not in _SEG_MISC_LABELS and len(idxs) >= min_size
+    )
+
+
+async def _llm_classify_segments(
+    titles: list[str], main_kw: str, ctx: Any
+) -> list[tuple[str, list[int]]] | None:
+    """LLM-anchored classification into use-case-group sub-markets.
+
+    Lexical distance groups products by FORM FACTOR (glue/snap/sticky) and shared
+    words, not by MARKET (target pest / use-case) — so a mouse-glue-trap and a
+    roach-glue-board cluster together though they are different markets. Correct
+    segmentation is semantic, so we ask the router, anchored to the actual n-gram
+    vocabulary to keep it grounded. Returns [(label, [item_idx, …]), …] or None.
+    """
+    if not ctx.router:
+        return None
+    anchor = _ngram_candidates(titles, min_doc_freq=max(3, len(titles) // 20), top_n=20)
+    numbered = "\n".join(f"{i + 1}. {t[:90]}" for i, t in enumerate(titles))
+    prompt = (
+        "You are a market analyst segmenting an Amazon category page into DISTINCT "
+        "SUB-MARKETS by primary use-case / target.\n\n"
+        f'Category anchor: "{main_kw}"\n'
+        f"Frequent terms in these titles: {', '.join(anchor)}\n\n"
+        "Group the titles below into BROAD sub-markets, MERGING closely related "
+        "variants into one market. Intended granularity (example for a pest 'traps' "
+        "page): merge mouse + rat as 'rodent'; merge cockroach + ant as "
+        "'crawling_insect'; merge fruit fly + gnat + mosquito as 'flying_insect'; "
+        "keep moth/fabric pests as 'fabric_pest'. Do NOT split by brand, pack size, "
+        "color, or mechanism (glue vs snap vs zapper are the SAME market). Aim for "
+        f"2-6 sub-markets. Put genuine off-category items (not part of '{main_kw}') "
+        "in 'misc'.\n\n"
+        f"{numbered}\n\n"
+        "Return ONLY a JSON object: keys = short snake_case market names, values = "
+        "arrays of the 1-based title numbers in that market. Every title must appear "
+        "in exactly one group. No prose, no markdown."
+    )
+    try:
+        # DEEP_REASONING routes to the cloud model — classification into nuanced
+        # sub-markets is beyond a small local model, which collapses 100 titles
+        # into the single category supertype (e.g. "pests").
+        res = await ctx.router.route_and_execute(prompt, category=TaskCategory.DEEP_REASONING)
+        m = re.search(r"\{[\s\S]*\}", res.text or "")
+        if not m:
+            return None
+        raw: dict = json.loads(m.group())
+    except Exception as e:
+        logger.warning(f"[segment_category] LLM classification failed: {e}")
+        return None
+
+    n = len(titles)
+    grouping: list[tuple[str, list[int]]] = []
+    seen: set[int] = set()
+    for label, nums in raw.items():
+        if not isinstance(nums, list):
+            continue
+        idxs = []
+        for x in nums:
+            try:
+                i = int(x) - 1  # 1-based → 0-based
+            except (TypeError, ValueError):
+                continue
+            if 0 <= i < n and i not in seen:  # first assignment wins on conflict
+                idxs.append(i)
+                seen.add(i)
+        if idxs:
+            grouping.append((str(label).strip().lower().replace(" ", "_"), idxs))
+    # Require reasonable coverage; otherwise fall back to the deterministic path.
+    if len(seen) < 0.7 * n:
+        logger.warning(f"[segment_category] LLM coverage too low ({len(seen)}/{n}); using fallback")
+        return None
+    return grouping
+
+
+def _deterministic_segments(titles: list[str]) -> list[tuple[str, list[int]]] | None:
+    """Fallback: strip category-wide + form-factor tokens (the connective vocabulary
+    that bridges all sub-markets), then Jaccard + DBSCAN. Coarser than the LLM path
+    (tends to merge closely-related targets), but free and fully deterministic.
+    Returns [(label, [item_idx, …]), …] or None if clustering is unavailable.
+    """
+    n = len(titles)
+    token_sets = [_seg_tokenize(t) for t in titles]
+    # Strip tokens present in ≥30% of titles — "trap", "killer", "glue", generic
+    # modifiers — so the discriminative target tokens drive the distance.
+    df: Counter = Counter(tok for ts in token_sets for tok in ts)
+    common = {tok for tok, c in df.items() if c / n >= 0.30}
+    stripped = [ts - common for ts in token_sets]
+    try:
+        import numpy as np
+        from sklearn.cluster import DBSCAN as _DBSCAN
+
+        dist = np.zeros((n, n), dtype=np.float32)
+        for i in range(n):
+            for j in range(i + 1, n):
+                d = _seg_jaccard(stripped[i], stripped[j])
+                dist[i, j] = dist[j, i] = d
+        labels = _DBSCAN(eps=0.75, min_samples=3, metric="precomputed").fit_predict(dist)
+    except ImportError:
+        return None
+
+    by_label: dict[int, list[int]] = defaultdict(list)
+    for idx, lbl in enumerate(labels):
+        if lbl >= 0:  # drop DBSCAN noise → becomes misc downstream
+            by_label[int(lbl)].append(idx)
+    if not by_label:
+        return None
+
+    grouping: list[tuple[str, list[int]]] = []
+    for idxs in by_label.values():
+        cluster_titles = [titles[i] for i in idxs]
+        grams = _ngram_candidates(cluster_titles, min_doc_freq=max(2, len(idxs) // 3), top_n=8)
+        bigrams = [g for g in grams if len(g.split()) == 2]
+        label = next(
+            (g for g in bigrams if any(t not in _SEG_GENERIC_TOKENS for t in g.split())),
+            next(
+                (g for g in grams if g not in _SEG_GENERIC_TOKENS), grams[0] if grams else "segment"
+            ),
+        )
+        grouping.append((label, idxs))
+    return grouping
+
+
+def _finalize_segments(
+    items: list[dict],
+    ctx: Any,
+    grouping: list[tuple[str, list[int]]],
+    method: str,
+    main_kw: str,
+    min_size: int,
+    k_cap: int,
+) -> list[dict]:
+    """Apply a [(label, [idx]), …] grouping: tag items, fold sub-floor groups and
+    unassigned items into 'misc', cap to k_cap real segments, write stats."""
+    n = len(items)
+
+    def _is_misc(lab: str) -> bool:
+        return lab.strip().lower() in {"misc", "other", "uncategorized", "unknown", ""}
+
+    real = sorted(
+        ((lab, idxs) for lab, idxs in grouping if not _is_misc(lab) and len(idxs) >= min_size),
+        key=lambda kv: len(kv[1]),
+        reverse=True,
+    )[:k_cap]
+
+    assigned: set[int] = set()
+    segments: list[dict] = []
+    used_ids: set[str] = set()
+    for rank, (lab, idxs) in enumerate(real):
+        label = lab.replace("_", " ").strip() or f"{main_kw} segment {rank + 1}"
+        seg_id = re.sub(r"[^a-z0-9]+", "_", lab.lower()).strip("_") or f"seg_{rank + 1}"
+        while seg_id in used_ids:
+            seg_id = f"{seg_id}_{rank + 1}"
+        used_ids.add(seg_id)
+        for i in idxs:
+            items[i]["segment_id"] = seg_id
+            items[i]["segment_label"] = label
+            assigned.add(i)
+        segments.append(
+            {
+                "id": seg_id,
+                "label": label,
+                "size": len(idxs),
+                "sample_titles": [items[i].get("Title", "")[:60] for i in idxs[:3]],
+            }
+        )
+
+    misc = [i for i in range(n) if i not in assigned]
+    if misc:
+        for i in misc:
+            items[i]["segment_id"] = "misc"
+            items[i]["segment_label"] = "misc / uncategorized"
+        segments.append(
+            {
+                "id": "misc",
+                "label": "misc / uncategorized",
+                "size": len(misc),
+                "sample_titles": [items[i].get("Title", "")[:60] for i in misc[:3]],
+            }
+        )
+
+    if not real:  # every group folded into misc — nothing analyzable
+        for it in items:
+            it["segment_id"] = "all"
+            it["segment_label"] = main_kw
+        ctx.cache["segmentation_stats"] = {
+            "status": "single_segment",
+            "reason": f"no_segment_above_floor ({method})",
+            "primary": "all",
+            "n_segments": 1,
+            "segments": [{"id": "all", "label": main_kw, "size": n}],
+        }
+        ctx.cache["contamination_stats"] = {
+            "status": "not_run",
+            "method": "segmentation_misc",
+            "n_removed": 0,
+            "n_retained": n,
+        }
+        return items
+
+    primary = segments[0]["id"]
+    ctx.cache["segmentation_stats"] = {
+        "status": "segmented",
+        "method": method,
+        "primary": primary,
+        "n_segments": len([s for s in segments if s["id"] != "misc"]),
+        "misc_size": len(misc),
+        "segments": segments,
+    }
+    # Report continuity: the "misc" fold IS the contamination signal (items
+    # excluded from analysis) now that the collapsing coherence filter is gone.
+    ctx.cache["contamination_stats"] = {
+        "status": "filtered" if misc else "clean",
+        "method": "segmentation_misc",
+        "n_removed": len(misc),
+        "n_retained": n - len(misc),
+        "outlier_rate": round(len(misc) / n, 3) if n else 0.0,
+        "sample_removed": [items[i].get("Title", "")[:60] for i in misc[:5]],
+    }
+    logger.info(
+        f"[segment_category] {n} items → {len(segments)} segments via {method} "
+        f"(primary={primary!r}, misc={len(misc)}); "
+        f"{[(s['id'], s['size']) for s in segments]}"
+    )
+    return items
+
+
+async def _segment_category(items: list[dict], ctx: Any) -> list[dict]:
+    """
+    Stage B — partition the BSR list into use-case-group sub-markets. Deletes
+    NOTHING: every item is tagged with item["segment_id"] / item["segment_label"]
+    and the full flat list is returned; the PerSegmentStep harness then re-runs
+    the deep analysis pipeline once per segment.
+
+    Classification is LLM-anchored (correct market axis is semantic, not lexical),
+    cached by title-content hash for cross-run determinism, with a deterministic
+    strip-common + Jaccard/DBSCAN fallback when the router is unavailable.
+
+    A "traps" page → {rodent, crawling_insect, flying_insect, fabric_pest, misc}.
+    Writes ctx.cache["segmentation_stats"] for the harness + report roll-up.
+    """
+    _MIN_SEG_SIZE = 4  # group smaller than this folds into "misc"
+    _K_CAP = 6  # keep at most K real segments; tail → "misc"
+
+    n = len(items)
+    if n == 0:
+        return items
+
+    main_kw = ctx.cache.get("main_keyword") or "category"
+
+    def _single(label: str, reason: str) -> list[dict]:
+        for it in items:
+            it["segment_id"] = "all"
+            it["segment_label"] = label
+        ctx.cache["segmentation_stats"] = {
+            "status": "single_segment",
+            "reason": reason,
+            "primary": "all",
+            "n_segments": 1,
+            "segments": [{"id": "all", "label": label, "size": n}],
+        }
+        ctx.cache["contamination_stats"] = {
+            "status": "not_run",
+            "method": "segmentation_misc",
+            "n_removed": 0,
+            "n_retained": n,
+            "note": f"single segment ({reason})",
+        }
+        logger.info(f"[segment_category] single segment ({reason}); n={n}")
+        return items
+
+    if n < 2 * _MIN_SEG_SIZE:
+        return _single(main_kw, f"too_few_items ({n})")
+
+    titles = [it.get("Title", "") for it in items]
+    content_hash = _hl.md5("\x01".join(titles).encode()).hexdigest()[:16]
+
+    # 1) L2 cache — identical page ⇒ identical segmentation (cross-run determinism).
+    grouping: list[tuple[str, list[int]]] | None = None
+    method = ""
+    cached = _l2_get(ctx, _TTL_KEYWORDS, "segments", content_hash)
+    if (
+        isinstance(cached, dict)
+        and isinstance(cached.get("labels"), list)
+        and len(cached["labels"]) == n
+    ):
+        by_lab: dict[str, list[int]] = defaultdict(list)
+        for i, lab in enumerate(cached["labels"]):
+            by_lab[lab].append(i)
+        grouping = list(by_lab.items())
+        method = f"{cached.get('method', 'unknown')} (cached)"
+
+    # 2) LLM-anchored classification (primary), with a degenerate-output guard.
+    #    A weak model (or a cloud-less box that falls back to local) can collapse
+    #    every title into one supertype bucket ("pests"). When the LLM yields
+    #    fewer than 2 real sub-markets we DON'T trust it blindly: we consult the
+    #    deterministic splitter, which is the better arbiter of whether the page
+    #    actually contains multiple markets. Only if the deterministic method ALSO
+    #    finds <2 do we accept a genuinely coherent single-segment category.
+    if grouping is None:
+        llm_grouping = await _llm_classify_segments(titles, main_kw, ctx)
+        if llm_grouping and _seg_n_real(llm_grouping, _MIN_SEG_SIZE) >= 2:
+            grouping, method = llm_grouping, "llm_anchored"
+        else:
+            det = _deterministic_segments(titles)
+            if det and _seg_n_real(det, _MIN_SEG_SIZE) >= 2:
+                # Page is mixed but the LLM under-segmented it → trust deterministic.
+                grouping = det
+                method = (
+                    "deterministic_strip_common (llm_underseg)"
+                    if llm_grouping
+                    else "deterministic_strip_common"
+                )
+            elif llm_grouping:
+                # Both agree there's <2 markets → genuinely coherent category.
+                grouping, method = llm_grouping, "llm_anchored_single"
+            elif det:
+                grouping, method = det, "deterministic_strip_common"
+
+    if not grouping:
+        return _single(main_kw, "no_segments_found")
+
+    # Persist the per-item label assignment for deterministic re-runs.
+    labels_per_item: list[str] = ["misc"] * n
+    for lab, idxs in grouping:
+        for i in idxs:
+            labels_per_item[i] = lab
+    _l2_set(
+        ctx,
+        {"labels": labels_per_item, "method": method},
+        _TTL_KEYWORDS,
+        "segments",
+        content_hash,
+    )
+
+    return _finalize_segments(items, ctx, grouping, method, main_kw, _MIN_SEG_SIZE, _K_CAP)
 
 
 async def _fetch_market_signals(items: list[dict], ctx: Any) -> list[dict]:
@@ -5684,38 +6073,164 @@ def _trim_repetition(text: str, min_run: int = 4) -> str:
 
 
 async def _prepare_report_artifact(items: list[dict], ctx: Any) -> list[dict]:
-    """Saves the report to a local Markdown file, stripping trailing repetition."""
-    if not items or "deliver_report" not in items[0]:
-        return items
-    report_data = items[0]["deliver_report"]
-    report_text = (
-        report_data.text
-        if hasattr(report_data, "text")
-        else report_data.get("text")
-        if isinstance(report_data, dict)
-        else str(report_data)
-    )
-    if not report_text or report_text == "None":
-        return items
+    """Saves each segment's report to its own Markdown file, stripping repetition.
 
-    # Strip LLM degeneration artifacts before persisting
-    report_text = _trim_repetition(report_text)
-
-    raw_kw = str(ctx.cache.get("main_keyword", "niche"))
-    keyword = re.sub(r"[^\w]", "_", raw_kw, flags=re.ASCII)[:40].strip("_") or "niche"
+    One item = one segment = one report (see PerSegmentStep). Files are named by
+    the segment label so K segments produce K distinct artifacts.
+    """
+    if not items:
+        return items
     _tz = ZoneInfo(ctx.config.get("timezone", "America/Los_Angeles"))
-    filename = f"Monopoly_Analysis_{keyword}_{datetime.now(tz=_tz).strftime('%Y%m%d_%H%M')}.md"
+    _ts = datetime.now(tz=_tz).strftime("%Y%m%d_%H%M")
     report_dir = os.path.abspath("data/reports")
     os.makedirs(report_dir, exist_ok=True)
-    file_path = os.path.join(report_dir, filename)
-    try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(report_text)
-        items[0]["report_file_path"] = file_path
-        logger.info(f"Artifact prepared at: {file_path} ({len(report_text)} chars)")
-    except Exception as e:
-        logger.error(f"Failed to write report file: {e}")
+
+    used_names: set[str] = set()
+    for item in items:
+        if "deliver_report" not in item:
+            continue
+        report_data = item["deliver_report"]
+        report_text = (
+            report_data.text
+            if hasattr(report_data, "text")
+            else report_data.get("text")
+            if isinstance(report_data, dict)
+            else str(report_data)
+        )
+        if not report_text or report_text == "None":
+            continue
+
+        # Strip LLM degeneration artifacts before persisting
+        report_text = _trim_repetition(report_text)
+
+        raw_kw = str(
+            item.get("segment_label")
+            or item.get("main_keyword")
+            or ctx.cache.get("main_keyword", "niche")
+        )
+        keyword = re.sub(r"[^\w]", "_", raw_kw, flags=re.ASCII)[:40].strip("_") or "niche"
+        # Disambiguate if two segments normalise to the same slug.
+        base_kw = keyword
+        _suffix = 2
+        while keyword in used_names:
+            keyword = f"{base_kw}_{_suffix}"
+            _suffix += 1
+        used_names.add(keyword)
+
+        filename = f"Monopoly_Analysis_{keyword}_{_ts}.md"
+        file_path = os.path.join(report_dir, filename)
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(report_text)
+            item["report_file_path"] = file_path
+            logger.info(f"Artifact prepared at: {file_path} ({len(report_text)} chars)")
+        except Exception as e:
+            logger.error(f"Failed to write report file: {e}")
     return items
+
+
+class PerSegmentStep(Step):
+    """
+    Composite step (Option 2): re-runs a deep sub-pipeline once per market
+    segment, each against an ISOLATED copy of ctx.cache, so category-scoped
+    fetches (core_keywords, CVR, CPC, social, monopoly score) are computed per
+    segment instead of once for a mixed parent category. Produces one report-
+    field dict per segment; the downstream deliver_report step renders one
+    report per item, so a category with K segments yields K reports.
+
+    Isolation model: each segment starts from a shallow copy of the global cache
+    (so upstream global keys — sellersprite_snapshots, ss_return_rate_pct, … —
+    remain readable) and its own writes shadow those keys within the segment
+    scope only. Nothing a segment writes leaks to siblings or to the parent.
+
+    Requires _segment_category to have tagged items with segment_id and written
+    ctx.cache["segmentation_stats"].
+    """
+
+    def __init__(
+        self,
+        name: str,
+        inner_steps: list[Step],
+        top_k: int = 2,
+        min_segment_size: int = 4,
+    ):
+        super().__init__(name=name, compute_target=ComputeTarget.PURE_PYTHON)
+        self.inner_steps = inner_steps
+        self.top_k = max(1, top_k)
+        self.min_segment_size = min_segment_size
+
+    async def run(self, items: list[dict[str, Any]], ctx: WorkflowContext) -> StepResult:
+        start = self._start_timer()
+        stats = ctx.cache.get("segmentation_stats") or {}
+        segments = [s for s in stats.get("segments", []) if s.get("id") != "misc"]
+        segments = sorted(segments, key=lambda s: s.get("size", 0), reverse=True)
+        chosen = [s for s in segments if s.get("size", 0) >= self.min_segment_size][: self.top_k]
+        if not chosen:
+            chosen = [{"id": "all", "label": ctx.cache.get("main_keyword", "category")}]
+
+        by_segment: dict[str, Any] = {}
+        out_items: list[dict] = []
+        for seg in chosen:
+            sid = seg["id"]
+            seg_items = (
+                list(items) if sid == "all" else [it for it in items if it.get("segment_id") == sid]
+            )
+            if not seg_items:
+                continue
+
+            # Isolated cache: shallow copy carries upstream global keys; per-segment
+            # writes shadow them only within this scope. router/mcp/heartbeat are
+            # shared by reference so cost tracking and tool calls behave normally.
+            seg_cache = dict(ctx.cache)
+            seg_cache.pop("by_segment", None)
+            seg_cache.pop("segment_rollup", None)
+            seg_ctx = _dc_replace(ctx, cache=seg_cache)
+
+            step_items = seg_items
+            for step in self.inner_steps:
+                res = await step.run(step_items, seg_ctx)
+                step_items = res.items
+
+            # Terminal inner step (_run_monopoly_analysis → reviews) yields one
+            # report-field dict; tag it so deliver_report / artifact can name it.
+            for it in step_items:
+                it["segment_id"] = sid
+                it["segment_label"] = seg.get("label", sid)
+            out_items.extend(step_items)
+
+            by_segment[sid] = {
+                "label": seg.get("label", sid),
+                "size": len(seg_items),
+                "main_keyword": seg_cache.get("main_keyword"),
+                "core_keywords": seg_cache.get("core_keywords"),
+                "category_cvr": seg_cache.get("category_cvr"),
+                "monopoly_score": (step_items[0].get("monopoly_score") if step_items else None),
+                "monopoly_status": (step_items[0].get("monopoly_status") if step_items else None),
+            }
+            logger.info(
+                f"[{self.name}] segment {sid!r}: score="
+                f"{by_segment[sid]['monopoly_score']}, status={by_segment[sid]['monopoly_status']!r}"
+            )
+
+        # Parent roll-up: flag the artifact where the pooled parent looks
+        # fragmented but ≥1 segment is concentrated (analyzer status ≥55).
+        parent_hhi = _parent_brand_hhi(items)
+        seg_scores = [(v.get("monopoly_score") or 0) for v in by_segment.values()]
+        ctx.cache["by_segment"] = by_segment
+        ctx.cache["segment_rollup"] = {
+            "parent_brand_hhi": parent_hhi,
+            "parent_is_artifact": bool(parent_hhi < 0.15 and any(s >= 55 for s in seg_scores)),
+            "segment_ids": list(by_segment.keys()),
+        }
+        return StepResult(
+            items=out_items,
+            metadata={
+                "duration_ms": self._elapsed_ms(start),
+                "segments_analyzed": len(by_segment),
+                "input_count": len(items),
+                "output_count": len(out_items),
+            },
+        )
 
 
 @WorkflowRegistry.register("category_monopoly_analysis")
@@ -5725,34 +6240,61 @@ def build_category_monopoly_analysis(config: dict) -> Workflow:
         name: f"{{{name}}}" for name in (monopoly_spec.required_vars if monopoly_spec else [])
     }
 
+    # Deep sub-pipeline re-run PER SEGMENT (Option 2). core_keywords is re-derived
+    # inside the loop so the whole keyword→CPC→CVR→social→monopoly chain scopes to
+    # each sub-market rather than borrowing the dominant niche's globals.
+    per_segment_steps: list[Step] = [
+        ProcessStep(name="seg_fetch_core_keywords", fn=_fetch_core_keywords),
+        ProcessStep(name="enrich_sales_data", fn=_enrich_sales),
+        EnrichStep(
+            name="enrich_seller_background",
+            extractor_fn=_enrich_seller_info,
+            parallel=True,
+            concurrency=5,
+        ),
+        ProcessStep(name="fetch_market_signals", fn=_fetch_market_signals),
+        ProcessStep(name="fetch_category_cvr", fn=_fetch_category_cvr),
+        ProcessStep(name="enrich_external_intensity", fn=_enrich_external_intensity),
+        ProcessStep(name="enrich_batch_traffic_scores", fn=_enrich_batch_traffic_scores),
+        ProcessStep(name="fetch_time_series_data", fn=_fetch_time_series_data),
+        ProcessStep(
+            name="fetch_critical_reviews_top_brands",
+            fn=_fetch_critical_reviews_top_brands,
+        ),
+        ProcessStep(name="calculate_monopoly_score", fn=_run_monopoly_analysis),
+        ProcessStep(
+            name="fetch_critical_reviews_dominant_portfolio",
+            fn=_fetch_critical_reviews_dominant_portfolio,
+        ),
+    ]
+
     return Workflow(
         name="category_monopoly_analysis",
         steps=[
+            # ── Shared prefix (runs once for the whole category page) ──────────
             ProcessStep(name="fetch_bsr_top_100", fn=_fetch_bsr_list),
             ProcessStep(name="fetch_sellersprite_bsr", fn=_fetch_sellersprite_bsr),
+            # Global keyword pass: provides a category-level main_keyword for
+            # segment labels; each segment re-derives its own keywords inside
+            # per_segment_analysis.
             ProcessStep(name="fetch_core_keywords", fn=_fetch_core_keywords),
-            ProcessStep(name="filter_category_coherence", fn=_filter_category_coherence),
-            ProcessStep(name="enrich_sales_data", fn=_enrich_sales),
-            EnrichStep(
-                name="enrich_seller_background",
-                extractor_fn=_enrich_seller_info,
-                parallel=True,
-                concurrency=5,
+            # NOTE: filter_category_coherence is intentionally NOT wired here. It
+            # collapses a mixed parent to its single dominant cluster (e.g. it
+            # expelled 63% of a "traps" page — all the rodent/roach/ant sub-markets
+            # — because they read as contra-tokens to the fly-trap keywords). That
+            # is market-definition masquerading as contamination removal, and it
+            # deletes legitimate demand before segmentation can see it. Under
+            # Option 2, segment_category owns both jobs: it partitions the page
+            # into sub-markets AND isolates true noise into a "misc" segment that
+            # the harness excludes.
+            ProcessStep(name="segment_category", fn=_segment_category),
+            # ── Per-segment deep analysis (K reports for K segments) ───────────
+            PerSegmentStep(
+                name="per_segment_analysis",
+                inner_steps=per_segment_steps,
+                top_k=int(config.get("max_segments", 2)),
             ),
-            ProcessStep(name="fetch_market_signals", fn=_fetch_market_signals),
-            ProcessStep(name="fetch_category_cvr", fn=_fetch_category_cvr),
-            ProcessStep(name="enrich_external_intensity", fn=_enrich_external_intensity),
-            ProcessStep(name="enrich_batch_traffic_scores", fn=_enrich_batch_traffic_scores),
-            ProcessStep(name="fetch_time_series_data", fn=_fetch_time_series_data),
-            ProcessStep(
-                name="fetch_critical_reviews_top_brands",
-                fn=_fetch_critical_reviews_top_brands,
-            ),
-            ProcessStep(name="calculate_monopoly_score", fn=_run_monopoly_analysis),
-            ProcessStep(
-                name="fetch_critical_reviews_dominant_portfolio",
-                fn=_fetch_critical_reviews_dominant_portfolio,
-            ),
+            # ── Shared suffix (renders one report per returned segment item) ───
             ProcessStep(
                 name="deliver_report",
                 # batch_threshold=1,
