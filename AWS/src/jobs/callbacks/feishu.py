@@ -451,9 +451,18 @@ class FeishuCallback(JobCallback):
             items = result.final_items if hasattr(result, "final_items") else []
 
             # --- Artifact Delivery (Attachment) First Priority ---
-            file_path = items[0].get("report_file_path") if items else None
+            # A workflow may emit multiple report items (e.g. one per category
+            # segment), so deliver every distinct report_file_path, not just the
+            # first item's.
             artifact_sent = False
-            if file_path and os.path.exists(file_path):
+            seen_paths: set[str] = set()
+            for item in items:
+                file_path = item.get("report_file_path")
+                if not file_path or file_path in seen_paths:
+                    continue
+                seen_paths.add(file_path)
+                if not os.path.exists(file_path):
+                    continue
                 logger.info(f"Detected report artifact for delivery: {file_path}")
                 try:
                     # Fix: Use 'stream' for .md files
@@ -467,9 +476,9 @@ class FeishuCallback(JobCallback):
                             receive_id_type="chat_id", receive_id=self.chat_id, file_key=file_key
                         )
                         artifact_sent = True
-                        logger.info("Report attachment sent successfully.")
+                        logger.info(f"Report attachment sent successfully: {file_path}")
                 except Exception as e:
-                    logger.error(f"Failed to send artifact attachment: {e}")
+                    logger.error(f"Failed to send artifact attachment {file_path}: {e}")
 
             if self.output_mode == "card":
                 text = "Workflow completed, but no textual response was provided."
