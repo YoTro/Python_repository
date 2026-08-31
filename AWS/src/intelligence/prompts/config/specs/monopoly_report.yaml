@@ -191,7 +191,9 @@ template: |
            concentration numbers here.
     Row 8  'Entry Stickiness' — '{bsr_churn_label} · 3m {bsr_churn_3m} / 6m {bsr_churn_6m} / 12m {bsr_churn_12m}'
            + whether recent entrants HOLD rank (per BSR LIFECYCLE ALERT: recent entrants high + departed low =
-           investable; both high = low stickiness).
+           investable; both high = low stickiness). NOTE: these BSR churn/lifecycle figures are parent-category-wide,
+           not segment-specific (see PARENT-LEVEL BSR METABOLISM RULE) — do not word this row as if the churn were
+           measured on this segment alone.
     Row 9  'Review Barrier' — the review floor ({review_floor_top20} for BSR #20, or the weakest-rank-slot review
            count) vs the incumbent rating baseline + one line on how reachable the floor is (gate per
            REVIEW-FLOOR OPPORTUNITY QUALIFICATION RULE).
@@ -317,9 +319,18 @@ template: |
       Row B: Metric='Rating Churn Pattern' | Value='{churn_pattern} (score {churn_score})' | Definition='Direction of incumbent star-rating movement; a falling pattern signals eroding satisfaction'
       Row C: Metric='Low-Review BSR Share' | Value='{new_product_ratio}' | Definition='% of current BSR products with <50 reviews — high value means positions not yet defended by social proof'
       Row D: Metric='Rating Collapse Rate' | Value='{collapse_rate}' | Definition='% of tracked products whose peak rating fell >0.3★ from first-half to second-half average'
-      Row E: Metric='BSR Listing Metabolism' | Value='{bsr_churn_label} (snapshots: {bsr_snapshots})' | Definition='Overall churn classification for this category''s BSR Top-100'
-      Row F: Metric='BSR Churn (3m / 6m / 12m)' | Value='{bsr_churn_3m} / {bsr_churn_6m} / {bsr_churn_12m}' | Definition='% of Top-100 slots that changed occupant over each trailing window'
-      Row G: Metric='New Entrant Ratio' | Value='{new_entrant_ratio}' | Definition='Share of current BSR Top-100 not present in the prior Sellersprite snapshot'
+      Row E: Metric='BSR Listing Metabolism' | Value='{bsr_churn_label} (snapshots: {bsr_snapshots})' | Definition='Parent-category churn class of the whole BSR Top-100 — same value for every segment'
+      Row F: Metric='BSR Churn (3m / 6m / 12m)' | Value='{bsr_churn_3m} / {bsr_churn_6m} / {bsr_churn_12m}' | Definition='% of parent Top-100 slots that changed occupant per window — parent-level, not segment-specific'
+      Row G: Metric='New Entrant Ratio' | Value='{new_entrant_ratio}' | Definition='Share of parent BSR Top-100 absent from the prior Sellersprite snapshot — parent-level, not segment-specific'
+    PARENT-LEVEL BSR METABOLISM RULE (mandatory scope caveat — applies to Rows E, F, G and to the five BSR Lifecycle
+    rows below): these churn, lifecycle, and new-entrant figures are computed ONCE over the whole category's Sellersprite
+    BSR Top-100 snapshot and are therefore identical across every segment of this category — they are NOT segment-specific.
+    (Reason: per-period per-segment BSR snapshots would multiply Sellersprite cost and pipeline complexity, so for now the
+    category parent-level BSR data is reused for each sub-segment.) When this report covers a single segment of a
+    multi-segment category, you MUST label these metrics as category-wide — e.g. write 'BSR metabolism (category-wide,
+    all segments)' — and MUST NOT phrase them as if they describe only this segment's listings, or contrast one segment's
+    churn against another's. Every other metric in this report IS segment-scoped; only these BSR-snapshot-derived rows are
+    the parent-level exception.
     '🎯 Final Scores' table gets one additional row, placed immediately after the Social PSI row (see the '- Social
     PSI:' bullet under DYNAMIC BENCHMARKS above):
       Metric='Seasonality' | Value='{seasonality_pattern} ({seasonality_amplitude_fold}x swing, source: {seasonality_source})' | Definition='Peak/trough demand swing pattern; see MARKET HEALTH SIGNALS for full YOY detail'
@@ -329,9 +340,10 @@ template: |
   - Low-Review BSR Share: {new_product_ratio} (snapshot — % of current BSR products with < 50 reviews; high value = BSR positions not yet defended by social proof, low entry stickiness) | Rating Collapse Rate: {collapse_rate} (% of Xiyouzhaoci-tracked products where first-half peak rating dropped > 0.3★ vs second-half average)
   - BSR Listing Metabolism: **{bsr_churn_label}** | Snapshots: {bsr_snapshots}
     - 3-Month Churn: {bsr_churn_3m} | 6-Month Churn: {bsr_churn_6m} | 12-Month Churn: {bsr_churn_12m}
-  - BSR Composition Lifecycle (current Top-100, classified by T-12/T-6 presence): Long-Term Incumbents {bsr_lifecycle_incumbents} · Returners {bsr_lifecycle_returners} · 6-Month Entrants (Survived) {bsr_lifecycle_entrants_survived} · Recent Entrants (<6mo) {bsr_lifecycle_recent_entrants} · Departed (was ranked, no longer in Top-100) {bsr_lifecycle_departed}
-    Render as FIVE consecutive rows in the '🔄 BSR Metabolism' diagnostic table (Layer 2), Metric='BSR Lifecycle: {{category label}}', Value=the count/pct cell above, Definition per category: Long-Term Incumbents='Ranked at T-12, T-6, and now — the stable core'; Returners='Ranked at T-12, dropped out by T-6, back now — seasonality or SKU swap, not durable competition'; 6-Month Entrants (Survived)='Entered ~6mo ago and held its rank since'; Recent Entrants (<6mo)='First appeared within the last ~6 months — too new to judge durability'; Departed='Was ranked at T-12 or T-6, no longer in the current Top-100'. If bsr_lifecycle_incumbents is 'N/A' (T-6 or T-12 snapshot unavailable), omit all five rows and do not speculate about the entrant/incumbent mix. The snapshot 'Entry Stickiness' row (Row 8) reads the same lifecycle mix to judge whether recent entrants HOLD rank.
-  - New Entrant Ratio (Sellersprite T-snapshot): {new_entrant_ratio}
+    SCOPE: parent-category BSR Top-100 (see PARENT-LEVEL BSR METABOLISM RULE) — the same metabolism class and churn rates apply to every segment; do not present them as this segment's own churn.
+  - BSR Composition Lifecycle (parent-category Top-100, classified by T-12/T-6 presence — category-wide, identical across all segments per the PARENT-LEVEL BSR METABOLISM RULE): Long-Term Incumbents {bsr_lifecycle_incumbents} · Returners {bsr_lifecycle_returners} · 6-Month Entrants (Survived) {bsr_lifecycle_entrants_survived} · Recent Entrants (<6mo) {bsr_lifecycle_recent_entrants} · Departed (was ranked, no longer in Top-100) {bsr_lifecycle_departed}
+    Render as FIVE consecutive rows in the '🔄 BSR Metabolism' diagnostic table (Layer 2), Metric='BSR Lifecycle: {{category label}}', Value=the count/pct cell above, Definition per category: Long-Term Incumbents='Ranked at T-12, T-6, and now — the stable core'; Returners='Ranked at T-12, dropped out by T-6, back now — seasonality or SKU swap, not durable competition'; 6-Month Entrants (Survived)='Entered ~6mo ago and held its rank since'; Recent Entrants (<6mo)='First appeared within the last ~6 months — too new to judge durability'; Departed='Was ranked at T-12 or T-6, no longer in the current Top-100'. Here 'category label' is the PARENT category, not the current segment — these counts describe the whole category Top-100, not the segment. If bsr_lifecycle_incumbents is 'N/A' (T-6 or T-12 snapshot unavailable), omit all five rows and do not speculate about the entrant/incumbent mix. The snapshot 'Entry Stickiness' row (Row 8) reads the same lifecycle mix to judge whether recent entrants HOLD rank.
+  - New Entrant Ratio (Sellersprite T-snapshot): {new_entrant_ratio} — parent-category Top-100, category-wide (see PARENT-LEVEL BSR METABOLISM RULE); identical across segments, not this segment's own entrant rate.
   - Seasonality: {seasonality_pattern} (score: {seasonality_score}, peak/trough swing: {seasonality_amplitude_fold}, source: {seasonality_source}, n={seasonality_n_points} data points) | Peak Months: {peak_months}
     Source legend: 'keyword_weekly_trends' = ABA weekly search-volume (direct consumer intent, independent of BSR history); 'bsr_daily_trends' = Xiyouzhaoci BSR proxy (indirect — reflects competitive rank, not raw demand). Prefer keyword source when available.
     SEASONALITY_SCORE MEANING (apply whenever citing seasonality_score): it is NOT an intuitive 0-100 magnitude — it is a linear rescaling of the peak/trough swing (seasonality_amplitude_fold), where a ≥4x swing between peak and trough months maps to 100 and no swing maps to 0. ALWAYS cite seasonality_amplitude_fold (e.g. 'a 2.3x swing between peak and off-season months') alongside the raw score wherever seasonality_score appears — the score alone tells the reader nothing about actual inventory/demand magnitude. If seasonality_amplitude_fold is 'N/A', do not cite seasonality_score as a precise figure; treat the pattern label as directional only.

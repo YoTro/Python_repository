@@ -4114,6 +4114,14 @@ async def _run_monopoly_analysis(items: list[dict], ctx: Any) -> list[dict]:
         ad_data=ad_data,
         external_data=external_data,
         historical_data=ctx.cache.get("historical_data"),
+        # PARENT-LEVEL BSR METABOLISM: sellersprite_snapshots is the category-wide
+        # BSR Top-100 snapshot fetched once in the shared prefix (fetch_sellersprite_bsr)
+        # and read here via PerSegmentStep's shallow-copied cache. It is deliberately
+        # NOT sliced to this segment: feeding per-period per-segment BSR snapshots into
+        # the LLM classifier would multiply Sellersprite cost and pipeline complexity,
+        # so for now every segment reuses the parent-level churn/lifecycle/new-entrant
+        # signals. The monopoly_report spec (PARENT-LEVEL BSR METABOLISM RULE) labels
+        # these rows as category-wide so the report never presents them as segment-specific.
         bsr_snapshots=ctx.cache.get("sellersprite_snapshots"),
         keyword_weekly_trends=ctx.cache.get("keyword_weekly_trends"),
         acos_data=acos_data,
