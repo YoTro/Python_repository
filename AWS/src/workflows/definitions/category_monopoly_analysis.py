@@ -80,6 +80,12 @@ _CVR_SRC_SS = "sellersprite_snapshot"  # SellerSprite median conversionRate
 _CVR_SRC_POWER_LAW = "power_law"  # price-based model_default_cvr()
 _CVR_SRC_DEFAULT = "default_0.10"  # hard-coded fallback (should rarely appear)
 _TTL_CRITICAL_REVIEWS = 86_400  # 24 h — recent critical reviews per ASIN
+# Per-segment resume checkpoint (see PerSegmentStep): PerSegmentStep is a single outer
+# step, so the engine only checkpoints once every segment finishes. This durable entry
+# lets a resume skip segments that already completed instead of re-running their scrapes
+# and LLM calls. Job-scoped key; TTL only has to outlive the gap between failure and the
+# manual ResumeJobCommand, so a day is ample.
+_TTL_SEGMENT = 86_400  # 24 h
 
 # Synthetic grouping key for Amazon.com direct sales (seller_type "AMZ"). Amazon-as-seller
 # listings have no separate "sold by" merchant link, so FulfillmentExtractor never captures
@@ -460,17 +466,27 @@ def _hhi(shares: list[float]) -> float:
     return round(sum(s * s for s in shares), 4)
 
 
-def _parent_brand_hhi(items: list[dict]) -> float:
+def _parent_brand_hhi(items: list[dict], brand_lookup: dict | None = None) -> float | None:
     """Best-effort brand HHI over the pooled parent list, for artifact detection.
 
-    Brands are often unresolved at the parent level (resolution happens inside
-    _run_monopoly_analysis), so this is a lower-bound signal: returns 0.0 when no
-    brand fields are present rather than pretending the market is fragmented.
+    Raw BSR items almost never carry a brand field (Amazon's BSR card HTML doesn't
+    expose it), so resolution must go through the Sellersprite ASIN→brand snapshot —
+    the same source _run_monopoly_analysis uses. Pass that lookup as `brand_lookup`;
+    without it (or when it resolves nothing) this returns None, which the caller must
+    treat as "unknown", NOT as a fragmented (low-HHI) market. Returning 0.0 here would
+    make `parent_hhi < threshold` trivially true and fire the parent-artifact flag on
+    every category — the bug this signature change fixes.
     """
-    brands = [(it.get("Brand") or it.get("brand")) for it in items]
+    brand_lookup = brand_lookup or {}
+    brands = [
+        brand_lookup.get((it.get("ASIN") or it.get("asin") or "").strip().upper())
+        or it.get("Brand")
+        or it.get("brand")
+        for it in items
+    ]
     brands = [b for b in brands if b]
     if not brands:
-        return 0.0
+        return None
     counts = Counter(brands)
     total = sum(counts.values())
     return _hhi([c / total for c in counts.values()])
@@ -1479,14 +1495,17 @@ _SOCIAL_KW_WINDOW_DAYS = 30
 
 async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     """
-    Fetches multi-platform social signals and deal promotion intensity for the category.
+    Fetches multi-platform social signals and deal promotion intensity for the
+    current segment (this step runs once per segment under PerSegmentStep).
 
     Platforms searched: TikTok, YouTube Shorts (concurrently per hashtag).
     Hashtags searched:
       1. Category keyword hashtag  (e.g. #gnattrapsforhouseindoor)
-      2. Top-5 brand hashtags by BSR frequency (e.g. #ZEVO, #Catchmaster)
-      3. New-entrant brand hashtags (products listed in last 12 months, up to 8)
-    Brand data requires fetch_sellersprite_bsr to have run first (previous step).
+      2. Top-5 brand hashtags by BSR frequency WITHIN this segment (e.g. #ZEVO, #Catchmaster)
+      3. New-entrant brand hashtags in this segment (products listed in last 12 months, up to 8)
+    Brand selection is scoped to the segment's ASINs; the Sellersprite snapshot is
+    used only as an ASIN→brand lookup. Requires fetch_sellersprite_bsr to have run
+    first (a shared-prefix step).
     """
     main_keyword = ctx.cache.get("main_keyword")
     if not main_keyword:
@@ -1507,12 +1526,27 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
     if ss_snapshots:
         base_ym = ctx.cache.get("sellersprite_base_ym", "")
         _latest_snap = ss_snapshots.get(max(ss_snapshots), [])
+        # ASIN→brand lookup spans the FULL snapshot: a superset is harmless (it is only
+        # ever queried by ASIN) and lets the weakest-rank-slot resolution below reach
+        # ASINs that fall outside this segment.
         _brand_lookup = {
             p["asin"].upper(): p["brand"] for p in _latest_snap if p.get("asin") and p.get("brand")
         }
 
-        # Top brands by product count in BSR
-        _brand_counts: Counter = Counter(p["brand"] for p in _latest_snap if p.get("brand"))
+        # Brand SELECTION (top brands + new entrants) must be scoped to THIS segment, not
+        # the whole category — otherwise every segment searches the same category-wide
+        # dominant brands and the social signal is not segment-specific. `items` is already
+        # the segment slice (PerSegmentStep runs this step per segment), so restrict the
+        # snapshot to products whose ASIN appears in it before counting brands.
+        _seg_asins = {
+            (it.get("ASIN") or it.get("asin") or "").strip().upper()
+            for it in items
+            if (it.get("ASIN") or it.get("asin"))
+        }
+        _seg_snap = [p for p in _latest_snap if (p.get("asin") or "").upper() in _seg_asins]
+
+        # Top brands by product count in this segment's BSR
+        _brand_counts: Counter = Counter(p["brand"] for p in _seg_snap if p.get("brand"))
         _top_brand_set = {b for b, _ in _brand_counts.most_common(_MAX_TOP_BRANDS) if b}
 
         # New-entrant brands: products listed within the last 12 months
@@ -1521,7 +1555,7 @@ async def _enrich_external_intensity(items: list[dict], ctx: Any) -> list[dict]:
 
         _new_entrant_products = [
             p
-            for p in _latest_snap
+            for p in _seg_snap
             if p.get("available_date_ms")
             and p["available_date_ms"] >= _cutoff_ms
             and p.get("brand")
@@ -6186,6 +6220,26 @@ class PerSegmentStep(Step):
             if not seg_items:
                 continue
 
+            # Per-segment resume checkpoint. Because this whole loop is one outer step,
+            # the engine only checkpoints after the LAST segment; a failure in a later
+            # segment otherwise discards every completed segment, so a resume re-runs
+            # them and repeats their external scrapes + LLM calls. Restore any segment
+            # already finished on a prior attempt (job-scoped, durable) and skip its
+            # inner pipeline. Best-effort: a cache miss/error just re-runs the segment.
+            try:
+                _seg_ckpt = _l2_get(ctx, _TTL_SEGMENT, "per_segment", ctx.job_id, sid)
+            except Exception as e:
+                logger.warning(f"[{self.name}] segment {sid!r} checkpoint read failed: {e}")
+                _seg_ckpt = None
+            if _seg_ckpt is not None:
+                out_items.extend(_seg_ckpt.get("items") or [])
+                by_segment[sid] = _seg_ckpt.get("rollup") or {}
+                logger.info(
+                    f"[{self.name}] segment {sid!r}: restored from resume checkpoint "
+                    f"(skipped {len(self.inner_steps)} inner steps)"
+                )
+                continue
+
             # Isolated cache: shallow copy carries upstream global keys; per-segment
             # writes shadow them only within this scope. router/mcp/heartbeat are
             # shared by reference so cost tracking and tool calls behave normally.
@@ -6215,6 +6269,20 @@ class PerSegmentStep(Step):
                 "monopoly_score": (step_items[0].get("monopoly_score") if step_items else None),
                 "monopoly_status": (step_items[0].get("monopoly_status") if step_items else None),
             }
+            # Persist this segment's completed work so a failure in a LATER segment does
+            # not force it to re-run on resume. Best-effort: checkpointing is an
+            # optimization, so a serialization/backend error must not break the analysis.
+            try:
+                _l2_set(
+                    ctx,
+                    {"items": step_items, "rollup": by_segment[sid]},
+                    _TTL_SEGMENT,
+                    "per_segment",
+                    ctx.job_id,
+                    sid,
+                )
+            except Exception as e:
+                logger.warning(f"[{self.name}] segment {sid!r} checkpoint write failed: {e}")
             logger.info(
                 f"[{self.name}] segment {sid!r}: score="
                 f"{by_segment[sid]['monopoly_score']}, status={by_segment[sid]['monopoly_status']!r}"
@@ -6222,12 +6290,24 @@ class PerSegmentStep(Step):
 
         # Parent roll-up: flag the artifact where the pooled parent looks
         # fragmented but ≥1 segment is concentrated (analyzer status ≥55).
-        parent_hhi = _parent_brand_hhi(items)
+        # Resolve parent brands through the Sellersprite snapshot (raw BSR items carry
+        # no brand), otherwise parent_hhi is always None/0 and the flag misfires.
+        _ss_snapshots = ctx.cache.get("sellersprite_snapshots") or {}
+        _parent_brand_lookup: dict = {}
+        for _ym in sorted(_ss_snapshots):
+            for _p in _ss_snapshots[_ym]:
+                if _p.get("asin") and _p.get("brand"):
+                    _parent_brand_lookup[_p["asin"].upper()] = _p["brand"]
+        parent_hhi = _parent_brand_hhi(items, _parent_brand_lookup)
         seg_scores = [(v.get("monopoly_score") or 0) for v in by_segment.values()]
         ctx.cache["by_segment"] = by_segment
         ctx.cache["segment_rollup"] = {
             "parent_brand_hhi": parent_hhi,
-            "parent_is_artifact": bool(parent_hhi < 0.15 and any(s >= 55 for s in seg_scores)),
+            # None = brands unresolved: cannot claim the parent is fragmented, so do not
+            # fire the artifact flag on an unknown HHI (avoids the prior false positives).
+            "parent_is_artifact": bool(
+                parent_hhi is not None and parent_hhi < 0.15 and any(s >= 55 for s in seg_scores)
+            ),
             "segment_ids": list(by_segment.keys()),
         }
         return StepResult(
