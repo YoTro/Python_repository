@@ -17,7 +17,7 @@
       "multipliers": "In 'modifiers' block only. Price entries contain absolute values.",
       "token_counts": "In 'tool_overhead' block only. See _pricing_formula.",
       "combinability_rule": "NOT_AVAILABLE_WITH > STACKS_WITH",
-      "opus_sonnet_4_6_flat": "Fable 5, Mythos 5, Opus 5, Opus 4.8, Opus 4.7, Opus 4.6 Sonnet 5 and Sonnet 4.6: flat 1M context, no long-context surcharge. Source: platform.claude.com/docs/en/about-claude/pricing — 'A 900k-token request is billed at the same per-token rate as a 9k-token request.'",
+      "opus_sonnet_4_6_flat": "Fable 5.1, Mythos 5.1, Fable 5, Mythos 5, Opus 5, Opus 4.8, Opus 4.7, Opus 4.6 Sonnet 5 and Sonnet 4.6: flat 1M context, no long-context surcharge. Source: platform.claude.com/docs/en/about-claude/pricing — 'A 900k-token request is billed at the same per-token rate as a 9k-token request.'",
       "schema_integrity": "All lookup keys are canonical_ids. Verified at build time.",
       "tokenizer_note": "Opus 4.7 and later use a new tokenizer that may consume up to 35% more tokens for the same text than earlier models.",
       "opus_5_note": "claude-opus-5 standard/fast_mode/cache/batch/data_residency_us pricing ratios are numerically identical to claude-opus-4-8 (fast_mode x2, cache_write_5m x1.25, cache_write_1h x2, cache_read x0.1, batch x0.5, data_residency_us x1.1) — all derived directly from source data, not assumed. context_window is confirmed at a flat 1,000,000 tokens (both default and maximum — no smaller context variant), max_output_tokens confirmed at 128,000 (see model_limits.claude-opus-5), and thinking is enabled by default (see models[].thinking_default). tool_overhead token counts were still not provided and remain omitted (no entry under tool_overhead.tool_use_system_prompt.by_model_id).",
@@ -25,6 +25,16 @@
     }
   },
   "model_string_index": {
+    "claude-fable-5-1": {
+      "canonical_id": "claude-fable-5-1",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-mythos-5-1": {
+      "canonical_id": "claude-mythos-5-1",
+      "is_alias": false,
+      "is_deprecated": false
+    },
     "claude-opus-5": {
       "canonical_id": "claude-opus-5",
       "is_alias": false,
@@ -168,6 +178,113 @@
     }
   },
   "lookup": {
+
+    "claude-fable-5-1#standard#input": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-fable-5-1#standard#output": {
+      "price": 50.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-fable-5-1#standard#cache_write_5m": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-fable-5-1#standard#cache_write_1h": {
+      "price": 20.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-fable-5-1#standard#cache_read": {
+      "price": 0.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.025,
+      "savings_pct_vs_input": 97.5,
+      "note": "Cache hits and refreshes. Per source pricing table: $0.25/MTok — 2.5% of base input, deviating from the usual 10% cache-read ratio (contrast claude-fable-5 at $1.00). Verify if a broader update revises this."
+    },
+    "claude-fable-5-1#batch#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-fable-5-1#batch#output": {
+      "price": 25.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-mythos-5-1#standard#input": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-mythos-5-1#standard#output": {
+      "price": 50.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-mythos-5-1#standard#cache_write_5m": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-mythos-5-1#standard#cache_write_1h": {
+      "price": 20.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-mythos-5-1#standard#cache_read": {
+      "price": 0.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.025,
+      "savings_pct_vs_input": 97.5,
+      "note": "Cache hits and refreshes. Same pricing as claude-fable-5-1: $0.25/MTok — 2.5% of base input, deviating from the usual 10% cache-read ratio. Verify if a broader update revises this."
+    },
+    "claude-mythos-5-1#batch#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-mythos-5-1#batch#output": {
+      "price": 25.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
     "claude-opus-5#standard#input": {
       "price": 5.0,
       "unit": "USD",
@@ -1167,6 +1284,57 @@
   },
   "models": [
     {
+      "id": "claude-fable-5-1",
+      "display_name": "Claude Fable 5.1",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 1000000,
+        "max_tokens": 1000000,
+        "long_context_behavior": "flat_1M_no_surcharge",
+        "note": "1M tokens is both the default and the maximum context window. 900k-token request billed at same rate as 9k-token request."
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-fable-5-1"
+    },
+    {
+      "id": "claude-mythos-5-1",
+      "display_name": "Claude Mythos 5.1",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "context_window": {
+        "standard_tokens": 1000000,
+        "max_tokens": 1000000,
+        "long_context_behavior": "flat_1M_no_surcharge",
+        "note": "1M tokens is both the default and the maximum context window. 900k-token request billed at same rate as 9k-token request."
+      },
+      "tiers_available": [
+        "standard",
+        "batch"
+      ],
+      "_lookup_key_prefix": "claude-mythos-5-1",
+      "pricing_note": "Identical pricing to claude-fable-5-1."
+    },
+    {
       "id": "claude-opus-5",
       "display_name": "Claude Opus 5",
       "status": "stable",
@@ -1665,6 +1833,8 @@
         "cache_read"
       ],
       "applies_to_model_ids": [
+        "claude-fable-5-1",
+        "claude-mythos-5-1",
         "claude-opus-5",
         "claude-mythos-5",
         "claude-fable-5",
@@ -1896,6 +2066,12 @@
       "max_output_tokens": 128000
     },
     "claude-fable-5": {
+      "max_output_tokens": 128000
+    },
+    "claude-fable-5-1": {
+      "max_output_tokens": 128000
+    },
+    "claude-mythos-5-1": {
       "max_output_tokens": 128000
     },
     "claude-opus-4-0": {
