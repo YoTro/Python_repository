@@ -1,7 +1,7 @@
 {
   "metadata": {
     "source": "https://ai.google.dev/gemini-api/docs/pricing",
-    "last_verified": "2026-08-13",
+    "last_verified": "2026-09-03",
     "model_availability_synced_via": "client.models.list() (Gemini API) on 2026-08-13 — confirms model existence/aliases only; this endpoint does not return pricing. gemini-robotics-er-1.5, imagen-3, and gemma-3 (models[]) plus the gemini-2.5-flash-lite-preview index entry were marked deprecated after confirming they no longer appear in the live model list. gemini-3-pro-image-preview intentionally stays removed even though it is still live (per explicit instruction). 22 live models (e.g. gemini-3.5-flash-lite, gemini-flash-latest, gemini-pro-latest, gemma-4-31b-it) remain unadded pending official pricing figures — see conversation history for the full list.",
     "currency": "USD",
     "schema_version": "5",
@@ -29,7 +29,8 @@
       "grounding_free_allowance_unit": "RPD (requests per day) \u2014 uniform across all models",
       "image_output_schema": "single billing_unit=USD_per_image; token_count field documents token consumption for reference only \u2014 it does NOT change the billing_unit",
       "caching_read_ratio": "cache read price = input price \u00d7 ratio (documented per model for verification)",
-      "gemini_3_7_flash_note": "gemini-3.7-flash has scheduled 2x pricing on 2027-01-01 (no timezone given on the pricing page; assumed UTC 00:00, matching this file's other date-cutover conventions) across standard_paid, batch_paid, flex_paid, and priority_paid (cache_storage too). Current (through 2026-12-31) prices live under the plain tier names; post-cutover prices live under a '_2027_01_01' tier suffix (e.g. standard_paid_2027_01_01) \u2014 PriceManager switches automatically once 'now' reaches the cutover. flex tier pricing is identical to batch (flex_paid mirrors batch_paid exactly, per the source page). Grounding (search/maps) has no published date-based change and is carried over unchanged into the 2027 tier."
+      "gemini_3_7_flash_note": "gemini-3.7-flash has scheduled 2x pricing on 2027-01-01 (no timezone given on the pricing page; assumed UTC 00:00, matching this file's other date-cutover conventions) across standard_paid, batch_paid, flex_paid, and priority_paid (cache_storage too). Current (through 2026-12-31) prices live under the plain tier names; post-cutover prices live under a '_2027_01_01' tier suffix (e.g. standard_paid_2027_01_01) \u2014 PriceManager switches automatically once 'now' reaches the cutover. flex tier pricing is identical to batch (flex_paid mirrors batch_paid exactly, per the source page). Grounding (search/maps) has no published date-based change and is carried over unchanged into the 2027 tier.",
+      "gemini_3_8_flash_note": "gemini-3.8-flash pricing (added 2026-09-03) is identical to gemini-3.7-flash across every tier, direction, and the 2027-01-01 2x cutover \u2014 same tier layout ('_2027_01_01' suffix convention and flex==batch mirroring), so see gemini_3_7_flash_note for the mechanics."
     },
     "model_string_normalization": "Strip leading 'models/' prefix, then lowercase. GeminiProvider: s.removeprefix('models/').strip().lower()",
     "lookup_key_pattern": "{model_string}#{tier}#{direction}#{modality}[#{context_tier|resolution|variant}]  |  tier = standard_free | standard_paid | batch_free | batch_paid  |  direction = input | output | cache_read | cache_storage | grounding_search | grounding_maps | image_gen",
@@ -60,6 +61,7 @@
     "gemma-3": "gemma-3",
     "gemini-3.6-flash": "gemini-3.6-flash",
     "gemini-3.7-flash": "gemini-3.7-flash",
+    "gemini-3.8-flash": "gemini-3.8-flash",
     "gemini-3.5-flash": "gemini-3.5-flash",
     "gemini-3.5-live-translate-preview": "gemini-3.5-live-translate-preview",
     "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
@@ -2176,6 +2178,294 @@
       "note": "No date-based change published for grounding; carried over unchanged"
     },
     "gemini-3.7-flash#priority_paid_2027_01_01#grounding_maps": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000,
+      "note": "No date-based change published for grounding; carried over unchanged"
+    },
+    "gemini-3.8-flash#standard_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.8-flash#standard_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.8-flash#standard_free#cache_read#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.8-flash#standard_free#cache_storage": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": true
+    },
+    "gemini-3.8-flash#standard_paid#input#text": {
+      "price": 0.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Through 2026-12-31; $1.50 starting 2027-01-01 — see standard_paid_2027_01_01#input#text"
+    },
+    "gemini-3.8-flash#standard_paid#output#text": {
+      "price": 3.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Includes thinking tokens. Through 2026-12-31; $7.50 starting 2027-01-01 — see standard_paid_2027_01_01#output#text"
+    },
+    "gemini-3.8-flash#standard_paid#cache_read#text": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Through 2026-12-31; $0.15 starting 2027-01-01 — see standard_paid_2027_01_01#cache_read#text"
+    },
+    "gemini-3.8-flash#standard_paid#cache_storage": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false,
+      "note": "Through 2026-12-31; $1.00/1M tokens/hour starting 2027-01-01 — see standard_paid_2027_01_01#cache_storage"
+    },
+    "gemini-3.8-flash#standard_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000,
+      "note": "5,000 free requests/month shared across all Gemini 3.x models"
+    },
+    "gemini-3.8-flash#standard_paid#grounding_maps": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000,
+      "note": "5,000 free prompts/month shared across Gemini 3.x models"
+    },
+    "gemini-3.8-flash#standard_paid_2027_01_01#input#text": {
+      "price": 1.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#standard_paid_2027_01_01#output#text": {
+      "price": 7.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Includes thinking tokens. Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#standard_paid_2027_01_01#cache_read#text": {
+      "price": 0.15,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#standard_paid_2027_01_01#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false,
+      "note": "Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#standard_paid_2027_01_01#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000,
+      "note": "No date-based change published for grounding; carried over unchanged"
+    },
+    "gemini-3.8-flash#standard_paid_2027_01_01#grounding_maps": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000,
+      "note": "No date-based change published for grounding; carried over unchanged"
+    },
+    "gemini-3.8-flash#batch_paid#input#text": {
+      "price": 0.375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Through 2026-12-31; $0.75 starting 2027-01-01 — see batch_paid_2027_01_01#input#text. flex tier is identical to batch."
+    },
+    "gemini-3.8-flash#batch_paid#output#text": {
+      "price": 1.875,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Includes thinking tokens. Through 2026-12-31; $3.75 starting 2027-01-01 — see batch_paid_2027_01_01#output#text"
+    },
+    "gemini-3.8-flash#batch_paid#cache_read#text": {
+      "price": 0.0375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Through 2026-12-31; $0.075 starting 2027-01-01 — see batch_paid_2027_01_01#cache_read#text"
+    },
+    "gemini-3.8-flash#batch_paid#cache_storage": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false,
+      "note": "Through 2026-12-31; $1.00/1M tokens/hour starting 2027-01-01 — see batch_paid_2027_01_01#cache_storage"
+    },
+    "gemini-3.8-flash#batch_paid_2027_01_01#input#text": {
+      "price": 0.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#batch_paid_2027_01_01#output#text": {
+      "price": 3.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Includes thinking tokens. Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#batch_paid_2027_01_01#cache_read#text": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#batch_paid_2027_01_01#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false,
+      "note": "Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#flex_paid#input#text": {
+      "price": 0.375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Identical to batch_paid. Through 2026-12-31; $0.75 starting 2027-01-01 — see flex_paid_2027_01_01#input#text"
+    },
+    "gemini-3.8-flash#flex_paid#output#text": {
+      "price": 1.875,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Identical to batch_paid. Includes thinking tokens. Through 2026-12-31; $3.75 starting 2027-01-01"
+    },
+    "gemini-3.8-flash#flex_paid#cache_read#text": {
+      "price": 0.0375,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Identical to batch_paid. Through 2026-12-31; $0.075 starting 2027-01-01"
+    },
+    "gemini-3.8-flash#flex_paid#cache_storage": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false,
+      "note": "Identical to batch_paid. Through 2026-12-31; $1.00/1M tokens/hour starting 2027-01-01"
+    },
+    "gemini-3.8-flash#flex_paid_2027_01_01#input#text": {
+      "price": 0.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Identical to batch_paid_2027_01_01. Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#flex_paid_2027_01_01#output#text": {
+      "price": 3.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Identical to batch_paid_2027_01_01. Includes thinking tokens. Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#flex_paid_2027_01_01#cache_read#text": {
+      "price": 0.075,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Identical to batch_paid_2027_01_01. Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#flex_paid_2027_01_01#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false,
+      "note": "Identical to batch_paid_2027_01_01. Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#priority_free#input#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.8-flash#priority_free#output#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.8-flash#priority_free#cache_read#text": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": true
+    },
+    "gemini-3.8-flash#priority_free#cache_storage": {
+      "price": 0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": true
+    },
+    "gemini-3.8-flash#priority_paid#input#text": {
+      "price": 1.35,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Through 2026-12-31; $2.70 starting 2027-01-01 — see priority_paid_2027_01_01#input#text"
+    },
+    "gemini-3.8-flash#priority_paid#output#text": {
+      "price": 6.75,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Includes thinking tokens. Through 2026-12-31; $13.50 starting 2027-01-01 — see priority_paid_2027_01_01#output#text"
+    },
+    "gemini-3.8-flash#priority_paid#cache_read#text": {
+      "price": 0.135,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Through 2026-12-31; $0.27 starting 2027-01-01 — see priority_paid_2027_01_01#cache_read#text"
+    },
+    "gemini-3.8-flash#priority_paid#cache_storage": {
+      "price": 0.5,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false,
+      "note": "Through 2026-12-31; $1.00/1M tokens/hour starting 2027-01-01 — see priority_paid_2027_01_01#cache_storage"
+    },
+    "gemini-3.8-flash#priority_paid#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000,
+      "note": "5,000 free requests/month shared across all Gemini 3.x models"
+    },
+    "gemini-3.8-flash#priority_paid#grounding_maps": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000,
+      "note": "5,000 free prompts/month shared across Gemini 3.x models"
+    },
+    "gemini-3.8-flash#priority_paid_2027_01_01#input#text": {
+      "price": 2.7,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#priority_paid_2027_01_01#output#text": {
+      "price": 13.5,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Includes thinking tokens. Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#priority_paid_2027_01_01#cache_read#text": {
+      "price": 0.27,
+      "billing_unit": "USD_per_1M_tokens",
+      "is_free": false,
+      "note": "Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#priority_paid_2027_01_01#cache_storage": {
+      "price": 1.0,
+      "billing_unit": "USD_per_1M_tokens_per_hour",
+      "is_free": false,
+      "note": "Effective 2027-01-01"
+    },
+    "gemini-3.8-flash#priority_paid_2027_01_01#grounding_search": {
+      "price": 14.0,
+      "billing_unit": "USD_per_1000_queries",
+      "is_free": false,
+      "free_monthly_prompts": 5000,
+      "note": "No date-based change published for grounding; carried over unchanged"
+    },
+    "gemini-3.8-flash#priority_paid_2027_01_01#grounding_maps": {
       "price": 14.0,
       "billing_unit": "USD_per_1000_queries",
       "is_free": false,
