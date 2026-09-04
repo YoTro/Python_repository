@@ -15,10 +15,10 @@
       "tier_values": "standard | batch | long_context_standard | long_context_batch | fast_mode | long_context_fast_mode",
       "resolution_flow": "any_string -> model_string_index -> canonical_id -> lookup key",
       "cache_note": "Cached input (automatic prompt caching) billed at input_cache_hit price; non-cached input at input price. Reasoning/'pro' models do not expose a cached-input rate — cached tokens fall back to the full input price in PriceManager.",
-      "cache_writes_note": "gpt-5.6-sol/terra/luna are the only models that publish a distinct cache_writes rate (cost of newly writing a segment into the prompt cache, separate from cache_hit reads). Sourced directly for the standard and long_context_standard tiers; batch and long_context_batch cache_writes entries are now also sourced directly (the 2026-08-16 refresh captured an expanded Batch tab showing all four dimensions for these three models, matching the standard x 0.5 / long_context_standard x 0.5 ratio exactly — see batch_note). Models without a captured cache_writes entry (all non-gpt-5.6 models) simply have no cache-write billing dimension; PriceManager should treat any provided cache-write token count as $0.00 for those models rather than erroring.",
+      "cache_writes_note": "gpt-5.6-sol/terra/luna and gpt-6-astra are the models that publish a distinct cache_writes rate (cost of newly writing a segment into the prompt cache, separate from cache_hit reads). Sourced directly for the standard and long_context_standard tiers; batch and long_context_batch cache_writes entries are now also sourced directly (the 2026-08-16 refresh captured an expanded Batch tab showing all four dimensions for the three gpt-5.6 models, matching the standard x 0.5 / long_context_standard x 0.5 ratio exactly — see batch_note). gpt-6-astra publishes cache_writes across all six tiers (standard, batch, long_context_standard, long_context_batch, fast_mode, long_context_fast_mode), likewise preserving the standard x 0.5 batch ratio and standard x 2 fast_mode ratio. Models without a captured cache_writes entry (all other models) simply have no cache-write billing dimension; PriceManager should treat any provided cache-write token count as $0.00 for those models rather than erroring.",
       "batch_note": "Batch API (async) is a uniform 50% discount on input, cached input, cache_writes, and output. Sourced directly (via the Batch and/or Flex pricing tables, which are numerically identical per gpt_5_6_coverage_note) for: gpt-5.6-sol/terra/luna (short + long context), gpt-5.5, gpt-5.5-pro, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.4-pro, gpt-5.2, gpt-5.1, gpt-5, gpt-5-mini, gpt-5-nano, o3, and o4-mini. The Flex table's own displayed figures are occasionally rounded to 2-3 decimals (e.g. gpt-5.4 cached input shown as $0.13, o4-mini cached input shown as $0.138); this file stores the exact standard x 0.5 value instead of the table's rounded display wherever the two diverge only in rounding. For every other model (gpt-5.3-codex, chatgpt-latest, gpt-4.1/4o/3.5-turbo family, remaining o-series, etc.) no batch/flex table entry has been captured; batch entries for those are derived as standard x 0.5 per this uniform-discount rule rather than sourced per model.",
-      "long_context_note": "long_context_standard / long_context_batch / long_context_fast_mode apply when total prompt tokens > 272,000 (the long_context threshold); PriceManager switches to these keys automatically when the model publishes them (see gpt_5_6_coverage_note). Below the threshold, standard / batch / fast_mode apply. standard/batch published for gpt-5.4-pro and every model at or above it in the GPT-5.x line (gpt-5.4-pro, gpt-5.4, gpt-5.5-pro, gpt-5.5, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna); earlier/smaller models (gpt-5.4-mini, gpt-5.4-nano, gpt-5.3-codex, chatgpt-latest, gpt-5.6-cyber, gpt-5.5-cyber, and every legacy model added in the 2026-08-16 sync) do not publish a long-context rate. long_context_fast_mode is gpt-5.6-sol/terra/luna only; plain fast_mode is published for a much wider set of models — see fast_mode_note.",
-      "fast_mode_note": "fast_mode is a distinct, higher-throughput service tier. Its price is NOT a fixed multiple of standard across models — every model's fast_mode row is sourced directly from a dedicated 'Fast pricing data' table, and the standard-to-fast ratio varies per model (e.g. exactly 2x for gpt-5.6-sol/terra/luna, gpt-5.4, gpt-5.4-mini, gpt-5.2, gpt-5.1, gpt-5, and gpt-4.1-nano; 2.5x for gpt-5.5; 1.8x for gpt-5-mini; 1.75x for gpt-4.1, gpt-4.1-mini, gpt-4o-2024-05-13, o3; 1.7x for gpt-4o; ~1.667x for gpt-4o-mini; ~1.818x for o4-mini) — do not assume 2x for a model without direct source data. Published (as of the 2026-08-16 sync) for: gpt-5.6-sol/terra/luna (input, input_cache_hit, cache_writes, output, both short and long context — the only models with a fast_mode cache_writes rate or a long_context_fast_mode tier); gpt-5.3-codex (input, input_cache_hit, output only); and gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.2, gpt-5.1, gpt-5, gpt-5-mini, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o3, o4-mini (input, input_cache_hit, output — short-context only, no cache_writes). gpt-4o-2024-05-13#fast_mode has no input_cache_hit entry, matching its standard tier's lack of a cache dimension. Models absent from the fast-pricing table (gpt-5.4-pro, gpt-5.5-pro, chatgpt-latest, o1, o1-pro, o3-mini, o3-pro, and every model older than gpt-4o-2024-05-13) have no known fast_mode rate; PriceManager falls back to standard/batch with a warning for those (see price_manager.py). There is no fast_mode_batch variant; fast_mode and batch are mutually exclusive service tiers. Naming: this tier was called 'Priority processing' before being renamed 'Fast mode' on 2026-07-30; the API request parameter service_tier accepts either \"priority\" or \"fast\" for the same tier (same pricing, same lookup key 'fast_mode' in this schema) — PriceManager.calculate_cost accepts tier values \"fast_mode\", \"fast\", or \"priority\" interchangeably.",
+      "long_context_note": "long_context_standard / long_context_batch / long_context_fast_mode apply when total prompt tokens > 272,000 (the long_context threshold); PriceManager switches to these keys automatically when the model publishes them (see gpt_5_6_coverage_note). Below the threshold, standard / batch / fast_mode apply. standard/batch published for gpt-5.4-pro and every model at or above it in the GPT-5.x line (gpt-5.4-pro, gpt-5.4, gpt-5.5-pro, gpt-5.5, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna) plus gpt-6-astra; earlier/smaller models (gpt-5.4-mini, gpt-5.4-nano, gpt-5.3-codex, chatgpt-latest, gpt-5.6-cyber, gpt-5.5-cyber, and every legacy model added in the 2026-08-16 sync) do not publish a long-context rate. long_context_fast_mode is gpt-5.6-sol/terra/luna and gpt-6-astra only; plain fast_mode is published for a much wider set of models — see fast_mode_note.",
+      "fast_mode_note": "fast_mode is a distinct, higher-throughput service tier. Its price is NOT a fixed multiple of standard across models — every model's fast_mode row is sourced directly from a dedicated 'Fast pricing data' table, and the standard-to-fast ratio varies per model (e.g. exactly 2x for gpt-5.6-sol/terra/luna, gpt-5.4, gpt-5.4-mini, gpt-5.2, gpt-5.1, gpt-5, and gpt-4.1-nano; 2.5x for gpt-5.5; 1.8x for gpt-5-mini; 1.75x for gpt-4.1, gpt-4.1-mini, gpt-4o-2024-05-13, o3; 1.7x for gpt-4o; ~1.667x for gpt-4o-mini; ~1.818x for o4-mini) — do not assume 2x for a model without direct source data. Published (as of the 2026-08-16 sync) for: gpt-5.6-sol/terra/luna and gpt-6-astra (input, input_cache_hit, cache_writes, output, both short and long context — the only models with a fast_mode cache_writes rate or a long_context_fast_mode tier; gpt-6-astra's fast_mode is exactly 2x its standard rates in both contexts); gpt-5.3-codex (input, input_cache_hit, output only); and gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.2, gpt-5.1, gpt-5, gpt-5-mini, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o3, o4-mini (input, input_cache_hit, output — short-context only, no cache_writes). gpt-4o-2024-05-13#fast_mode has no input_cache_hit entry, matching its standard tier's lack of a cache dimension. Models absent from the fast-pricing table (gpt-5.4-pro, gpt-5.5-pro, chatgpt-latest, o1, o1-pro, o3-mini, o3-pro, and every model older than gpt-4o-2024-05-13) have no known fast_mode rate; PriceManager falls back to standard/batch with a warning for those (see price_manager.py). There is no fast_mode_batch variant; fast_mode and batch are mutually exclusive service tiers. Naming: this tier was called 'Priority processing' before being renamed 'Fast mode' on 2026-07-30; the API request parameter service_tier accepts either \"priority\" or \"fast\" for the same tier (same pricing, same lookup key 'fast_mode' in this schema) — PriceManager.calculate_cost accepts tier values \"fast_mode\", \"fast\", or \"priority\" interchangeably.",
       "gpt_5_5_pro_batch_note": "Source page originally returned an anomalous batch rate for gpt-5.5-pro (higher than standard); corrected to the standard 50% discount, matching its sibling gpt-5.4-pro. The Flex pricing table (2026-08-16 sync) independently confirms this correction — its short-context figures ($15.00 input / $90.00 output) match the corrected 50%-discount values exactly.",
       "coverage_note": "As of the 2026-08-16 sync, the developer pricing page's 'Flagship models' table was captured in its expanded ('View more') state, which reveals the full legacy catalog previously omitted from this file: gpt-5.2, gpt-5.2-pro, gpt-5.1, gpt-5, gpt-5-mini, gpt-5-nano, gpt-5-pro, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o4-mini, o3, o3-mini, o3-pro, o1, o1-pro, gpt-4o-2024-05-13, gpt-4-turbo-2024-04-09, gpt-4-0613, gpt-3.5-turbo (+0125/1106/instruct variants), davinci-002, babbage-002. These are captured at standard tier only (input/input_cache_hit/output) — the source's Batch/Flex/Fast-mode tabs were not expanded for this subset, so no batch or long-context rate is asserted for them (see batch_note). Models with no cache column on the source table (dash) simply have no input_cache_hit entry, matching the 'pro'/reasoning-model convention already used for gpt-5.4-pro/gpt-5.5-pro.",
       "gpt_5_alias_fix_note": "Prior to the 2026-08-16 sync, the bare string 'gpt-5' was mapped as an alias to gpt-5.5's pricing. The source page lists 'gpt-5' as its own distinct (older, cheaper) model — $1.25/$0.125/$10.00 vs gpt-5.5's $5.00/$0.50/$30.00 — so treating it as a gpt-5.5 alias silently overbilled any call using the literal model id 'gpt-5' by 4x. Fixed: 'gpt-5' is now its own canonical entry with its real published pricing.",
@@ -28,6 +28,10 @@
     }
   },
   "model_string_index": {
+    "gpt-6-astra": {
+      "canonical_id": "gpt-6-astra",
+      "is_alias": false
+    },
     "gpt-5.5": {
       "canonical_id": "gpt-5.5",
       "is_alias": false
@@ -206,6 +210,170 @@
     }
   },
   "lookup": {
+    "gpt-6-astra#standard#input": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-6-astra#standard#input_cache_hit": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-6-astra#standard#cache_writes": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_writes"
+    },
+    "gpt-6-astra#standard#output": {
+      "price": 50.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-6-astra#batch#input": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-6-astra#batch#input_cache_hit": {
+      "price": 0.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-6-astra#batch#cache_writes": {
+      "price": 6.25,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_writes",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-6-astra#batch#output": {
+      "price": 25.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "gpt-6-astra#long_context_standard#input": {
+      "price": 20.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-6-astra#long_context_standard#input_cache_hit": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-6-astra#long_context_standard#cache_writes": {
+      "price": 25.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_writes",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-6-astra#long_context_standard#output": {
+      "price": 75.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-6-astra#long_context_batch#input": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-6-astra#long_context_batch#input_cache_hit": {
+      "price": 1.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-6-astra#long_context_batch#cache_writes": {
+      "price": 12.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_writes",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-6-astra#long_context_batch#output": {
+      "price": 37.5,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5,
+      "note": "input tokens > 272,000"
+    },
+    "gpt-6-astra#fast_mode#input": {
+      "price": 20.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "gpt-6-astra#fast_mode#input_cache_hit": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit"
+    },
+    "gpt-6-astra#fast_mode#cache_writes": {
+      "price": 25.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_writes"
+    },
+    "gpt-6-astra#fast_mode#output": {
+      "price": 100.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "gpt-6-astra#long_context_fast_mode#input": {
+      "price": 40.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-6-astra#long_context_fast_mode#input_cache_hit": {
+      "price": 4.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-6-astra#long_context_fast_mode#cache_writes": {
+      "price": 50.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_writes",
+      "note": "input tokens > 272,000"
+    },
+    "gpt-6-astra#long_context_fast_mode#output": {
+      "price": 150.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "input tokens > 272,000"
+    },
     "gpt-5.5#standard#input": {
       "price": 5.0,
       "unit": "USD",
