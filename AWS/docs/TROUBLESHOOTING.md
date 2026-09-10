@@ -85,12 +85,12 @@ This guide provides solutions to common issues you might encounter while develop
     *   **Solution**: Set `DEEPSEEK_API_KEY` in `.env`. Verify the key at [platform.deepseek.com](https://platform.deepseek.com).
 
 *   **DeepSeek `404 model not found`**:
-    *   **Cause**: Passing a deprecated model name (e.g., `deepseek-chat`, `deepseek-reasoner`, `deepseek-v3`, `deepseek-r1`) directly to the API instead of going through `PriceManager`.
-    *   **Solution**: These names are now aliases in `deepseek_pricing.json` that resolve to `deepseek-v4-flash`. Ensure you are using `DeepSeekProvider` rather than calling the API directly. Set `DEEPSEEK_MODEL=deepseek-v4-flash` (or `deepseek-v4-pro`) in `.env`.
+    *   **Cause**: Passing a retired or unsupported model name directly to the API instead of going through `DeepSeekProvider`.
+    *   **Solution**: Use `DEEPSEEK_MODEL=deepseek-flash` in `.env`. `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` remain accepted provider aliases and are routed to `deepseek-flash`; `deepseek-v4-pro` is routed there after its 2026-09-14T04:00Z retirement cutoff.
 
 *   **DeepSeek cost shows `0.0` despite successful calls**:
     *   **Cause**: `PriceManager` cannot find the pricing config, or the model name passed to `calculate_cost` did not resolve to a canonical ID.
-    *   **Solution**: Check that `src/intelligence/providers/config/deepseek_pricing.json` exists. Enable DEBUG logging for `src.intelligence.providers.price_manager` and verify `normalize_model_name()` returns `deepseek-v4-flash` or `deepseek-v4-pro`.
+    *   **Solution**: Check that `src/intelligence/providers/config/deepseek_pricing.json` exists. Enable DEBUG logging for `src.intelligence.providers.price_manager` and verify `normalize_model_name()` returns `deepseek-flash` or `deepseek-v4-pro`.
 
 *   **`ImportError: No module named 'openai'` when using DeepSeekProvider**:
     *   **Cause**: `DeepSeekProvider` uses the `openai` Python package for the OpenAI-compatible endpoint.

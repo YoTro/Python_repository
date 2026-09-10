@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -7,6 +8,7 @@ import pytest
 
 from src.intelligence.dto import LLMResponse
 from src.intelligence.providers.claude import ClaudeProvider
+from src.intelligence.providers.deepseek import DeepSeekProvider
 from src.intelligence.providers.gemini import GeminiProvider
 from src.intelligence.providers.price_manager import PriceManager
 
@@ -68,7 +70,51 @@ def test_price_manager_calculation_claude_long_context():
     assert cost_high == expected_high
 
 
-# 3. GeminiProvider Integration (Mocked)
+# 3. DeepSeek aliases and scheduled retirement
+
+
+def test_deepseek_flash_aliases_and_prices():
+    pm = PriceManager(provider="deepseek")
+
+    assert pm.normalize_model_name("deepseek-flash") == "deepseek-flash"
+    assert pm.normalize_model_name("deepseek-v4-flash") == "deepseek-flash"
+    assert pm.normalize_model_name("deepseek-v4-flash-vision-exp") == "deepseek-flash"
+    assert pm.lookup["deepseek-flash#standard_2026_09_10#input"]["price"] == 0.15
+    assert pm.lookup["deepseek-flash#standard_2026_09_10#input_cache_hit"]["price"] == 0.003
+    assert pm.lookup["deepseek-flash#standard_2026_09_10#output"]["price"] == 0.6
+    assert pm.lookup["deepseek-flash#standard_2026_09_10_peak#input"]["price"] == 0.3
+    assert pm.lookup["deepseek-flash#standard_2026_09_10_peak#input_cache_hit"]["price"] == 0.006
+    assert pm.lookup["deepseek-flash#standard_2026_09_10_peak#output"]["price"] == 1.2
+
+    provider = DeepSeekProvider(api_key="fake", model_name="deepseek-v4-flash-vision-exp")
+    assert provider.model_name == "deepseek-flash"
+
+
+def test_deepseek_v4_pro_retirement_routes_and_bills_flash():
+    provider = DeepSeekProvider(api_key="fake", model_name="deepseek-v4-pro")
+    pm = PriceManager(provider="deepseek")
+
+    class FrozenDateTime(dt.datetime):
+        frozen = dt.datetime(2026, 9, 14, 4, 0, tzinfo=dt.UTC)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.frozen if tz is not None else cls.frozen.replace(tzinfo=None)
+
+    with patch.object(dt, "datetime", FrozenDateTime):
+        assert provider._routed_model_name() == "deepseek-flash"
+        assert (
+            pm.calculate_cost(
+                "deepseek-v4-pro",
+                input_tokens=1_000_000,
+                output_tokens=1_000_000,
+                cached_tokens=1_000_000,
+            )
+            == 0.603
+        )
+
+
+# 4. GeminiProvider Integration (Mocked)
 
 
 @pytest.mark.asyncio

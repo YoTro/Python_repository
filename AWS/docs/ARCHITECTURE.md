@@ -388,7 +388,7 @@ The AWS (Amazon Web Scraper) V2 project is a **Hybrid Intelligence Agentic Platf
 |   +──────────────────────+──────────────────────────────────────────────+   |
 |   | "deepseek"           | DeepSeekProvider  supports_batch=False       |   |
 |   |                      |   OpenAI-compatible REST API                 |   |
-|   |                      |   models: deepseek-v4-flash / deepseek-v4-pro|   |
+|   |                      |   models: deepseek-flash / deepseek-v4-pro    |   |
 |   |                      |   KV cache: cached_tokens split billing      |   |
 |   +──────────────────────+──────────────────────────────────────────────+   |
 |                                                                              |

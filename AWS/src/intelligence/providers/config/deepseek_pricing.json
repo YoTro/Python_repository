@@ -1,7 +1,7 @@
 {
   "metadata": {
     "source": "https://api-docs.deepseek.com/quick_start/pricing",
-    "last_verified": "2026-08-13",
+    "last_verified": "2026-09-10",
     "schema_version": "2",
     "conventions": {
       "price_entry_shape": {
@@ -11,12 +11,14 @@
         "dimension": "input | input_cache_hit | output"
       },
       "lookup_key_pattern": "{canonical_model_id}#{tier}#{dimension}",
-      "tier_values": "standard | standard_peak | undiscounted | undiscounted_peak | standard_2026_08_16 | standard_2026_08_16_peak",
+      "tier_values": "standard | standard_peak | undiscounted | undiscounted_peak | standard_2026_08_16 | standard_2026_08_16_peak | standard_2026_09_10 | standard_2026_09_10_peak",
       "resolution_flow": "any_string → model_string_index → canonical_id → lookup key",
       "cache_note": "Server-side KV cache. Cache hits billed at input_cache_hit price (\"cache miss\" in the official pricing table = the plain input price).",
       "v4_pro_discount_note": "deepseek-v4-pro's 75%-off promotion ended 2026-05-31T15:59:00Z; the standard and undiscounted tiers are the same post-promotion official price and are kept numerically identical in this file. This distinction is superseded by price_update_2026_08_16_note below once that cutover takes effect.",
-      "price_update_2026_08_16_note": "A new peak/off-peak pricing structure takes effect 2026-08-16T16:00:00Z, verified directly against DeepSeek's official pricing table on 2026-08-13 (ahead of the cutover). Off-peak rates are exactly half the peak rates, same peak windows as the existing standard tier. Stored under standard_2026_08_16 / standard_2026_08_16_peak — PriceManager switches to these once 'now' reaches the cutover, for both deepseek-v4-flash and deepseek-v4-pro (the v4-pro promotion/undiscounted distinction becomes moot once this supersedes it). Until the cutover, standard / standard_peak / undiscounted / undiscounted_peak remain the currently-billed prices — do not overwrite them early.",
-      "peak_pricing_note": "Effective 2026-07-15, peak-hour surcharge applies: all billing dimensions cost 2x the off-peak rate. Peak hours (UTC): 01:00–04:00 and 06:00–10:00 (UTC+8: 09:00–12:00 and 14:00–18:00), Monday through Friday only — all other hours, and all day Saturday/Sunday, are off-peak (off-peak = half the peak rate). Use *_peak tier variants for peak-hour cost estimation. Same windows and weekday restriction apply to the 2026-08-16 pricing update."
+      "price_update_2026_08_16_note": "A new peak/off-peak pricing structure takes effect 2026-08-16T16:00:00Z, verified directly against DeepSeek's official pricing table on 2026-08-13 (ahead of the cutover). Off-peak rates are exactly half the peak rates, same peak windows as the existing standard tier. Stored under standard_2026_08_16 / standard_2026_08_16_peak — PriceManager switches to these once 'now' reaches the cutover, for both deepseek-flash and deepseek-v4-pro (the v4-pro promotion/undiscounted distinction becomes moot once this supersedes it). Until the cutover, standard / standard_peak / undiscounted / undiscounted_peak remain the currently-billed prices — do not overwrite them early.",
+      "price_update_2026_09_10_note": "DeepSeek V4.1-Flash (API model name: deepseek-flash; legacy deepseek-v4-flash and deepseek-v4-flash-vision-exp names remain accepted) uses the new pricing from 2026-09-10T04:00:00Z (12:00 Beijing Time). Off-peak rates are $0.003 per 1M tokens for input cache hits, $0.15 for input cache misses, and $0.60 for output; peak rates are exactly 2x. Stored under standard_2026_09_10 / standard_2026_09_10_peak for deepseek-flash. PriceManager switches the Flash series to these tiers at the cutover.",
+      "price_update_2026_09_14_note": "At 2026-09-14T04:00:00Z (12:00 Beijing Time), deepseek-v4-pro is retired pending a future V4.1-Pro release. DeepSeekProvider routes requests for deepseek-v4-pro to deepseek-flash, and PriceManager bills them at the deepseek-flash rate from that cutover onward.",
+      "peak_pricing_note": "Effective 2026-07-15, peak-hour surcharge applies: all billing dimensions cost 2x the off-peak rate. Peak hours (UTC): 01:00–04:00 and 06:00–10:00 (UTC+8: 09:00–12:00 and 14:00–18:00), Monday through Friday only — all other hours, and all day Saturday/Sunday, are off-peak (off-peak = half the peak rate). Use *_peak tier variants for peak-hour cost estimation. Same windows and weekday restriction apply to the 2026-08-16 and 2026-09-10 pricing updates."
     },
     "peak_pricing": {
       "effective_date": "2026-07-15",
@@ -35,58 +37,66 @@
     }
   },
   "model_string_index": {
-    "deepseek-v4-flash": {
-      "canonical_id": "deepseek-v4-flash",
+    "deepseek-flash": {
+      "canonical_id": "deepseek-flash",
       "is_alias": false,
-      "is_deprecated": false
+      "is_deprecated": false,
+      "note": "Current API model name for DeepSeek-V4.1-Flash."
+    },
+    "deepseek-v4-flash": {
+      "canonical_id": "deepseek-flash",
+      "is_alias": true,
+      "is_deprecated": true,
+      "note": "Retired legacy name; requests are served by DeepSeek-V4.1-Flash via deepseek-flash and billed at the Flash price."
     },
     "deepseek-v4-flash-vision-exp": {
-      "canonical_id": "deepseek-v4-flash",
+      "canonical_id": "deepseek-flash",
       "is_alias": true,
-      "is_deprecated": false,
-      "note": "Experimental vision variant; priced identically to deepseek-v4-flash. Aliased to the deepseek-v4-flash canonical id so it inherits the same lookup keys (standard / *_peak / *_2026_08_16) with no price duplication."
+      "is_deprecated": true,
+      "note": "Retired legacy vision name; requests are served by DeepSeek-V4.1-Flash via deepseek-flash and billed at the Flash price."
     },
     "deepseek-v4-pro": {
       "canonical_id": "deepseek-v4-pro",
       "is_alias": false,
-      "is_deprecated": false
+      "is_deprecated": true,
+      "note": "Scheduled for retirement at 2026-09-14T04:00:00Z; until V4.1-Pro is released, requests are routed to deepseek-flash and billed at the Flash price after the cutover."
     }
   },
   "lookup": {
-    "deepseek-v4-flash#standard#input": {
+    "deepseek-flash#standard#input": {
       "price": 0.14,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input"
     },
-    "deepseek-v4-flash#standard#input_cache_hit": {
+    "deepseek-flash#standard#input_cache_hit": {
       "price": 0.0028,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit",
       "note": "1/10 of launch cache-hit price"
     },
-    "deepseek-v4-flash#standard#output": {
+    "deepseek-flash#standard#output": {
       "price": 0.28,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output"
     },
-    "deepseek-v4-flash#standard_peak#input": {
+    "deepseek-flash#standard_peak#input": {
       "price": 0.28,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input",
       "peak_multiplier": 2.0
     },
-    "deepseek-v4-flash#standard_peak#input_cache_hit": {
+    "deepseek-flash#standard_peak#input_cache_hit": {
       "price": 0.0056,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit",
       "peak_multiplier": 2.0
     },
-    "deepseek-v4-flash#standard_peak#output": {
+    "deepseek-flash#standard_peak#output": {
       "price": 0.56,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
@@ -177,28 +187,28 @@
       "dimension": "output",
       "peak_multiplier": 2.0
     },
-    "deepseek-v4-flash#standard_2026_08_16#input": {
+    "deepseek-flash#standard_2026_08_16#input": {
       "price": 0.22,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input",
       "note": "Cache miss rate, off-peak. Effective 2026-08-16T16:00:00Z. Verified against official pricing table 2026-08-13, ahead of the cutover."
     },
-    "deepseek-v4-flash#standard_2026_08_16#input_cache_hit": {
+    "deepseek-flash#standard_2026_08_16#input_cache_hit": {
       "price": 0.007,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "input_cache_hit",
       "note": "Cache hit rate, off-peak. Effective 2026-08-16T16:00:00Z."
     },
-    "deepseek-v4-flash#standard_2026_08_16#output": {
+    "deepseek-flash#standard_2026_08_16#output": {
       "price": 0.66,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
       "note": "Off-peak. Effective 2026-08-16T16:00:00Z."
     },
-    "deepseek-v4-flash#standard_2026_08_16_peak#input": {
+    "deepseek-flash#standard_2026_08_16_peak#input": {
       "price": 0.44,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
@@ -206,7 +216,7 @@
       "peak_multiplier": 2.0,
       "note": "Cache miss rate, peak. Effective 2026-08-16T16:00:00Z."
     },
-    "deepseek-v4-flash#standard_2026_08_16_peak#input_cache_hit": {
+    "deepseek-flash#standard_2026_08_16_peak#input_cache_hit": {
       "price": 0.014,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
@@ -214,13 +224,58 @@
       "peak_multiplier": 2.0,
       "note": "Cache hit rate, peak. Effective 2026-08-16T16:00:00Z."
     },
-    "deepseek-v4-flash#standard_2026_08_16_peak#output": {
+    "deepseek-flash#standard_2026_08_16_peak#output": {
       "price": 1.32,
       "unit": "USD",
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
       "peak_multiplier": 2.0,
       "note": "Peak. Effective 2026-08-16T16:00:00Z."
+    },
+    "deepseek-flash#standard_2026_09_10#input": {
+      "price": 0.15,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "note": "Cache miss rate, off-peak. Effective 2026-09-10T04:00:00Z (12:00 Beijing Time)."
+    },
+    "deepseek-flash#standard_2026_09_10#input_cache_hit": {
+      "price": 0.003,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "note": "Cache hit rate, off-peak. Effective 2026-09-10T04:00:00Z (12:00 Beijing Time)."
+    },
+    "deepseek-flash#standard_2026_09_10#output": {
+      "price": 0.6,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "note": "Off-peak. Effective 2026-09-10T04:00:00Z (12:00 Beijing Time)."
+    },
+    "deepseek-flash#standard_2026_09_10_peak#input": {
+      "price": 0.3,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "peak_multiplier": 2.0,
+      "note": "Cache miss rate, peak. Effective 2026-09-10T04:00:00Z (12:00 Beijing Time)."
+    },
+    "deepseek-flash#standard_2026_09_10_peak#input_cache_hit": {
+      "price": 0.006,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input_cache_hit",
+      "peak_multiplier": 2.0,
+      "note": "Cache hit rate, peak. Effective 2026-09-10T04:00:00Z (12:00 Beijing Time)."
+    },
+    "deepseek-flash#standard_2026_09_10_peak#output": {
+      "price": 1.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "peak_multiplier": 2.0,
+      "note": "Peak. Effective 2026-09-10T04:00:00Z (12:00 Beijing Time)."
     },
     "deepseek-v4-pro#standard_2026_08_16#input": {
       "price": 0.66,
@@ -270,9 +325,12 @@
   },
   "model_limits": {
     "_source": "https://api-docs.deepseek.com/",
-    "_last_verified": "2026-07-24",
+    "_last_verified": "2026-09-10",
     "_default": {
       "max_output_tokens": 8192
+    },
+    "deepseek-flash": {
+      "max_output_tokens": 393216
     },
     "deepseek-v4-flash": {
       "max_output_tokens": 393216
