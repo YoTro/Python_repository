@@ -1,7 +1,7 @@
 {
   "metadata": {
     "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-    "last_verified": "2026-08-13",
+    "last_verified": "2026-09-22",
     "schema_version": "4",
     "conventions": {
       "price_entry_shape": {
@@ -17,9 +17,10 @@
       "multipliers": "In 'modifiers' block only. Price entries contain absolute values.",
       "token_counts": "In 'tool_overhead' block only. See _pricing_formula.",
       "combinability_rule": "NOT_AVAILABLE_WITH > STACKS_WITH",
-      "opus_sonnet_4_6_flat": "Fable 5.1, Mythos 5.1, Fable 5, Mythos 5, Opus 5, Opus 4.8, Opus 4.7, Opus 4.6 Sonnet 5 and Sonnet 4.6: flat 1M context, no long-context surcharge. Source: platform.claude.com/docs/en/about-claude/pricing — 'A 900k-token request is billed at the same per-token rate as a 9k-token request.'",
+      "opus_sonnet_4_6_flat": "Fable 5.1, Mythos 5.1, Fable 5, Mythos 5, Opus 5.5, Opus 5, Opus 4.8, Opus 4.7, Opus 4.6 Sonnet 5 and Sonnet 4.6: flat 1M context, no long-context surcharge. Source: platform.claude.com/docs/en/about-claude/pricing — 'A 900k-token request is billed at the same per-token rate as a 9k-token request.'",
       "schema_integrity": "All lookup keys are canonical_ids. Verified at build time.",
       "tokenizer_note": "Opus 4.7 and later use a new tokenizer that may consume up to 35% more tokens for the same text than earlier models.",
+      "opus_5_5_note": "claude-opus-5-5 standard, fast_mode and batch prices are taken directly from published pricing ($4/$20 standard, $8/$40 fast mode, $2/$10 batch, $5 5m cache write, $8 1h cache write, $0.20 cache read). Note the cache_read ratio is 0.05x base input (95% savings), NOT the 0.1x used across the rest of the Opus family — the absolute value in the lookup entry is authoritative over modifiers.prompt_caching. context_window, max_output_tokens, thinking_default and data_residency_us eligibility are carried over from claude-opus-5 and not independently confirmed. tool_overhead token counts were not provided and remain omitted.",
       "opus_5_note": "claude-opus-5 standard/fast_mode/cache/batch/data_residency_us pricing ratios are numerically identical to claude-opus-4-8 (fast_mode x2, cache_write_5m x1.25, cache_write_1h x2, cache_read x0.1, batch x0.5, data_residency_us x1.1) — all derived directly from source data, not assumed. context_window is confirmed at a flat 1,000,000 tokens (both default and maximum — no smaller context variant), max_output_tokens confirmed at 128,000 (see model_limits.claude-opus-5), and thinking is enabled by default (see models[].thinking_default). tool_overhead token counts were still not provided and remain omitted (no entry under tool_overhead.tool_use_system_prompt.by_model_id).",
       "fast_mode_availability_note": "Fast mode (modifiers.fast_mode) is only orderable on claude-opus-5 and claude-opus-4-8. It is NOT available on claude-opus-4-7 (speed:\"fast\" returns an error — hard failure, model still usable at standard speed) or claude-opus-4-6 (speed:\"fast\" silently falls back to standard speed and standard billing, usage.speed:\"standard\", no error). Their fast_mode lookup entries were removed accordingly — see models[].fast_mode_note for each model and modifiers.fast_mode.not_applicable_model_ids."
     }
@@ -32,6 +33,11 @@
     },
     "claude-mythos-5-1": {
       "canonical_id": "claude-mythos-5-1",
+      "is_alias": false,
+      "is_deprecated": false
+    },
+    "claude-opus-5-5": {
+      "canonical_id": "claude-opus-5-5",
       "is_alias": false,
       "is_deprecated": false
     },
@@ -284,6 +290,72 @@
       "billing_unit": "per_1M_tokens",
       "dimension": "output",
       "discount_vs_standard": 0.5
+    },
+    "claude-opus-5-5#standard#input": {
+      "price": 4.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input"
+    },
+    "claude-opus-5-5#standard#output": {
+      "price": 20.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output"
+    },
+    "claude-opus-5-5#standard#cache_write_5m": {
+      "price": 5.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 5,
+      "multiplier_vs_base_input": 1.25,
+      "break_even_reads": 1
+    },
+    "claude-opus-5-5#standard#cache_write_1h": {
+      "price": 8.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_write",
+      "cache_ttl_minutes": 60,
+      "multiplier_vs_base_input": 2.0,
+      "break_even_reads": 2
+    },
+    "claude-opus-5-5#standard#cache_read": {
+      "price": 0.2,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "cache_read",
+      "multiplier_vs_base_input": 0.05,
+      "savings_pct_vs_input": 95
+    },
+    "claude-opus-5-5#batch#input": {
+      "price": 2.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-5-5#batch#output": {
+      "price": 10.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "discount_vs_standard": 0.5
+    },
+    "claude-opus-5-5#fast_mode#input": {
+      "price": 8.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "input",
+      "multiplier_vs_standard": 2
+    },
+    "claude-opus-5-5#fast_mode#output": {
+      "price": 40.0,
+      "unit": "USD",
+      "billing_unit": "per_1M_tokens",
+      "dimension": "output",
+      "multiplier_vs_standard": 2
     },
     "claude-opus-5#standard#input": {
       "price": 5.0,
@@ -1335,6 +1407,35 @@
       "pricing_note": "Identical pricing to claude-fable-5-1."
     },
     {
+      "id": "claude-opus-5-5",
+      "display_name": "Claude Opus 5.5",
+      "status": "stable",
+      "deprecated": false,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "thinking": true,
+      "thinking_default": true,
+      "thinking_note": "Thinking enabled by default (not opt-in), unlike other models where it must be requested.",
+      "context_window": {
+        "standard_tokens": 1000000,
+        "max_tokens": 1000000,
+        "long_context_behavior": "flat_1M_no_surcharge",
+        "note": "1M tokens is both the default and the maximum context window — there is no smaller context variant. 900k-token request billed at same rate as 9k-token request."
+      },
+      "tiers_available": [
+        "standard",
+        "batch",
+        "fast_mode"
+      ],
+      "_lookup_key_prefix": "claude-opus-5-5",
+      "pricing_note": "Cache reads are 5% of base input (0.05x), not the 0.1x default applied to the rest of the Opus family."
+    },
+    {
       "id": "claude-opus-5",
       "display_name": "Claude Opus 5",
       "status": "stable",
@@ -1835,6 +1936,7 @@
       "applies_to_model_ids": [
         "claude-fable-5-1",
         "claude-mythos-5-1",
+        "claude-opus-5-5",
         "claude-opus-5",
         "claude-mythos-5",
         "claude-fable-5",
@@ -1863,6 +1965,7 @@
     "fast_mode": {
       "type": "multiplier_on_standard",
       "applies_to_model_ids": [
+        "claude-opus-5-5",
         "claude-opus-5",
         "claude-opus-4-8"
       ],
@@ -1871,6 +1974,8 @@
         "claude-opus-4-6": "speed:\"fast\" is silently downgraded to standard speed and billed at standard rates (usage.speed: \"standard\") — no error, but no fast-mode pricing either"
       },
       "lookup_keys": [
+        "claude-opus-5-5#fast_mode#input",
+        "claude-opus-5-5#fast_mode#output",
         "claude-opus-5#fast_mode#input",
         "claude-opus-5#fast_mode#output",
         "claude-opus-4-8#fast_mode#input",
@@ -1886,6 +1991,7 @@
       "precedence_note": "NOT_AVAILABLE_WITH > STACKS_WITH",
       "availability": "research_preview",
       "factor_by_model": {
+        "claude-opus-5-5": 2.0,
         "claude-opus-5": 2.0,
         "claude-opus-4-8": 2.0
       }
@@ -2088,6 +2194,10 @@
     },
     "claude-opus-4-8": {
       "max_output_tokens": 128000
+    },
+    "claude-opus-5-5": {
+      "max_output_tokens": 128000,
+      "_note": "Not yet cross-checked against GET /v1/models; assumed identical to claude-opus-5 / claude-opus-4-8."
     },
     "claude-opus-5": {
       "max_output_tokens": 128000
