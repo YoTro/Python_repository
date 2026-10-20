@@ -1,7 +1,7 @@
 {
   "metadata": {
-    "source": "https://api-docs.deepseek.com/quick_start/pricing",
-    "last_verified": "2026-09-10",
+    "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "last_verified": "2026-10-20",
     "schema_version": "2",
     "conventions": {
       "price_entry_shape": {
@@ -14,17 +14,29 @@
       "tier_values": "standard | standard_peak | undiscounted | undiscounted_peak | standard_2026_08_16 | standard_2026_08_16_peak | standard_2026_09_10 | standard_2026_09_10_peak",
       "resolution_flow": "any_string → model_string_index → canonical_id → lookup key",
       "cache_note": "Server-side KV cache. Cache hits billed at input_cache_hit price (\"cache miss\" in the official pricing table = the plain input price).",
-      "v4_pro_discount_note": "deepseek-v4-pro's 75%-off promotion ended 2026-05-31T15:59:00Z; the standard and undiscounted tiers are the same post-promotion official price and are kept numerically identical in this file. This distinction is superseded by price_update_2026_08_16_note below once that cutover takes effect.",
-      "price_update_2026_08_16_note": "A new peak/off-peak pricing structure takes effect 2026-08-16T16:00:00Z, verified directly against DeepSeek's official pricing table on 2026-08-13 (ahead of the cutover). Off-peak rates are exactly half the peak rates, same peak windows as the existing standard tier. Stored under standard_2026_08_16 / standard_2026_08_16_peak — PriceManager switches to these once 'now' reaches the cutover, for both deepseek-flash and deepseek-v4-pro (the v4-pro promotion/undiscounted distinction becomes moot once this supersedes it). Until the cutover, standard / standard_peak / undiscounted / undiscounted_peak remain the currently-billed prices — do not overwrite them early.",
+      "v4_pro_discount_note": "Historical tiers: deepseek-v4-pro's 75%-off promotion ended 2026-05-31T15:59:00Z; standard and undiscounted retain the same post-promotion price. The 2026-08-16 pricing update superseded these tiers.",
+      "price_update_2026_08_16_note": "Peak/off-peak pricing effective 2026-08-16T16:00:00Z is stored under standard_2026_08_16 / standard_2026_08_16_peak. These remain the current published Pro rates: off-peak input cache hits $0.022, input cache misses $0.66, and output $1.98 per 1M tokens; peak rates are 2x. Flash subsequently moved to the 2026-09-10 tiers. Earlier tiers are retained for historical estimates.",
       "price_update_2026_09_10_note": "DeepSeek V4.1-Flash (API model name: deepseek-flash; legacy deepseek-v4-flash and deepseek-v4-flash-vision-exp names remain accepted) uses the new pricing from 2026-09-10T04:00:00Z (12:00 Beijing Time). Off-peak rates are $0.003 per 1M tokens for input cache hits, $0.15 for input cache misses, and $0.60 for output; peak rates are exactly 2x. Stored under standard_2026_09_10 / standard_2026_09_10_peak for deepseek-flash. PriceManager switches the Flash series to these tiers at the cutover.",
-      "price_update_2026_09_14_note": "At 2026-09-14T04:00:00Z (12:00 Beijing Time), deepseek-v4-pro is retired pending a future V4.1-Pro release. DeepSeekProvider routes requests for deepseek-v4-pro to deepseek-flash, and PriceManager bills them at the deepseek-flash rate from that cutover onward.",
-      "peak_pricing_note": "Effective 2026-07-15, peak-hour surcharge applies: all billing dimensions cost 2x the off-peak rate. Peak hours (UTC): 01:00–04:00 and 06:00–10:00 (UTC+8: 09:00–12:00 and 14:00–18:00), Monday through Friday only — all other hours, and all day Saturday/Sunday, are off-peak (off-peak = half the peak rate). Use *_peak tier variants for peak-hour cost estimation. Same windows and weekday restriction apply to the 2026-08-16 and 2026-09-10 pricing updates."
+      "current_pricing_note": "Verified 2026-10-20: the official pricing page lists deepseek-flash (DeepSeek-V4.1-Flash-1017) and deepseek-v4-pro (DeepSeek-V4-Pro-0813) as separate models with their own prices; it no longer states that Pro requests are served by Flash. Current token prices are already stored in the dated tiers identified by metadata.current_tiers.",
+      "peak_pricing_note": "All token billing dimensions cost 2x the off-peak rate during 01:00–04:00 and 06:00–10:00 UTC (09:00–12:00 and 14:00–18:00 UTC+8), Monday through Friday, excluding Chinese public holidays. Weekends, Chinese public holidays, and all other hours use off-peak rates. The base tiers store off-peak prices; *_peak variants store peak prices."
+    },
+    "current_tiers": {
+      "deepseek-flash": {
+        "off_peak": "standard_2026_09_10",
+        "peak": "standard_2026_09_10_peak"
+      },
+      "deepseek-v4-pro": {
+        "off_peak": "standard_2026_08_16",
+        "peak": "standard_2026_08_16_peak"
+      }
     },
     "peak_pricing": {
       "effective_date": "2026-07-15",
       "multiplier": 2.0,
       "applies_to": "all billing dimensions (input, input_cache_hit, output) across all tiers",
-      "peak_days": "Monday through Friday only; Saturday and Sunday are entirely off-peak",
+      "peak_days": "Monday through Friday, excluding Chinese public holidays; weekends and Chinese public holidays are entirely off-peak",
+      "excluded_holidays": "Chinese public holidays",
+      "holiday_estimation_note": "Cost estimates intentionally use regular weekday peak windows without annual Chinese public holiday adjustments.",
       "off_peak_note": "Off-peak rate = half the peak rate. The base (non-_peak) tiers store the off-peak price.",
       "peak_windows_utc": [
         {"start": "01:00", "end": "04:00"},
@@ -41,25 +53,27 @@
       "canonical_id": "deepseek-flash",
       "is_alias": false,
       "is_deprecated": false,
-      "note": "Current API model name for DeepSeek-V4.1-Flash."
+      "model_version": "DeepSeek-V4.1-Flash-1017",
+      "note": "Current API model name for DeepSeek-V4.1-Flash-1017."
     },
     "deepseek-v4-flash": {
       "canonical_id": "deepseek-flash",
       "is_alias": true,
       "is_deprecated": true,
-      "note": "Retired legacy name; requests are served by DeepSeek-V4.1-Flash via deepseek-flash and billed at the Flash price."
+      "note": "Legacy name remains accepted; requests are served by DeepSeek-V4.1-Flash-1017 via deepseek-flash and billed at the Flash price."
     },
     "deepseek-v4-flash-vision-exp": {
       "canonical_id": "deepseek-flash",
       "is_alias": true,
       "is_deprecated": true,
-      "note": "Retired legacy vision name; requests are served by DeepSeek-V4.1-Flash via deepseek-flash and billed at the Flash price."
+      "note": "Legacy vision name remains accepted; requests are served by DeepSeek-V4.1-Flash-1017 via deepseek-flash and billed at the Flash price."
     },
     "deepseek-v4-pro": {
       "canonical_id": "deepseek-v4-pro",
       "is_alias": false,
-      "is_deprecated": true,
-      "note": "Scheduled for retirement at 2026-09-14T04:00:00Z; until V4.1-Pro is released, requests are routed to deepseek-flash and billed at the Flash price after the cutover."
+      "is_deprecated": false,
+      "model_version": "DeepSeek-V4-Pro-0813",
+      "note": "Current API model name for DeepSeek-V4-Pro-0813, listed with separate Pro pricing on 2026-10-20."
     }
   },
   "lookup": {
@@ -323,9 +337,30 @@
       "note": "Peak. Effective 2026-08-16T16:00:00Z."
     }
   },
+  "search_fetch_pricing": {
+    "_source": "https://api-docs.deepseek.com/guides/search/",
+    "_last_verified": "2026-10-20",
+    "search": {
+      "price": 0.75,
+      "unit": "USD",
+      "billing_unit": "per_1000_requests"
+    },
+    "fetch": {
+      "price": 0.75,
+      "unit": "USD",
+      "billing_unit": "per_1000_requests"
+    },
+    "billing_rule": "Bill only HTTP 200 responses containing results: non-empty search results or fetched page content. Errors, empty searches, and timeouts are free; search result count does not change the request price.",
+    "server_side_tool_calls": {
+      "applies_to": ["DeepSeek Harness", "Claude Code", "Codex"],
+      "price_before_billing_starts": 0.0,
+      "billing_starts_at": "2026-10-31T16:00:00Z",
+      "note": "Server-side Search/Fetch calls through these integrations are free before 2026-11-01 00:00 UTC+8; thereafter the per-request rates above apply."
+    }
+  },
   "model_limits": {
-    "_source": "https://api-docs.deepseek.com/",
-    "_last_verified": "2026-09-10",
+    "_source": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "_last_verified": "2026-10-20",
     "_default": {
       "max_output_tokens": 8192
     },
