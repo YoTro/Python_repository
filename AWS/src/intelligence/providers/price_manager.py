@@ -266,17 +266,10 @@ class PriceManager:
             # Flash-series pricing changes at 12:00 Beijing Time on 2026-09-10,
             # which is 04:00 UTC (see price_update_2026_09_10_note in the config).
             _FLASH_PRICE_UPDATE_2026_09_10 = _dt.datetime(2026, 9, 10, 4, 0, 0, tzinfo=_dt.UTC)
-            # V4-Pro retires at 12:00 Beijing Time on 2026-09-14, which is
-            # 04:00 UTC. Until a future V4.1-Pro release, its requests use the
-            # V4.1-Flash model and Flash pricing.
-            _V4PRO_RETIREMENT_2026_09_14 = _dt.datetime(2026, 9, 14, 4, 0, 0, tzinfo=_dt.UTC)
             # deepseek-v4-pro: 75% discount until 2026-05-31T15:59:00Z; after that, undiscounted tier = 1/4 of launch price (same value).
             _V4PRO_DISCOUNT_END = _dt.datetime(2026, 5, 31, 15, 59, 0, tzinfo=_dt.UTC)
-            billing_model = canonical_model
-            if canonical_model == "deepseek-v4-pro" and now_utc >= _V4PRO_RETIREMENT_2026_09_14:
-                billing_model = "deepseek-flash"
 
-            if billing_model == "deepseek-flash" and now_utc >= _FLASH_PRICE_UPDATE_2026_09_10:
+            if canonical_model == "deepseek-flash" and now_utc >= _FLASH_PRICE_UPDATE_2026_09_10:
                 ds_base_tier = "standard_2026_09_10"
             elif now_utc >= _PRICE_UPDATE_2026_08_16:
                 ds_base_tier = "standard_2026_08_16"
@@ -290,7 +283,7 @@ class PriceManager:
             if is_batch:
                 logger.warning(
                     f"DeepSeek pricing has no batch tier for {canonical_model}; "
-                    f"billing at the {billing_model}/{ds_base_tier} rate instead."
+                    f"billing at the {canonical_model}/{ds_base_tier} rate instead."
                 )
 
             # Peak-hour surcharge, effective 2026-07-15: 2x multiplier during
@@ -298,6 +291,7 @@ class PriceManager:
             # (see metadata.peak_pricing in deepseek_pricing.json). All other
             # hours — and all day Saturday/Sunday — are off-peak. Select the
             # *_peak tier variant only inside a weekday peak window.
+            # Estimates intentionally omit annual Chinese public holiday adjustments.
             _PEAK_WINDOWS_UTC = (
                 (_dt.time(1, 0), _dt.time(4, 0)),
                 (_dt.time(6, 0), _dt.time(10, 0)),
@@ -309,14 +303,14 @@ class PriceManager:
             )
             ds_tier = f"{ds_base_tier}_peak" if is_peak else ds_base_tier
 
-            in_key = f"{billing_model}#{ds_tier}#input"
-            cache_hit_key = f"{billing_model}#{ds_tier}#input_cache_hit"
-            out_key = f"{billing_model}#{ds_tier}#output"
+            in_key = f"{canonical_model}#{ds_tier}#input"
+            cache_hit_key = f"{canonical_model}#{ds_tier}#input_cache_hit"
+            out_key = f"{canonical_model}#{ds_tier}#output"
 
             missing_keys = [k for k in (in_key, out_key) if k not in self.lookup]
             if missing_keys:
                 logger.warning(
-                    f"DeepSeek pricing lookup miss for model={billing_model} tier={ds_tier}: "
+                    f"DeepSeek pricing lookup miss for model={canonical_model} tier={ds_tier}: "
                     f"missing {missing_keys} — pricing config may be out of date. "
                     f"Cost for the missing dimension(s) will be reported as $0.00."
                 )

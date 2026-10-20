@@ -70,7 +70,7 @@ def test_price_manager_calculation_claude_long_context():
     assert cost_high == expected_high
 
 
-# 3. DeepSeek aliases and scheduled retirement
+# 3. DeepSeek aliases and pricing
 
 
 def test_deepseek_flash_aliases_and_prices():
@@ -90,27 +90,44 @@ def test_deepseek_flash_aliases_and_prices():
     assert provider.model_name == "deepseek-flash"
 
 
-def test_deepseek_v4_pro_retirement_routes_and_bills_flash():
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("now_utc", "expected_cost"),
+    [
+        (dt.datetime(2026, 9, 14, 4, 0, tzinfo=dt.UTC), 2.662),  # Off-peak
+        (dt.datetime(2026, 10, 20, 2, 0, tzinfo=dt.UTC), 5.324),  # Weekday peak
+        (dt.datetime(2026, 10, 1, 2, 0, tzinfo=dt.UTC), 5.324),  # Holidays ignored
+        (dt.datetime(2026, 10, 10, 2, 0, tzinfo=dt.UTC), 2.662),  # Weekend
+    ],
+)
+async def test_deepseek_v4_pro_uses_own_model_and_prices(now_utc, expected_cost):
     provider = DeepSeekProvider(api_key="fake", model_name="deepseek-v4-pro")
     pm = PriceManager(provider="deepseek")
 
     class FrozenDateTime(dt.datetime):
-        frozen = dt.datetime(2026, 9, 14, 4, 0, tzinfo=dt.UTC)
+        frozen = now_utc
 
         @classmethod
         def now(cls, tz=None):
             return cls.frozen if tz is not None else cls.frozen.replace(tzinfo=None)
 
-    with patch.object(dt, "datetime", FrozenDateTime):
-        assert provider._routed_model_name() == "deepseek-flash"
+    with (
+        patch.object(dt, "datetime", FrozenDateTime),
+        patch.object(
+            provider,
+            "list_models",
+            new=AsyncMock(return_value=[{"id": "deepseek-flash"}, {"id": "deepseek-v4-pro"}]),
+        ),
+    ):
+        assert await provider._active_model() == "deepseek-v4-pro"
         assert (
             pm.calculate_cost(
                 "deepseek-v4-pro",
-                input_tokens=1_000_000,
+                input_tokens=2_000_000,
                 output_tokens=1_000_000,
                 cached_tokens=1_000_000,
             )
-            == 0.603
+            == expected_cost
         )
 
 

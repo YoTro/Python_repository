@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime as _dt
 import json
 import logging
 import os
@@ -18,7 +17,6 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "deepseek-flash"
-_V4PRO_RETIREMENT_2026_09_14 = _dt.datetime(2026, 9, 14, 4, 0, 0, tzinfo=_dt.UTC)
 
 # DeepSeek recommended temperatures (API default: 1.0).
 # Source: https://api-docs.deepseek.com/quick_start/token_usage
@@ -50,12 +48,11 @@ class DeepSeekProvider(BaseLLMProvider):
     Requires `openai` package (pip install openai).
 
     Current model names (per live GET /models — see list_models()):
-      - deepseek-flash     (DeepSeek-V4.1-Flash; default)
-      - deepseek-v4-pro    (scheduled retirement at 2026-09-14T04:00:00Z)
+      - deepseek-flash     (DeepSeek-V4.1-Flash-1017; default)
+      - deepseek-v4-pro    (DeepSeek-V4-Pro-0813)
 
     The retired deepseek-v4-flash and deepseek-v4-flash-vision-exp names are
-    accepted as aliases for deepseek-flash. After the V4-Pro retirement cutoff,
-    deepseek-v4-pro requests are routed to deepseek-flash until V4.1-Pro ships.
+    accepted as aliases for deepseek-flash. Pro uses its own API model and pricing.
 
     Server-side KV cache is automatic; prompt_cache_hit_tokens in the
     usage response drives the cheaper cache-hit billing rate.
@@ -75,8 +72,7 @@ class DeepSeekProvider(BaseLLMProvider):
 
         resolved = model_name or os.getenv("DEEPSEEK_MODEL", _DEFAULT_MODEL)
         super().__init__("deepseek", resolved)
-        # Normalize legacy Flash names to the current API/billing identity while
-        # retaining deepseek-v4-pro until its scheduled retirement cutoff.
+        # Normalize legacy Flash names to the current API/billing identity.
         self.model_name = self.price_manager.normalize_model_name(resolved)
 
         try:
@@ -136,7 +132,7 @@ class DeepSeekProvider(BaseLLMProvider):
         Result is cached after the first successful /models call so subsequent
         inference calls pay no extra latency.
         """
-        requested_model = self._routed_model_name()
+        requested_model = self.model_name
         if self._resolved_model is not None and self._resolved_for_model == requested_model:
             return self._resolved_model
 
@@ -160,15 +156,6 @@ class DeepSeekProvider(BaseLLMProvider):
 
         self._resolved_for_model = requested_model
         return self._resolved_model
-
-    def _routed_model_name(self) -> str:
-        """Return the API model name after applying scheduled retirement routing."""
-        if (
-            self.model_name == "deepseek-v4-pro"
-            and _dt.datetime.now(_dt.UTC) >= _V4PRO_RETIREMENT_2026_09_14
-        ):
-            return _DEFAULT_MODEL
-        return self.model_name
 
     # ── Text generation ───────────────────────────────────────────────────────
 
